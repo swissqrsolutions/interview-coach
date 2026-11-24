@@ -2,7 +2,7 @@
 
 Generated from content/syllabus.json. Priority 1 = asked in almost every interview. Mark: **Projekt** = shown in CV/Gmail · **— kein Projekt** = no project experience · **? prüfen** = unclear, you decide.
 
-415 topics · P1 243 · P2 132 · P3 40 · written 290
+413 topics · P1 243 · P2 132 · P3 38 · written 290
 
 ## Java 21 (core + advanced) (40)
 Sources: Java SE 21/25 docs (docs.oracle.com) · JVM Specification · OpenJDK source + JEPs (openjdk.org) · Oracle Java SE 21 Developer exam 1Z0-830 topics
@@ -410,14 +410,6 @@ Sources: Microsoft Learn: AZ-204 and AZ-305 skills outlines · Azure Architectur
 | 2 | Defender for Cloud und Malware Scanning | Projekt |  |
 | 2 | Daten-Services: ADF, Synapse, Fabric, Databricks | — kein Projekt |  |
 | 2 | Kosten und Governance: Tags, Policies, Budgets | ? prüfen |  |
-
-## AWS (2)
-Sources: AWS documentation · AWS Certified Developer Associate exam guide
-
-| P | Topic | Project | Written |
-|---|---|---|---|
-| 3 | AWS-Grundlagen: EC2, S3, IAM, VPC, Lambda, RDS, EKS | ? prüfen |  |
-| 3 | AWS vs Azure: Dienste übersetzen | Projekt |  |
 
 ## Kubernetes + Docker (18)
 Sources: kubernetes.io documentation · CKA and CKAD curricula (CNCF)

@@ -1,7 +1,7 @@
 ---
 id: project-cariad
 round: project
-tech: [angular, spring, postgres, aws, scrum, cicd]
+tech: [angular, spring, postgres, scrum, cicd]
 tier: 1
 project: CARIAD (HAD Map Learning)
 q: Erzählen Sie von Ihrer Zeit bei CARIAD. Was haben Sie dort gebaut?
@@ -23,7 +23,7 @@ Soll ich die Architektur oder die Release-Automatisierung erklären?
 2. **Backend:** Spring Boot mit Java 11 und PostgreSQL.
 3. **Pipeline:** Kubernetes. gRPC und Protobuf zwischen den Services.
 4. **Login:** LDAP über Keycloak.
-5. **Betrieb:** CI/CD mit Bamboo, SonarQube Quality Gates, Grafana-Dashboards für die Pipeline. Entwicklung auf AWS.
+5. **Betrieb:** CI/CD mit Bamboo, SonarQube Quality Gates, Grafana-Dashboards für die Pipeline.
 
 **Meine Rollen:**
 - Architektur und Infrastruktur der Monitoring- und Test-Plattform mitverantwortet.
@@ -53,7 +53,6 @@ Ich habe Planning, Review, Retro und Daily moderiert. Dazu Backlog-Pflege, Veloc
 - Ihr CV sagt ab 2017, das Zeugnis ab Dezember 2020. Warum? → CARIAD wurde erst 2020 gegründet. *(Prüfen: Erklären Sie klar, wo und wie Sie 2017–2020 gearbeitet haben.)*
 - Was ist HAD? → Highly Automated Driving, also hochautomatisiertes Fahren. Die Autos brauchen sehr genaue Karten.
 - Was ist EB GUIDE? → Ein Framework von Elektrobit für Fahrzeug-HMIs. Ich habe Plugins, Widgets und Checker dafür gebaut. *(Prüfen: Wofür genau?)*
-- Was haben Sie auf AWS gemacht? → Entwicklung auf AWS: Anwendungen, Datenbanken, Sicherheit, Skalierung und Monitoring. *(Ihr echtes Beispiel: welche AWS-Dienste.)*
 - Warum Standalone Components? → Weniger NgModule-Code. Jede Komponente sagt selbst, was sie braucht. Lazy Loading wird einfacher.
 - Wie gross war das Team? → *(Ihr echtes Beispiel: Teamgrösse.)*
 - Warum sind Sie gegangen? → Auf eigenen Wunsch. *(Ihr echtes Beispiel: positiver Grund, z. B. Wechsel in die Schweiz.)*
