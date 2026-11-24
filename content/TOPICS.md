@@ -2,7 +2,7 @@
 
 Generated from content/syllabus.json. Priority 1 = asked in almost every interview. Mark: **Projekt** = shown in CV/Gmail · **— kein Projekt** = no project experience · **? prüfen** = unclear, you decide.
 
-404 topics · P1 239 · P2 125 · P3 40 · written 29
+404 topics · P1 239 · P2 125 · P3 40 · written 31
 
 ## Java 21 (core + advanced) (40)
 Sources: Java SE 21/25 docs (docs.oracle.com) · JVM Specification · OpenJDK source + JEPs (openjdk.org) · Oracle Java SE 21 Developer exam 1Z0-830 topics
@@ -693,8 +693,8 @@ Sources: RFC 9110/9113/9114 (HTTP) · RFC 8446 (TLS 1.3) · MDN web docs
 | 1 | TCP vs UDP | — kein Projekt | ✓ |
 | 1 | DNS: Auflösung, Records, TTL | — kein Projekt | ✓ |
 | 1 | HTTP/1.1 vs HTTP/2 vs HTTP/3 | — kein Projekt | ✓ |
-| 1 | TLS-Handshake und Zertifikate | — kein Projekt |  |
-| 1 | Layer-4 vs Layer-7 Load Balancer und Proxies | — kein Projekt |  |
+| 1 | TLS-Handshake und Zertifikate | — kein Projekt | ✓ |
+| 1 | Layer-4 vs Layer-7 Load Balancer und Proxies | — kein Projekt | ✓ |
 
 ## Redis / Caching (3)
 Sources: redis.io documentation
