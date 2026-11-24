@@ -1,0 +1,208 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MinIO und S3-API</title>
+<style>
+  body { font: 17px/1.55 -apple-system, system-ui, sans-serif; max-width: 760px; margin: 0 auto; padding: 16px; color: #1d1d1f; }
+  h1 { font-size: 28px; margin: 8px 0 4px; }
+  h2 { font-size: 21px; margin: 32px 0 8px; padding-top: 12px; border-top: 2px solid #e5e5ea; }
+  .kern { background: #eef6ff; border-left: 4px solid #0a66c2; padding: 10px 14px; border-radius: 6px; }
+  .senior { background: #f0faf0; border-left: 4px solid #2e7d32; padding: 10px 14px; border-radius: 6px; }
+  .trap { background: #fff4f2; border-left: 4px solid #c62828; padding: 10px 14px; border-radius: 6px; }
+  code { background: #f2f2f7; padding: 1px 5px; border-radius: 4px; font-size: 15px; }
+  pre { background: #1e1e1e; color: #e6e6e6; padding: 12px; border-radius: 8px; overflow-x: auto; font-size: 13.5px; line-height: 1.45; }
+  svg { width: 100%; height: auto; display: block; margin: 10px 0; }
+  ol li, ul li { margin: 4px 0; }
+  details { border: 1px solid #e5e5ea; border-radius: 8px; padding: 8px 12px; margin: 6px 0; }
+  summary { font-weight: 600; cursor: pointer; }
+  details p { margin: 6px 0 2px; }
+  .small { color: #6e6e73; font-size: 14px; }
+</style>
+</head>
+<body>
+
+<h1>MinIO und S3-API</h1>
+<p class="small">Dremio · Tier 2 · Quellen: MinIO AIStor Docs (Erasure Coding, Core Concepts), GitHub minio/minio README (archiviert am 25.4.2026), AWS S3 Docs (Consistency Model, Multipart Upload, Path-Style vs Virtual-Hosted), Apache Iceberg 1.12 Docs (S3FileIO), Hadoop S3A Docs</p>
+
+<div class="kern">
+<b>MinIO</b> ist ein <b>Object Storage</b>, der die <b>S3-API</b> von Amazon nachbildet und auf eigenen Servern oder in Kubernetes läuft. Er löst das Problem, ein Lakehouse ohne Cloud-Anbieter zu betreiben: Spark, Iceberg und Dremio sprechen S3 und merken keinen Unterschied. Wichtig für 2026: Das <b>Community-Repository</b> ist seit April 2026 archiviert und nicht mehr gepflegt; weiterentwickelt wird das kommerzielle <b>AIStor</b>.
+</div>
+
+<h2>1. Wo sitzt MinIO?</h2>
+<svg viewBox="0 0 720 300" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="mia" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="10" y="20" width="130" height="44" rx="8" fill="#dbe9fb" stroke="#0a66c2"/><text x="75" y="47" text-anchor="middle">Spark (S3A)</text>
+  <rect x="10" y="76" width="130" height="44" rx="8" fill="#dbe9fb" stroke="#0a66c2"/><text x="75" y="103" text-anchor="middle">Iceberg S3FileIO</text>
+  <rect x="10" y="132" width="130" height="44" rx="8" fill="#dbe9fb" stroke="#0a66c2"/><text x="75" y="159" text-anchor="middle">Dremio</text>
+  <line x1="140" y1="42" x2="218" y2="90" stroke="#555" stroke-width="2" marker-end="url(#mia)"/>
+  <line x1="140" y1="98" x2="218" y2="98" stroke="#555" stroke-width="2" marker-end="url(#mia)"/>
+  <line x1="140" y1="154" x2="218" y2="106" stroke="#555" stroke-width="2" marker-end="url(#mia)"/>
+  <text x="180" y="70" font-size="11">HTTPS, S3-API</text>
+  <rect x="220" y="70" width="150" height="56" rx="8" fill="#0a66c2"/><text x="295" y="94" text-anchor="middle" fill="#fff" font-weight="700">MinIO Server</text><text x="295" y="112" text-anchor="middle" fill="#fff" font-size="12">Buckets, IAM, TLS</text>
+  <line x1="370" y1="98" x2="418" y2="98" stroke="#555" stroke-width="2" marker-end="url(#mia)"/>
+  <rect x="420" y="20" width="290" height="160" rx="10" fill="#f7f7fa" stroke="#999" stroke-dasharray="5 4"/><text x="565" y="40" text-anchor="middle" font-weight="700" font-size="13">Server Pool / Erasure Set</text>
+  <rect x="435" y="55" width="60" height="50" rx="6" fill="#fff" stroke="#555"/><text x="465" y="85" text-anchor="middle" font-size="12">Disk 1</text>
+  <rect x="505" y="55" width="60" height="50" rx="6" fill="#fff" stroke="#555"/><text x="535" y="85" text-anchor="middle" font-size="12">Disk 2</text>
+  <rect x="575" y="55" width="60" height="50" rx="6" fill="#fff" stroke="#555"/><text x="605" y="85" text-anchor="middle" font-size="12">Disk 3</text>
+  <rect x="645" y="55" width="55" height="50" rx="6" fill="#fff3cd" stroke="#c9a227"/><text x="672" y="85" text-anchor="middle" font-size="12">Parität</text>
+  <text x="565" y="130" text-anchor="middle" font-size="12">Objekt → K Daten-Shards + M Paritäts-Shards</text>
+  <text x="565" y="150" text-anchor="middle" font-size="12">verteilt über Laufwerke und Knoten</text>
+  <rect x="220" y="210" width="490" height="56" rx="8" fill="#e8f5e9" stroke="#2e7d32"/><text x="465" y="234" text-anchor="middle" font-weight="700">Bucket-Funktionen</text><text x="465" y="252" text-anchor="middle" font-size="12">Versioning, Object Lock, Lifecycle (ILM), Replikation, Events</text>
+</svg>
+<ol>
+  <li><b>Clients:</b> Spark nutzt den Hadoop-Connector <b>S3A</b>, Iceberg seine <b>S3FileIO</b>, Dremio einen eigenen S3-Client. Alle sprechen HTTP(S) mit der S3-API.</li>
+  <li><b>MinIO Server:</b> Er nimmt Requests wie <code>PUT</code>, <code>GET</code>, <code>LIST</code> an, prüft Rechte (Access Key, Policies) und TLS.</li>
+  <li><b>Bucket:</b> ein Namensraum für Objekte, z. B. <code>lakehouse</code>. Ein <b>Objekt</b> ist eine Datei mit Schlüssel wie <code>silver/trade/data/00001.parquet</code>.</li>
+  <li><b>Erasure Set:</b> eine Gruppe von Laufwerken (standardmässig 2 bis 16). Jedes Objekt wird in <b>Daten-</b> und <b>Paritäts-Shards</b> zerlegt und darauf verteilt.</li>
+  <li><b>Server Pool:</b> eine Gruppe von Servern mit festen Erasure Sets. Mehr Kapazität kommt als neuer Pool dazu.</li>
+  <li><b>Bucket-Funktionen:</b> Versionierung, Löschschutz (Object Lock), Lifecycle-Regeln, Replikation, Event-Benachrichtigungen.</li>
+</ol>
+
+<h2>2. Die Reise eines Parquet-Writes</h2>
+<svg viewBox="0 0 720 290" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="mib" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="10" y="20" width="140" height="60" rx="10" fill="#eee" stroke="#777"/><text x="80" y="44" text-anchor="middle" font-weight="700">1. Spark-Task</text><text x="80" y="64" text-anchor="middle" font-size="12">256 MB Parquet</text>
+  <line x1="150" y1="50" x2="188" y2="50" stroke="#555" stroke-width="2" marker-end="url(#mib)"/>
+  <rect x="190" y="20" width="160" height="60" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="270" y="44" text-anchor="middle" font-weight="700">2. Multipart Upload</text><text x="270" y="64" text-anchor="middle" font-size="12">Teile parallel</text>
+  <line x1="350" y1="50" x2="388" y2="50" stroke="#555" stroke-width="2" marker-end="url(#mib)"/>
+  <rect x="390" y="20" width="150" height="60" rx="10" fill="#0a66c2"/><text x="465" y="44" text-anchor="middle" fill="#fff" font-weight="700">3. Erasure Coding</text><text x="465" y="64" text-anchor="middle" fill="#fff" font-size="12">K + M Shards</text>
+  <line x1="540" y1="50" x2="578" y2="50" stroke="#555" stroke-width="2" marker-end="url(#mib)"/>
+  <rect x="580" y="20" width="130" height="60" rx="10" fill="#fff" stroke="#555"/><text x="645" y="44" text-anchor="middle" font-weight="700">4. Quorum</text><text x="645" y="64" text-anchor="middle" font-size="12">genug Disks OK</text>
+  <line x1="645" y1="80" x2="645" y2="128" stroke="#555" stroke-width="2" marker-end="url(#mib)"/>
+  <rect x="540" y="130" width="170" height="60" rx="10" fill="#fff" stroke="#555"/><text x="625" y="154" text-anchor="middle" font-weight="700">5. Complete</text><text x="625" y="174" text-anchor="middle" font-size="12">Objekt sichtbar</text>
+  <line x1="540" y1="160" x2="402" y2="160" stroke="#555" stroke-width="2" marker-end="url(#mib)"/>
+  <rect x="230" y="130" width="170" height="60" rx="10" fill="#e8f5e9" stroke="#2e7d32"/><text x="315" y="154" text-anchor="middle" font-weight="700">6. Iceberg-Commit</text><text x="315" y="174" text-anchor="middle" font-size="12">Manifest zeigt drauf</text>
+  <line x1="230" y1="160" x2="162" y2="160" stroke="#555" stroke-width="2" marker-end="url(#mib)"/>
+  <rect x="10" y="130" width="150" height="60" rx="10" fill="#fff" stroke="#555"/><text x="85" y="154" text-anchor="middle" font-weight="700">7. Dremio liest</text><text x="85" y="174" text-anchor="middle" font-size="12">Range-GET Footer</text>
+  <text x="360" y="240" text-anchor="middle" font-size="12">Das Objekt existiert ab Schritt 5. Die Tabelle kennt es erst ab Schritt 6.</text>
+</svg>
+<ol>
+  <li><b>Spark-Task:</b> Ein Task schreibt eine Parquet-Datei von ca. 256 MB.</li>
+  <li><b>Multipart Upload:</b> Grosse Dateien gehen in Teilen hoch (mind. 5 MiB pro Teil ausser dem letzten). Teile laufen parallel und einzeln wiederholbar.</li>
+  <li><b>Erasure Coding:</b> MinIO zerlegt die Daten mit <b>Reed-Solomon</b> in K Daten- und M Paritäts-Shards.</li>
+  <li><b>Quorum:</b> Der Write gilt erst, wenn genug Laufwerke bestätigen: mindestens K, bei Parität = halbe Set-Grösse K+1.</li>
+  <li><b>Complete:</b> Mit <code>CompleteMultipartUpload</code> wird das Objekt atomar sichtbar. Halbe Objekte gibt es nicht.</li>
+  <li><b>Iceberg-Commit:</b> Erst der Commit im Katalog macht die Datei Teil der Tabelle.</li>
+  <li><b>Lesen:</b> Dremio liest zuerst den Parquet-Footer per <b>Range-GET</b> (nur einige Bytes am Ende), dann nur die nötigen Spalten.</li>
+</ol>
+
+<h2>3. Beispiel: Erasure Coding im Kleinen</h2>
+<pre># Modell: Objekt in 3 Daten-Shards + 1 Paritäts-Shard (XOR), ein Laufwerk fällt aus
+obj = b"trade,2026-11-02,50.000;trade,2026-11-02,60.000;"
+k = 3
+size = -(-len(obj) // k)                                   # aufrunden
+shards = [obj[i*size:(i+1)*size].ljust(size, b"\0") for i in range(k)]
+parity = bytes(a ^ b ^ c for a, b, c in zip(*shards))
+drives = {"d1": shards[0], "d2": shards[1], "d3": shards[2], "d4": parity}
+print("Shard-Grösse:", size, "Bytes | Speicher:", size * 4, "für", len(obj), "Bytes Nutzdaten")
+lost = drives.pop("d2")                                     # Laufwerk 2 fällt aus
+rebuilt = bytes(a ^ b ^ p for a, b, p in zip(drives["d1"], drives["d3"], drives["d4"]))
+print("d2 wiederhergestellt:", rebuilt == lost)
+print("Objekt:", (drives["d1"] + rebuilt + drives["d3"]).rstrip(b"\0").decode())</pre>
+<pre>Shard-Grösse: 16 Bytes | Speicher: 64 für 48 Bytes Nutzdaten
+d2 wiederhergestellt: True
+Objekt: trade,2026-11-02,50.000;trade,2026-11-02,60.000;</pre>
+<p class="small">Echte Ausgabe, Python 3.12. Ein Modell: XOR entspricht Reed-Solomon mit genau einer Parität (M = 1). MinIO nutzt Reed-Solomon mit mehreren Paritäts-Shards.</p>
+<ol>
+  <li>48 Bytes Nutzdaten brauchen 64 Bytes Speicher: Effizienz K/(K+M) = 75 %.</li>
+  <li>Fällt ein Laufwerk aus, rechnet MinIO den Shard aus den übrigen zurück. Das heisst <b>Healing</b>.</li>
+  <li>Mit M Paritäts-Shards dürfen bis zu M Laufwerke ausfallen, ohne dass Lesen scheitert.</li>
+  <li>Zum Vergleich: Spiegelung (2 Kopien) bräuchte 96 Bytes für denselben Schutz gegen 1 Ausfall.</li>
+</ol>
+<p><b>Spark und Iceberg auf MinIO konfigurieren:</b></p>
+<pre>spark.hadoop.fs.s3a.endpoint                 https://minio.lakehouse.svc:9000
+spark.hadoop.fs.s3a.path.style.access        true
+spark.sql.catalog.lake.io-impl               org.apache.iceberg.aws.s3.S3FileIO
+spark.sql.catalog.lake.s3.endpoint           https://minio.lakehouse.svc:9000
+spark.sql.catalog.lake.s3.path-style-access  true</pre>
+<p class="small">Erwartetes Ergebnis (laut Doku, nicht ausgeführt): Ohne Path-Style versucht der Client <code>bucket.minio.lakehouse.svc</code> per DNS aufzulösen und scheitert. MinIO läuft hier nicht.</p>
+
+<h2>4. Details, die Interviewer fragen</h2>
+<ol>
+  <li><b>S3-Konsistenz:</b> AWS S3 ist seit Dezember 2020 stark konsistent für Lesen nach Schreiben und für LIST. MinIO ist ebenfalls stark konsistent. Iceberg braucht trotzdem den Katalog, weil S3 kein atomares Rename hat.</li>
+  <li><b>Kein Rename:</b> „Umbenennen“ ist in S3 Kopieren plus Löschen. Darum sind Hive-artige Commits per Rename auf S3 langsam und nicht atomar.</li>
+  <li><b>Path-Style vs Virtual-Hosted:</b> <code>host/bucket/key</code> gegen <code>bucket.host/key</code>. MinIO im Cluster braucht meist Path-Style.</li>
+  <li><b>Parität:</b> zwischen 0 und der halben Set-Grösse einstellbar. Die Doku empfiehlt für Produktion mindestens EC:3; im 16-Laufwerke-Beispiel ist EC:4 der Standard.</li>
+  <li><b>Quorum:</b> Lesen braucht K beliebige Shards. Schreiben braucht K Bestätigungen, bei Parität = halbe Set-Grösse K+1 (gegen Split-Brain).</li>
+  <li><b>Erweitern:</b> Die Grösse eines Erasure Sets ist fest. Man erweitert mit einem neuen Server Pool, nicht mit einzelnen Disks.</li>
+  <li><b>Versioning und Object Lock:</b> Versioning behält alte Versionen bei Überschreiben und Löschen. Object Lock verbietet Löschen für eine Frist (WORM), z. B. für Aufbewahrungspflichten.</li>
+  <li><b>Lifecycle (ILM):</b> Regeln löschen alte Objekte oder alte Versionen automatisch. Achtung: Iceberg-Dateien nie per Lifecycle löschen, nur per <code>expire_snapshots</code>.</li>
+  <li><b>Kubernetes:</b> MinIO läuft als StatefulSet mit Persistent Volumes, oft über einen Operator. Lokale Disks sind schneller als Netz-Volumes.</li>
+  <li><b>Lizenz und Status 2026:</b> Das Community-Repository ist seit 25. April 2026 archiviert und wird nicht mehr gepflegt. Die Community-Edition gibt es nur als Quellcode, ohne neue Binaries. Wer MinIO betreibt, braucht eine Strategie: AIStor-Lizenz, ein anderer S3-kompatibler Speicher oder Cloud-Storage.</li>
+</ol>
+
+<h2>5. Vergleich</h2>
+<ul>
+  <li><b>MinIO / AIStor:</b> einfach, schnell, S3-nah, gut in Kubernetes. Community-Version nicht mehr gepflegt; produktiv also Lizenz oder Wechsel planen.</li>
+  <li><b>Ceph (RADOS Gateway):</b> sehr mächtig, Block, File und Object in einem. Aber viel komplexer zu betreiben.</li>
+  <li><b>Cloud-Storage</b> (AWS S3, Azure Blob/ADLS Gen2, Google Cloud Storage): kein Betrieb, hohe Haltbarkeit. Kosten pro Request und Egress, Daten beim Anbieter.</li>
+</ul>
+
+<h2>6. In der Produktion</h2>
+<ol>
+  <li><b>Writes werden abgelehnt:</b> Platte voll, oft der darunterliegende Host oder die VM. Lösung: Kapazität überwachen, Snapshots ablaufen lassen, Orphan Files entfernen.</li>
+  <li><b>Spark findet den Bucket nicht (UnknownHost):</b> Virtual-Hosted-Style aktiv. Lösung: Path-Style einschalten.</li>
+  <li><b>TLS-Fehler in Spark oder pip:</b> eigenes oder Firmen-CA-Zertifikat fehlt im Trust Store. Lösung: CA ins Image einbauen.</li>
+  <li><b>Langsame Listings:</b> Millionen kleiner Dateien. Lösung: Compaction; Iceberg listet sowieso nicht, nur Hive-Tabellen.</li>
+  <li><b>Iceberg-Tabelle kaputt nach Lifecycle-Regel:</b> ILM hat Daten gelöscht, die ein Snapshot noch braucht. Lösung: kein ILM auf Tabellen-Pfaden.</li>
+  <li><b>Unklare Zukunft der Version:</b> Community-Binaries ohne Updates. Lösung: Risiko bewerten, Sicherheits-Updates klären, Alternativen testen.</li>
+</ol>
+
+<h2>7. Diagnose</h2>
+<ul>
+  <li><code>mc admin info &lt;alias&gt;</code>: Server, Laufwerke online/offline, Speicher.</li>
+  <li><code>mc admin heal &lt;alias&gt;</code>: Healing-Status nach Laufwerksausfall.</li>
+  <li><code>mc ls --recursive --summarize alias/bucket/prefix</code>: Zahl und Grösse der Objekte.</li>
+  <li><b>Prometheus-Metriken</b> von MinIO: Kapazität, Requests, Fehler, Latenz.</li>
+  <li>Spark: <code>fs.s3a</code>-Logs auf DEBUG für Endpoint- und Auth-Probleme.</li>
+</ul>
+
+<h2>8. Senior-Punkte</h2>
+<div class="senior">
+<ol>
+  <li><b>S3-Kompatibilität ist der Vertrag,</b> nicht das Produkt. Wer nur die S3-API nutzt, kann den Speicher wechseln.</li>
+  <li><b>Object Storage ist kein Dateisystem.</b> Kein Rename, teure Listings. Darum Table Formats wie Iceberg.</li>
+  <li><b>Der Speicher hält die Daten, der Katalog die Wahrheit.</b> Beide brauchen Backup, aber unterschiedlich.</li>
+  <li><b>Produkt-Lebenszyklus prüfen:</b> Die Archivierung der MinIO-Community-Edition 2026 zeigt, dass Open Source sich ändern kann. Exit-Strategie gehört in die Architektur.</li>
+  <li><b>Kapazität nach Parität rechnen:</b> Brutto ist nicht netto.</li>
+</ol>
+</div>
+
+<h2>9. Aus dem Projekt</h2>
+<p>„Bei ElCom MATCH liegen ZIP-Eingänge und alle Iceberg-Tabellen in MinIO auf AKS; ein Argo-CD-PostSync-Hook legt die Buckets an, und lokal hatten wir einmal einen MinIO-Write-Fehler, dessen Ursache eine volle Rancher-Desktop-VM-Disk war.“ <span class="small">(Prüfen und durch dein echtes Beispiel ersetzen.)</span></p>
+
+<h2>10. Fallen</h2>
+<div class="trap">
+<ul>
+  <li>„S3 ist wie ein Dateisystem.“ → <b>Falsch.</b> Kein atomares Rename, keine echten Ordner.</li>
+  <li>„S3 ist eventual consistent.“ → <b>Veraltet.</b> AWS S3 ist seit 2020 stark konsistent.</li>
+  <li>„Mit Erasure Coding brauche ich kein Backup.“ → <b>Falsch.</b> Es schützt vor Laufwerksausfall, nicht vor Löschen durch Fehler.</li>
+  <li>„MinIO Community wird weiter gepflegt.“ → <b>Falsch</b> seit 2026: Repository archiviert.</li>
+  <li>„Lifecycle-Regeln räumen Iceberg auf.“ → <b>Gefährlich.</b> Nur Iceberg-Prozeduren wissen, welche Dateien noch gebraucht werden.</li>
+</ul>
+</div>
+
+<h2>11. Fragen</h2>
+<details><summary>Was ist MinIO?</summary><p>Ein Object Storage mit S3-kompatibler API, der auf eigenen Servern oder in Kubernetes läuft.</p></details>
+<details><summary>Was ist Object Storage?</summary><p>Speicher für Objekte mit Schlüssel und Metadaten in Buckets, per HTTP-API. Keine Ordner, kein Rename, kein teilweises Überschreiben.</p></details>
+<details><summary>Wie schützt MinIO Daten vor Laufwerksausfall?</summary><p>Mit Reed-Solomon Erasure Coding: K Daten- und M Paritäts-Shards. Bis zu M Laufwerke dürfen ausfallen.</p></details>
+<details><summary>Was ist ein Erasure Set?</summary><p>Eine feste Gruppe von Laufwerken, standardmässig 2 bis 16, über die ein Objekt verteilt wird.</p></details>
+<details><summary>Wie funktioniert das Quorum?</summary><p>Lesen braucht K Shards. Schreiben braucht K Bestätigungen, bei Parität = halbe Set-Grösse K+1.</p></details>
+<details><summary>Wie erweitern Sie MinIO?</summary><p>Mit einem neuen Server Pool. Bestehende Erasure Sets kann man nicht vergrössern.</p></details>
+<details><summary>Was ist ein Multipart Upload?</summary><p>Ein grosses Objekt wird in Teilen hochgeladen, parallel und einzeln wiederholbar. Mit Complete wird es atomar sichtbar.</p></details>
+<details><summary>Path-Style oder Virtual-Hosted-Style?</summary><p>Path-Style hat den Bucket im Pfad, Virtual-Hosted im Hostnamen. MinIO im Cluster braucht meist Path-Style.</p></details>
+<details><summary>Ist S3 konsistent?</summary><p>Ja, AWS S3 ist seit Dezember 2020 stark konsistent, auch für LIST. Atomares Rename fehlt trotzdem.</p></details>
+<details><summary>Warum braucht Iceberg auf S3 einen Katalog?</summary><p>S3 hat kein atomares Rename. Der Katalog macht den Zeiger-Tausch atomar.</p></details>
+<details><summary>Was ist Object Lock?</summary><p>Ein Löschschutz für eine Frist (WORM). Gut für Aufbewahrungspflichten und gegen Ransomware.</p></details>
+<details><summary>Darf man Lifecycle-Regeln auf Iceberg-Pfade setzen?</summary><p>Nein. Sie löschen Dateien, die Snapshots noch brauchen. Aufräumen nur mit expire_snapshots und remove_orphan_files.</p></details>
+<details><summary>Was ist der Status von MinIO Community 2026?</summary><p>Das Repository ist seit 25. April 2026 archiviert und nicht mehr gepflegt, nur noch Quellcode ohne neue Binaries. Weiterentwicklung gibt es im kommerziellen AIStor.</p></details>
+<details><summary>MinIO oder Ceph?</summary><p>MinIO ist einfacher und rein Object. Ceph kann Block, File und Object, ist aber deutlich komplexer im Betrieb.</p></details>
+<details><summary>Wie betreiben Sie MinIO in Kubernetes?</summary><p>Als StatefulSet mit Persistent Volumes, oft per Operator. Lokale Disks, TLS, Prometheus-Metriken.</p></details>
+<details><summary>Szenario: MinIO lehnt plötzlich alle Writes ab. Was prüfen Sie?</summary><p>Freien Platz auf Laufwerken und dem Host darunter, Laufwerke offline, Quorum. mc admin info zeigt den Zustand.</p></details>
+<details><summary>Szenario: Spark meldet UnknownHostException für lakehouse.minio. Warum?</summary><p>Der Client nutzt Virtual-Hosted-Style und sucht den Bucket als Hostnamen. Path-Style-Zugriff einschalten.</p></details>
+<details><summary>Szenario: Das Management fragt, ob MinIO noch die richtige Wahl ist. Was sagen Sie?</summary><p>Die Community-Edition wird nicht mehr gepflegt. Optionen sind AIStor-Lizenz, ein anderer S3-kompatibler Speicher oder Cloud-Storage. Weil wir nur die S3-API nutzen, ist ein Wechsel machbar.</p></details>
+
+</body>
+</html>

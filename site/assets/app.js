@@ -160,44 +160,16 @@
       <section class="card ask"><div class="label">Frage</div><p class="q">${esc(c.q)}</p>
         ${c.en ? `<details class="en"><summary>Englisch</summary><p>${esc(c.en)}</p></details>` : ''}
         ${c.project ? `<p class="small">Nimm dein Projekt: <b>${esc(c.project)}</b></p>` : ''}</section>
-      <div class="card timer"><span id="tm">0:00</span><div class="row"><button class="btn" id="go">Start · laut sprechen</button><button class="btn ghost" id="stop">Stopp</button></div>
-        <p class="small">Sag die 30-Sekunden-Antwort. Wenn es geht, weiter auf 90 Sekunden und 3 Minuten. Dann die Antwort öffnen.</p></div>
-      <details class="step reveal" id="ans"><summary>Antwort zeigen</summary><div class="body">
+      <details class="step reveal" id="ans" open><summary>Antwort</summary><div class="body">
         <div class="levels">${[['l1', '30 s'], ['l2', '90 s'], ['l3', '3 min']].filter(([k]) => c[k]).map(([k, l], i) => `<button class="lv ${i ? '' : 'on'}" data-lv="${k}">${l}</button>`).join('')}</div>
         ${['l1', 'l2', 'l3'].filter(k => c[k]).map((k, i) => `<div class="lvbody" data-body="${k}" ${i ? 'hidden' : ''}>${c[k]}</div>`).join('')}
         ${c.follow.length ? `<h3>Nachfragen</h3>${c.follow.map(f => `<details class="fu"><summary>${esc(f.q)}</summary>${f.a ? `<p>${f.a}</p>` : '<p class="small">Beantworte sie laut in 30 Sekunden.</p>'}</details>`).join('')}` : ''}
         ${c.dont ? `<h3>Nicht sagen</h3><div class="dont">${c.dont}</div>` : ''}
         ${c.words ? `<h3>Wörter</h3><div class="words">${c.words}</div>` : ''}
         <p class="techs">${techs}</p>
-      </div></details>
-      <section class="card grade"><div class="label">Bewerte dich (je 0–2)</div>
-        ${[['k', 'ZK14 Fachwissen', 'Richtig, genau, mit Tiefe'], ['c', 'ZK15 Ruhe', 'Keine Panik, ehrlich bei Lücken'], ['l', 'ZK16 Sprache', 'Kurze klare Sätze, richtiges Niveau'], ['p', 'ZK17 Vorbereitung', 'Projekt + Zahl + Bezug zur Stelle']].map(([k, n, h]) => `<div class="gr"><div><b>${n}</b><br><span class="small">${h}</span></div><div class="seg" data-k="${k}">${[0, 1, 2].map(v => `<button data-v="${v}">${v}</button>`).join('')}</div></div>`).join('')}
-        <div id="why" hidden><p class="small"><b>Was ging am meisten schief?</b></p><div class="seg" data-k="tag">${[['knowledge', 'Wissen'], ['german', 'Deutsch'], ['structure', 'Struktur'], ['practice', 'Praxis']].map(([v, l]) => `<button data-v="${v}">${l}</button>`).join('')}</div></div>
-        <button class="btn block good" id="save" disabled>Speichern</button></section>`;
-    // timer
-    let t0 = 0; const tm = $('#tm');
-    $('#go').onclick = () => { t0 = Date.now(); clearInterval(tick); tick = setInterval(() => { const x = Math.floor((Date.now() - t0) / 1000); tm.textContent = `${Math.floor(x / 60)}:${String(x % 60).padStart(2, '0')}`; tm.className = x > 180 ? 'over' : x >= 30 ? 'ok' : ''; }, 250); };
-    $('#stop').onclick = () => clearInterval(tick);
+      </div></details>`;
     // levels
     $$('.lv').forEach(b => b.onclick = () => { $$('.lv').forEach(x => x.classList.toggle('on', x === b)); $$('.lvbody').forEach(x => x.hidden = x.dataset.body !== b.dataset.lv); });
-    // grading
-    const g = {};
-    const total = () => ['k', 'c', 'l', 'p'].reduce((a, k) => a + (g[k] ?? 0), 0);
-    $$('.seg button').forEach(b => b.onclick = () => {
-      const k = b.parentElement.dataset.k; g[k] = k === 'tag' ? b.dataset.v : +b.dataset.v;
-      $$('button', b.parentElement).forEach(x => x.classList.toggle('on', x === b));
-      const all = ['k', 'c', 'l', 'p'].every(x => g[x] !== undefined);
-      $('#why').hidden = !(all && total() < 7);
-      $('#save').disabled = !all || (total() < 7 && !g.tag);
-      if (all) $('#save').textContent = `Speichern ${total()}/8`;
-    });
-    $('#save').onclick = () => {
-      clearInterval(tick);
-      const s2 = saveGrade(id, total(), g.tag);
-      toast(total() >= 7 ? `Gut. Wieder in ${GAP[s2.box]} Tagen.` : total() >= 5 ? 'Fast. Wieder in ein paar Tagen.' : 'Morgen wieder. Das ist normal.');
-      if (fromQueue) { const n = queue().find(x => x.id !== id); location.hash = n ? `#q-${n.id}` : '#today'; }
-      else location.hash = '#r-' + r.id;
-    };
   }
 
   // ---------- JOB ----------

@@ -1,0 +1,257 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DaemonSet, Job, CronJob</title>
+<style>
+  body { font: 17px/1.55 -apple-system, system-ui, sans-serif; max-width: 760px; margin: 0 auto; padding: 16px; color: #1d1d1f; }
+  h1 { font-size: 28px; margin: 8px 0 4px; }
+  h2 { font-size: 21px; margin: 32px 0 8px; padding-top: 12px; border-top: 2px solid #e5e5ea; }
+  .kern { background: #eef6ff; border-left: 4px solid #0a66c2; padding: 10px 14px; border-radius: 6px; }
+  .senior { background: #f0faf0; border-left: 4px solid #2e7d32; padding: 10px 14px; border-radius: 6px; }
+  .trap { background: #fff4f2; border-left: 4px solid #c62828; padding: 10px 14px; border-radius: 6px; }
+  code { background: #f2f2f7; padding: 1px 5px; border-radius: 4px; font-size: 15px; }
+  pre { background: #1e1e1e; color: #e6e6e6; padding: 12px; border-radius: 8px; overflow-x: auto; font-size: 13.5px; line-height: 1.45; }
+  svg { width: 100%; height: auto; display: block; margin: 10px 0; }
+  ol li, ul li { margin: 4px 0; }
+  details { border: 1px solid #e5e5ea; border-radius: 8px; padding: 8px 12px; margin: 6px 0; }
+  summary { font-weight: 600; cursor: pointer; }
+  details p { margin: 6px 0 2px; }
+  .small { color: #6e6e73; font-size: 14px; }
+</style>
+</head>
+<body>
+
+<h1>DaemonSet, Job, CronJob</h1>
+<p class="small">Kubernetes · Tier 2 · Quellen: kubernetes.io Docs „DaemonSet“, „Perform a Rolling Update on a DaemonSet“, „Jobs“, „CronJob“, Feature-Gate-Referenz (JobPodFailurePolicy, JobBackoffLimitPerIndex, JobSuccessPolicy, JobPodReplacementPolicy, JobManagedBy, CronJobTimeZone) (Stand Kubernetes 1.37)</p>
+
+<div class="kern">
+<b>Kern:</b> Ein <b>Deployment</b> hält Pods dauerhaft am Leben. Ein <b>DaemonSet</b> startet genau einen Pod <b>pro passendem Node</b>, z. B. für Log- oder Netzwerk-Agenten. Ein <b>Job</b> startet Pods, bis eine Aufgabe <b>erfolgreich fertig</b> ist, und ein <b>CronJob</b> erzeugt solche Jobs nach einem <b>Zeitplan</b>.
+</div>
+
+<h2>1. Wo sitzen DaemonSet, Job und CronJob?</h2>
+<svg viewBox="0 0 720 300" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="a" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="10" y="10" width="700" height="80" rx="12" fill="#f7f7fa" stroke="#999" stroke-dasharray="5 4"/><text x="360" y="30" text-anchor="middle" font-weight="700">kube-controller-manager</text>
+  <rect x="30" y="40" width="200" height="40" rx="8" fill="#fff" stroke="#555"/><text x="130" y="65" text-anchor="middle">DaemonSet-Controller</text>
+  <rect x="260" y="40" width="200" height="40" rx="8" fill="#fff" stroke="#555"/><text x="360" y="65" text-anchor="middle">CronJob-Controller</text>
+  <rect x="490" y="40" width="200" height="40" rx="8" fill="#fff" stroke="#555"/><text x="590" y="65" text-anchor="middle">Job-Controller</text>
+  <line x1="460" y1="60" x2="488" y2="60" stroke="#555" stroke-width="2" marker-end="url(#a)"/><text x="474" y="35" text-anchor="middle" font-size="11">Job</text>
+  <rect x="10" y="150" width="220" height="70" rx="10" fill="#0a66c2"/><text x="120" y="178" text-anchor="middle" fill="#fff" font-weight="700">1 Pod je Node</text><text x="120" y="198" text-anchor="middle" fill="#fff" font-size="12">mit nodeAffinity auf den Node</text>
+  <rect x="490" y="150" width="220" height="70" rx="10" fill="#e8f5e9" stroke="#2e7d32"/><text x="600" y="178" text-anchor="middle" font-weight="700">Pods bis „fertig“</text><text x="600" y="198" text-anchor="middle" font-size="12">completions · parallelism</text>
+  <rect x="260" y="150" width="200" height="70" rx="10" fill="#fff" stroke="#555"/><text x="360" y="178" text-anchor="middle" font-weight="700">kube-scheduler</text><text x="360" y="198" text-anchor="middle" font-size="12">bindet jeden Pod</text>
+  <line x1="130" y1="80" x2="120" y2="148" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <line x1="590" y1="80" x2="600" y2="148" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <line x1="230" y1="185" x2="258" y2="185" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <line x1="488" y1="185" x2="462" y2="185" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="160" y="250" width="400" height="40" rx="8" fill="#eee" stroke="#777"/><text x="360" y="275" text-anchor="middle">kubelet auf dem Node startet die Container</text>
+  <line x1="360" y1="220" x2="360" y2="248" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+</svg>
+<ol>
+  <li><b>DaemonSet-Controller:</b> erzeugt pro passendem Node einen Pod und setzt eine <b>nodeAffinity</b> auf genau diesen Node. Beispiel: Cilium-Agent, Log-Collector, Node Exporter.</li>
+  <li><b>Job-Controller:</b> erzeugt Pods, zählt Erfolge und Fehler und markiert den Job als <code>Complete</code> oder <code>Failed</code>. Beispiel: DB-Migration vor dem Release.</li>
+  <li><b>CronJob-Controller:</b> prüft den Zeitplan und erzeugt zur richtigen Zeit ein <b>Job</b>-Objekt. Beispiel: nächtliche Statistik.</li>
+  <li><b>kube-scheduler:</b> bindet alle diese Pods an Nodes, auch die des DaemonSets.</li>
+  <li><b>kubelet:</b> startet die Container. Bei Jobs ist <code>restartPolicy</code> nur <code>Never</code> oder <code>OnFailure</code> erlaubt.</li>
+</ol>
+
+<h2>2. Die Reise eines nächtlichen Laufs (die Geschichte zum Merken)</h2>
+<svg viewBox="0 0 720 300" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="b" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker><marker id="r" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#c62828"/></marker></defs>
+  <rect x="10" y="20" width="160" height="70" rx="10" fill="#eee" stroke="#777"/><text x="90" y="46" text-anchor="middle" font-weight="700">1. 02:00 Zürich</text><text x="90" y="66" text-anchor="middle" font-size="12">Zeitplan fällig</text>
+  <line x1="170" y1="55" x2="198" y2="55" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="200" y="20" width="160" height="70" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="280" y="46" text-anchor="middle" font-weight="700">2. Policy</text><text x="280" y="66" text-anchor="middle" font-size="12">Forbid: läuft noch?</text>
+  <line x1="360" y1="55" x2="388" y2="55" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="390" y="20" width="150" height="70" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="465" y="46" text-anchor="middle" font-weight="700">3. Job</text><text x="465" y="66" text-anchor="middle" font-size="12">nightly-29925562</text>
+  <line x1="540" y1="55" x2="568" y2="55" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="570" y="20" width="140" height="70" rx="10" fill="#0a66c2"/><text x="640" y="46" text-anchor="middle" fill="#fff" font-weight="700">4. Pod</text><text x="640" y="66" text-anchor="middle" fill="#fff" font-size="12">Exit-Code?</text>
+  <line x1="640" y1="90" x2="640" y2="138" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="470" y="140" width="240" height="64" rx="10" fill="#e8f5e9" stroke="#2e7d32"/><text x="590" y="166" text-anchor="middle" font-weight="700">5a. Exit 0 → Complete</text><text x="590" y="186" text-anchor="middle" font-size="12">History: 3 Erfolge behalten</text>
+  <path d="M570,80 C420,140 300,150 250,168" fill="none" stroke="#c62828" stroke-width="2" stroke-dasharray="6 4" marker-end="url(#r)"/>
+  <rect x="10" y="140" width="240" height="64" rx="10" fill="#fff4f2" stroke="#c62828"/><text x="130" y="166" text-anchor="middle" font-weight="700">5b. Exit ≠ 0 → neuer Pod</text><text x="130" y="186" text-anchor="middle" font-size="12">10 s, 20 s, 40 s … bis backoffLimit</text>
+  <line x1="130" y1="204" x2="130" y2="238" stroke="#c62828" stroke-width="2" marker-end="url(#r)"/>
+  <rect x="10" y="240" width="240" height="50" rx="10" fill="#fff" stroke="#c62828"/><text x="130" y="270" text-anchor="middle">6. Failed: BackoffLimitExceeded</text>
+</svg>
+<ol>
+  <li><b>Zeitplan:</b> Der CronJob-Controller prüft etwa alle 10 Sekunden. Um 02:00 in der Zone <code>Europe/Zurich</code> ist der Lauf fällig.</li>
+  <li><b>Concurrency Policy:</b> Mit <code>Forbid</code> prüft er, ob der Job von gestern noch läuft. Wenn ja, fällt dieser Lauf aus. Mit <code>Replace</code> würde er den alten ersetzen. Standard ist <code>Allow</code>.</li>
+  <li><b>Job:</b> Er erzeugt ein Job-Objekt. Der Name enthält die geplante Zeit in Minuten, z. B. <code>nightly-29925562</code>.</li>
+  <li><b>Pod:</b> Der Job-Controller erzeugt einen Pod. Er wartet auf den Exit-Code.</li>
+  <li><b>Erfolg:</b> Exit 0, also <code>Complete</code>. Der CronJob behält standardmässig 3 erfolgreiche und 1 fehlgeschlagenen Job.</li>
+  <li><b>Fehler:</b> Bei Exit ungleich 0 erzeugt der Job einen neuen Pod. Die Wartezeit wächst exponentiell: 10 s, 20 s, 40 s, höchstens 10 Minuten.</li>
+  <li><b>Aufgeben:</b> Nach <code>backoffLimit</code> Fehlern (Standard 6) ist der Job <code>Failed</code> mit Grund <code>BackoffLimitExceeded</code>.</li>
+</ol>
+
+<h2>3. Beispiel: alle drei im echten Cluster</h2>
+<pre># Auszug aus wl.yaml (Namespace demo-workload-types)
+kind: Job            # report-indexed
+spec: {completionMode: Indexed, completions: 3, parallelism: 2, ttlSecondsAfterFinished: 600}
+  command: echo Teil $JOB_COMPLETION_INDEX fertig; sleep 3
+kind: Job            # always-fails
+spec: {backoffLimit: 2}
+  command: echo kaputt; exit 1
+kind: CronJob        # nightly
+spec: {schedule: "*/1 * * * *", timeZone: "Europe/Zurich", concurrencyPolicy: Forbid}
+kind: DaemonSet      # node-agent
+  command: sleep 3600</pre>
+<pre>$ kubectl -n demo-workload-types get jobs,pods
+NAME                         STATUS     COMPLETIONS   DURATION   AGE
+job.batch/always-fails       Failed     0/1           61s        61s
+job.batch/nightly-29925562   Complete   1/1           7s         33s
+job.batch/report-indexed     Complete   3/3           42s        61s
+
+NAME                         READY   STATUS      RESTARTS   AGE
+pod/always-fails-2gwd4       0/1     Error       0          61s
+pod/always-fails-jtgr6       0/1     Error       0          27s
+pod/always-fails-xcqg4       0/1     Error       0          5s
+pod/nightly-29925562-5mn2r   0/1     Completed   0          33s
+pod/node-agent-95l8q         1/1     Running     0          61s
+pod/report-indexed-0-9wv5d   0/1     Completed   0          61s
+pod/report-indexed-1-p5dwp   0/1     Completed   0          61s
+pod/report-indexed-2-swpbn   0/1     Completed   0          28s
+
+$ kubectl -n demo-workload-types logs -l batch.kubernetes.io/job-name=report-indexed,...
+Teil 0 fertig
+Teil 1 fertig
+Teil 2 fertig
+
+$ kubectl -n demo-workload-types get job always-fails -o jsonpath='{...conditions...}'
+FailureTarget=True BackoffLimitExceeded: Job has reached the specified backoff limit
+Failed=True BackoffLimitExceeded: Job has reached the specified backoff limit
+
+$ kubectl -n demo-workload-types get cronjob nightly
+NAME      SCHEDULE      TIMEZONE        SUSPEND   ACTIVE   LAST SCHEDULE   AGE
+nightly   */1 * * * *   Europe/Zurich   False     0        40s             68s
+
+$ kubectl -n demo-workload-types logs job/nightly-29925562
+Tue Nov 24 15:22:02 UTC 2026
+Statistik neu berechnet
+
+$ kubectl -n demo-workload-types get pod -l app=node-agent -o jsonpath='{...tolerations...}'
+node.kubernetes.io/not-ready NoExecute
+node.kubernetes.io/unreachable NoExecute
+node.kubernetes.io/disk-pressure NoSchedule
+node.kubernetes.io/memory-pressure NoSchedule
+node.kubernetes.io/pid-pressure NoSchedule
+node.kubernetes.io/unschedulable NoSchedule
+
+$ kubectl -n demo-workload-types get pod -l app=node-agent -o jsonpath='{.items[0].spec.affinity.nodeAffinity}'
+{"requiredDuringSchedulingIgnoredDuringExecution":{"nodeSelectorTerms":[{"matchFields":
+ [{"key":"metadata.name","operator":"In","values":["laptop-c6q2hodc"]}]}]}}</pre>
+<p class="small">Echte Ausgabe, k3s v1.36 (v1.36.4+k3s1, ein Node). Befehle mit jsonpath gekürzt. Der Namespace wurde danach gelöscht.</p>
+<ol>
+  <li><b>Indexed Job:</b> Jeder Pod bekommt seinen Index in <code>JOB_COMPLETION_INDEX</code>. Mit <code>parallelism: 2</code> liefen Index 0 und 1 zuerst (Alter 61 s), Index 2 danach (28 s).</li>
+  <li><b>backoffLimit: 2:</b> Es gab 3 Pods: den ersten Versuch und 2 Wiederholungen. Danach <code>Failed</code>. Die Abstände wurden länger: Backoff.</li>
+  <li>Die Fehler-Pods bleiben stehen (<code>Error</code>). So kann man ihre Logs lesen. Das ist ein Grund für <code>restartPolicy: Never</code>.</li>
+  <li><b>timeZone</b> gilt nur für den Zeitplan. Im Container zeigt <code>date</code> weiter UTC.</li>
+  <li><b>DaemonSet:</b> Der Pod hat automatisch sechs Tolerations und eine nodeAffinity mit <code>matchFields</code> auf den Node-Namen. So läuft er auch auf Nodes mit Druck oder im Zustand <code>unschedulable</code>.</li>
+</ol>
+
+<h2>4. Details, die Interviewer fragen</h2>
+<ol>
+  <li><b>Job-Grundwerte:</b> <code>completions</code> und <code>parallelism</code> Standard 1. <code>completionMode</code>: <code>NonIndexed</code> (Standard) oder <code>Indexed</code>.</li>
+  <li><b>Work Queue:</b> <code>completions</code> leer lassen, <code>parallelism</code> setzen. Pods holen Arbeit aus einer Queue. Der Job ist fertig, wenn ein Pod erfolgreich endet und alle enden.</li>
+  <li><b>Retries zählen:</b> bei <code>Never</code> fehlgeschlagene Pods, bei <code>OnFailure</code> auch Container-Neustarts im Pod. Bei <code>OnFailure</code> beendet Kubernetes den Pod, sobald das <code>backoffLimit</code> erreicht ist. Die Logs gehen so leicht verloren.</li>
+  <li><b><code>activeDeadlineSeconds</code></b> begrenzt die Laufzeit des ganzen Jobs. Es gewinnt gegen <code>backoffLimit</code>.</li>
+  <li><b><code>ttlSecondsAfterFinished</code>:</b> löscht fertige Jobs samt Pods automatisch. Ohne das bleiben Jobs liegen (ausser CronJob-History).</li>
+  <li><b>Pod Failure Policy</b> (stabil seit 1.31): Regeln nach Exit-Code oder Pod-Condition. Aktionen: <code>FailJob</code>, <code>Ignore</code> (z. B. bei <code>DisruptionTarget</code>), <code>Count</code>, <code>FailIndex</code>. So zählt eine Node-Räumung nicht als Fehler, ein Konfigurationsfehler bricht sofort ab.</li>
+  <li><b>Backoff Limit per Index</b> (stabil seit 1.33): Bei Indexed Jobs eigene Retries pro Index. Ein kaputter Index stoppt die anderen nicht.</li>
+  <li><b>Success Policy</b> (stabil seit 1.33): Ein Indexed Job ist schon fertig, wenn bestimmte Indizes erfolgreich sind, z. B. der Leader.</li>
+  <li><b>Pod Replacement Policy</b> (stabil seit 1.34): <code>Failed</code> heisst, Ersatz erst, wenn der alte Pod ganz beendet ist. Wichtig, wenn zwei Pods nie gleichzeitig laufen dürfen.</li>
+  <li><b><code>suspend: true</code></b> pausiert einen Job und löscht aktive Pods. <b><code>managedBy</code></b> (stabil seit 1.35) überlässt den Job einem externen Controller, z. B. MultiKueue.</li>
+  <li><b>Job-Template ist unveränderlich:</b> Man kann den Pod-Template eines laufenden Jobs nicht ändern. GitOps-Tools brauchen dafür Hooks oder Ersetzen.</li>
+  <li><b>CronJob-Feinheiten:</b> <code>startingDeadlineSeconds</code> begrenzt, wie spät ein verpasster Lauf noch startet. Unter 10 s kann er ganz ausfallen. Mehr als 100 verpasste Läufe ergeben die Warnung <code>TooManyMissedTimes</code>, gestartet wird nur der letzte.</li>
+  <li><b>CronJob ist „ungefähr einmal“:</b> In seltenen Fällen entstehen zwei Jobs oder keiner. Die Doku verlangt darum <b>idempotente</b> Jobs.</li>
+  <li><b><code>timeZone</code></b> stabil seit 1.27. <code>CRON_TZ</code> oder <code>TZ</code> im <code>schedule</code> werden abgelehnt.</li>
+  <li><b>DaemonSet-Update:</b> <code>RollingUpdate</code> (Standard) mit <code>maxUnavailable</code> 1 und <code>maxSurge</code> 0, oder <code>OnDelete</code> (neuer Pod erst nach manuellem Löschen).</li>
+  <li><b>DaemonSet auf Teil der Nodes:</b> mit <code>nodeSelector</code> oder <code>affinity</code> im Pod-Template. Für wichtige Agenten eine hohe <code>priorityClassName</code>.</li>
+</ol>
+
+<h2>5. Vergleich</h2>
+<ul>
+  <li><b>Deployment:</b> dauerhafte, austauschbare Pods. Neustart bei jedem Ende.</li>
+  <li><b>StatefulSet:</b> dauerhafte Pods mit fester Identität und eigenem Volume.</li>
+  <li><b>DaemonSet:</b> ein Pod pro Node. Anzahl folgt den Nodes, nicht <code>replicas</code>.</li>
+  <li><b>Job:</b> läuft bis zum Erfolg, dann Ende. Für Migrationen, Batch, Einmal-Aufgaben.</li>
+  <li><b>CronJob:</b> Job nach Zeitplan. Für Berichte, Aufräumen, Backups.</li>
+  <li><b>Static Pod:</b> vom kubelet aus einer Datei, ohne API-Server-Steuerung. Nur für Control-Plane-Teile.</li>
+  <li><b>Argo Workflows, Airflow, Spark Operator:</b> für Ketten von Schritten mit Abhängigkeiten. Ein Job allein kennt keine Reihenfolge.</li>
+</ul>
+
+<h2>6. In der Produktion</h2>
+<ol>
+  <li><b>Tausende alte Jobs und Pods:</b> Kein <code>ttlSecondsAfterFinished</code>. API-Server und etcd werden langsamer. Lösung: TTL setzen, History-Limits beim CronJob.</li>
+  <li><b>Statistik doppelt gezählt:</b> CronJob mit <code>Allow</code>, ein Lauf dauert länger als das Intervall. Zwei Läufe überlappen. Lösung: <code>Forbid</code> und idempotente Logik (Ergebnis ersetzen statt addieren).</li>
+  <li><b>Migration-Job startet bei jedem Sync neu oder gar nicht:</b> GitOps sieht den unveränderlichen Job als Drift. Lösung: Helm- oder Argo-Hooks, Job-Namen mit Version, <code>ignoreDifferences</code>.</li>
+  <li><b>Job bleibt <code>Running</code> für immer:</b> Ein Sidecar (z. B. Proxy) beendet sich nicht. Lösung: nativer Sidecar als Init Container mit <code>restartPolicy: Always</code>.</li>
+  <li><b>Job scheitert wegen Node-Räumung:</b> Spot-Node oder Autoscaler entfernt den Node. Lösung: Pod Failure Policy mit <code>Ignore</code> für <code>DisruptionTarget</code>.</li>
+  <li><b>DaemonSet-Pod fehlt auf neuen Nodes:</b> Der Node hat einen eigenen Taint, z. B. für Spark-Nodes. Lösung: passende Toleration im DaemonSet.</li>
+  <li><b>CronJob lief nicht, keiner merkt es:</b> Lösung: Alarm auf „letzter erfolgreicher Lauf älter als X“ (z. B. kube-state-metrics).</li>
+</ol>
+
+<h2>7. Diagnose: Werkzeuge und Befehle</h2>
+<ul>
+  <li><code>kubectl get jobs,cronjobs</code> und <code>kubectl describe job X</code>: Bedingungen, Events, Zähler.</li>
+  <li><code>kubectl get job X -o jsonpath='{.status.conditions}'</code>: Grund wie <code>BackoffLimitExceeded</code> oder <code>DeadlineExceeded</code>.</li>
+  <li><code>kubectl logs job/X</code> und <code>kubectl get pods -l batch.kubernetes.io/job-name=X</code>.</li>
+  <li><code>kubectl create job test --from=cronjob/nightly</code>: einen CronJob sofort von Hand auslösen.</li>
+  <li><code>kubectl patch cronjob nightly -p '{"spec":{"suspend":true}}'</code>: Zeitplan anhalten.</li>
+  <li><code>kubectl rollout status ds/X</code> und <code>kubectl get ds</code> (DESIRED vs READY).</li>
+  <li><code>kubectl events --for job/X</code>: Events eines Objekts.</li>
+</ul>
+
+<h2>8. Senior-Punkte</h2>
+<div class="senior">
+<ol>
+  <li><b>Jeder Job muss idempotent sein.</b> Retries, Doppel-Läufe und Neustarts sind normal. „Ergebnis neu berechnen und ersetzen“ ist sicherer als „aufaddieren“.</li>
+  <li><b>Fehlerarten trennen:</b> Infrastruktur-Fehler wiederholen, Logik-Fehler sofort abbrechen. Dafür gibt es die Pod Failure Policy.</li>
+  <li><b><code>restartPolicy: Never</code></b> für Debugging und klare Zählung. <code>OnFailure</code> nur, wenn Pod-Neuerzeugung teuer ist.</li>
+  <li><b>Aufräumen gehört zum Design:</b> TTL, History-Limits, Alarm auf ausbleibende Läufe.</li>
+  <li><b>DaemonSets sind Infrastruktur.</b> Kleine Requests, hohe Priorität, alle nötigen Tolerations. Sie laufen auf jedem Node und kosten mal N.</li>
+  <li><b>Für Workflows kein Job-Bastelwerk.</b> Ab Abhängigkeiten und Wiederaufnahme ein Workflow-Werkzeug nehmen.</li>
+</ol>
+</div>
+
+<h2>9. Aus dem Projekt</h2>
+<p>„Bei MATCH enthält unser Helm-Chart einen DB-Migration-Job, und Argo CD erzeugt über PostSync-Hooks die MinIO-Buckets. Weil Jobs unveränderlich sind, nutzen wir in Argo CD <code>ignoreDifferences</code> für Jobs.“ <span class="small">(Prüfen und durch dein echtes Beispiel ersetzen.)</span></p>
+
+<h2>10. Fallen</h2>
+<div class="trap">
+<ul>
+  <li>„Ein DaemonSet hat <code>replicas</code>.“ → <b>Falsch.</b> Die Anzahl folgt den passenden Nodes.</li>
+  <li>„Ein Job darf <code>restartPolicy: Always</code> haben.“ → <b>Falsch.</b> Nur <code>Never</code> oder <code>OnFailure</code>.</li>
+  <li>„<code>backoffLimit: 2</code> heisst 2 Versuche.“ → <b>Falsch.</b> 2 Wiederholungen, also bis zu 3 Pods.</li>
+  <li>„Ein CronJob läuft garantiert genau einmal.“ → <b>Falsch.</b> Er kann ausfallen oder doppelt laufen. Jobs müssen idempotent sein.</li>
+  <li>„<code>timeZone</code> ändert die Uhr im Container.“ → <b>Falsch.</b> Nur den Zeitplan.</li>
+  <li>„Ein fertiger Job räumt sich selbst auf.“ → <b>Falsch.</b> Nur mit <code>ttlSecondsAfterFinished</code> oder durch die CronJob-History.</li>
+</ul>
+</div>
+
+<h2>11. Fragen</h2>
+<details><summary>Was ist ein DaemonSet?</summary><p>Ein Controller, der auf jedem passenden Node genau einen Pod betreibt. Typisch für Agenten: Logs, Monitoring, CNI.</p></details>
+<details><summary>Wie plant ein DaemonSet seine Pods?</summary><p>Der Controller setzt pro Pod eine nodeAffinity auf den Ziel-Node. Der normale Scheduler bindet ihn dann.</p></details>
+<details><summary>Welche Tolerations bekommt ein DaemonSet-Pod automatisch?</summary><p>not-ready und unreachable (NoExecute), disk-, memory-, pid-pressure und unschedulable (NoSchedule). network-unavailable nur mit hostNetwork.</p></details>
+<details><summary>Wie aktualisiert man ein DaemonSet?</summary><p>RollingUpdate (Standard, maxUnavailable 1, maxSurge 0) oder OnDelete.</p></details>
+<details><summary>Was ist ein Job?</summary><p>Ein Controller, der Pods startet, bis eine Zahl erfolgreicher Abschlüsse erreicht ist. Dann ist der Job Complete.</p></details>
+<details><summary>completions vs parallelism?</summary><p>completions = wie viele Erfolge nötig sind. parallelism = wie viele Pods gleichzeitig laufen.</p></details>
+<details><summary>Was ist ein Indexed Job?</summary><p>Jeder Pod bekommt einen Index 0 bis completions−1 in <code>JOB_COMPLETION_INDEX</code>. Gut, um Arbeit statisch aufzuteilen.</p></details>
+<details><summary>Was macht backoffLimit?</summary><p>Anzahl erlaubter Wiederholungen, Standard 6. Wartezeit 10 s, 20 s, 40 s …, höchstens 10 Minuten.</p></details>
+<details><summary>Never oder OnFailure?</summary><p>Never: neuer Pod pro Versuch, Logs bleiben. OnFailure: Container-Neustart im selben Pod. Beim Erreichen des backoffLimit wird der Pod beendet, Logs gehen leicht verloren.</p></details>
+<details><summary>Was ist die Pod Failure Policy?</summary><p>Regeln nach Exit-Code oder Pod-Condition: FailJob, Ignore, Count, FailIndex. Stabil seit 1.31.</p></details>
+<details><summary>Was macht activeDeadlineSeconds?</summary><p>Maximale Laufzeit des ganzen Jobs. Danach Failed mit DeadlineExceeded, auch wenn backoffLimit nicht erreicht ist.</p></details>
+<details><summary>Wie räumt man fertige Jobs auf?</summary><p>Mit <code>ttlSecondsAfterFinished</code>. Beim CronJob zusätzlich mit den History-Limits 3 und 1.</p></details>
+<details><summary>Was ist ein CronJob?</summary><p>Ein Objekt, das nach einem Cron-Zeitplan Jobs erzeugt. Mit Zeitzone, Concurrency Policy und History.</p></details>
+<details><summary>Welche concurrencyPolicy gibt es?</summary><p>Allow (Standard, Überlappung erlaubt), Forbid (neuer Lauf fällt aus), Replace (alter Job wird ersetzt).</p></details>
+<details><summary>Was macht startingDeadlineSeconds?</summary><p>Wie spät ein verpasster Lauf noch starten darf. Ohne Wert gibt es keine Frist. Unter 10 s kann der Lauf ganz ausfallen.</p></details>
+<details><summary>Was passiert nach einem langen Ausfall des Controllers?</summary><p>Er zählt verpasste Läufe. Bei über 100 gibt es die Warnung TooManyMissedTimes. Gestartet wird nur der letzte verpasste Lauf.</p></details>
+<details><summary>Warum müssen CronJobs idempotent sein?</summary><p>Der Controller garantiert nur „ungefähr einmal“. Ein Lauf kann doppelt kommen oder ausfallen.</p></details>
+<details><summary>Wie lösen Sie einen CronJob sofort aus?</summary><p><code>kubectl create job manuell --from=cronjob/nightly</code>.</p></details>
+<details><summary>Was ist Pod Replacement Policy?</summary><p>Mit <code>Failed</code> startet der Ersatz-Pod erst, wenn der alte ganz beendet ist. Stabil seit 1.34.</p></details>
+<details><summary>Warum hängen Jobs mit Sidecars?</summary><p>Ein klassischer Sidecar-Container beendet sich nicht, also endet der Pod nie. Native Sidecars (Init Container mit restartPolicy Always) lösen das.</p></details>
+<details><summary>Szenario: Die nächtliche Statistik zeigt manchmal doppelte Werte. Was prüfen Sie?</summary><p>Überlappende Läufe durch <code>Allow</code> oder Retries, die addieren. Lösung: <code>Forbid</code> und Ergebnis pro Tag ersetzen statt addieren.</p></details>
+<details><summary>Szenario: Ein Job wird nach Node-Wartungen immer wieder Failed. Was tun Sie?</summary><p>Räumungen zählen gegen backoffLimit. Pod Failure Policy mit <code>Ignore</code> für die Condition <code>DisruptionTarget</code>, eventuell PDB.</p></details>
+<details><summary>Szenario: Auf neuen Spark-Nodes fehlt der Log-Agent. Warum?</summary><p>Die Nodes haben einen eigenen Taint. Das DaemonSet braucht eine passende Toleration, sonst plant es dort keine Pods.</p></details>
+
+</body>
+</html>

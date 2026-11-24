@@ -2,7 +2,7 @@
 
 Generated from content/syllabus.json. Priority 1 = asked in almost every interview. Mark: **Projekt** = shown in CV/Gmail · **— kein Projekt** = no project experience · **? prüfen** = unclear, you decide.
 
-413 topics · P1 243 · P2 132 · P3 38 · written 290
+413 topics · P1 243 · P2 132 · P3 38 · written 293
 
 ## Java 21 (core + advanced) (40)
 Sources: Java SE 21/25 docs (docs.oracle.com) · JVM Specification · OpenJDK source + JEPs (openjdk.org) · Oracle Java SE 21 Developer exam 1Z0-830 topics
@@ -48,7 +48,7 @@ Sources: Java SE 21/25 docs (docs.oracle.com) · JVM Specification · OpenJDK so
 | 2 | Reflection und Annotations | ? prüfen | ✓ |
 | 3 | Java-Serialisierung | ? prüfen | ✓ |
 | 3 | IO und NIO | ? prüfen | ✓ |
-| 3 | Java-Module (JPMS) | — kein Projekt |  |
+| 3 | Java-Module (JPMS) | — kein Projekt | ✓ |
 
 ## Spring Boot + Spring family (23)
 Sources: Spring Framework reference · Spring Boot 3 reference · Spring Security reference · Spring Certified Professional exam guide
@@ -349,7 +349,7 @@ Sources: Dremio docs · Apache Arrow docs · Project Nessie docs · MinIO docs �
 | 1 | Parquet intern: Row Groups, Column Chunks, Encoding, Predicate Pushdown | Projekt | ✓ |
 | 2 | Dremio und Reflections | Projekt | ✓ |
 | 2 | Arrow und Flight SQL | Projekt | ✓ |
-| 2 | MinIO und S3-API | Projekt |  |
+| 2 | MinIO und S3-API | Projekt | ✓ |
 
 ## Data modelling (star, SCD2, Data Vault) (6)
 Sources: Kimball Group dimensional modeling techniques · Data Vault 2.0 (Linstedt)
@@ -430,7 +430,7 @@ Sources: kubernetes.io documentation · CKA and CKAD curricula (CNCF)
 | 1 | Network Policies und CNI (Cilium) | Projekt | ✓ |
 | 1 | Troubleshooting: CrashLoopBackOff, Pending, ImagePullBackOff | Projekt | ✓ |
 | 1 | Docker: Image, Layer, Multi-Stage, Container vs VM | Projekt | ✓ |
-| 2 | DaemonSet, Job, CronJob | Projekt |  |
+| 2 | DaemonSet, Job, CronJob | Projekt | ✓ |
 | 2 | Scheduling: Affinity, Taints, Tolerations | ? prüfen |  |
 | 2 | Pod Security, Admission Controller (Kyverno) | Projekt |  |
 | 2 | Operators und CRDs | ? prüfen |  |
