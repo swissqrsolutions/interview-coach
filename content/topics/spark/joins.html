@@ -1,0 +1,229 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Joins: Broadcast, Sort-Merge, Shuffle Hash</title>
+<style>
+  body { font: 17px/1.55 -apple-system, system-ui, sans-serif; max-width: 760px; margin: 0 auto; padding: 16px; color: #1d1d1f; }
+  h1 { font-size: 28px; margin: 8px 0 4px; }
+  h2 { font-size: 21px; margin: 32px 0 8px; padding-top: 12px; border-top: 2px solid #e5e5ea; }
+  .kern { background: #eef6ff; border-left: 4px solid #0a66c2; padding: 10px 14px; border-radius: 6px; }
+  .senior { background: #f0faf0; border-left: 4px solid #2e7d32; padding: 10px 14px; border-radius: 6px; }
+  .trap { background: #fff4f2; border-left: 4px solid #c62828; padding: 10px 14px; border-radius: 6px; }
+  code { background: #f2f2f7; padding: 1px 5px; border-radius: 4px; font-size: 15px; }
+  pre { background: #1e1e1e; color: #e6e6e6; padding: 12px; border-radius: 8px; overflow-x: auto; font-size: 13.5px; line-height: 1.45; }
+  svg { width: 100%; height: auto; display: block; margin: 10px 0; }
+  ol li, ul li { margin: 4px 0; }
+  details { border: 1px solid #e5e5ea; border-radius: 8px; padding: 8px 12px; margin: 6px 0; }
+  summary { font-weight: 600; cursor: pointer; }
+  details p { margin: 6px 0 2px; }
+  .small { color: #6e6e73; font-size: 14px; }
+</style>
+</head>
+<body>
+
+<h1>Joins: Broadcast, Sort-Merge, Shuffle Hash</h1>
+<p class="small">Spark · Tier 1 · Quellen: Apache Spark 3.5/4.x Doku: SQL Performance Tuning (Join Strategy Hints, AQE), Configuration (<code>spark.sql.autoBroadcastJoinThreshold</code>, <code>spark.sql.join.preferSortMergeJoin</code>), SQL Reference (Hints, EXPLAIN), PySpark API (<code>DataFrame.hint</code>, <code>functions.broadcast</code>, <code>DataFrameWriter.bucketBy</code>)</p>
+
+<div class="kern">
+<b>Kern:</b> Eine <b>Join-Strategie</b> ist der physische Weg, auf dem Spark zwei Tabellen verbindet. Spark wählt sie nach <b>Grösse</b>, <b>Join-Typ</b> und <b>Hints</b>. Die richtige Strategie entscheidet, ob ein Join Sekunden oder Stunden dauert, weil sie den <b>Shuffle</b> bestimmt.
+</div>
+
+<h2>1. Wo sitzt die Join-Strategie?</h2>
+<svg viewBox="0 0 720 300" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="a" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="10" y="20" width="150" height="60" rx="8" fill="#fff" stroke="#555"/><text x="85" y="46" text-anchor="middle" font-weight="700">df.join(...)</text><text x="85" y="64" text-anchor="middle" font-size="12">oder SQL JOIN</text>
+  <line x1="160" y1="50" x2="198" y2="50" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="200" y="20" width="160" height="60" rx="8" fill="#fff" stroke="#555"/><text x="280" y="46" text-anchor="middle" font-weight="700">Logischer Plan</text><text x="280" y="64" text-anchor="middle" font-size="12">Catalyst optimiert</text>
+  <line x1="360" y1="50" x2="398" y2="50" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="400" y="10" width="310" height="80" rx="10" fill="#0a66c2" stroke="#0a66c2"/><text x="555" y="36" text-anchor="middle" fill="#fff" font-weight="700">JoinSelection (Planner)</text><text x="555" y="56" text-anchor="middle" fill="#fff" font-size="12">Hints → Grösse (Statistiken) → Join-Typ</text><text x="555" y="74" text-anchor="middle" fill="#fff" font-size="12">wählt die physische Strategie</text>
+  <line x1="470" y1="90" x2="110" y2="148" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <line x1="530" y1="90" x2="300" y2="148" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <line x1="590" y1="90" x2="490" y2="148" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <line x1="650" y1="90" x2="640" y2="148" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="20" y="150" width="170" height="60" rx="8" fill="#e8f5e9" stroke="#2e7d32"/><text x="105" y="175" text-anchor="middle" font-weight="700">Broadcast Hash</text><text x="105" y="195" text-anchor="middle" font-size="12">kein Shuffle grosse Seite</text>
+  <rect x="210" y="150" width="170" height="60" rx="8" fill="#dbe9fb" stroke="#0a66c2"/><text x="295" y="175" text-anchor="middle" font-weight="700">Sort-Merge</text><text x="295" y="195" text-anchor="middle" font-size="12">Shuffle + Sort, Standard</text>
+  <rect x="400" y="150" width="170" height="60" rx="8" fill="#dbe9fb" stroke="#0a66c2"/><text x="485" y="175" text-anchor="middle" font-weight="700">Shuffle Hash</text><text x="485" y="195" text-anchor="middle" font-size="12">Shuffle, Hash-Tabelle</text>
+  <rect x="590" y="150" width="120" height="60" rx="8" fill="#fff4f2" stroke="#c62828"/><text x="650" y="175" text-anchor="middle" font-weight="700">Nested Loop</text><text x="650" y="195" text-anchor="middle" font-size="12">kein = im ON</text>
+  <rect x="200" y="240" width="320" height="50" rx="8" fill="#f7f7fa" stroke="#999" stroke-dasharray="5 4"/><text x="360" y="262" text-anchor="middle" font-weight="700">AQE zur Laufzeit</text><text x="360" y="280" text-anchor="middle" font-size="12">kann Sort-Merge → Broadcast umstellen</text>
+</svg>
+<ol>
+  <li>Der Code ruft <code>df.join(other, "message_id")</code> auf. Das ist nur ein logischer Join.</li>
+  <li><b>Catalyst</b>, der Optimizer, schiebt Filter vor den Join (<b>Predicate Pushdown</b>) und schätzt Grössen.</li>
+  <li><b>JoinSelection</b>, eine Planer-Regel, wählt die physische Strategie. Reihenfolge: zuerst Hints, dann Grösse, dann Join-Typ.</li>
+  <li>Vier Strategien sind möglich: <b>Broadcast Hash Join</b>, <b>Sort-Merge Join</b>, <b>Shuffle Hash Join</b>, <b>Nested Loop Join</b> (Broadcast oder Cartesian).</li>
+  <li><b>AQE</b> (Adaptive Query Execution) prüft nach jedem Shuffle echte Grössen und kann die Strategie wechseln.</li>
+</ol>
+
+<h2>2. Die Reise eines Joins (die Geschichte zum Merken)</h2>
+<svg viewBox="0 0 720 320" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="b" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <text x="180" y="22" text-anchor="middle" font-weight="700">Broadcast Hash Join</text>
+  <rect x="20" y="40" width="130" height="50" rx="8" fill="#e8f5e9" stroke="#2e7d32"/><text x="85" y="62" text-anchor="middle">kleine Tabelle</text><text x="85" y="80" text-anchor="middle" font-size="12">&lt; 10 MB</text>
+  <line x1="150" y1="65" x2="208" y2="65" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="210" y="40" width="130" height="50" rx="8" fill="#fff" stroke="#555"/><text x="275" y="62" text-anchor="middle">Driver sammelt</text><text x="275" y="80" text-anchor="middle" font-size="12">baut Hash-Tabelle</text>
+  <line x1="275" y1="90" x2="275" y2="128" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="20" y="130" width="320" height="56" rx="8" fill="#e8f5e9" stroke="#2e7d32"/><text x="180" y="152" text-anchor="middle">Kopie an jeden Executor</text><text x="180" y="172" text-anchor="middle" font-size="12">grosse Tabelle bleibt liegen, kein Shuffle</text>
+  <text x="540" y="22" text-anchor="middle" font-weight="700">Sort-Merge Join</text>
+  <rect x="390" y="40" width="140" height="50" rx="8" fill="#fff" stroke="#555"/><text x="460" y="70" text-anchor="middle">Tabelle A</text>
+  <rect x="560" y="40" width="140" height="50" rx="8" fill="#fff" stroke="#555"/><text x="630" y="70" text-anchor="middle">Tabelle B</text>
+  <line x1="460" y1="90" x2="460" y2="128" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <line x1="630" y1="90" x2="630" y2="128" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="390" y="130" width="310" height="50" rx="8" fill="#0a66c2" stroke="#0a66c2"/><text x="545" y="152" text-anchor="middle" fill="#fff" font-weight="700">Exchange: hashpartitioning(key)</text><text x="545" y="170" text-anchor="middle" fill="#fff" font-size="12">beide Seiten shuffeln</text>
+  <line x1="545" y1="180" x2="545" y2="208" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="390" y="210" width="310" height="40" rx="8" fill="#dbe9fb" stroke="#0a66c2"/><text x="545" y="235" text-anchor="middle">Sort je Partition nach key</text>
+  <line x1="545" y1="250" x2="545" y2="268" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="390" y="270" width="310" height="40" rx="8" fill="#dbe9fb" stroke="#0a66c2"/><text x="545" y="295" text-anchor="middle">Merge: zwei sortierte Listen abgleichen</text>
+  <text x="180" y="230" text-anchor="middle" font-size="12">Shuffle Hash Join: wie Sort-Merge,</text>
+  <text x="180" y="248" text-anchor="middle" font-size="12">aber statt Sort eine Hash-Tabelle</text>
+  <text x="180" y="266" text-anchor="middle" font-size="12">aus der kleineren Seite je Partition</text>
+</svg>
+<ol>
+  <li><b>Start:</b> Ein Job verbindet 500 Mio. Trades mit einer Tabelle von 40 <code>schema_type</code>-Werten. Spark schätzt die kleine Seite auf 2 MB.</li>
+  <li><b>Broadcast-Weg:</b> 2 MB liegt unter <code>autoBroadcastJoinThreshold</code> (10 MB). Der Driver sammelt die kleine Tabelle und baut eine <b>Hash-Tabelle</b>. Jeder Executor bekommt eine Kopie.</li>
+  <li><b>Probe:</b> Jeder Task liest seine Trades-Partition und sucht jeden Schlüssel in der Hash-Tabelle. Die grosse Tabelle bewegt sich nicht.</li>
+  <li><b>Anderer Fall, zwei grosse Tabellen:</b> Trades mit 500 Mio. Orders. Kein Broadcast möglich. Beide Seiten werden nach <code>message_id</code> <b>gehasht und geshuffelt</b>. Gleiche Schlüssel landen in der gleichen Partition.</li>
+  <li><b>Sort und Merge:</b> Jede Partition wird auf beiden Seiten sortiert. Dann laufen zwei Zeiger parallel durch die Listen. Das ist der <b>Sort-Merge Join</b>. Er kann auf Disk spillen und ist darum robust.</li>
+  <li><b>Shuffle Hash Join:</b> Gleicher Shuffle, aber ohne Sort. Pro Partition baut Spark eine Hash-Tabelle aus der kleineren Seite. Schneller, aber die Tabelle muss in den Speicher passen.</li>
+</ol>
+
+<h2>3. Beispiel: Strategien im Plan erkennen</h2>
+<pre>from pyspark.sql import functions as F
+
+trades = spark.table("lake.silver.trades")           # gross
+types  = spark.table("lake.silver.schema_types")     # klein, ca. 40 Zeilen
+orders = spark.table("lake.silver.orders")           # gross
+
+trades.join(types, "schema_type").explain()                       # 1) automatisch
+trades.join(orders, "message_id").explain()                       # 2) zwei grosse
+trades.join(F.broadcast(types), "schema_type").explain()          # 3) Hint im Code
+trades.join(orders.hint("shuffle_hash"), "message_id").explain()  # 4) Shuffle Hash
+
+spark.conf.set("spark.sql.autoBroadcastJoinThreshold", -1)        # 5) Broadcast aus
+trades.join(types, "schema_type").explain()</pre>
+<pre>1) BroadcastHashJoin [schema_type#12], [schema_type#40], Inner, BuildRight, false
+   :- Filter isnotnull(schema_type#12)
+   +- BroadcastExchange HashedRelationBroadcastMode(...), [plan_id=31]
+
+2) SortMergeJoin [message_id#3L], [message_id#77L], Inner
+   :- Sort [message_id#3L ASC NULLS FIRST], false, 0
+   :  +- Exchange hashpartitioning(message_id#3L, 200), ENSURE_REQUIREMENTS
+   +- Sort [message_id#77L ASC NULLS FIRST], false, 0
+      +- Exchange hashpartitioning(message_id#77L, 200), ENSURE_REQUIREMENTS
+
+3) BroadcastHashJoin ... BuildRight ...          (wie 1)
+
+4) ShuffledHashJoin [message_id#3L], [message_id#77L], Inner, BuildRight
+   :- Exchange hashpartitioning(message_id#3L, 200)
+   +- Exchange hashpartitioning(message_id#77L, 200)
+
+5) SortMergeJoin [schema_type#12], [schema_type#40], Inner</pre>
+<p class="small">Erwartetes Ergebnis (laut Doku, nicht ausgeführt). Spark 3.5/4.x, Ausschnitte unter <code>AdaptiveSparkPlan isFinalPlan=false</code>.</p>
+<ol>
+  <li><b>BuildRight</b> heisst: Die rechte Seite (<code>types</code>) wird zur Hash-Tabelle. Es gibt einen <b>BroadcastExchange</b>, aber keinen Shuffle für <code>trades</code>.</li>
+  <li>Zwei grosse Seiten: zwei <b>Exchange</b>-Knoten (Shuffle) und zwei <b>Sort</b>-Knoten. Das ist der teure Standardfall.</li>
+  <li><code>F.broadcast()</code> erzwingt den Broadcast auch über 10 MB. Gefährlich, wenn die Tabelle wächst.</li>
+  <li><b>ShuffledHashJoin</b>: Shuffle bleibt, Sort fällt weg.</li>
+  <li>Mit Schwelle <code>-1</code> plant Spark keinen automatischen Broadcast mehr. Es fällt auf Sort-Merge zurück.</li>
+</ol>
+
+<h2>4. Details, die Interviewer fragen</h2>
+<ol>
+  <li><b>autoBroadcastJoinThreshold</b> (10 MB): maximale geschätzte Grösse für automatischen Broadcast. <code>-1</code> schaltet ihn ab.</li>
+  <li><b>Geschätzte Grösse:</b> Spark nutzt Statistiken aus Datei-Metadaten oder <code>ANALYZE TABLE</code>. Nach Filtern und Projektionen ist die Schätzung oft falsch. Komprimiertes Parquet ist im Speicher viel grösser.</li>
+  <li><b>spark.sql.broadcastTimeout</b> (300 s): Zeitlimit, um die Broadcast-Tabelle zu bauen.</li>
+  <li><b>Broadcast-Grenze:</b> Die Broadcast-Tabelle muss in Driver und jeden Executor passen. Spark hat eine harte Obergrenze von 8 GB.</li>
+  <li><b>Build Side:</b> Die Seite, aus der die Hash-Tabelle entsteht. Bei <code>LEFT OUTER</code> kann nur die rechte Seite gebroadcastet werden, bei <code>RIGHT OUTER</code> nur die linke. <code>FULL OUTER</code> unterstützt keinen Broadcast Hash Join.</li>
+  <li><b>preferSortMergeJoin</b> (true): Spark bevorzugt Sort-Merge vor Shuffle Hash. Grund: Sort-Merge kann spillen.</li>
+  <li><b>Join Hints:</b> <code>BROADCAST</code> (auch <code>BROADCASTJOIN</code>, <code>MAPJOIN</code>), <code>MERGE</code>, <code>SHUFFLE_HASH</code>, <code>SHUFFLE_REPLICATE_NL</code>. Priorität in genau dieser Reihenfolge.</li>
+  <li><b>Hint ist keine Garantie:</b> Unterstützt eine Strategie den Join-Typ nicht, ignoriert Spark den Hint.</li>
+  <li><b>Nicht-Equi-Join:</b> Ohne <code>=</code> im ON (z. B. <code>a.ts BETWEEN b.start AND b.end</code>) bleibt nur Nested Loop. Ist eine Seite klein: <b>BroadcastNestedLoopJoin</b>, sonst <b>CartesianProduct</b>.</li>
+  <li><b>Bucketing:</b> <code>bucketBy(64, "message_id")</code> schreibt die Tabelle in 64 Hash-Buckets. Joinen zwei Tabellen mit gleichen Buckets, entfällt der Shuffle. Gilt für Spark-Tabellen im Metastore; Iceberg hat eigene <code>bucket(N, col)</code>-Partitionen.</li>
+  <li><b>AQE-Umstellung:</b> Ist eine Seite nach dem Shuffle klein, stellt AQE Sort-Merge auf Broadcast um. Der Shuffle ist dann schon passiert, aber Sort und Netzwerk-Lesen fallen weg.</li>
+  <li><b>Null-Schlüssel:</b> <code>null = null</code> ist nicht wahr. Null-Schlüssel finden nie einen Partner. Für Null-Gleichheit gibt es <code>&lt;=&gt;</code> (<code>eqNullSafe</code>).</li>
+</ol>
+
+<h2>5. Vergleich</h2>
+<ul>
+  <li><b>Broadcast Hash Join:</b> eine Seite klein, kein Shuffle der grossen Seite, am schnellsten. Risiko: Driver- und Executor-OOM.</li>
+  <li><b>Sort-Merge Join:</b> zwei grosse Seiten, Shuffle und Sort, spillt auf Disk. Standard und robust.</li>
+  <li><b>Shuffle Hash Join:</b> Shuffle ohne Sort. Schneller, wenn eine Seite pro Partition in den Speicher passt.</li>
+  <li><b>Broadcast Nested Loop Join:</b> Nicht-Equi-Join mit kleiner Seite. O(n × m), aber ohne Shuffle.</li>
+  <li><b>Cartesian Product:</b> Nicht-Equi-Join mit zwei grossen Seiten. Fast immer ein Fehler.</li>
+  <li><b>Bucketed Sort-Merge Join:</b> Sort-Merge ohne Shuffle, weil beide Tabellen gleich gebucketet sind.</li>
+</ul>
+
+<h2>6. In der Produktion</h2>
+<ol>
+  <li><b>Broadcast zu gross:</b> Ein Hint oder hoher Threshold broadcastet eine gewachsene Tabelle. Folge: Driver-OOM oder <code>broadcastTimeout</code>. Lösung: Hint entfernen, Threshold realistisch, AQE entscheiden lassen.</li>
+  <li><b>Kein Broadcast trotz kleiner Tabelle:</b> Spark kennt die Grösse nicht, z. B. nach einer UDF oder einem komplexen Filter. Lösung: <code>F.broadcast()</code> bewusst setzen oder Statistiken sammeln.</li>
+  <li><b>Explodierender Join:</b> Duplikate im Schlüssel vervielfachen Zeilen. 1000 × 1000 Zeilen pro Schlüssel = 1 Mio. Lösung: Schlüssel vorher prüfen und deduplizieren.</li>
+  <li><b>Skew:</b> Ein Schlüssel hat 80 % der Zeilen. Ein Task läuft Stunden. Lösung: AQE Skew Join oder Salting (siehe Seite Data Skew).</li>
+  <li><b>Versteckter Cartesian Product:</b> Fehlende Join-Bedingung oder ein OR in ON. Lösung: Plan lesen, Bedingung korrigieren.</li>
+  <li><b>Shuffle Hash Join mit OOM:</b> Eine Build-Partition passt nicht in den Speicher. Lösung: Sort-Merge erzwingen (<code>MERGE</code>-Hint) oder mehr Partitionen.</li>
+</ol>
+
+<h2>7. Diagnose: Werkzeuge und Befehle</h2>
+<ul>
+  <li><code>df.explain("formatted")</code> oder SQL <code>EXPLAIN FORMATTED</code>: zeigt die gewählte Strategie und die Build Side.</li>
+  <li><code>df.explain("cost")</code>: zeigt geschätzte Grössen (<code>Statistics(sizeInBytes=...)</code>). Damit sieht man, warum kein Broadcast kam.</li>
+  <li><b>Spark UI, SQL-Tab:</b> der finale Plan nach AQE (<code>isFinalPlan=true</code>), Zeilen pro Knoten, Grösse des Broadcasts (<code>data size</code>).</li>
+  <li><b>Spark UI, Stages-Tab:</b> Shuffle Read/Write pro Join-Stage. Max vs Median zeigt Skew.</li>
+  <li><code>ANALYZE TABLE t COMPUTE STATISTICS</code>: Statistiken für Spark-Katalog-Tabellen sammeln.</li>
+  <li><code>df.groupBy("key").count().orderBy(F.desc("count")).show(10)</code>: häufigste Schlüssel vor dem Join prüfen.</li>
+</ul>
+
+<h2>8. Senior-Punkte</h2>
+<div class="senior">
+<ol>
+  <li><b>Der beste Join ist der ohne Shuffle.</b> Vorher filtern, nur nötige Spalten lesen, kleine Seiten broadcasten.</li>
+  <li><b>Hints sind Wetten auf die Zukunft.</b> Ein Broadcast-Hint auf eine wachsende Tabelle wird später zum OOM. Lieber Threshold und AQE nutzen.</li>
+  <li><b>Sort-Merge ist der sichere Standard.</b> Er ist langsamer, aber er spillt statt abzustürzen.</li>
+  <li><b>Plan lesen gehört zum Code-Review</b> bei teuren Jobs. Ein unerwarteter <code>CartesianProduct</code> oder ein doppelter Exchange fällt sofort auf.</li>
+  <li><b>Datenqualität vor Tuning:</b> Doppelte oder Null-Schlüssel ändern Ergebnis und Laufzeit. Eindeutigkeit prüfen, bevor man joint.</li>
+  <li><b>Bucketing nur bei wiederholten Joins</b> auf demselben Schlüssel. Es fixiert das Layout und braucht Pflege.</li>
+</ol>
+</div>
+
+<h2>9. Aus dem Projekt</h2>
+<p>„Im Profil ist keine konkrete Join-Optimierung dokumentiert; die nächste echte Erfahrung ist der <code>validate_parity.py</code>-Job bei MATCH, der SQL-Server- und Iceberg-Ergebnisse Tabelle für Tabelle vergleicht – hier vor dem Interview im Plan nachsehen, welche Join-Strategie Spark gewählt hat.“ <span class="small">(Prüfen und durch dein echtes Beispiel ersetzen.)</span></p>
+
+<h2>10. Fallen</h2>
+<div class="trap">
+<ul>
+  <li>„Ein Hint erzwingt immer die Strategie.“ → <b>Falsch.</b> Unterstützt sie den Join-Typ nicht, ignoriert Spark den Hint.</li>
+  <li>„10 MB Threshold heisst 10 MB auf Disk.“ → <b>Falsch.</b> Es ist eine Schätzung. Im Speicher ist die Tabelle oft viel grösser als komprimiertes Parquet.</li>
+  <li>„Broadcast ist immer am schnellsten.“ → <b>Falsch.</b> Bei grossen Tabellen kostet das Sammeln auf dem Driver mehr als ein Shuffle und riskiert OOM.</li>
+  <li>„Bei LEFT JOIN kann Spark jede Seite broadcasten.“ → <b>Falsch.</b> Nur die rechte Seite.</li>
+  <li>„Shuffle Hash Join ist veraltet.“ → <b>Falsch.</b> Er ist schneller ohne Sort, braucht aber genug Speicher pro Partition.</li>
+  <li>„null-Schlüssel joinen miteinander.“ → <b>Falsch.</b> Nur mit <code>&lt;=&gt;</code> / <code>eqNullSafe</code>.</li>
+</ul>
+</div>
+
+<h2>11. Fragen</h2>
+<details><summary>Welche Join-Strategien kennt Spark?</summary><p>Broadcast Hash Join, Sort-Merge Join, Shuffle Hash Join, Broadcast Nested Loop Join und Cartesian Product.</p></details>
+<details><summary>Wie funktioniert ein Broadcast Hash Join?</summary><p>Der Driver sammelt die kleine Seite, baut eine Hash-Tabelle und schickt sie an alle Executors. Die grosse Seite wird ohne Shuffle dagegen geprüft.</p></details>
+<details><summary>Wie funktioniert ein Sort-Merge Join?</summary><p>Beide Seiten werden nach dem Schlüssel geshuffelt und je Partition sortiert. Dann werden zwei sortierte Listen gemischt.</p></details>
+<details><summary>Wie funktioniert ein Shuffle Hash Join?</summary><p>Beide Seiten werden geshuffelt. Pro Partition baut Spark eine Hash-Tabelle aus der kleineren Seite. Es gibt keinen Sort.</p></details>
+<details><summary>Warum ist Sort-Merge der Standard?</summary><p>Er funktioniert für alle Grössen und kann auf Disk spillen. Shuffle Hash braucht die Hash-Tabelle im Speicher.</p></details>
+<details><summary>Was ist autoBroadcastJoinThreshold?</summary><p>Die maximale geschätzte Grösse für automatischen Broadcast, Standard 10 MB. Mit -1 ist Auto-Broadcast aus.</p></details>
+<details><summary>Warum broadcastet Spark eine kleine Tabelle nicht?</summary><p>Spark kennt die Grösse nicht oder schätzt sie zu hoch, z. B. nach UDFs. Oder der Join-Typ erlaubt diese Build Side nicht.</p></details>
+<details><summary>Welche Join Hints gibt es?</summary><p>BROADCAST, MERGE, SHUFFLE_HASH, SHUFFLE_REPLICATE_NL. Bei Konflikt gilt diese Reihenfolge als Priorität.</p></details>
+<details><summary>Wie setzen Sie einen Broadcast in PySpark?</summary><p><code>df.join(F.broadcast(small), "key")</code> oder <code>small.hint("broadcast")</code>.</p></details>
+<details><summary>Was ist die Build Side?</summary><p>Die Seite, aus der die Hash-Tabelle gebaut wird. Im Plan steht BuildLeft oder BuildRight.</p></details>
+<details><summary>Welche Seite kann bei LEFT OUTER JOIN gebroadcastet werden?</summary><p>Nur die rechte. Bei FULL OUTER geht kein Broadcast Hash Join.</p></details>
+<details><summary>Was passiert bei einem Join ohne Gleichheitsbedingung?</summary><p>Spark nutzt Nested Loop: Broadcast Nested Loop bei kleiner Seite, sonst Cartesian Product. Beides ist teuer.</p></details>
+<details><summary>Was ist Bucketing?</summary><p>Die Tabelle wird in eine feste Anzahl Hash-Buckets nach dem Join-Schlüssel geschrieben. Gleich gebucketete Tabellen joinen ohne Shuffle.</p></details>
+<details><summary>Was macht AQE bei Joins?</summary><p>Es misst nach dem Shuffle echte Grössen. Ist eine Seite klein, stellt es auf Broadcast um. Bei Skew teilt es grosse Partitionen.</p></details>
+<details><summary>Woran erkennen Sie im Plan einen Shuffle?</summary><p>Am Knoten <code>Exchange hashpartitioning(...)</code>. Ein Broadcast zeigt <code>BroadcastExchange</code>.</p></details>
+<details><summary>Warum kann ein Broadcast zum Driver-OOM führen?</summary><p>Der Driver sammelt die ganze Broadcast-Seite und baut die Hash-Tabelle. Ist sie zu gross, reicht sein Heap nicht.</p></details>
+<details><summary>Warum explodiert manchmal die Zeilenzahl nach einem Join?</summary><p>Doppelte Schlüssel auf beiden Seiten multiplizieren sich. Schlüssel vorher auf Eindeutigkeit prüfen.</p></details>
+<details><summary>Was passiert mit null-Schlüsseln?</summary><p>Sie finden keinen Partner, weil null = null nicht wahr ist. Mit <code>eqNullSafe</code> (&lt;=&gt;) werden sie gleich behandelt.</p></details>
+<details><summary>Was zeigt explain("cost")?</summary><p>Die geschätzten Grössen und Zeilenzahlen. Damit sieht man, warum Spark eine Strategie gewählt hat.</p></details>
+<details><summary>Szenario: Ein Join-Job stürzt seit einer Woche mit Driver-OOM ab, ohne Code-Änderung. Woran denken Sie?</summary><p>Eine gebroadcastete Tabelle ist gewachsen, oft wegen eines festen Hints. Plan prüfen, Hint entfernen oder Threshold senken, Sort-Merge zulassen.</p></details>
+<details><summary>Szenario: Ein Join mit einer Mapping-Tabelle von 40 Zeilen macht einen Shuffle über 500 GB. Was tun Sie?</summary><p>Im Plan prüfen, warum kein Broadcast kam. Dann <code>F.broadcast()</code> setzen. Die grosse Seite muss dann nicht geshuffelt werden.</p></details>
+<details><summary>Szenario: Ein Join läuft Stunden, im Plan steht CartesianProduct. Was ist passiert?</summary><p>Die Join-Bedingung fehlt oder ist kein Gleichheitsvergleich, z. B. ein OR. Bedingung korrigieren oder einen Equi-Schlüssel ergänzen.</p></details>
+
+</body>
+</html>

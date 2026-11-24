@@ -1,0 +1,262 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Blob Storage</title>
+<style>
+  body { font: 17px/1.55 -apple-system, system-ui, sans-serif; max-width: 760px; margin: 0 auto; padding: 16px; color: #1d1d1f; }
+  h1 { font-size: 28px; margin: 8px 0 4px; }
+  h2 { font-size: 21px; margin: 32px 0 8px; padding-top: 12px; border-top: 2px solid #e5e5ea; }
+  .kern { background: #eef6ff; border-left: 4px solid #0a66c2; padding: 10px 14px; border-radius: 6px; }
+  .senior { background: #f0faf0; border-left: 4px solid #2e7d32; padding: 10px 14px; border-radius: 6px; }
+  .trap { background: #fff4f2; border-left: 4px solid #c62828; padding: 10px 14px; border-radius: 6px; }
+  code { background: #f2f2f7; padding: 1px 5px; border-radius: 4px; font-size: 15px; }
+  pre { background: #1e1e1e; color: #e6e6e6; padding: 12px; border-radius: 8px; overflow-x: auto; font-size: 13.5px; line-height: 1.45; }
+  svg { width: 100%; height: auto; display: block; margin: 10px 0; }
+  ol li, ul li { margin: 4px 0; }
+  details { border: 1px solid #e5e5ea; border-radius: 8px; padding: 8px 12px; margin: 6px 0; }
+  summary { font-weight: 600; cursor: pointer; }
+  details p { margin: 6px 0 2px; }
+  .small { color: #6e6e73; font-size: 14px; }
+</style>
+</head>
+<body>
+
+<h1>Blob Storage: Tiers, SAS, Lifecycle, ADLS Gen2</h1>
+<p class="small">Azure · Tier 1 · Quellen: Microsoft Learn – Blob Storage Introduction, Access tiers for blob data, Azure Storage redundancy, Grant limited access with SAS / Create a user delegation SAS, Lifecycle management overview, Azure Data Lake Storage hierarchical namespace, Introduction to Defender for Storage malware scanning, Prevent Shared Key authorization</p>
+
+<div class="kern">
+<b>Kern:</b> <b>Azure Blob Storage</b> ist ein Object Store für unstrukturierte Daten in einem <b>Storage Account</b>. Er löst das Problem, Dateien billig, sicher und fast unbegrenzt zu speichern. Kosten steuert man mit <b>Access Tiers</b> und <b>Lifecycle-Regeln</b>, Zugriff mit <b>Entra ID, RBAC und SAS</b>.
+</div>
+
+<h2>1. Wo sitzt Blob Storage?</h2>
+<svg viewBox="0 0 720 330" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="a" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="10" y="20" width="150" height="56" rx="8" fill="#fff" stroke="#555"/><text x="85" y="44" text-anchor="middle" font-weight="700">Client</text><text x="85" y="62" text-anchor="middle" font-size="12">SDK · az · AzCopy</text>
+  <line x1="160" y1="48" x2="218" y2="48" stroke="#555" stroke-width="2" marker-end="url(#a)"/><text x="189" y="40" text-anchor="middle" font-size="11">HTTPS</text>
+  <rect x="220" y="8" width="490" height="314" rx="12" fill="#f7f7fa" stroke="#999" stroke-dasharray="5 4"/><text x="465" y="28" text-anchor="middle" font-weight="700">Storage Account (StorageV2) · Redundanz LRS/ZRS/GRS</text>
+  <rect x="240" y="40" width="210" height="44" rx="8" fill="#fff" stroke="#555"/><text x="345" y="60" text-anchor="middle" font-size="13">Endpoint blob.core.windows.net</text><text x="345" y="76" text-anchor="middle" font-size="11">oder dfs.core.windows.net (HNS)</text>
+  <rect x="470" y="40" width="220" height="44" rx="8" fill="#fff" stroke="#555"/><text x="580" y="60" text-anchor="middle" font-size="13">Auth: Entra + RBAC · SAS</text><text x="580" y="76" text-anchor="middle" font-size="11">Shared Key (besser aus)</text>
+  <line x1="345" y1="84" x2="345" y2="110" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="240" y="112" width="450" height="48" rx="8" fill="#dbe9fb" stroke="#0a66c2"/><text x="465" y="132" text-anchor="middle" font-weight="700">Container (z. B. uploads)</text><text x="465" y="150" text-anchor="middle" font-size="12">flacher Namensraum, "/" nur im Namen – oder echte Ordner mit HNS</text>
+  <line x1="465" y1="160" x2="465" y2="184" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="240" y="186" width="140" height="54" rx="6" fill="#0a66c2"/><text x="310" y="210" text-anchor="middle" fill="#fff" font-weight="700">Block Blob</text><text x="310" y="228" text-anchor="middle" fill="#fff" font-size="11">Dateien · Tiers</text>
+  <rect x="395" y="186" width="140" height="54" rx="6" fill="#eee" stroke="#777"/><text x="465" y="210" text-anchor="middle" font-weight="700">Append Blob</text><text x="465" y="228" text-anchor="middle" font-size="11">nur anhängen · Logs</text>
+  <rect x="550" y="186" width="140" height="54" rx="6" fill="#eee" stroke="#777"/><text x="620" y="210" text-anchor="middle" font-weight="700">Page Blob</text><text x="620" y="228" text-anchor="middle" font-size="11">512-Byte-Seiten · Disks</text>
+  <rect x="240" y="258" width="450" height="48" rx="8" fill="#e8f5e9" stroke="#2e7d32"/><text x="465" y="278" text-anchor="middle" font-weight="700">Tiers: Hot · Cool · Cold · Archive (nur Block Blobs)</text><text x="465" y="296" text-anchor="middle" font-size="12">Lifecycle Policy verschiebt oder löscht automatisch</text>
+</svg>
+<ol>
+  <li><b>Storage Account:</b> die Hülle mit Name, Region, Redundanz und Netzwerkregeln. Beispiel: <code>stdigiupload</code> in Switzerland North.</li>
+  <li><b>Endpoint:</b> jeder Dienst hat eine URL. Blob: <code>https://&lt;account&gt;.blob.core.windows.net</code>. Mit HNS zusätzlich <code>dfs.core.windows.net</code>.</li>
+  <li><b>Container:</b> eine Gruppe von Blobs, ähnlich einem Bucket. Zugriffsrechte lassen sich pro Container vergeben.</li>
+  <li><b>Blob:</b> das eigentliche Objekt. Es gibt drei Typen: Block, Append und Page.</li>
+  <li><b>Access Tier:</b> die Preisklasse eines Block Blobs. Sie ändert Speicher- und Zugriffskosten, nicht die API.</li>
+  <li><b>Auth:</b> Entra ID mit RBAC-Rollen, SAS-Tokens oder Account Key (Shared Key).</li>
+</ol>
+
+<h2>2. Die Reise eines Uploads (die Geschichte zum Merken)</h2>
+<svg viewBox="0 0 720 330" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="b" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker><marker id="r" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#c62828"/></marker></defs>
+  <rect x="10" y="20" width="150" height="62" rx="10" fill="#eee" stroke="#777"/><text x="85" y="44" text-anchor="middle" font-weight="700">1. Upload-Function</text><text x="85" y="64" text-anchor="middle" font-size="12">Token via Managed Id.</text>
+  <line x1="160" y1="51" x2="208" y2="51" stroke="#555" stroke-width="2" marker-end="url(#b)"/><text x="184" y="43" text-anchor="middle" font-size="11">PE</text>
+  <rect x="210" y="20" width="170" height="62" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="295" y="44" text-anchor="middle" font-weight="700">2. Put Block (List)</text><text x="295" y="64" text-anchor="middle" font-size="12">Blob in "quarantine"</text>
+  <line x1="380" y1="51" x2="428" y2="51" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="430" y="20" width="130" height="62" rx="10" fill="#fff" stroke="#555"/><text x="495" y="44" text-anchor="middle" font-weight="700">3. BlobCreated</text><text x="495" y="64" text-anchor="middle" font-size="12">Event Grid System Topic</text>
+  <line x1="560" y1="51" x2="598" y2="51" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="600" y="20" width="110" height="62" rx="10" fill="#0a66c2"/><text x="655" y="44" text-anchor="middle" fill="#fff" font-weight="700">4. Defender</text><text x="655" y="64" text-anchor="middle" fill="#fff" font-size="12">Malware-Scan</text>
+  <line x1="655" y1="82" x2="655" y2="128" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="470" y="130" width="240" height="62" rx="10" fill="#fff" stroke="#555"/><text x="590" y="154" text-anchor="middle" font-weight="700">5. Ergebnis</text><text x="590" y="174" text-anchor="middle" font-size="12">Index-Tag · Event Grid · Alert</text>
+  <line x1="470" y1="161" x2="388" y2="161" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="200" y="130" width="186" height="62" rx="10" fill="#fff" stroke="#555"/><text x="293" y="154" text-anchor="middle" font-weight="700">6. Result-Function</text><text x="293" y="174" text-anchor="middle" font-size="12">liest Event (via Event Hub)</text>
+  <line x1="250" y1="192" x2="170" y2="248" stroke="#2e7d32" stroke-width="2" marker-end="url(#b)"/>
+  <line x1="340" y1="192" x2="420" y2="248" stroke="#c62828" stroke-width="2" marker-end="url(#r)"/>
+  <rect x="40" y="250" width="240" height="62" rx="10" fill="#e8f5e9" stroke="#2e7d32"/><text x="160" y="274" text-anchor="middle" font-weight="700">7a. Clean → freigeben</text><text x="160" y="294" text-anchor="middle" font-size="12">Copy nach "clean", später Cool</text>
+  <rect x="330" y="250" width="240" height="62" rx="10" fill="#fff4f2" stroke="#c62828"/><text x="450" y="274" text-anchor="middle" font-weight="700">7b. Malicious → löschen</text><text x="450" y="294" text-anchor="middle" font-size="12">oder Soft Delete durch Defender</text>
+</svg>
+<ol>
+  <li><b>Token holen:</b> Die Upload-Function hat eine <b>Managed Identity</b>, also eine Identität ohne Passwort. Sie holt ein Entra-Token für <code>https://storage.azure.com/</code>. Sie erreicht den Account über einen <b>Private Endpoint</b> (private IP im VNet).</li>
+  <li><b>Blob schreiben:</b> Das SDK lädt grosse Dateien in Blöcken hoch (<b>Put Block</b>). Am Ende macht <b>Put Block List</b> den Blob sichtbar und atomar. Die Function antwortet dem Client sofort danach.</li>
+  <li><b>Event:</b> Storage meldet <code>Microsoft.Storage.BlobCreated</code> an ein <b>Event Grid System Topic</b>. Defender legt dieses Topic beim Aktivieren selbst an.</li>
+  <li><b>Scan:</b> <b>Defender for Storage</b> liest den Blob und scannt ihn mit Microsoft Defender Antivirus. Das läuft in derselben Region. Blobs bis 50 GB sind möglich.</li>
+  <li><b>Ergebnis:</b> Defender schreibt den Blob-Index-Tag <code>Malware Scanning scan result</code> (z. B. <code>No threats found</code> oder <code>Malicious</code>). Optional kommt ein Event über ein eigenes Event Grid Custom Topic.</li>
+  <li><b>Reagieren:</b> Eine zweite Function bekommt das Ergebnis, z. B. über Event Hub. Sie entscheidet allein auf Basis des Events, nicht des Tags.</li>
+  <li><b>Freigeben oder löschen:</b> Sauber: Blob in einen freigegebenen Container kopieren. Schädlich: löschen. Danach verschiebt eine <b>Lifecycle Policy</b> alte Dateien nach Cool oder Cold.</li>
+</ol>
+
+<h2>3. Beispiel: sicherer Account, Lifecycle und User Delegation SAS</h2>
+<pre>// storage.bicep – Account ohne Shared Key, ohne Public Access
+resource st 'Microsoft.Storage/storageAccounts@2023-05-01' = {
+  name: 'stdemoupload'
+  location: 'switzerlandnorth'
+  sku: { name: 'Standard_ZRS' }
+  kind: 'StorageV2'
+  properties: {
+    accessTier: 'Hot'
+    isHnsEnabled: false
+    allowSharedKeyAccess: false        // nur Entra ID, keine Account-Key-SAS
+    allowBlobPublicAccess: false
+    publicNetworkAccess: 'Disabled'    // nur Private Endpoint
+    minimumTlsVersion: 'TLS1_2'
+  }
+}
+
+resource lifecycle 'Microsoft.Storage/storageAccounts/managementPolicies@2023-05-01' = {
+  name: 'default'
+  parent: st
+  properties: { policy: { rules: [ {
+    name: 'clean-to-cold'
+    enabled: true
+    type: 'Lifecycle'
+    definition: {
+      filters: { blobTypes: [ 'blockBlob' ], prefixMatch: [ 'clean/' ] }
+      actions: { baseBlob: {
+        tierToCool: { daysAfterModificationGreaterThan: 30 }
+        tierToCold: { daysAfterModificationGreaterThan: 90 }
+        delete:     { daysAfterModificationGreaterThan: 365 }
+      } }
+    } } ] } }
+}</pre>
+<pre>$ az storage blob generate-sas --account-name stdemoupload \
+    --container-name clean --name report.pdf --permissions r \
+    --expiry 2026-11-24T18:00Z --https-only \
+    --auth-mode login --as-user --full-uri
+
+"https://stdemoupload.blob.core.windows.net/clean/report.pdf?skoid=…&amp;sktid=…
+ &amp;skt=2026-11-24T12%3A00%3A00Z&amp;ske=2026-11-24T18%3A00%3A00Z&amp;sks=b&amp;skv=2024-11-04
+ &amp;sv=2024-11-04&amp;st=…&amp;se=2026-11-24T18%3A00%3A00Z&amp;sr=b&amp;sp=r&amp;spr=https&amp;sig=…"
+
+$ az storage account show -n stdemoupload --query \
+    "{sku:sku.name, tier:accessTier, hns:isHnsEnabled, sharedKey:allowSharedKeyAccess, net:publicNetworkAccess}"
+{ "sku": "Standard_ZRS", "tier": "Hot", "hns": false, "sharedKey": false, "net": "Disabled" }</pre>
+<p class="small">Erwartetes Ergebnis (laut Doku, nicht ausgeführt). Hier gibt es keine Azure CLI und keinen Account.</p>
+<ol>
+  <li><code>allowSharedKeyAccess: false</code> sperrt Account Key, Account SAS und Service SAS. Nur Entra-Tokens und <b>User Delegation SAS</b> funktionieren noch.</li>
+  <li><code>--as-user --auth-mode login</code> signiert die SAS mit einem <b>User Delegation Key</b>. Die Felder <code>skoid</code>, <code>sktid</code>, <code>skt</code>, <code>ske</code> zeigen das. Der Key gilt höchstens 7 Tage.</li>
+  <li><code>sr=b</code> heisst Blob, <code>sp=r</code> nur Lesen, <code>spr=https</code> nur HTTPS. Wenige Rechte, kurze Laufzeit.</li>
+  <li>Der Aufrufer braucht die Aktion <code>generateUserDelegationKey</code> (z. B. in <b>Storage Blob Delegator</b>) und Leserechte auf den Blob. Die SAS gibt nie mehr Rechte als der Aufrufer hat.</li>
+  <li>Die Lifecycle Policy wirkt nur auf <code>clean/</code>. Sie läuft etwa einmal pro Tag, nicht sofort.</li>
+</ol>
+
+<h2>4. Details, die Interviewer fragen</h2>
+<ol>
+  <li><b>Block Blob:</b> besteht aus Blöcken, die erst <b>Put Block List</b> verbindet. Bis 50 000 Blöcke, maximal ca. 190,7 TiB. Standard für Dateien, Bilder, Parquet.</li>
+  <li><b>Append Blob:</b> erlaubt nur Anhängen am Ende (<b>Append Block</b>). Gut für Logs. Kein Tier-Wechsel möglich.</li>
+  <li><b>Page Blob:</b> besteht aus 512-Byte-Seiten mit wahlfreiem Schreiben. Bis 8 TiB. Basis für alte unmanaged VM-Disks.</li>
+  <li><b>Access Tiers:</b> <b>Hot</b> (oft genutzt), <b>Cool</b> (min. 30 Tage), <b>Cold</b> (min. 90 Tage), <b>Archive</b> (min. 180 Tage, offline). Kälter heisst: Speicher billiger, Zugriff teurer.</li>
+  <li><b>Early Deletion:</b> Wer vor der Mindestdauer löscht, überschreibt oder den Tier wechselt, zahlt die Resttage. Beispiel: Cool nach 21 Tagen löschen kostet 9 Tage extra.</li>
+  <li><b>Archive:</b> Ein archivierter Blob ist nicht lesbar. Man muss ihn erst <b>rehydrieren</b> (Set Blob Tier oder Copy Blob). Das dauert bis zu 15 Stunden, mit <b>High Priority</b> meist deutlich weniger.</li>
+  <li><b>Archive und Redundanz:</b> Archive geht nur mit LRS, GRS und RA-GRS. Mit ZRS oder GZRS gibt es kein Archive.</li>
+  <li><b>Default Tier:</b> Der Account hat einen Standard-Tier (Hot, Cool oder Cold). Blobs ohne eigenen Tier „erben“ ihn (<b>inferred</b>). Archive kann nie Standard sein.</li>
+  <li><b>Smart Tier:</b> verschiebt Blobs automatisch zwischen Hot, Cool und Cold nach Nutzung. Alternative zu eigenen Lifecycle-Regeln.</li>
+  <li><b>Redundanz:</b> <b>LRS</b> = 3 Kopien in einem Rechenzentrum. <b>ZRS</b> = 3 Kopien über 3 Availability Zones. <b>GRS</b> = LRS plus asynchrone Kopie in die Paar-Region. <b>GZRS</b> = ZRS plus Geo-Kopie.</li>
+  <li><b>RA-GRS / RA-GZRS:</b> erlauben Lesen in der Sekundär-Region über <code>&lt;account&gt;-secondary</code>. Die Geo-Kopie ist asynchron, also kann sie hinterherhinken.</li>
+  <li><b>Schweiz:</b> Switzerland North hat Zonen, die Paar-Region ist Switzerland West. Mit GRS bleiben die Daten so in der Schweiz.</li>
+  <li><b>SAS-Typen:</b> <b>Account SAS</b> (Account Key, mehrere Dienste), <b>Service SAS</b> (Account Key, ein Dienst), <b>User Delegation SAS</b> (Entra-Identität, nur Blob/ADLS). Microsoft empfiehlt die User Delegation SAS.</li>
+  <li><b>SAS widerrufen:</b> Eine Key-SAS stirbt nur durch Key-Rotation oder eine <b>Stored Access Policy</b>. Eine User Delegation SAS stirbt durch <code>revoke-delegation-keys</code> oder durch Entzug der Rolle.</li>
+  <li><b>SAS Expiration Policy:</b> Account-Einstellung mit maximaler SAS-Laufzeit. Längere SAS werden geloggt oder blockiert.</li>
+  <li><b>Lifecycle Policy:</b> JSON-Regeln mit <b>Filter</b> (blobTypes, prefixMatch, blobIndexMatch) und <b>Aktionen</b> (tierToCool, tierToCold, tierToArchive, delete). Gilt für Base Blobs, Versionen und Snapshots.</li>
+  <li><b>Bedingungen:</b> <code>daysAfterModificationGreaterThan</code>, <code>daysAfterCreationGreaterThan</code>, <code>daysAfterLastAccessTimeGreaterThan</code>. Letztere braucht <b>Last Access Time Tracking</b>.</li>
+  <li><b>Lifecycle rehydriert nie.</b> Von Archive zurück geht nur manuell oder per Code.</li>
+  <li><b>Hierarchical Namespace (HNS):</b> macht den Account zu <b>ADLS Gen2</b>. Ordner sind echte Objekte. Umbenennen eines Ordners ist eine atomare Metadaten-Operation, kein Kopieren aller Blobs.</li>
+  <li><b>ACLs:</b> ADLS Gen2 hat POSIX-artige <b>ACLs</b> pro Ordner und Datei, zusätzlich zu RBAC. <b>Default ACLs</b> vererben sich auf neue Kinder, nicht auf bestehende.</li>
+  <li><b>HNS ist Einweg:</b> Man kann HNS beim Erstellen setzen oder später per Upgrade aktivieren. Zurück geht nicht. Manche Blob-Features haben mit HNS Einschränkungen.</li>
+  <li><b>Datenschutz:</b> <b>Soft Delete</b> für Blobs und Container, <b>Versioning</b>, <b>Point-in-time Restore</b> und <b>Immutability</b> (WORM, z. B. Aufbewahrungspflicht).</li>
+  <li><b>Verschlüsselung:</b> Daten sind immer verschlüsselt (AES-256). Standard: Microsoft-Key. Optional: <b>Customer-Managed Key</b> in Key Vault mit Purge Protection.</li>
+  <li><b>Defender Malware Scanning:</b> On-Upload und On-Demand. Nur Block Blobs, keine Append- oder Page-Blobs. Client-seitig verschlüsselte Blobs kann es nicht scannen.</li>
+  <li><b>Defender-Ergebnis:</b> Index-Tags sind nicht manipulationssicher. Für Sicherheitsentscheidungen nimmt man Event Grid Events, Alerts oder Log Analytics (<code>StorageMalwareScanningResults</code>).</li>
+  <li><b>Defender und Netzwerk:</b> Scanning funktioniert mit Private Endpoints. Ein Event Grid Topic ohne Public Network Access wird laut Doku aber nicht für Scan-Ergebnisse unterstützt.</li>
+</ol>
+
+<h2>5. Vergleich</h2>
+<ul>
+  <li><b>Blob Storage vs ADLS Gen2:</b> gleicher Dienst. ADLS Gen2 = Blob mit HNS, echten Ordnern, ACLs und <code>abfss://</code> für Spark.</li>
+  <li><b>Blob vs Azure Files:</b> Files ist ein SMB/NFS-Dateisystem zum Mounten. Blob ist ein Object Store über HTTP.</li>
+  <li><b>Blob vs Managed Disks:</b> Disks sind Block-Devices für VMs. Blob ist für Objekte.</li>
+  <li><b>Blob vs S3:</b> Bucket ≈ Container, Object ≈ Blob, Presigned URL ≈ SAS, S3 Lifecycle ≈ Lifecycle Policy, Glacier ≈ Archive.</li>
+  <li><b>Blob vs MinIO:</b> MinIO ist S3-kompatibel und läuft im eigenen Cluster. Blob ist ein verwalteter Dienst mit Redundanz und Tiers.</li>
+  <li><b>Account SAS vs Service SAS vs User Delegation SAS:</b> nur die letzte hängt an einer Entra-Identität und überlebt ein Abschalten von Shared Key.</li>
+  <li><b>LRS vs ZRS vs GZRS:</b> mehr Schutz (Rack → Zone → Region) gegen mehr Kosten und Einschränkungen (z. B. kein Archive mit ZRS).</li>
+</ul>
+
+<h2>6. In der Produktion</h2>
+<ol>
+  <li><b>Account Key geleakt:</b> Jeder kann alles lesen und schreiben. Lösung: Shared Key abschalten, Entra ID mit Managed Identity, Keys rotieren.</li>
+  <li><b>SAS ohne Ende:</b> Eine SAS mit Laufzeit von Jahren liegt in einer Mail. Lösung: User Delegation SAS, kurze Laufzeit, SAS Expiration Policy.</li>
+  <li><b>Archive-Falle:</b> Ein Job will alte Dateien lesen und bekommt <code>409 BlobArchived</code>. Lösung: vorher rehydrieren, oder nur Cold statt Archive nutzen.</li>
+  <li><b>Unerwartete Kosten:</b> Lifecycle schiebt nach Cool, ein Report liest täglich alles. Zugriffs- und Early-Deletion-Kosten steigen. Lösung: Zugriffsmuster messen, Last Access Time als Bedingung, oder Smart Tier.</li>
+  <li><b>Throttling:</b> Viele kleine Requests auf einen Account liefern <code>503 ServerBusy</code>. Lösung: Retry mit Backoff (macht das SDK), grössere Blöcke, Last verteilen.</li>
+  <li><b>Gelöscht ist gelöscht:</b> Ohne Soft Delete ist ein falscher Delete endgültig. Lösung: Soft Delete und Versioning, und eine <b>Resource Lock</b> auf den Account.</li>
+  <li><b>Unscanned Files:</b> Die App liefert Dateien aus, bevor der Scan fertig ist. Lösung: Quarantäne-Container, Freigabe erst nach „No threats found“ aus dem Event.</li>
+  <li><b>Private Endpoint ohne DNS:</b> Die App löst die öffentliche IP auf und bekommt <code>403 AuthorizationFailure</code>. Lösung: Private DNS Zone <code>privatelink.blob.core.windows.net</code> verlinken.</li>
+</ol>
+
+<h2>7. Diagnose: Werkzeuge und Befehle</h2>
+<ul>
+  <li><b>Diagnostic Settings</b> → Log Analytics, Tabelle <code>StorageBlobLogs</code>: wer hat was mit welcher Auth gemacht (<code>AuthenticationType</code>: OAuth, SAS, AccountKey).</li>
+  <li>KQL: <code>StorageBlobLogs | where StatusCode == 403 | summarize count() by CallerIpAddress, AuthenticationType</code></li>
+  <li><b>Metriken:</b> <code>Transactions</code> nach <code>ResponseType</code> (z. B. ServerBusyError), <code>SuccessE2ELatency</code> vs <code>SuccessServerLatency</code>.</li>
+  <li><code>az storage blob show --query properties.blobTier</code> und <code>properties.rehydrationStatus</code>.</li>
+  <li><code>az storage account management-policy show</code>: aktive Lifecycle-Regeln.</li>
+  <li><b>Defender:</b> Security Alerts in Defender for Cloud, Tabelle <code>StorageMalwareScanningResults</code>.</li>
+  <li><b>Storage Explorer</b> und <b>AzCopy</b> (<code>azcopy login</code>, <code>azcopy copy</code>): grosse Kopien, Rehydrierung per Copy.</li>
+  <li><code>nslookup &lt;account&gt;.blob.core.windows.net</code> von innen: muss eine private IP liefern.</li>
+</ul>
+
+<h2>8. Senior-Punkte</h2>
+<div class="senior">
+<ol>
+  <li><b>Identität statt Schlüssel.</b> Shared Key aus, Managed Identity mit Data-Rolle (z. B. Storage Blob Data Contributor) pro App. Für Externe nur User Delegation SAS.</li>
+  <li><b>Tiers sind eine Kostenrechnung,</b> keine Ablage. Speicher, Zugriffe, Transaktionen und Mindestdauer zusammen rechnen.</li>
+  <li><b>Redundanz nach Anforderung:</b> ZRS gegen Zonenausfall, GZRS für Regionsausfall. Geo-Replikation ist asynchron, also RPO grösser als null.</li>
+  <li><b>HNS früh entscheiden.</b> Für Analytics (Spark, Iceberg, Delta) ja, für reine App-Dateien meist nein. Zurück geht nicht.</li>
+  <li><b>Upload ist kein Freigabe-Signal.</b> Malware-Scan und MIME-Prüfung gehören in eine Quarantäne-Pipeline.</li>
+  <li><b>Kein Public Access</b> auf Account-Ebene, Netzwerk über Private Endpoint, Ausnahmen bewusst dokumentieren.</li>
+</ol>
+</div>
+
+<h2>9. Aus dem Projekt</h2>
+<p>„Bei DigiSanté antwortet die Upload-Function direkt nach dem Blob-Write; das Defender-Scan-Ergebnis verarbeitet eine eigene Event-Hub-Function, die die Datei freigibt oder löscht – Storage ist nur über Private Endpoint erreichbar.“ <span class="small">(Prüfen und durch dein echtes Beispiel ersetzen.)</span></p>
+
+<h2>10. Fallen</h2>
+<div class="trap">
+<ul>
+  <li>„Archive ist einfach ein billiger Hot-Tier.“ → <b>Falsch.</b> Archive ist offline. Lesen erst nach Rehydrierung, bis zu 15 Stunden.</li>
+  <li>„Lifecycle holt Daten aus Archive zurück.“ → <b>Falsch.</b> Lifecycle kann nicht rehydrieren.</li>
+  <li>„Eine SAS kann ich jederzeit löschen.“ → <b>Falsch.</b> Eine SAS ist ein signierter String. Widerruf nur über Key-Rotation, Stored Access Policy oder Delegation-Key-Widerruf.</li>
+  <li>„Owner auf dem Account darf Blobs lesen.“ → <b>Nicht über Entra.</b> Dafür braucht es eine Data-Rolle. Aber Owner und Contributor können die Keys auslesen.</li>
+  <li>„Mit Private Endpoint ist der öffentliche Zugang zu.“ → <b>Falsch.</b> Public Network Access muss man extra abschalten.</li>
+  <li>„Der Malware-Tag ist ein sicheres Freigabe-Signal.“ → <b>Falsch.</b> Tags kann jeder mit Tag-Rechten ändern. Events oder Alerts nutzen.</li>
+  <li>„ZRS plus Archive spart am meisten.“ → <b>Geht nicht.</b> Archive nur mit LRS, GRS, RA-GRS.</li>
+</ul>
+</div>
+
+<h2>11. Fragen</h2>
+<details><summary>Was ist Azure Blob Storage?</summary><p>Ein Object Store für unstrukturierte Daten in einem Storage Account. Zugriff über HTTPS, Kosten über Tiers, Schutz über Redundanz.</p></details>
+<details><summary>Welche Blob-Typen gibt es?</summary><p>Block Blobs für Dateien, Append Blobs für Logs (nur anhängen), Page Blobs für wahlfreien Zugriff wie VM-Disks.</p></details>
+<details><summary>Welche Access Tiers gibt es?</summary><p>Hot, Cool (30 Tage), Cold (90 Tage), Archive (180 Tage, offline). Dazu Smart Tier, das automatisch zwischen Hot, Cool und Cold wechselt.</p></details>
+<details><summary>Was ist die Early Deletion Charge?</summary><p>Wer vor der Mindestdauer löscht, überschreibt oder umzieht, zahlt die Resttage anteilig.</p></details>
+<details><summary>Wie lese ich einen Blob aus Archive?</summary><p>Rehydrieren mit Set Blob Tier oder Copy Blob in einen Online-Tier. Standard dauert bis zu 15 Stunden, High Priority ist schneller und teurer.</p></details>
+<details><summary>LRS, ZRS, GRS, GZRS – was ist der Unterschied?</summary><p>LRS: 3 Kopien in einem Rechenzentrum. ZRS: über 3 Zonen. GRS: LRS plus Kopie in der Paar-Region. GZRS: ZRS plus Geo-Kopie.</p></details>
+<details><summary>Was bringt RA-GRS?</summary><p>Lesezugriff auf die Sekundär-Region über den <code>-secondary</code>-Endpoint, auch ohne Failover. Die Daten können leicht veraltet sein.</p></details>
+<details><summary>Welche SAS-Typen gibt es?</summary><p>Account SAS und Service SAS (mit Account Key signiert) und User Delegation SAS (mit Entra-Identität signiert, nur Blob/ADLS).</p></details>
+<details><summary>Warum User Delegation SAS?</summary><p>Kein Account Key nötig, an eine Identität gebunden, auditierbar, maximal 7 Tage gültig. Funktioniert auch mit abgeschaltetem Shared Key.</p></details>
+<details><summary>Wie widerrufe ich eine SAS?</summary><p>Key-SAS: Account Key rotieren oder Stored Access Policy ändern. User Delegation SAS: Delegation Keys widerrufen oder Rolle entziehen.</p></details>
+<details><summary>Was ist eine Stored Access Policy?</summary><p>Eine Richtlinie auf dem Container, auf die eine Service SAS verweist. Ändert oder löscht man sie, ist die SAS sofort ungültig.</p></details>
+<details><summary>Wie funktioniert eine Lifecycle Policy?</summary><p>JSON-Regeln mit Filtern und Aktionen wie tierToCool oder delete, basierend auf Alter oder letztem Zugriff. Sie läuft ungefähr einmal am Tag.</p></details>
+<details><summary>Was ist ADLS Gen2?</summary><p>Blob Storage mit Hierarchical Namespace: echte Ordner, atomares Umbenennen, POSIX-ACLs und der dfs-Endpoint für Analytics.</p></details>
+<details><summary>Warum ist HNS für Spark wichtig?</summary><p>Spark und Tabellenformate benennen Ordner um und listen sie oft. Mit HNS ist das eine Metadaten-Operation statt vieler Kopien.</p></details>
+<details><summary>Kann ich HNS wieder abschalten?</summary><p>Nein. Das Upgrade ist einseitig. Darum vorher die Feature-Unterstützung prüfen.</p></details>
+<details><summary>Wie sichere ich einen Storage Account ab?</summary><p>Shared Key aus, Entra ID mit Managed Identity, keine anonymen Container, Private Endpoint, Public Network Access aus, TLS 1.2, Soft Delete und Versioning.</p></details>
+<details><summary>Welche Rolle braucht eine App zum Schreiben von Blobs?</summary><p>Storage Blob Data Contributor auf Container- oder Account-Ebene. Owner oder Contributor reichen für den Datenzugriff über Entra nicht.</p></details>
+<details><summary>Wie funktioniert Defender Malware Scanning?</summary><p>Beim Upload löst ein Event Grid System Topic den Scan aus. Ergebnis als Index-Tag, Alert, Event Grid Event oder Log-Analytics-Eintrag.</p></details>
+<details><summary>Was scannt Defender nicht?</summary><p>Append- und Page-Blobs, client-seitig verschlüsselte Blobs, NFS-Uploads und Dateien über 50 GB.</p></details>
+<details><summary>Wie schütze ich Daten gegen versehentliches Löschen?</summary><p>Soft Delete für Blobs und Container, Versioning, Resource Lock auf dem Account, bei Pflicht-Aufbewahrung Immutability Policies.</p></details>
+<details><summary>Blob Storage vs Azure Files?</summary><p>Files ist ein mountbares SMB/NFS-Dateisystem. Blob ist ein Object Store über HTTP-API.</p></details>
+<details><summary>Wie lade ich grosse Dateien effizient hoch?</summary><p>Mit Block-Upload: Blöcke parallel hochladen, dann Put Block List. Das SDK und AzCopy machen das automatisch.</p></details>
+<details><summary>Szenario: Ein Partner braucht für 2 Stunden Lesezugriff auf eine Datei. Was tun Sie?</summary><p>User Delegation SAS nur für diesen Blob, nur Lesen, nur HTTPS, Ablauf in 2 Stunden. Erstellt von einer Identität mit genau diesen Rechten.</p></details>
+<details><summary>Szenario: Nach Aktivieren eines Private Endpoints bekommt die App 403. Warum?</summary><p>Wahrscheinlich löst DNS noch die öffentliche IP auf, und Public Access ist aus. Private DNS Zone verlinken und mit nslookup von innen prüfen.</p></details>
+<details><summary>Szenario: Die Storage-Kosten steigen trotz Lifecycle nach Cool. Woran denken Sie?</summary><p>An Lese- und Early-Deletion-Kosten, weil Daten in Cool doch oft gelesen werden. StorageBlobLogs prüfen, Regel auf Last Access Time umstellen oder Smart Tier nutzen.</p></details>
+
+</body>
+</html>

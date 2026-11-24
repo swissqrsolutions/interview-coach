@@ -1,0 +1,255 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Azure Identity</title>
+<style>
+  body { font: 17px/1.55 -apple-system, system-ui, sans-serif; max-width: 760px; margin: 0 auto; padding: 16px; color: #1d1d1f; }
+  h1 { font-size: 28px; margin: 8px 0 4px; }
+  h2 { font-size: 21px; margin: 32px 0 8px; padding-top: 12px; border-top: 2px solid #e5e5ea; }
+  .kern { background: #eef6ff; border-left: 4px solid #0a66c2; padding: 10px 14px; border-radius: 6px; }
+  .senior { background: #f0faf0; border-left: 4px solid #2e7d32; padding: 10px 14px; border-radius: 6px; }
+  .trap { background: #fff4f2; border-left: 4px solid #c62828; padding: 10px 14px; border-radius: 6px; }
+  code { background: #f2f2f7; padding: 1px 5px; border-radius: 4px; font-size: 15px; }
+  pre { background: #1e1e1e; color: #e6e6e6; padding: 12px; border-radius: 8px; overflow-x: auto; font-size: 13.5px; line-height: 1.45; }
+  svg { width: 100%; height: auto; display: block; margin: 10px 0; }
+  ol li, ul li { margin: 4px 0; }
+  details { border: 1px solid #e5e5ea; border-radius: 8px; padding: 8px 12px; margin: 6px 0; }
+  summary { font-weight: 600; cursor: pointer; }
+  details p { margin: 6px 0 2px; }
+  .small { color: #6e6e73; font-size: 14px; }
+</style>
+</head>
+<body>
+
+<h1>Entra ID, Managed Identity, Workload Identity, RBAC</h1>
+<p class="small">Azure · Tier 1 · Quellen: Microsoft Learn – What are managed identities?, Managed identity best practice recommendations, Workload identity federation, Use Microsoft Entra Workload ID with AKS, What is Azure RBAC?, Azure roles vs Microsoft Entra roles, Credential chains in the Azure Identity library for Java; External Secrets Operator docs (Azure Key Vault provider)</p>
+
+<div class="kern">
+<b>Kern:</b> <b>Microsoft Entra ID</b> ist der Identity Provider von Azure: Er stellt Tokens für Benutzer und Anwendungen aus. <b>Managed Identity</b> und <b>Workload Identity</b> lösen das Problem, dass Anwendungen ohne gespeicherte Passwörter an Azure-Dienste kommen. <b>Azure RBAC</b> entscheidet dann, was diese Identität auf welcher Ressource darf.
+</div>
+
+<h2>1. Wo sitzt die Identität?</h2>
+<svg viewBox="0 0 720 330" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="a" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="10" y="8" width="300" height="314" rx="12" fill="#f7f7fa" stroke="#999" stroke-dasharray="5 4"/><text x="160" y="28" text-anchor="middle" font-weight="700">Entra ID Tenant</text>
+  <rect x="30" y="42" width="260" height="44" rx="8" fill="#fff" stroke="#555"/><text x="160" y="62" text-anchor="middle" font-size="13">Users · Groups</text><text x="160" y="78" text-anchor="middle" font-size="11">Menschen</text>
+  <rect x="30" y="96" width="260" height="60" rx="8" fill="#dbe9fb" stroke="#0a66c2"/><text x="160" y="116" text-anchor="middle" font-size="13" font-weight="700">Service Principals</text><text x="160" y="134" text-anchor="middle" font-size="11">App Registration (Secret/Zertifikat/Federation)</text><text x="160" y="148" text-anchor="middle" font-size="11">Managed Identity (system/user-assigned)</text>
+  <rect x="30" y="166" width="260" height="56" rx="8" fill="#e8f5e9" stroke="#2e7d32"/><text x="160" y="188" text-anchor="middle" font-size="13" font-weight="700">Federated Credentials</text><text x="160" y="206" text-anchor="middle" font-size="11">vertraut AKS-OIDC, GitHub, DevOps</text>
+  <rect x="30" y="232" width="260" height="76" rx="8" fill="#fff4f2" stroke="#c62828"/><text x="160" y="254" text-anchor="middle" font-size="13" font-weight="700">Entra-Rollen</text><text x="160" y="272" text-anchor="middle" font-size="11">Global Admin, App Admin …</text><text x="160" y="288" text-anchor="middle" font-size="11">verwalten das Verzeichnis</text>
+  <line x1="290" y1="126" x2="358" y2="126" stroke="#555" stroke-width="2" marker-end="url(#a)"/><text x="324" y="118" text-anchor="middle" font-size="11">Token</text>
+  <rect x="360" y="8" width="350" height="314" rx="12" fill="#f7f7fa" stroke="#999" stroke-dasharray="5 4"/><text x="535" y="28" text-anchor="middle" font-weight="700">Azure RBAC (Ressourcen)</text>
+  <rect x="380" y="42" width="310" height="36" rx="8" fill="#fff" stroke="#555"/><text x="535" y="65" text-anchor="middle" font-size="13">Management Group</text>
+  <rect x="400" y="86" width="290" height="36" rx="8" fill="#fff" stroke="#555"/><text x="545" y="109" text-anchor="middle" font-size="13">Subscription</text>
+  <rect x="420" y="130" width="270" height="36" rx="8" fill="#fff" stroke="#555"/><text x="555" y="153" text-anchor="middle" font-size="13">Resource Group</text>
+  <rect x="440" y="174" width="250" height="36" rx="8" fill="#0a66c2"/><text x="565" y="197" text-anchor="middle" fill="#fff" font-size="13">Ressource (z. B. Key Vault)</text>
+  <rect x="380" y="226" width="310" height="80" rx="8" fill="#fff" stroke="#555"/><text x="535" y="248" text-anchor="middle" font-size="13" font-weight="700">Role Assignment</text><text x="535" y="268" text-anchor="middle" font-size="12">Principal + Role Definition + Scope</text><text x="535" y="286" text-anchor="middle" font-size="12">vererbt nach unten</text>
+</svg>
+<ol>
+  <li><b>Tenant:</b> eine Entra-ID-Instanz einer Organisation. Alle Identitäten leben hier.</li>
+  <li><b>Service Principal:</b> die Identität einer Anwendung im Tenant. Eine <b>Managed Identity</b> ist ein Service Principal, dessen Credentials Azure selbst verwaltet.</li>
+  <li><b>Federated Credential:</b> eine Vertrauensregel. Entra akzeptiert ein Token eines fremden Issuers (z. B. AKS) statt eines Secrets.</li>
+  <li><b>Entra-Rollen:</b> Rechte im Verzeichnis selbst. Beispiel: Benutzer anlegen, App-Registrierungen verwalten.</li>
+  <li><b>Azure RBAC:</b> Rechte auf Azure-Ressourcen. Eine <b>Role Assignment</b> verbindet Principal, Rolle und Scope.</li>
+  <li><b>Scope-Hierarchie:</b> Management Group → Subscription → Resource Group → Ressource. Rechte vererben sich nach unten.</li>
+</ol>
+
+<h2>2. Die Reise eines Tokens mit Workload Identity (die Geschichte zum Merken)</h2>
+<svg viewBox="0 0 720 330" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="b" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="10" y="20" width="160" height="62" rx="10" fill="#eee" stroke="#777"/><text x="90" y="44" text-anchor="middle" font-weight="700">1. Pod + SA</text><text x="90" y="64" text-anchor="middle" font-size="12">Label use: "true"</text>
+  <line x1="170" y1="51" x2="208" y2="51" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="210" y="20" width="180" height="62" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="300" y="44" text-anchor="middle" font-weight="700">2. Webhook + Kubelet</text><text x="300" y="64" text-anchor="middle" font-size="12">Env-Vars + SA-Token-Datei</text>
+  <line x1="390" y1="51" x2="428" y2="51" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="430" y="20" width="280" height="62" rx="10" fill="#fff" stroke="#555"/><text x="570" y="44" text-anchor="middle" font-weight="700">3. SDK: WorkloadIdentityCredential</text><text x="570" y="64" text-anchor="middle" font-size="12">SA-Token als client_assertion an Entra</text>
+  <line x1="570" y1="82" x2="570" y2="128" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="430" y="130" width="280" height="70" rx="10" fill="#0a66c2"/><text x="570" y="154" text-anchor="middle" fill="#fff" font-weight="700">4. Entra prüft</text><text x="570" y="172" text-anchor="middle" fill="#fff" font-size="12">Signatur via OIDC-JWKS des Clusters</text><text x="570" y="188" text-anchor="middle" fill="#fff" font-size="12">issuer + subject + audience passen?</text>
+  <line x1="430" y1="165" x2="372" y2="165" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="190" y="130" width="180" height="70" rx="10" fill="#e8f5e9" stroke="#2e7d32"/><text x="280" y="156" text-anchor="middle" font-weight="700">5. Access Token</text><text x="280" y="176" text-anchor="middle" font-size="12">für die User-Assigned MI</text>
+  <line x1="280" y1="200" x2="280" y2="248" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="140" y="250" width="280" height="62" rx="10" fill="#fff" stroke="#555"/><text x="280" y="274" text-anchor="middle" font-weight="700">6. Key Vault (via PE)</text><text x="280" y="294" text-anchor="middle" font-size="12">prüft Token + RBAC-Rolle</text>
+  <line x1="420" y1="281" x2="478" y2="281" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="480" y="250" width="230" height="62" rx="10" fill="#fff" stroke="#555"/><text x="595" y="274" text-anchor="middle" font-weight="700">7. Secret</text><text x="595" y="294" text-anchor="middle" font-size="12">z. B. für ESO → K8s Secret</text>
+</svg>
+<ol>
+  <li><b>Pod startet:</b> Der Pod nutzt einen <b>ServiceAccount</b> mit der Annotation <code>azure.workload.identity/client-id</code>. Der Pod trägt das Label <code>azure.workload.identity/use: "true"</code>.</li>
+  <li><b>Webhook:</b> Ein <b>Mutating Admission Webhook</b> setzt Env-Vars: <code>AZURE_CLIENT_ID</code>, <code>AZURE_TENANT_ID</code>, <code>AZURE_FEDERATED_TOKEN_FILE</code>, <code>AZURE_AUTHORITY_HOST</code>. Das Kubelet legt ein <b>projiziertes SA-Token</b> mit Audience <code>api://AzureADTokenExchange</code> in die Datei.</li>
+  <li><b>Token tauschen:</b> Das SDK liest die Datei. Es schickt das Kubernetes-Token als <b>Client Assertion</b> an Entra. Kein Secret ist im Spiel.</li>
+  <li><b>Entra prüft:</b> Entra lädt die öffentlichen Schlüssel vom <b>OIDC Issuer</b> des Clusters. Es vergleicht Issuer, Subject (<code>system:serviceaccount:&lt;ns&gt;:&lt;sa&gt;</code>) und Audience mit der <b>Federated Identity Credential</b>.</li>
+  <li><b>Access Token:</b> Passt alles, stellt Entra ein Token für die User-Assigned Managed Identity aus. Es gilt typischerweise etwa eine Stunde.</li>
+  <li><b>Zugriff:</b> Der Pod ruft Key Vault mit dem Token auf. Key Vault prüft die RBAC-Rolle, z. B. <b>Key Vault Secrets User</b>.</li>
+  <li><b>Ergebnis:</b> Das Secret kommt zurück. Mit dem <b>External Secrets Operator</b> landet es als Kubernetes Secret im Namespace.</li>
+</ol>
+<p>Ohne AKS ist der Weg kürzer: Auf einer VM holt das SDK das Token beim <b>IMDS</b>-Endpoint <code>169.254.169.254</code>. Auf App Service und Functions über <code>IDENTITY_ENDPOINT</code> und <code>IDENTITY_HEADER</code>.</p>
+
+<h2>3. Beispiel: Workload Identity für den External Secrets Operator</h2>
+<pre># 1) Cluster mit OIDC Issuer und Workload Identity
+az aks update -g rg-match -n aks-match --enable-oidc-issuer --enable-workload-identity
+ISSUER=$(az aks show -g rg-match -n aks-match --query oidcIssuerProfile.issuerUrl -o tsv)
+
+# 2) User-Assigned Managed Identity + Rolle nur auf den Key Vault
+az identity create -g rg-match -n id-eso
+az role assignment create --assignee &lt;principalId&gt; \
+  --role "Key Vault Secrets User" --scope &lt;keyVaultResourceId&gt;
+
+# 3) Vertrauen: nur dieser ServiceAccount in diesem Namespace
+az identity federated-credential create -g rg-match --identity-name id-eso \
+  --name fic-eso --issuer "$ISSUER" \
+  --subject system:serviceaccount:external-secrets:eso-sa \
+  --audiences api://AzureADTokenExchange</pre>
+<pre>{
+  "audiences": [ "api://AzureADTokenExchange" ],
+  "issuer": "https://switzerlandnorth.oic.prod-aks.azure.com/&lt;tenant-id&gt;/&lt;guid&gt;/",
+  "name": "fic-eso",
+  "subject": "system:serviceaccount:external-secrets:eso-sa",
+  "type": "Microsoft.ManagedIdentity/userAssignedIdentities/federatedIdentityCredentials"
+}</pre>
+<pre>apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: eso-sa
+  namespace: external-secrets
+  annotations:
+    azure.workload.identity/client-id: &lt;clientId von id-eso&gt;
+---
+apiVersion: external-secrets.io/v1
+kind: ClusterSecretStore
+metadata: { name: azure-kv }
+spec:
+  provider:
+    azurekv:
+      authType: WorkloadIdentity
+      vaultUrl: https://kv-match.vault.azure.net
+      serviceAccountRef: { name: eso-sa, namespace: external-secrets }</pre>
+<pre>// Java im Pod oder in der Function: gleicher Code überall
+TokenCredential cred = new DefaultAzureCredentialBuilder().build();
+SecretClient kv = new SecretClientBuilder()
+    .vaultUrl("https://kv-match.vault.azure.net").credential(cred).buildClient();
+kv.getSecret("db-password").getValue();</pre>
+<p class="small">Erwartetes Ergebnis (laut Doku, nicht ausgeführt). Hier gibt es keine Azure CLI, keinen Account und keinen AKS-Cluster.</p>
+<ol>
+  <li><b>Issuer:</b> Die URL ist pro Cluster eindeutig. Entra holt dort die öffentlichen Schlüssel, um SA-Tokens zu prüfen.</li>
+  <li><b>Subject:</b> Nur genau dieser ServiceAccount in diesem Namespace bekommt Tokens. Ein anderer Pod im Cluster nicht.</li>
+  <li><b>Rolle auf Vault-Scope:</b> nicht auf Subscription. Das ist <b>Least Privilege</b>.</li>
+  <li><b>DefaultAzureCredential</b> findet im Pod <code>WorkloadIdentityCredential</code>, in der Function <code>ManagedIdentityCredential</code>, lokal die Azure CLI.</li>
+  <li>Die ESO-API-Version hängt von der installierten ESO-Version ab (ältere: <code>v1beta1</code>).</li>
+</ol>
+
+<h2>4. Details, die Interviewer fragen</h2>
+<ol>
+  <li><b>System-Assigned MI:</b> gehört zu genau einer Ressource. Sie entsteht und stirbt mit ihr. Gut für eine App mit eigenen Rechten.</li>
+  <li><b>User-Assigned MI:</b> eine eigene Azure-Ressource. Mehrere Ressourcen können sie teilen. Man kann Rollen vergeben, <b>bevor</b> die App existiert.</li>
+  <li><b>Wann User-Assigned:</b> bei vielen Instanzen mit gleichen Rechten, bei Blue/Green-Deployments, bei Workload Identity und wenn Rechte schon beim Erstellen nötig sind.</li>
+  <li><b>Token-Cache:</b> Managed-Identity-Tokens werden gecacht. Rollen- oder Gruppenänderungen können darum bis zu Stunden brauchen. Microsoft empfiehlt Rollen direkt statt über Gruppen für MIs.</li>
+  <li><b>Workload Identity Federation:</b> Entra vertraut Tokens eines externen OIDC-Issuers. Beispiele: AKS, GitHub Actions, Azure DevOps Service Connections. Ersetzt Client Secrets.</li>
+  <li><b>Federated Credentials pro Identität:</b> höchstens 20 pro User-Assigned MI oder App Registration. Bei vielen Clustern oder Namespaces wird das eine Grenze.</li>
+  <li><b>AKS Pod Identity</b> (alt): ersetzt durch Workload Identity. Pod Identity nutzte NMI-Pods und IMDS-Abfangen.</li>
+  <li><b>Role Definition:</b> eine Liste von <code>Actions</code>, <code>NotActions</code>, <code>DataActions</code>, <code>NotDataActions</code>. <b>Actions</b> = Control Plane, <b>DataActions</b> = Daten.</li>
+  <li><b>Control Plane vs Data Plane:</b> Control Plane = Ressource verwalten (ARM). Data Plane = Inhalte lesen und schreiben (Blobs, Secrets). Beide haben eigene Rollen.</li>
+  <li><b>Wichtige Rollen:</b> <b>Owner</b> (alles inkl. Rechte vergeben), <b>Contributor</b> (alles ausser Rechte vergeben), <b>Reader</b>, <b>User Access Administrator</b>, <b>Role Based Access Control Administrator</b> (Rechte vergeben, mit Conditions einschränkbar).</li>
+  <li><b>Data-Rollen:</b> z. B. Storage Blob Data Reader/Contributor, Key Vault Secrets User, Azure Event Hubs Data Sender. Ohne sie gibt es mit Entra-Token keinen Datenzugriff.</li>
+  <li><b>Vererbung:</b> Eine Rolle auf der Subscription gilt in allen Resource Groups darunter. Darum Scope so klein wie möglich.</li>
+  <li><b>Deny Assignments:</b> verbieten Aktionen trotz Rolle. Man legt sie nicht direkt an. Sie kommen z. B. aus Deployment Stacks oder Managed Apps.</li>
+  <li><b>Conditions (ABAC):</b> Bedingungen an Role Assignments. Beispiel: nur Blobs mit einem bestimmten Index-Tag lesen.</li>
+  <li><b>Entra-Rollen vs Azure-Rollen:</b> Entra-Rollen verwalten Verzeichnis-Objekte (Benutzer, Apps). Azure-Rollen verwalten Ressourcen. Ein Global Admin hat nicht automatisch Rechte auf Subscriptions.</li>
+  <li><b>Elevate Access:</b> Ein Global Admin kann sich zum User Access Administrator auf Root-Scope machen. Das ist ein Notfall-Weg und wird überwacht.</li>
+  <li><b>PIM:</b> <b>Privileged Identity Management</b> vergibt Rollen nur auf Zeit und mit Begründung (just-in-time).</li>
+  <li><b>Propagation:</b> Neue Role Assignments brauchen einige Minuten. Direkt nach dem Deployment kommen darum oft kurz 403-Fehler.</li>
+  <li><b>DefaultAzureCredential (Java):</b> Reihenfolge Environment → Workload Identity → Managed Identity → IntelliJ → VS Code → Azure CLI → PowerShell → azd → Broker. Die erste, die ein Token bekommt, gewinnt.</li>
+  <li><b>AZURE_TOKEN_CREDENTIALS:</b> <code>prod</code> lässt nur die Deployment-Credentials zu, <code>dev</code> nur Entwickler-Tools. Oder ein einzelner Name wie <code>ManagedIdentityCredential</code>.</li>
+  <li><b>User-Assigned MI im SDK:</b> Bei mehreren MIs muss man die Client-ID angeben, z. B. <code>managedIdentityClientId(...)</code> oder <code>AZURE_CLIENT_ID</code>.</li>
+  <li><b>App Registration vs Enterprise App:</b> Die <b>App Registration</b> ist die globale Definition. Die <b>Enterprise Application</b> ist der Service Principal im Tenant.</li>
+</ol>
+
+<h2>5. Vergleich</h2>
+<ul>
+  <li><b>System-Assigned vs User-Assigned MI:</b> System = an eine Ressource gebunden, einfach. User = eigene Ressource, teilbar, vorab berechtigbar, nötig für Federation.</li>
+  <li><b>Managed Identity vs Service Principal mit Secret:</b> MI hat keine Secrets und rotiert selbst. Ein Secret läuft ab, kann leaken und braucht Rotation.</li>
+  <li><b>Workload Identity vs Pod Identity:</b> Workload Identity nutzt Standard-OIDC-Federation. Pod Identity fing IMDS-Aufrufe ab und ist abgelöst.</li>
+  <li><b>Workload Identity vs Kubernetes Secret mit Client Secret:</b> kein Secret im Cluster, kein Ablauf, Rechte pro ServiceAccount.</li>
+  <li><b>Azure RBAC vs Entra-Rollen:</b> Ressourcen vs Verzeichnis. Beide nutzen dieselben Identitäten.</li>
+  <li><b>Azure RBAC vs Key-Vault-Access-Policies:</b> RBAC ist zentral, mit PIM und Deny Assignments. Access Policies sind ein altes, Vault-lokales Modell.</li>
+  <li><b>DefaultAzureCredential vs konkrete Credential:</b> Default = bequem für lokal und Cloud. Konkret (z. B. <code>ManagedIdentityCredential</code>) = vorhersehbar und schneller in Produktion.</li>
+  <li><b>Azure vs AWS:</b> Managed Identity ≈ IAM Role für EC2/Lambda. Workload Identity auf AKS ≈ IRSA/Pod Identity auf EKS.</li>
+</ul>
+
+<h2>6. In der Produktion</h2>
+<ol>
+  <li><b>403 direkt nach dem Deployment:</b> Die Role Assignment ist noch nicht propagiert. Lösung: Retry mit Backoff, Rollen vor dem App-Start vergeben (User-Assigned MI).</li>
+  <li><b>Falsche Identität:</b> Lokal klappt alles mit dem eigenen <code>az login</code> (Owner), in Azure fehlt der MI die Rolle. Lösung: lokal mit gleich kleinen Rechten testen, <code>AZURE_TOKEN_CREDENTIALS</code>.</li>
+  <li><b>Env-Vars kapern die Kette:</b> Jemand setzt <code>AZURE_CLIENT_SECRET</code> auf dem Host. <code>EnvironmentCredential</code> gewinnt vor der MI. Lösung: konkrete Credential in Produktion.</li>
+  <li><b>Workload Identity geht nicht:</b> Label am Pod fehlt, Subject falsch geschrieben, Namespace anders oder Issuer-URL alt. Fehler: <code>AADSTS70021: No matching federated identity record found</code>.</li>
+  <li><b>Zu breite Rechte:</b> Contributor auf der Subscription für eine Pipeline. Lösung: eigene Identität pro Pipeline und Umgebung, Scope Resource Group, PIM für Menschen.</li>
+  <li><b>Gruppenänderung wirkt nicht:</b> Die MI ist in einer Gruppe, das Token ist gecacht. Lösung: Rolle direkt auf die MI, Geduld oder Neustart.</li>
+  <li><b>Gelöschte System-MI:</b> Ressource neu erstellt, neue Principal-ID, alte Role Assignments zeigen ins Leere („Identity not found“). Lösung: User-Assigned MI oder Rollen im IaC mitdeployen.</li>
+</ol>
+
+<h2>7. Diagnose: Werkzeuge und Befehle</h2>
+<ul>
+  <li><code>az role assignment list --assignee &lt;principalId&gt; --all -o table</code>: welche Rollen hat die Identität wo.</li>
+  <li><b>Access control (IAM) → Check access</b> im Portal: effektive Rechte einer Identität auf einer Ressource.</li>
+  <li><b>Entra Sign-in Logs</b> → „Managed identity sign-ins“ und „Service principal sign-ins“: Fehlercodes wie AADSTS70021.</li>
+  <li><b>Activity Log</b>: wer hat welche Role Assignment angelegt oder gelöscht.</li>
+  <li>Token dekodieren (z. B. jwt.ms): <code>aud</code>, <code>oid</code>, <code>appid</code>, <code>roles</code> prüfen.</li>
+  <li>Im Pod: <code>env | grep AZURE_</code> und <code>cat $AZURE_FEDERATED_TOKEN_FILE</code> (nur Claims prüfen).</li>
+  <li><code>az identity federated-credential list -g &lt;rg&gt; --identity-name &lt;mi&gt;</code>: Issuer und Subject vergleichen.</li>
+  <li>SDK-Logging auf INFO: zeigt, welche Credential in der Kette versucht wurde und warum sie scheiterte.</li>
+</ul>
+
+<h2>8. Senior-Punkte</h2>
+<div class="senior">
+<ol>
+  <li><b>Keine Secrets für Azure-Zugriffe.</b> Managed Identity in Azure, Workload Identity Federation für AKS und CI/CD.</li>
+  <li><b>Least Privilege mit Scope:</b> Data-Rolle auf die einzelne Ressource, nicht Contributor auf die Subscription.</li>
+  <li><b>User-Assigned MI für Plattform-Code:</b> Rollen im IaC vor der App, stabile Principal-ID, keine Race Conditions.</li>
+  <li><b>Eine Identität pro Workload und Umgebung.</b> Geteilte Identitäten verwischen das Audit und vergrössern den Schaden.</li>
+  <li><b>DefaultAzureCredential bewusst einsetzen:</b> bequem in der Entwicklung, in Produktion eingeschränkt oder konkret.</li>
+  <li><b>Menschen über PIM,</b> Maschinen über feste, kleine Rollen. Owner und User Access Administrator selten und überwacht.</li>
+</ol>
+</div>
+
+<h2>9. Aus dem Projekt</h2>
+<p>„Bei MATCH liest der External Secrets Operator Secrets aus Azure Key Vault über Workload Identity; bei DigiSanté schreibt die Audit-Library per Managed Identity an einen privaten Data Collection Endpoint von Azure Monitor.“ <span class="small">(Prüfen und durch dein echtes Beispiel ersetzen.)</span></p>
+
+<h2>10. Fallen</h2>
+<div class="trap">
+<ul>
+  <li>„Owner auf dem Storage Account darf Blobs per Entra lesen.“ → <b>Falsch.</b> Owner ist Control Plane. Dafür braucht es eine Data-Rolle.</li>
+  <li>„Global Admin darf alles in Azure.“ → <b>Falsch.</b> Entra-Rollen gelten fürs Verzeichnis. Für Ressourcen braucht es Azure-Rollen.</li>
+  <li>„System-Assigned MI überlebt ein Neuerstellen der App.“ → <b>Falsch.</b> Sie wird gelöscht, die neue hat eine andere ID.</li>
+  <li>„Workload Identity speichert ein Secret im Pod.“ → <b>Falsch.</b> Im Pod liegt nur ein kurzlebiges Kubernetes-Token.</li>
+  <li>„Eine neue Rolle wirkt sofort.“ → <b>Falsch.</b> Propagation braucht Minuten, gecachte MI-Tokens länger.</li>
+  <li>„DefaultAzureCredential nimmt immer die Managed Identity.“ → <b>Falsch.</b> Environment und Workload Identity kommen vorher.</li>
+  <li>„Contributor kann keine Daten lesen.“ → <b>Vorsicht.</b> Contributor kann Storage-Keys auslesen und bei Access Policies sich selbst Key-Vault-Rechte geben.</li>
+</ul>
+</div>
+
+<h2>11. Fragen</h2>
+<details><summary>Was ist Microsoft Entra ID?</summary><p>Der Cloud Identity Provider von Microsoft. Er authentifiziert Benutzer und Anwendungen und stellt OAuth-2.0- und OIDC-Tokens aus.</p></details>
+<details><summary>Was ist eine Managed Identity?</summary><p>Eine Entra-Identität für eine Azure-Ressource. Azure verwaltet und rotiert die Credentials, die App sieht nie ein Secret.</p></details>
+<details><summary>System-Assigned vs User-Assigned?</summary><p>System: gehört einer Ressource, stirbt mit ihr. User: eigene Ressource, teilbar, vorab berechtigbar.</p></details>
+<details><summary>Wann nehmen Sie eine User-Assigned MI?</summary><p>Bei mehreren Ressourcen mit gleichen Rechten, wenn Rechte vor der App da sein müssen, und für Workload Identity auf AKS.</p></details>
+<details><summary>Wie holt eine App ein Token mit Managed Identity?</summary><p>Über einen lokalen Endpoint: IMDS (169.254.169.254) auf VMs, IDENTITY_ENDPOINT auf App Service und Functions. Das SDK macht das automatisch.</p></details>
+<details><summary>Was ist Workload Identity Federation?</summary><p>Entra vertraut Tokens eines externen OIDC-Issuers und tauscht sie gegen ein Entra-Token. Kein Secret nötig.</p></details>
+<details><summary>Wie funktioniert Workload Identity auf AKS?</summary><p>Der Cluster hat einen OIDC Issuer. Der Pod bekommt ein projiziertes SA-Token. Entra prüft es gegen die Federated Credential der MI und stellt ein Token aus.</p></details>
+<details><summary>Was muss für Workload Identity gesetzt sein?</summary><p>OIDC Issuer und Workload Identity am Cluster, Federated Credential mit Issuer und Subject, SA-Annotation client-id und Pod-Label use: "true".</p></details>
+<details><summary>Was ist das Subject einer Federated Credential bei AKS?</summary><p>system:serviceaccount:&lt;namespace&gt;:&lt;serviceaccount&gt;. Es muss genau passen.</p></details>
+<details><summary>Was ist Azure RBAC?</summary><p>Autorisierung auf Azure-Ressourcen über Role Assignments: Principal, Rolle und Scope. Rechte vererben sich nach unten.</p></details>
+<details><summary>Azure-Rollen vs Entra-Rollen?</summary><p>Azure-Rollen regeln Ressourcen (Owner, Contributor). Entra-Rollen regeln das Verzeichnis (Global Admin, App Admin).</p></details>
+<details><summary>Owner vs Contributor vs User Access Administrator?</summary><p>Owner darf alles inklusive Rechte vergeben. Contributor alles ausser Rechte vergeben. User Access Administrator nur Rechte vergeben.</p></details>
+<details><summary>Was ist der Unterschied zwischen Actions und DataActions?</summary><p>Actions betreffen die Verwaltung der Ressource. DataActions betreffen die Daten darin, z. B. Blob lesen oder Secret holen.</p></details>
+<details><summary>Wie setzen Sie Least Privilege um?</summary><p>Eigene Identität pro Workload, kleinste passende Data-Rolle, kleinster Scope, PIM für Menschen, regelmässige Access Reviews.</p></details>
+<details><summary>Was ist PIM?</summary><p>Privileged Identity Management: Rollen werden nur auf Zeit aktiviert, mit Begründung und optional Genehmigung.</p></details>
+<details><summary>Wie arbeitet DefaultAzureCredential?</summary><p>Eine Kette: Environment, Workload Identity, Managed Identity, dann Entwickler-Tools wie IntelliJ und Azure CLI. Die erste mit Token gewinnt.</p></details>
+<details><summary>Sollte man DefaultAzureCredential in Produktion nutzen?</summary><p>Mit Vorsicht. Microsoft nennt Nachteile wie unvorhersehbares Verhalten. Besser AZURE_TOKEN_CREDENTIALS=prod oder eine konkrete Credential.</p></details>
+<details><summary>Warum klappt es lokal, aber nicht in Azure?</summary><p>Lokal nutzt die Kette oft das eigene Konto mit mehr Rechten. Die Managed Identity in Azure hat diese Rolle nicht.</p></details>
+<details><summary>Wie authentifiziert sich eine CI/CD-Pipeline ohne Secret?</summary><p>Mit Workload Identity Federation: GitHub Actions oder Azure DevOps bekommen ein OIDC-Token, das Entra gegen eine Federated Credential prüft.</p></details>
+<details><summary>Was ist ein Deny Assignment?</summary><p>Eine Sperre, die Aktionen trotz Rolle verbietet. Sie kommt aus Plattform-Funktionen wie Deployment Stacks, nicht von Hand.</p></details>
+<details><summary>Was sind ABAC-Conditions?</summary><p>Bedingungen an einer Role Assignment, z. B. nur Blobs mit bestimmtem Tag oder Pfad. Sie verfeinern RBAC.</p></details>
+<details><summary>Szenario: Eine neue Function bekommt 403 beim Lesen aus Key Vault, die Rolle ist vergeben. Was prüfen Sie?</summary><p>Propagation abwarten, richtige Identität (System vs User, Client-ID), Scope der Rolle, RBAC-Modell des Vaults und Netzwerk (Private Endpoint, Firewall).</p></details>
+<details><summary>Szenario: Ein Pod auf AKS meldet AADSTS70021. Was ist los?</summary><p>Entra findet keine passende Federated Credential. Issuer-URL, Subject mit Namespace und SA-Name, Audience und Client-ID-Annotation vergleichen.</p></details>
+<details><summary>Szenario: Eine Pipeline hat Contributor auf der Subscription. Wie verbessern Sie das?</summary><p>Eigene Identität pro Umgebung mit Federation statt Secret, Scope auf die Resource Group, nur nötige Rollen. Rechte-Vergabe über RBAC Administrator mit Conditions.</p></details>
+
+</body>
+</html>

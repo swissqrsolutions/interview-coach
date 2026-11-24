@@ -1,0 +1,226 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Spark-Architektur: Driver, Executor, Cluster Manager</title>
+<style>
+  body { font: 17px/1.55 -apple-system, system-ui, sans-serif; max-width: 760px; margin: 0 auto; padding: 16px; color: #1d1d1f; }
+  h1 { font-size: 28px; margin: 8px 0 4px; }
+  h2 { font-size: 21px; margin: 32px 0 8px; padding-top: 12px; border-top: 2px solid #e5e5ea; }
+  .kern { background: #eef6ff; border-left: 4px solid #0a66c2; padding: 10px 14px; border-radius: 6px; }
+  .senior { background: #f0faf0; border-left: 4px solid #2e7d32; padding: 10px 14px; border-radius: 6px; }
+  .trap { background: #fff4f2; border-left: 4px solid #c62828; padding: 10px 14px; border-radius: 6px; }
+  code { background: #f2f2f7; padding: 1px 5px; border-radius: 4px; font-size: 15px; }
+  pre { background: #1e1e1e; color: #e6e6e6; padding: 12px; border-radius: 8px; overflow-x: auto; font-size: 13.5px; line-height: 1.45; }
+  svg { width: 100%; height: auto; display: block; margin: 10px 0; }
+  ol li, ul li { margin: 4px 0; }
+  details { border: 1px solid #e5e5ea; border-radius: 8px; padding: 8px 12px; margin: 6px 0; }
+  summary { font-weight: 600; cursor: pointer; }
+  details p { margin: 6px 0 2px; }
+  .small { color: #6e6e73; font-size: 14px; }
+</style>
+</head>
+<body>
+
+<h1>Spark-Architektur: Driver, Executor, Cluster Manager</h1>
+<p class="small">Spark · Tier 1 · Quellen: Apache Spark Docs 3.5/4.x – Cluster Mode Overview, Running Spark on Kubernetes, Submitting Applications, Spark Connect Overview, Configuration, Job Scheduling (Dynamic Allocation)</p>
+
+<div class="kern">
+<b>Kern:</b> Spark ist eine verteilte Engine, die Daten parallel auf vielen Rechnern verarbeitet. Ein <b>Driver</b> plant die Arbeit, viele <b>Executors</b> rechnen sie in Tasks. Ein <b>Cluster Manager</b> (z. B. Kubernetes) gibt ihnen CPU und Speicher.
+</div>
+
+<h2>1. Wo sitzen Driver, Executor und Cluster Manager?</h2>
+<svg viewBox="0 0 720 330" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="a" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="10" y="20" width="200" height="120" rx="10" fill="#0a66c2" stroke="#0a66c2"/><text x="110" y="46" text-anchor="middle" fill="#fff" font-weight="700">Driver</text>
+  <text x="110" y="68" text-anchor="middle" fill="#fff" font-size="12">SparkSession · main()</text><text x="110" y="86" text-anchor="middle" fill="#fff" font-size="12">Catalyst · DAGScheduler</text><text x="110" y="104" text-anchor="middle" fill="#fff" font-size="12">TaskScheduler</text><text x="110" y="122" text-anchor="middle" fill="#fff" font-size="12">Python ↔ JVM (Py4J)</text>
+  <rect x="270" y="20" width="200" height="70" rx="10" fill="#fff" stroke="#555"/><text x="370" y="46" text-anchor="middle" font-weight="700">Cluster Manager</text><text x="370" y="68" text-anchor="middle" font-size="12">Kubernetes · YARN · Standalone</text>
+  <line x1="210" y1="55" x2="268" y2="55" stroke="#555" stroke-width="2" marker-end="url(#a)"/><text x="239" y="46" text-anchor="middle" font-size="11">1. Ressourcen</text>
+  <line x1="370" y1="90" x2="370" y2="168" stroke="#555" stroke-width="2" marker-end="url(#a)"/><text x="440" y="134" text-anchor="middle" font-size="11">2. startet Executors</text>
+  <rect x="20" y="170" width="220" height="140" rx="10" fill="#f7f7fa" stroke="#555"/><text x="130" y="192" text-anchor="middle" font-weight="700">Executor 1 (JVM)</text>
+  <rect x="34" y="204" width="90" height="34" rx="6" fill="#dbe9fb" stroke="#0a66c2"/><text x="79" y="226" text-anchor="middle" font-size="12">Task (Core 1)</text>
+  <rect x="134" y="204" width="90" height="34" rx="6" fill="#dbe9fb" stroke="#0a66c2"/><text x="179" y="226" text-anchor="middle" font-size="12">Task (Core 2)</text>
+  <text x="130" y="262" text-anchor="middle" font-size="12">BlockManager: Cache</text><text x="130" y="280" text-anchor="middle" font-size="12">Shuffle-Dateien (lokale Disk)</text><text x="130" y="298" text-anchor="middle" font-size="12">Python Worker (bei UDFs)</text>
+  <rect x="260" y="170" width="220" height="140" rx="10" fill="#f7f7fa" stroke="#555"/><text x="370" y="192" text-anchor="middle" font-weight="700">Executor 2 (JVM)</text>
+  <rect x="274" y="204" width="90" height="34" rx="6" fill="#dbe9fb" stroke="#0a66c2"/><text x="319" y="226" text-anchor="middle" font-size="12">Task (Core 1)</text>
+  <rect x="374" y="204" width="90" height="34" rx="6" fill="#dbe9fb" stroke="#0a66c2"/><text x="419" y="226" text-anchor="middle" font-size="12">Task (Core 2)</text>
+  <text x="370" y="262" text-anchor="middle" font-size="12">BlockManager: Cache</text><text x="370" y="280" text-anchor="middle" font-size="12">Shuffle-Dateien</text>
+  <line x1="110" y1="140" x2="120" y2="168" stroke="#0a66c2" stroke-width="2" marker-end="url(#a)"/><text x="60" y="158" font-size="11" fill="#0a66c2">3. Tasks</text>
+  <rect x="530" y="170" width="180" height="140" rx="10" fill="#fff" stroke="#999" stroke-dasharray="5 4"/><text x="620" y="200" text-anchor="middle" font-weight="700">Speicher</text><text x="620" y="224" text-anchor="middle" font-size="12">S3 / ADLS / MinIO</text><text x="620" y="244" text-anchor="middle" font-size="12">Iceberg · Parquet</text><text x="620" y="264" text-anchor="middle" font-size="12">JDBC</text>
+  <line x1="480" y1="240" x2="528" y2="240" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+</svg>
+<ol>
+  <li><b>Driver: plant und steuert.</b> Er führt dein <code>main()</code> aus und hält die <b>SparkSession</b>, also den Einstiegspunkt. Beispiel: <code>spark.read.parquet(...)</code> läuft im Driver.</li>
+  <li><b>Cluster Manager: verteilt Ressourcen.</b> Er startet Prozesse mit CPU und Speicher. Beispiel: Auf Kubernetes erzeugt der Driver über die API Executor-Pods.</li>
+  <li><b>Executor: rechnet.</b> Ein <b>Executor</b> ist ein JVM-Prozess auf einem Worker. Er führt Tasks aus, hält Cache und schreibt Shuffle-Dateien.</li>
+  <li><b>Core: Task-Slot.</b> Jeder Core führt gleichzeitig einen <b>Task</b> aus, also die Arbeit für eine Partition. Beispiel: 10 Executors × 4 Cores = 40 Tasks parallel.</li>
+  <li><b>Speicher: hält die Daten.</b> Spark selbst speichert nichts dauerhaft. Die Executors lesen und schreiben direkt im Object Store, nicht über den Driver.</li>
+</ol>
+
+<h2>2. Die Reise einer Anwendung (die Geschichte zum Merken)</h2>
+<svg viewBox="0 0 720 300" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="b" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="10" y="20" width="150" height="60" rx="10" fill="#eee" stroke="#777"/><text x="85" y="45" text-anchor="middle" font-weight="700">1. spark-submit</text><text x="85" y="64" text-anchor="middle" font-size="12">oder REST-Aufruf</text>
+  <line x1="160" y1="50" x2="198" y2="50" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="200" y="20" width="150" height="60" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="275" y="45" text-anchor="middle" font-weight="700">2. Driver startet</text><text x="275" y="64" text-anchor="middle" font-size="12">Driver-Pod</text>
+  <line x1="350" y1="50" x2="388" y2="50" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="390" y="20" width="150" height="60" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="465" y="45" text-anchor="middle" font-weight="700">3. Executors</text><text x="465" y="64" text-anchor="middle" font-size="12">Pods melden sich an</text>
+  <line x1="540" y1="50" x2="578" y2="50" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="580" y="20" width="130" height="60" rx="10" fill="#fff" stroke="#555"/><text x="645" y="45" text-anchor="middle" font-weight="700">4. Action</text><text x="645" y="64" text-anchor="middle" font-size="12">z. B. write()</text>
+  <line x1="645" y1="80" x2="645" y2="128" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="470" y="130" width="240" height="60" rx="10" fill="#0a66c2" stroke="#0a66c2"/><text x="590" y="155" text-anchor="middle" fill="#fff" font-weight="700">5. Plan → Job → Stages</text><text x="590" y="174" text-anchor="middle" fill="#fff" font-size="12">Catalyst + DAGScheduler</text>
+  <line x1="470" y1="160" x2="388" y2="160" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="200" y="130" width="186" height="60" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="293" y="155" text-anchor="middle" font-weight="700">6. Tasks</text><text x="293" y="174" text-anchor="middle" font-size="12">1 Task pro Partition</text>
+  <line x1="293" y1="190" x2="293" y2="228" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="160" y="230" width="270" height="60" rx="10" fill="#e8f5e9" stroke="#2e7d32"/><text x="295" y="255" text-anchor="middle" font-weight="700">7. Ende: spark.stop()</text><text x="295" y="274" text-anchor="middle" font-size="12">Executor-Pods weg, Driver-Pod bleibt (Logs)</text>
+</svg>
+<ol>
+  <li><b>Submit.</b> Ein Client ruft <code>spark-submit --master k8s://https://&lt;api&gt;:443 --deploy-mode cluster</code> auf. Bei MATCH schickt ein .NET-Worker den Job per REST.</li>
+  <li><b>Driver startet.</b> Im <b>Cluster Mode</b> läuft der Driver als eigener Pod im Cluster. Er erstellt die SparkSession.</li>
+  <li><b>Executors kommen.</b> Der Driver bittet die Kubernetes-API um Executor-Pods. Diese starten, verbinden sich mit dem Driver und melden ihre Cores.</li>
+  <li><b>Eine Action startet Arbeit.</b> Transformationen bauen nur einen Plan. Erst eine <b>Action</b> (z. B. <code>write</code>, <code>count</code>) startet einen <b>Job</b>.</li>
+  <li><b>Planen.</b> <b>Catalyst</b> optimiert den Plan. Der <b>DAGScheduler</b> teilt den Job an Shuffle-Grenzen in <b>Stages</b>.</li>
+  <li><b>Verteilen.</b> Der <b>TaskScheduler</b> schickt pro Partition einen Task an einen freien Core. Er bevorzugt Executors, die die Daten schon haben (<b>Data Locality</b>). Scheitert ein Task, startet er ihn neu (Standard: 4 Versuche).</li>
+  <li><b>Ende.</b> Nach <code>spark.stop()</code> löscht Spark die Executor-Pods. Der Driver-Pod bleibt im Status <code>Completed</code> und behält die Logs.</li>
+</ol>
+
+<h2>3. Beispiel: Job auf Kubernetes starten und Parallelität ablesen</h2>
+<pre>$ spark-submit \
+  --master k8s://https://aks-api.example:443 \
+  --deploy-mode cluster \
+  --name ingest-orders \
+  --conf spark.kubernetes.container.image=myacr.azurecr.io/spark-etl:1.4 \
+  --conf spark.kubernetes.namespace=spark-jobs \
+  --conf spark.executor.instances=3 \
+  --conf spark.executor.cores=4 \
+  --conf spark.executor.memory=8g \
+  local:///opt/app/ingest.py</pre>
+<pre># ingest.py
+from pyspark.sql import SparkSession
+spark = SparkSession.builder.appName("ingest-orders").getOrCreate()
+sc = spark.sparkContext
+print("master:", sc.master)
+print("deployMode:", sc.getConf().get("spark.submit.deployMode"))
+print("defaultParallelism:", sc.defaultParallelism)
+spark.stop()</pre>
+<pre>$ kubectl get pods -n spark-jobs
+NAME                                    READY   STATUS    AGE
+ingest-orders-3f9a...-driver            1/1     Running   40s
+ingest-orders-3f9a...-exec-1            1/1     Running   25s
+ingest-orders-3f9a...-exec-2            1/1     Running   25s
+ingest-orders-3f9a...-exec-3            1/1     Running   25s
+
+# Log des Driver-Pods
+master: k8s://https://aks-api.example:443
+deployMode: cluster
+defaultParallelism: 12</pre>
+<p class="small">Erwartetes Ergebnis (laut Doku, nicht ausgeführt). Pod-Namen gekürzt.</p>
+<ol>
+  <li>Ein Driver-Pod und drei Executor-Pods: Das ist die Grundform jeder Spark-Anwendung auf Kubernetes.</li>
+  <li>Der Driver-Pod startet zuerst. Er erzeugt danach selbst die Executor-Pods.</li>
+  <li><code>defaultParallelism</code> = 3 Executors × 4 Cores = <b>12</b>. So viele Tasks laufen gleichzeitig.</li>
+  <li><code>local:///</code> heisst: Die Datei liegt schon im Container-Image, nicht auf dem Client.</li>
+</ol>
+
+<h2>4. Details, die Interviewer fragen</h2>
+<ol>
+  <li><b>Driver-Aufgaben:</b> Code ausführen, Plan bauen, Stages und Tasks planen, Executors überwachen, Ergebnisse von <code>collect()</code> annehmen. Stirbt der Driver, stirbt die ganze Anwendung.</li>
+  <li><b>Executor-Aufgaben:</b> Tasks in Threads ausführen, Daten cachen (<b>BlockManager</b>), Shuffle-Dateien schreiben und anderen Executors liefern. Stirbt ein Executor, rechnet Spark seine Tasks woanders neu.</li>
+  <li><b>Cores und Tasks:</b> <code>spark.executor.cores</code> legt die Task-Slots pro Executor fest. <code>spark.task.cpus</code> (Standard 1) legt fest, wie viele Cores ein Task braucht. Parallelität = Executors × Cores / task.cpus.</li>
+  <li><b>Executor-Grösse:</b> Viele kleine Executors (1 Core) teilen keinen Cache und keine Broadcasts. Wenige riesige Executors haben lange GC-Pausen. Üblich sind 4–5 Cores pro Executor.</li>
+  <li><b>Speicher pro Executor:</b> <code>spark.executor.memory</code> ist der JVM-Heap. Dazu kommt <b>memoryOverhead</b>, also Speicher ausserhalb des Heaps. Standard 10 %, mindestens 384 MB; auf Kubernetes für Nicht-JVM-Jobs wie PySpark 40 %.</li>
+  <li><b>Pod-Limit auf Kubernetes:</b> Der Pod bekommt Heap + Overhead (+ <code>spark.executor.pyspark.memory</code>). Überschreitet der Prozess das, tötet Kubernetes ihn: <b>OOMKilled</b>, Exit-Code 137.</li>
+  <li><b>PySpark-Aufbau:</b> Dein Python-Code läuft im Driver als Python-Prozess. Er steuert die Driver-JVM über <b>Py4J</b>. DataFrame-Operationen laufen danach ganz in den Executor-JVMs.</li>
+  <li><b>Python Worker:</b> Nur Python-UDFs und RDD-Lambdas brauchen auf den Executors <b>Python-Worker-Prozesse</b>. Die Daten werden dafür zwischen JVM und Python kopiert (Pickle oder Arrow).</li>
+  <li><b>Client vs Cluster Mode:</b> Im <b>Client Mode</b> läuft der Driver dort, wo du startest (Notebook, Laptop, Pod). Im <b>Cluster Mode</b> läuft er im Cluster. Für Produktion: Cluster Mode.</li>
+  <li><b>Client Mode auf Kubernetes:</b> Die Executors müssen den Driver erreichen. Läuft der Driver in einem Pod, braucht er einen <b>Headless Service</b> und <code>spark.driver.host</code>.</li>
+  <li><b>Cluster Manager:</b> <b>Standalone</b> (eingebaut), <b>YARN</b> (Hadoop), <b>Kubernetes</b> (seit 2.3, GA seit 3.1). Mesos ist seit 3.2 veraltet und in 4.0 entfernt. <code>local[*]</code> ist kein Cluster, sondern Tests auf einem Rechner.</li>
+  <li><b>Dynamic Allocation:</b> Spark fordert Executors nach Bedarf an und gibt freie wieder ab. Auf Kubernetes gibt es keinen External Shuffle Service. Darum braucht man <code>spark.dynamicAllocation.shuffleTracking.enabled=true</code>.</li>
+  <li><b>Spark Connect</b> (seit 3.4): Ein dünner Client schickt den <b>ungelösten logischen Plan</b> per gRPC an einen Spark-Server (Port 15002). Der Client braucht keine JVM. Ab 4.0 gibt es dafür das schlanke Paket <code>pyspark-client</code>.</li>
+  <li><b>Spark Connect Grenzen:</b> Kein direkter Zugriff auf <code>SparkContext</code> und RDDs. DataFrame-API und SQL funktionieren. Ein Absturz des Clients reisst den Server nicht mit.</li>
+</ol>
+
+<h2>5. Vergleich</h2>
+<ul>
+  <li><b>Kubernetes:</b> Pods pro Anwendung, Container-Images, Isolation per Namespace. Kein External Shuffle Service. Passt, wenn die Plattform schon Kubernetes ist.</li>
+  <li><b>YARN:</b> klassisch mit Hadoop/HDFS. Data Locality mit HDFS, External Shuffle Service im NodeManager. Weniger üblich in Cloud-Plattformen.</li>
+  <li><b>Standalone:</b> eigener Master und Worker von Spark. Einfach, aber Spark-only. Hat einen REST-Submission-Endpunkt (wenn aktiviert).</li>
+  <li><b>Managed (Databricks, Synapse, EMR, Dataproc):</b> Cluster-Betrieb fällt weg. Dafür Kosten pro Nutzung und Bindung an einen Anbieter.</li>
+  <li><b>Spark Operator (Kubeflow):</b> beschreibt eine Anwendung als <code>SparkApplication</code>-CRD in YAML. Gut für GitOps, statt <code>spark-submit</code> per Skript.</li>
+  <li><b>Client Mode vs Cluster Mode:</b> Client: interaktiv, Logs lokal, Driver stirbt mit dem Client. Cluster: robust, Driver im Cluster, gut für geplante Jobs.</li>
+  <li><b>Klassisch vs Spark Connect:</b> Klassisch: Client = Driver, volle API. Connect: Client getrennt vom Driver, nur DataFrame/SQL, leichter und stabiler für Notebooks und Apps.</li>
+</ul>
+
+<h2>6. In der Produktion</h2>
+<ol>
+  <li><b>Driver OOM durch <code>collect()</code>:</b> Alle Daten fliessen in den Driver. Lösung: Ergebnis schreiben statt sammeln, <code>take(n)</code>, oder <code>spark.driver.maxResultSize</code> als Schutz.</li>
+  <li><b>Executor-Pod OOMKilled (137):</b> Nicht der Heap, sondern der Pod ist voll. Ursache oft Python-Worker oder Off-Heap-Speicher. Lösung: <code>spark.executor.memoryOverhead</code> erhöhen.</li>
+  <li><b>Executors bleiben in <code>Pending</code>:</b> Kein Node hat genug CPU oder RAM. Lösung: Requests passend setzen, Node-Autoscaler (z. B. Karpenter), Quota im Namespace prüfen.</li>
+  <li><b>Executors verlieren Shuffle-Daten:</b> Ein Node wird entfernt (Spot, Autoscaler), die Shuffle-Dateien sind weg. Spark rechnet die vorige Stage neu. Lösung: Decommissioning mit Shuffle-Migration oder PVC-basierte Shuffle-Speicher.</li>
+  <li><b>Executors finden den Driver nicht:</b> Im Client Mode fehlt der Headless Service oder eine NetworkPolicy blockiert die Ports. Lösung: Service anlegen, Driver-Ports freigeben.</li>
+  <li><b>Kleiner Job, grosser Overhead:</b> Pod-Start und JVM-Start kosten Sekunden bis Minuten. Lösung: Arbeit bündeln statt viele Mini-Jobs zu starten.</li>
+</ol>
+
+<h2>7. Diagnose: Werkzeuge und Befehle</h2>
+<ul>
+  <li><b>Spark UI</b> (Port 4040 am Driver): Tab <b>Executors</b> zeigt Cores, Speicher, GC-Zeit, fehlgeschlagene Tasks. Auf Kubernetes: <code>kubectl port-forward &lt;driver-pod&gt; 4040:4040</code>.</li>
+  <li><b>Spark History Server:</b> UI nach Job-Ende. Braucht <code>spark.eventLog.enabled=true</code> und ein gemeinsames Log-Verzeichnis.</li>
+  <li><code>kubectl get pods -l spark-role=executor</code>, <code>kubectl describe pod</code>: Status, Events, <code>OOMKilled</code>, <code>FailedScheduling</code>.</li>
+  <li><code>kubectl logs &lt;driver-pod&gt;</code>: Driver-Log mit Stacktraces und Task-Fehlern.</li>
+  <li><code>spark.sparkContext.getConf().getAll()</code>: alle wirksamen Einstellungen. In der UI: Tab <b>Environment</b>.</li>
+  <li><b>Prometheus:</b> <code>spark.ui.prometheus.enabled=true</code> liefert Executor-Metriken für Grafana.</li>
+</ul>
+
+<h2>8. Senior-Punkte</h2>
+<div class="senior">
+<ol>
+  <li><b>Der Driver ist ein Single Point of Failure.</b> Darum: keine grossen Daten im Driver, Jobs idempotent bauen, damit ein Neustart sicher ist.</li>
+  <li><b>Executor-Grösse ist eine Abwägung:</b> mehr Cores pro Executor = mehr Sharing, aber mehr GC und grössere Ausfälle. 4–5 Cores sind ein guter Start, dann messen.</li>
+  <li><b>Kubernetes oder Managed Spark</b> ist eine Plattform-Entscheidung. Kubernetes passt, wenn der Rest schon dort läuft und das Team es betreibt. Sonst ist Managed oft günstiger im Betrieb.</li>
+  <li><b>PySpark ist schnell, solange Python nur steuert.</b> Teuer wird es erst mit Python-UDFs, weil dann Daten zwischen JVM und Python wandern.</li>
+  <li><b>Overhead-Speicher einplanen.</b> Auf Kubernetes zählt der ganze Pod, nicht nur der Heap.</li>
+  <li><b>Spark Connect</b> lohnt sich für viele Clients (Notebooks, Apps) gegen einen langlebigen Server. Für Batch-Jobs im Cluster Mode bringt es wenig.</li>
+</ol>
+</div>
+
+<h2>9. Aus dem Projekt</h2>
+<p>„Bei ElCom MATCH liefen unsere PySpark-Jobs als Kubernetes-Workloads auf AKS: Ein .NET-Worker startete einen Job per Spark REST API nur, wenn Nachrichten anstanden, und Karpenter skalierte die Nodes für die Spark-Spitzen hoch und wieder runter.“ <span class="small">(Prüfen und durch dein echtes Beispiel ersetzen.)</span></p>
+
+<h2>10. Fallen</h2>
+<div class="trap">
+<ul>
+  <li>„Die Daten fliessen durch den Driver.“ → <b>Falsch.</b> Executors lesen und schreiben direkt. Nur <code>collect()</code>, <code>toPandas()</code> und Broadcasts belasten den Driver.</li>
+  <li>„Ein Executor ist ein Node.“ → <b>Falsch.</b> Ein Executor ist ein Prozess. Ein Node kann mehrere Executors haben.</li>
+  <li>„Ein Executor führt einen Task aus.“ → <b>Falsch.</b> Er führt so viele Tasks gleichzeitig aus, wie er Cores hat.</li>
+  <li>„<code>spark.executor.memory=8g</code> heisst Pod mit 8 GB.“ → <b>Falsch.</b> Dazu kommt Overhead. Der Pod ist grösser.</li>
+  <li>„PySpark-Code läuft komplett in Python.“ → <b>Falsch.</b> DataFrame-Operationen laufen in der JVM. Python steuert nur, ausser bei UDFs.</li>
+  <li>„Dynamic Allocation geht auf Kubernetes nicht.“ → <b>Falsch.</b> Sie geht mit Shuffle Tracking statt External Shuffle Service.</li>
+</ul>
+</div>
+
+<h2>11. Fragen</h2>
+<details><summary>Welche Hauptteile hat eine Spark-Anwendung?</summary><p>Einen Driver, der plant und steuert, und viele Executors, die Tasks ausführen. Ein Cluster Manager stellt die Ressourcen bereit.</p></details>
+<details><summary>Was macht der Driver genau?</summary><p>Er führt main() aus, baut und optimiert den Plan, teilt Jobs in Stages und Tasks und verteilt diese. Er überwacht Executors und sammelt Ergebnisse.</p></details>
+<details><summary>Was macht ein Executor?</summary><p>Er führt Tasks in Threads aus, einen pro Core. Er cached Daten und schreibt und liefert Shuffle-Dateien.</p></details>
+<details><summary>Was ist ein Task?</summary><p>Die kleinste Arbeitseinheit: eine Stage auf einer Partition. Ein Task läuft auf einem Core.</p></details>
+<details><summary>Wie viele Tasks laufen gleichzeitig?</summary><p>Executors × Cores pro Executor / spark.task.cpus. Beispiel: 10 × 4 / 1 = 40.</p></details>
+<details><summary>Welche Cluster Manager gibt es?</summary><p>Standalone, YARN und Kubernetes. Mesos ist in Spark 4.0 entfernt. local[*] dient für Tests.</p></details>
+<details><summary>Client Mode vs Cluster Mode?</summary><p>Client: Driver läuft beim Aufrufer, gut für Notebooks. Cluster: Driver läuft im Cluster, gut für Produktion, weil er nicht vom Client-Rechner abhängt.</p></details>
+<details><summary>Was passiert, wenn der Driver stirbt?</summary><p>Die ganze Anwendung bricht ab. Die Executors werden beendet. Darum müssen Jobs neu startbar und idempotent sein.</p></details>
+<details><summary>Was passiert, wenn ein Executor stirbt?</summary><p>Spark plant seine Tasks auf anderen Executors neu. Fehlen Shuffle-Dateien, rechnet Spark die nötige vorige Stage neu.</p></details>
+<details><summary>Wie läuft Spark auf Kubernetes?</summary><p>spark-submit spricht mit der Kubernetes-API. Es entsteht ein Driver-Pod, der selbst Executor-Pods anlegt. Nach dem Ende werden die Executor-Pods gelöscht.</p></details>
+<details><summary>Was ist memoryOverhead?</summary><p>Speicher ausserhalb des JVM-Heaps, z. B. für Python-Worker, Netty und native Puffer. Auf Kubernetes zählt er zum Pod-Limit.</p></details>
+<details><summary>Wie arbeitet PySpark mit der JVM zusammen?</summary><p>Im Driver steuert Python die JVM über Py4J. DataFrame-Code läuft in der JVM. Nur UDFs und RDD-Lambdas starten Python-Worker auf den Executors.</p></details>
+<details><summary>Was ist Spark Connect?</summary><p>Eine Client-Server-Architektur seit 3.4. Der Client schickt ungelöste logische Pläne per gRPC an den Server. Er braucht keine JVM und stört den Server bei einem Absturz nicht.</p></details>
+<details><summary>Was ist Dynamic Allocation?</summary><p>Spark passt die Zahl der Executors an die Last an. Auf Kubernetes braucht es Shuffle Tracking, weil es keinen External Shuffle Service gibt.</p></details>
+<details><summary>Wie viele Cores pro Executor sind sinnvoll?</summary><p>Meist 4–5. Weniger verhindert Sharing von Cache und Broadcasts. Mehr führt zu langen GC-Pausen und I/O-Engpässen.</p></details>
+<details><summary>Was ist Data Locality?</summary><p>Der Scheduler schickt einen Task bevorzugt dorthin, wo seine Daten schon liegen. Bei Object Stores wie S3 oder ADLS spielt das kaum eine Rolle.</p></details>
+<details><summary>Warum ist collect() gefährlich?</summary><p>Alle Zeilen gehen in den Driver-Speicher. Bei grossen Daten gibt es einen Driver-OOM. Besser schreiben oder take(n).</p></details>
+<details><summary>Was ist die SparkSession?</summary><p>Der Einstiegspunkt für DataFrames und SQL seit Spark 2.0. Sie enthält den SparkContext und die Konfiguration.</p></details>
+<details><summary>Szenario: Executor-Pods enden mit Exit-Code 137, die Spark UI zeigt aber wenig Heap-Nutzung. Was ist los?</summary><p>Kubernetes hat den Pod wegen des Pod-Limits getötet (OOMKilled). Der Speicher ausserhalb des Heaps war zu gross, oft Python-Worker. Lösung: memoryOverhead erhöhen oder Python-UDFs reduzieren.</p></details>
+<details><summary>Szenario: Der Job startet, aber Executor-Pods bleiben auf Pending. Was prüfen Sie?</summary><p>kubectl describe pod: oft FailedScheduling wegen zu wenig CPU/RAM oder Namespace-Quota. Lösung: Requests anpassen, Autoscaler prüfen, Quota erhöhen.</p></details>
+<details><summary>Szenario: Ein Team will Notebooks direkt gegen den Produktions-Cluster laufen lassen. Was raten Sie?</summary><p>Spark Connect gegen einen eigenen Server statt Client Mode pro Notebook. Der Client braucht keine JVM, und ein Absturz trifft den Server nicht. Dazu Ressourcen-Quotas und eigene Namespaces.</p></details>
+
+</body>
+</html>

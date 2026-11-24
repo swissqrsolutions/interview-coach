@@ -1,0 +1,226 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>HttpClient und Interceptors</title>
+<style>
+  body { font: 17px/1.55 -apple-system, system-ui, sans-serif; max-width: 760px; margin: 0 auto; padding: 16px; color: #1d1d1f; }
+  h1 { font-size: 28px; margin: 8px 0 4px; }
+  h2 { font-size: 21px; margin: 32px 0 8px; padding-top: 12px; border-top: 2px solid #e5e5ea; }
+  .kern { background: #eef6ff; border-left: 4px solid #0a66c2; padding: 10px 14px; border-radius: 6px; }
+  .senior { background: #f0faf0; border-left: 4px solid #2e7d32; padding: 10px 14px; border-radius: 6px; }
+  .trap { background: #fff4f2; border-left: 4px solid #c62828; padding: 10px 14px; border-radius: 6px; }
+  code { background: #f2f2f7; padding: 1px 5px; border-radius: 4px; font-size: 15px; }
+  pre { background: #1e1e1e; color: #e6e6e6; padding: 12px; border-radius: 8px; overflow-x: auto; font-size: 13.5px; line-height: 1.45; }
+  svg { width: 100%; height: auto; display: block; margin: 10px 0; }
+  ol li, ul li { margin: 4px 0; }
+  details { border: 1px solid #e5e5ea; border-radius: 8px; padding: 8px 12px; margin: 6px 0; }
+  summary { font-weight: 600; cursor: pointer; }
+  details p { margin: 6px 0 2px; }
+  .small { color: #6e6e73; font-size: 14px; }
+</style>
+</head>
+<body>
+
+<h1>HttpClient und Interceptors</h1>
+<p class="small">Angular · Tier 1 · Quellen: angular.dev (v20) Guides „HTTP: Setup“, „Making requests“, „Interceptors“, „Test requests“; API <code>provideHttpClient</code>, <code>withInterceptors</code>, <code>withInterceptorsFromDi</code>, <code>withFetch</code>, <code>HttpContextToken</code>, <code>HttpErrorResponse</code>; rxjs.dev <code>retry</code>, <code>catchError</code></p>
+
+<div class="kern">
+<b>Kern:</b> <b>HttpClient</b> ist Angulars Dienst für HTTP-Requests; er liefert typisierte, cold Observables. Ein <b>Interceptor</b> ist eine Funktion in der Kette zwischen HttpClient und Netzwerk, die jeden Request und jede Antwort sehen und ändern kann. Typische Aufgaben: Auth-Token anhängen, Fehler zentral behandeln, Retry, Logging, Ladeanzeige.
+</div>
+
+<h2>1. Wo sitzen die Interceptors?</h2>
+<svg viewBox="0 0 720 260" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="a" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="10" y="40" width="120" height="56" rx="8" fill="#fff" stroke="#555"/><text x="70" y="64" text-anchor="middle">Service</text><text x="70" y="82" text-anchor="middle" font-size="12">http.get()</text>
+  <line x1="130" y1="68" x2="158" y2="68" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="160" y="40" width="110" height="56" rx="8" fill="#0a66c2"/><text x="215" y="64" text-anchor="middle" fill="#fff" font-weight="700">HttpClient</text><text x="215" y="82" text-anchor="middle" fill="#fff" font-size="12">HttpRequest</text>
+  <line x1="270" y1="68" x2="288" y2="68" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="290" y="40" width="100" height="56" rx="8" fill="#dbe9fb" stroke="#0a66c2"/><text x="340" y="64" text-anchor="middle" font-size="13">auth</text><text x="340" y="82" text-anchor="middle" font-size="12">Token</text>
+  <line x1="390" y1="68" x2="408" y2="68" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="410" y="40" width="100" height="56" rx="8" fill="#dbe9fb" stroke="#0a66c2"/><text x="460" y="64" text-anchor="middle" font-size="13">error</text><text x="460" y="82" text-anchor="middle" font-size="12">retry, 401</text>
+  <line x1="510" y1="68" x2="528" y2="68" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="530" y="40" width="180" height="56" rx="8" fill="#e8f5e9" stroke="#2e7d32"/><text x="620" y="64" text-anchor="middle">Backend-Handler</text><text x="620" y="82" text-anchor="middle" font-size="12">XHR oder fetch</text>
+  <path d="M620,96 C620,170 215,170 215,98" fill="none" stroke="#2e7d32" stroke-width="2" stroke-dasharray="6 4" marker-end="url(#a)"/>
+  <text x="420" y="182" text-anchor="middle" font-size="12" fill="#2e7d32">Antwort läuft rückwärts durch dieselbe Kette</text>
+  <text x="360" y="225" text-anchor="middle" font-size="12" fill="#666">provideHttpClient(withInterceptors([authInterceptor, errorInterceptor]), withFetch())</text>
+</svg>
+<ol>
+  <li><b>Service:</b> ruft <code>http.get&lt;T&gt;(url)</code> auf. Das ergibt ein cold Observable.</li>
+  <li><b>HttpClient:</b> baut beim Subscribe ein unveränderliches <b>HttpRequest</b>-Objekt.</li>
+  <li><b>Interceptors:</b> laufen in der Reihenfolge aus <code>withInterceptors([...])</code>. Jeder ruft <code>next(req)</code> für den nächsten.</li>
+  <li><b>Backend-Handler:</b> sendet über XHR (Standard) oder <code>fetch</code> (mit <code>withFetch()</code>).</li>
+  <li><b>Antwort:</b> läuft in umgekehrter Reihenfolge zurück, weil jeder Interceptor das Observable von <code>next</code> umhüllt.</li>
+</ol>
+
+<h2>2. Die Reise eines Requests mit abgelaufenem Token (die Geschichte zum Merken)</h2>
+<svg viewBox="0 0 720 290" font-family="-apple-system, system-ui, sans-serif" font-size="13">
+  <defs><marker id="b" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="10" y="30" width="130" height="60" rx="10" fill="#eee" stroke="#777"/><text x="75" y="56" text-anchor="middle" font-weight="700">1. subscribe</text><text x="75" y="76" text-anchor="middle" font-size="11">GET /api/reports</text>
+  <line x1="140" y1="60" x2="168" y2="60" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="170" y="30" width="150" height="60" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="245" y="56" text-anchor="middle" font-weight="700">2. auth</text><text x="245" y="76" text-anchor="middle" font-size="11">clone + Bearer-Header</text>
+  <line x1="320" y1="60" x2="348" y2="60" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="350" y="30" width="150" height="60" rx="10" fill="#fff4f2" stroke="#c62828"/><text x="425" y="56" text-anchor="middle" font-weight="700">3. Server: 401</text><text x="425" y="76" text-anchor="middle" font-size="11">Token abgelaufen</text>
+  <line x1="500" y1="60" x2="528" y2="60" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="530" y="30" width="180" height="60" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="620" y="56" text-anchor="middle" font-weight="700">4. catchError</text><text x="620" y="76" text-anchor="middle" font-size="11">401 erkannt</text>
+  <line x1="620" y1="90" x2="620" y2="148" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="470" y="150" width="240" height="60" rx="10" fill="#fff" stroke="#555"/><text x="590" y="174" text-anchor="middle" font-weight="700">5. Token erneuern</text><text x="590" y="194" text-anchor="middle" font-size="11">ein Refresh für alle Requests</text>
+  <line x1="470" y1="180" x2="398" y2="180" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="180" y="150" width="216" height="60" rx="10" fill="#0a66c2"/><text x="288" y="174" text-anchor="middle" fill="#fff" font-weight="700">6. Wiederholen</text><text x="288" y="194" text-anchor="middle" fill="#fff" font-size="11">switchMap → next(neuer Req)</text>
+  <line x1="180" y1="180" x2="138" y2="180" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="10" y="150" width="126" height="60" rx="10" fill="#e8f5e9" stroke="#2e7d32"/><text x="73" y="174" text-anchor="middle" font-weight="700">7. 200 OK</text><text x="73" y="194" text-anchor="middle" font-size="11">Service bekommt Daten</text>
+  <text x="360" y="250" text-anchor="middle" font-size="12" fill="#c62828">Refresh scheitert → Logout, Redirect auf /login, Fehler weiterwerfen</text>
+</svg>
+<ol>
+  <li><b>Subscribe:</b> Der Report-Service abonniert <code>GET /api/reports</code>. Erst jetzt startet die Kette.</li>
+  <li><b>Auth-Interceptor:</b> <code>HttpRequest</code> ist unveränderlich. Darum <code>req.clone({ setHeaders: { Authorization: 'Bearer …' } })</code>.</li>
+  <li><b>Server:</b> antwortet mit 401, das Token ist abgelaufen.</li>
+  <li><b>catchError:</b> Der Interceptor sieht den <code>HttpErrorResponse</code> mit <code>status === 401</code>.</li>
+  <li><b>Refresh:</b> Er holt ein neues Token. Laufen mehrere Requests gleichzeitig, teilen sie sich <b>einen</b> Refresh (geteiltes Observable).</li>
+  <li><b>Wiederholen:</b> Mit <code>switchMap</code> sendet er den Request mit neuem Token erneut über <code>next()</code>.</li>
+  <li><b>Erfolg:</b> Der Service merkt nichts vom Umweg. Scheitert der Refresh: Logout und Fehler weiterwerfen.</li>
+</ol>
+
+<h2>3. Beispiel: Auth-, Fehler- und Retry-Interceptor</h2>
+<pre>// app.config.ts
+provideHttpClient(withInterceptors([authInterceptor, errorInterceptor]), withFetch())
+
+export const SKIP_AUTH = new HttpContextToken&lt;boolean&gt;(() =&gt; false);
+
+export const authInterceptor: HttpInterceptorFn = (req, next) =&gt; {
+  if (req.context.get(SKIP_AUTH)) return next(req);
+  const token = inject(AuthService).token();
+  const authReq = token ? req.clone({ setHeaders: { Authorization: `Bearer ${token}` } }) : req;
+  return next(authReq);
+};
+
+export const errorInterceptor: HttpInterceptorFn = (req, next) =&gt; {
+  const router = inject(Router);
+  const notify = inject(Notifier);
+  return next(req).pipe(
+    retry({
+      count: req.method === 'GET' ? 2 : 0,            // nur idempotente Requests
+      delay: (err, n) =&gt; err.status &gt;= 500 || err.status === 0
+        ? timer(300 * 2 ** n)                          // Backoff: 600, 1200 ms
+        : throwError(() =&gt; err),                       // 4xx: nicht wiederholen
+    }),
+    catchError((err: HttpErrorResponse) =&gt; {
+      if (err.status === 401) router.navigate(['/login']);
+      else if (err.status === 0) notify.error('Keine Verbindung');
+      else if (err.status &gt;= 500) notify.error('Serverfehler, bitte später erneut');
+      return throwError(() =&gt; err);                   // Aufrufer entscheidet weiter
+    }),
+  );
+};
+
+// Aufruf ohne Token
+http.get('/public/info', { context: new HttpContext().set(SKIP_AUTH, true) });</pre>
+<pre>Erwartetes Ergebnis (laut Doku, nicht ausgeführt):
+GET /api/reports (Server down):
+  Versuch 1 → 503, nach 600 ms Versuch 2 → 503, nach 1200 ms Versuch 3 → 503
+  → Meldung "Serverfehler, bitte später erneut", Fehler geht an den Service.
+POST /api/reports (503): kein Retry, sofort Meldung.
+GET /api/reports (404): kein Retry, Fehler direkt weiter.
+Request-Header: Authorization: Bearer eyJ... (ausser /public/info)</pre>
+<ol>
+  <li>Funktionale Interceptors laufen im Injection Context. <code>inject()</code> ist darin erlaubt.</li>
+  <li><code>HttpContextToken</code> trägt Metadaten pro Request, z. B. „kein Token“. Besser als URL-Listen im Interceptor.</li>
+  <li><code>retry</code> abonniert <code>next(req)</code> neu, also läuft der Request wirklich erneut. Nur GET, weil POST nicht idempotent ist.</li>
+  <li><code>status === 0</code> heisst: keine Antwort vom Server, z. B. Netzwerk weg oder CORS.</li>
+  <li>Der Fehler wird weitergeworfen. Ein Interceptor soll Fehler nicht stillschweigend schlucken.</li>
+</ol>
+
+<h2>4. Details, die Interviewer fragen</h2>
+<ol>
+  <li><b>provideHttpClient</b> (seit v15): ersetzt <code>HttpClientModule</code>, das seit v18 deprecated ist.</li>
+  <li><b>Funktionale Interceptors</b> (seit v15): <code>HttpInterceptorFn = (req, next) =&gt; Observable&lt;HttpEvent&gt;</code>. Angular empfiehlt sie, weil die Reihenfolge klarer ist.</li>
+  <li><b>Klassen-Interceptors</b> (Angular-14-Stil): <code>implements HttpInterceptor</code>, registriert mit <code>HTTP_INTERCEPTORS</code> und <code>multi: true</code>. Mit Standalone braucht man <code>withInterceptorsFromDi()</code>.</li>
+  <li><b>Reihenfolge:</b> Request in Listen-Reihenfolge, Antwort umgekehrt. Auth vor Logging, Fehlerbehandlung möglichst aussen.</li>
+  <li><b>Unveränderlich:</b> <code>HttpRequest</code> und <code>HttpHeaders</code> sind immutable. Ändern nur mit <code>clone()</code>.</li>
+  <li><b>Cold:</b> Kein Subscribe, kein Request. Zwei Subscribes, zwei Requests.</li>
+  <li><b>Abbruch:</b> Unsubscribe bricht den laufenden Request ab. Das nutzt <code>switchMap</code>.</li>
+  <li><b>observe und reportProgress:</b> <code>observe: 'response'</code> liefert Header und Status. <code>observe: 'events'</code> mit <code>reportProgress</code> liefert Upload-Fortschritt.</li>
+  <li><b>withFetch():</b> nutzt die <code>fetch</code>-API statt XHR. Empfohlen für SSR. Upload-Fortschritt geht mit fetch nicht.</li>
+  <li><b>Transfer Cache bei SSR:</b> GET-Antworten vom Server werden ins HTML gelegt. Der Browser fragt nicht doppelt. Konfigurierbar mit <code>withHttpTransferCacheOptions</code>.</li>
+  <li><b>XSRF:</b> HttpClient liest das Cookie <code>XSRF-TOKEN</code> und sendet den Header <code>X-XSRF-TOKEN</code>. Konfiguration mit <code>withXsrfConfiguration</code>.</li>
+  <li><b>Tests:</b> <code>provideHttpClientTesting()</code> und <code>HttpTestingController</code>: <code>expectOne(url).flush(data)</code>, am Ende <code>verify()</code>.</li>
+  <li><b>httpResource:</b> ein signalbasiertes API für GET-Requests, in v20 experimentell. Es läuft auch durch die Interceptors.</li>
+</ol>
+
+<h2>5. Vergleich</h2>
+<ul>
+  <li><b>Funktional vs Klasse:</b> <code>withInterceptors([fn])</code> mit klarer Reihenfolge vs <code>HTTP_INTERCEPTORS</code> mit DI-Reihenfolge.</li>
+  <li><b>Interceptor vs Service-Wrapper:</b> Interceptor gilt für alle Requests. Ein Wrapper nur für die, die ihn nutzen.</li>
+  <li><b>retry vs Retry im Backend-Client:</b> Frontend-Retry nur für idempotente Lesezugriffe und kurze Störungen.</li>
+  <li><b>XHR vs fetch:</b> XHR kann Upload-Fortschritt. fetch passt besser zu SSR und modernen Laufzeiten.</li>
+  <li><b>HttpClient vs httpResource:</b> Observable für alles vs Signal-API für Lesen (experimentell).</li>
+</ul>
+
+<h2>6. In der Produktion</h2>
+<ol>
+  <li><b>Token geht an fremde Domains:</b> Interceptor hängt den Header an jeden Request. Lösung: nur für die eigene API-URL.</li>
+  <li><b>Refresh-Sturm:</b> 10 Requests bekommen 401, es gibt 10 Refreshes. Lösung: ein geteiltes Refresh-Observable (<code>shareReplay</code>) und Warten.</li>
+  <li><b>Endlosschleife:</b> Der Refresh-Request selbst läuft durch den Auth-Interceptor und bekommt 401. Lösung: <code>HttpContextToken</code> zum Überspringen.</li>
+  <li><b>Doppelte Bestellungen:</b> Retry auf POST. Lösung: nur GET wiederholen oder Idempotency-Key im Backend.</li>
+  <li><b>Fehler verschwinden:</b> Interceptor gibt bei Fehler <code>EMPTY</code> zurück. Komponenten warten ewig. Lösung: Fehler weiterwerfen.</li>
+  <li><b>Interceptor wirkt nicht:</b> Klassen-Interceptor in Standalone-App ohne <code>withInterceptorsFromDi()</code>. Oder ein Feature hat einen eigenen <code>provideHttpClient()</code>.</li>
+</ol>
+
+<h2>7. Diagnose: Werkzeuge und Befehle</h2>
+<ul>
+  <li><b>Network-Tab:</b> Header, Status, Wiederholungen, „(canceled)“.</li>
+  <li><b>Logging-Interceptor</b> mit <code>tap</code> und <code>finalize</code>: Methode, URL, Status, Dauer.</li>
+  <li><code>HttpTestingController</code>: prüft in Tests Header, Retry-Anzahl und Fehlerpfade.</li>
+  <li><b>OpenTelemetry Web</b> oder ein Header wie <code>traceparent</code> per Interceptor: Frontend-Requests im Backend-Trace sehen.</li>
+  <li><b>Angular DevTools Injector Tree:</b> prüfen, ob ein Feature einen eigenen HttpClient bekommt.</li>
+</ul>
+
+<h2>8. Senior-Punkte</h2>
+<div class="senior">
+<ol>
+  <li><b>Querschnitt in Interceptors:</b> Auth, Fehler, Tracing, Ladeanzeige. Business-Logik nicht.</li>
+  <li><b>Retry nur idempotent, mit Backoff</b> und Grenze. Sonst verstärkt das Frontend einen Ausfall.</li>
+  <li><b>Fehler zentral anzeigen, lokal entscheiden:</b> Interceptor meldet, Komponente reagiert fachlich.</li>
+  <li><b>Token-Handling sicher:</b> Header nur für eigene Domain. Am besten übernimmt eine Bibliothek für OIDC/Keycloak den Refresh.</li>
+  <li><b>Reihenfolge dokumentieren.</b> Sie ist Teil der Architektur.</li>
+</ol>
+</div>
+
+<h2>9. Aus dem Projekt</h2>
+<p>„Bei CARIAD lief die Anmeldung über Keycloak (LDAP); das Angular-Frontend sprach mit einem Spring-Boot-Backend.“ <span class="small">(Prüfen und durch dein echtes Beispiel ersetzen: Gab es einen eigenen Interceptor für das Token oder eine Keycloak-Bibliothek?)</span></p>
+
+<h2>10. Fallen</h2>
+<div class="trap">
+<ul>
+  <li>„Ich ändere <code>req.headers</code> direkt.“ → <b>Geht nicht.</b> Requests sind unveränderlich, <code>clone()</code> nutzen.</li>
+  <li>„Interceptors laufen auch für die Antwort in derselben Reihenfolge.“ → <b>Falsch.</b> Die Antwort läuft umgekehrt.</li>
+  <li>„Klassen-Interceptors funktionieren mit <code>provideHttpClient()</code> automatisch.“ → <b>Falsch.</b> <code>withInterceptorsFromDi()</code> nötig.</li>
+  <li>„Retry ist immer gut.“ → <b>Falsch.</b> Nicht für POST und nicht für 4xx.</li>
+  <li>„status 0 ist ein Serverfehler.“ → <b>Falsch.</b> Keine Antwort: Netzwerk, CORS oder Abbruch.</li>
+</ul>
+</div>
+
+<h2>11. Fragen</h2>
+<details><summary>Wie richtet man HttpClient in Angular 20 ein?</summary><p>provideHttpClient() in der appConfig, optional mit withInterceptors, withFetch und weiteren Features.</p></details>
+<details><summary>Was ist ein Interceptor?</summary><p>Eine Funktion zwischen HttpClient und Netzwerk. Sie sieht und ändert Requests und Antworten.</p></details>
+<details><summary>Wie sieht ein funktionaler Interceptor aus?</summary><p>(req, next) =&gt; next(req), optional mit pipe() auf der Antwort. inject() ist darin erlaubt.</p></details>
+<details><summary>Wie hängt man ein Auth-Token an?</summary><p>req.clone({ setHeaders: { Authorization: 'Bearer …' } }) und next(clone). Nur für die eigene API.</p></details>
+<details><summary>In welcher Reihenfolge laufen Interceptors?</summary><p>Requests in Listen-Reihenfolge, Antworten in umgekehrter Reihenfolge.</p></details>
+<details><summary>Warum clone()?</summary><p>HttpRequest ist unveränderlich. So kann ein Retry den Original-Request sicher neu senden.</p></details>
+<details><summary>Wie behandelt man Fehler zentral?</summary><p>catchError im Interceptor: nach Status reagieren, Meldung zeigen, Fehler weiterwerfen.</p></details>
+<details><summary>Wie macht man Retry richtig?</summary><p>retry({ count, delay }) nur für GET, nur bei 5xx oder status 0, mit Backoff.</p></details>
+<details><summary>Wie verhindert man mehrere Token-Refreshes gleichzeitig?</summary><p>Ein geteiltes Refresh-Observable. Alle 401-Requests warten darauf und wiederholen dann.</p></details>
+<details><summary>Was ist ein HttpContextToken?</summary><p>Metadaten pro Request für Interceptors, z. B. „Auth überspringen“ oder „kein Spinner“.</p></details>
+<details><summary>Wie nutzt man alte Klassen-Interceptors in einer Standalone-App?</summary><p>provideHttpClient(withInterceptorsFromDi()) und weiter HTTP_INTERCEPTORS mit multi: true.</p></details>
+<details><summary>Was bedeutet status 0?</summary><p>Keine HTTP-Antwort: Netzwerkfehler, CORS-Blockade oder Abbruch.</p></details>
+<details><summary>Was macht withFetch?</summary><p>HttpClient nutzt fetch statt XHR. Empfohlen für SSR, aber kein Upload-Fortschritt.</p></details>
+<details><summary>Wie testet man HTTP-Code?</summary><p>provideHttpClientTesting und HttpTestingController: expectOne, flush, verify.</p></details>
+<details><summary>Was ist der HTTP Transfer Cache?</summary><p>Bei SSR werden GET-Antworten ins HTML gelegt. Der Browser nutzt sie und fragt nicht doppelt.</p></details>
+<details><summary>Wie zeigt man Upload-Fortschritt?</summary><p>reportProgress: true und observe: 'events'. Dann kommen HttpEventType.UploadProgress-Events, nur mit XHR.</p></details>
+<details><summary>Szenario: Nach Token-Ablauf feuert die App 20 Refresh-Requests. Lösung?</summary><p>Refresh als geteiltes Observable mit shareReplay. Alle wartenden Requests nutzen dasselbe Ergebnis.</p></details>
+<details><summary>Szenario: Kunden haben doppelte Einträge nach Netzwerk-Wacklern. Warum?</summary><p>Retry auf POST. Lösung: nur GET wiederholen, im Backend Idempotency-Key.</p></details>
+<details><summary>Szenario: Ein lazy Feature sendet Requests ohne Token. Warum?</summary><p>Das Feature hat ein eigenes provideHttpClient() ohne Interceptors. Lösung: nur einmal in der appConfig registrieren.</p></details>
+
+</body>
+</html>

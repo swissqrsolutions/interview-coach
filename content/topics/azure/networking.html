@@ -1,0 +1,247 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Azure Networking</title>
+<style>
+  body { font: 17px/1.55 -apple-system, system-ui, sans-serif; max-width: 760px; margin: 0 auto; padding: 16px; color: #1d1d1f; }
+  h1 { font-size: 28px; margin: 8px 0 4px; }
+  h2 { font-size: 21px; margin: 32px 0 8px; padding-top: 12px; border-top: 2px solid #e5e5ea; }
+  .kern { background: #eef6ff; border-left: 4px solid #0a66c2; padding: 10px 14px; border-radius: 6px; }
+  .senior { background: #f0faf0; border-left: 4px solid #2e7d32; padding: 10px 14px; border-radius: 6px; }
+  .trap { background: #fff4f2; border-left: 4px solid #c62828; padding: 10px 14px; border-radius: 6px; }
+  code { background: #f2f2f7; padding: 1px 5px; border-radius: 4px; font-size: 15px; }
+  pre { background: #1e1e1e; color: #e6e6e6; padding: 12px; border-radius: 8px; overflow-x: auto; font-size: 13.5px; line-height: 1.45; }
+  svg { width: 100%; height: auto; display: block; margin: 10px 0; }
+  ol li, ul li { margin: 4px 0; }
+  details { border: 1px solid #e5e5ea; border-radius: 8px; padding: 8px 12px; margin: 6px 0; }
+  summary { font-weight: 600; cursor: pointer; }
+  details p { margin: 6px 0 2px; }
+  .small { color: #6e6e73; font-size: 14px; }
+</style>
+</head>
+<body>
+
+<h1>VNet, Subnetze, NSG, Private Endpoints, Private DNS</h1>
+<p class="small">Azure · Tier 1 · Quellen: Microsoft Learn – Virtual Network overview and FAQ, Network security groups, What is a private endpoint?, Private endpoint DNS configuration, Virtual network service endpoints, Azure Functions networking options, App Service VNet integration, Hub-spoke network topology (Azure Architecture Center), Network Watcher</p>
+
+<div class="kern">
+<b>Kern:</b> Ein <b>Virtual Network (VNet)</b> ist ein privates, isoliertes Netz in einer Azure-Region. Es löst das Problem, Dienste ohne Internet miteinander sprechen zu lassen. <b>Private Endpoints</b> holen PaaS-Dienste mit einer privaten IP ins VNet, und <b>Private DNS</b> sorgt dafür, dass ihr Name auf diese IP zeigt.
+</div>
+
+<h2>1. Wo sitzt das Netzwerk?</h2>
+<svg viewBox="0 0 720 340" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="a" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="10" y="8" width="520" height="324" rx="12" fill="#f7f7fa" stroke="#999" stroke-dasharray="5 4"/><text x="270" y="28" text-anchor="middle" font-weight="700">VNet 10.20.0.0/16 (Switzerland North)</text>
+  <rect x="30" y="44" width="230" height="110" rx="8" fill="#fff" stroke="#555"/><text x="145" y="64" text-anchor="middle" font-weight="700">snet-func-int /26</text><text x="145" y="84" text-anchor="middle" font-size="12">delegiert an Functions</text><text x="145" y="102" text-anchor="middle" font-size="12">nur ausgehend (VNet Integration)</text>
+  <rect x="50" y="114" width="190" height="30" rx="6" fill="#dbe9fb" stroke="#0a66c2"/><text x="145" y="134" text-anchor="middle" font-size="13">Function App (Outbound)</text>
+  <rect x="290" y="44" width="220" height="200" rx="8" fill="#fff" stroke="#555"/><text x="400" y="64" text-anchor="middle" font-weight="700">snet-pe /27</text>
+  <rect x="305" y="76" width="190" height="30" rx="6" fill="#0a66c2"/><text x="400" y="96" text-anchor="middle" fill="#fff" font-size="13">PE Storage 10.20.1.4</text>
+  <rect x="305" y="114" width="190" height="30" rx="6" fill="#0a66c2"/><text x="400" y="134" text-anchor="middle" fill="#fff" font-size="13">PE Key Vault 10.20.1.5</text>
+  <rect x="305" y="152" width="190" height="30" rx="6" fill="#0a66c2"/><text x="400" y="172" text-anchor="middle" fill="#fff" font-size="13">PE Event Hub 10.20.1.6</text>
+  <rect x="305" y="190" width="190" height="30" rx="6" fill="#0a66c2"/><text x="400" y="210" text-anchor="middle" fill="#fff" font-size="13">PE Function (Inbound)</text>
+  <line x1="240" y1="129" x2="303" y2="94" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="30" y="172" width="230" height="72" rx="8" fill="#fff4f2" stroke="#c62828"/><text x="145" y="196" text-anchor="middle" font-weight="700">NSG</text><text x="145" y="216" text-anchor="middle" font-size="12">Regeln pro Subnetz/NIC</text><text x="145" y="232" text-anchor="middle" font-size="12">Priorität · 5-Tupel · stateful</text>
+  <rect x="30" y="262" width="480" height="56" rx="8" fill="#e8f5e9" stroke="#2e7d32"/><text x="270" y="284" text-anchor="middle" font-weight="700">Private DNS Zones (mit VNet verlinkt)</text><text x="270" y="304" text-anchor="middle" font-size="12">privatelink.blob.core.windows.net · privatelink.vaultcore.azure.net · …</text>
+  <rect x="560" y="60" width="150" height="70" rx="8" fill="#fff" stroke="#555"/><text x="635" y="88" text-anchor="middle" font-weight="700">PaaS-Dienste</text><text x="635" y="108" text-anchor="middle" font-size="12">Public Access: aus</text>
+  <line x1="495" y1="94" x2="558" y2="94" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="560" y="180" width="150" height="70" rx="8" fill="#fff" stroke="#c62828"/><text x="635" y="208" text-anchor="middle" font-weight="700">Event Grid</text><text x="635" y="228" text-anchor="middle" font-size="12">bewusste Ausnahme</text>
+</svg>
+<ol>
+  <li><b>VNet:</b> ein Adressraum (z. B. <code>10.20.0.0/16</code>) in einer Region und Subscription. Ohne Peering spricht es mit keinem anderen VNet.</li>
+  <li><b>Subnetz:</b> ein Teil des Adressraums für eine Art von Ressource. Beispiel: <code>snet-pe</code> nur für Private Endpoints.</li>
+  <li><b>Delegiertes Subnetz:</b> ein Subnetz, das einem Dienst gehört. Beispiel: <code>Microsoft.Web/serverFarms</code> für App Service und Functions Premium.</li>
+  <li><b>NSG (Network Security Group):</b> eine Firewall-Regelliste auf Subnetz oder Netzwerkkarte.</li>
+  <li><b>Private Endpoint (PE):</b> eine Netzwerkkarte mit privater IP, die auf genau einen Dienst zeigt. Beispiel: Blob-Endpoint eines Storage Accounts.</li>
+  <li><b>Private DNS Zone:</b> eine DNS-Zone, die nur in verlinkten VNets gilt. Sie enthält die A-Records der Private Endpoints.</li>
+</ol>
+
+<h2>2. Die Reise eines Requests zum Private Endpoint (die Geschichte zum Merken)</h2>
+<svg viewBox="0 0 720 320" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="b" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="10" y="20" width="150" height="62" rx="10" fill="#eee" stroke="#777"/><text x="85" y="44" text-anchor="middle" font-weight="700">1. Function</text><text x="85" y="64" text-anchor="middle" font-size="12">st.blob.core…</text>
+  <line x1="160" y1="51" x2="208" y2="51" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="210" y="20" width="160" height="62" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="290" y="44" text-anchor="middle" font-weight="700">2. Azure DNS</text><text x="290" y="64" text-anchor="middle" font-size="12">168.63.129.16</text>
+  <line x1="370" y1="51" x2="418" y2="51" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="420" y="20" width="290" height="62" rx="10" fill="#fff" stroke="#555"/><text x="565" y="44" text-anchor="middle" font-weight="700">3. Public DNS: CNAME</text><text x="565" y="64" text-anchor="middle" font-size="12">st.privatelink.blob.core.windows.net</text>
+  <line x1="565" y1="82" x2="565" y2="128" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="420" y="130" width="290" height="62" rx="10" fill="#e8f5e9" stroke="#2e7d32"/><text x="565" y="154" text-anchor="middle" font-weight="700">4. Private DNS Zone</text><text x="565" y="174" text-anchor="middle" font-size="12">A-Record → 10.20.1.4</text>
+  <line x1="420" y1="161" x2="372" y2="161" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="200" y="130" width="170" height="62" rx="10" fill="#fff" stroke="#555"/><text x="285" y="154" text-anchor="middle" font-weight="700">5. Route + NSG</text><text x="285" y="174" text-anchor="middle" font-size="12">über Integration-Subnetz</text>
+  <line x1="285" y1="192" x2="285" y2="238" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="160" y="240" width="250" height="62" rx="10" fill="#0a66c2"/><text x="285" y="264" text-anchor="middle" fill="#fff" font-weight="700">6. Private Endpoint NIC</text><text x="285" y="284" text-anchor="middle" fill="#fff" font-size="12">Private Link → Storage Account</text>
+  <line x1="410" y1="271" x2="478" y2="271" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="480" y="240" width="230" height="62" rx="10" fill="#fff" stroke="#555"/><text x="595" y="264" text-anchor="middle" font-weight="700">7. Dienst prüft</text><text x="595" y="284" text-anchor="middle" font-size="12">Netzwerkregel + RBAC</text>
+</svg>
+<ol>
+  <li><b>Start:</b> Die Function ruft <code>stdemo.blob.core.windows.net</code> auf. Der Code ist gleich wie ohne Private Endpoint. Nur DNS und Routing ändern sich.</li>
+  <li><b>DNS-Frage:</b> Die Anfrage geht an <b>Azure DNS</b> unter der virtuellen IP <code>168.63.129.16</code>. Das ist der Standard-Resolver jedes VNets.</li>
+  <li><b>CNAME:</b> Das öffentliche DNS antwortet mit einem CNAME auf <code>stdemo.privatelink.blob.core.windows.net</code>. Diesen CNAME setzt Azure beim Anlegen des Private Endpoints.</li>
+  <li><b>Private Zone:</b> Ist die Zone <code>privatelink.blob.core.windows.net</code> mit dem VNet verlinkt, antwortet sie mit <code>10.20.1.4</code>. Ohne Link kommt die öffentliche IP zurück.</li>
+  <li><b>Route und NSG:</b> Mit <b>VNet Integration</b> geht der ausgehende Verkehr der Function ins Integration-Subnetz. Dort gelten NSG und Routen (UDR).</li>
+  <li><b>Private Endpoint:</b> Das Paket erreicht die NIC des Private Endpoints. <b>Private Link</b> leitet es über das Microsoft-Backbone zum einen Storage Account weiter.</li>
+  <li><b>Prüfung:</b> Der Dienst akzeptiert den Verkehr über den PE, auch wenn Public Network Access aus ist. Danach prüft er Token und RBAC-Rolle.</li>
+</ol>
+
+<h2>3. Beispiel: Private Endpoint mit DNS in Bicep</h2>
+<pre>// pe-storage.bicep
+resource zone 'Microsoft.Network/privateDnsZones@2020-06-01' = {
+  name: 'privatelink.blob.core.windows.net'
+  location: 'global'
+}
+resource link 'Microsoft.Network/privateDnsZones/virtualNetworkLinks@2020-06-01' = {
+  parent: zone
+  name: 'link-vnet-app'
+  location: 'global'
+  properties: { virtualNetwork: { id: vnet.id }, registrationEnabled: false }
+}
+resource pe 'Microsoft.Network/privateEndpoints@2023-11-01' = {
+  name: 'pe-stdemo-blob'
+  location: 'switzerlandnorth'
+  properties: {
+    subnet: { id: peSubnet.id }
+    privateLinkServiceConnections: [ {
+      name: 'blob'
+      properties: { privateLinkServiceId: st.id, groupIds: [ 'blob' ] }   // Sub-Resource
+    } ]
+  }
+}
+resource dnsGroup 'Microsoft.Network/privateEndpoints/privateDnsZoneGroups@2023-11-01' = {
+  parent: pe
+  name: 'default'
+  properties: { privateDnsZoneConfigs: [ { name: 'blob', properties: { privateDnsZoneId: zone.id } } ] }
+}</pre>
+<pre># aus dem VNet (z. B. Kudu-Konsole der Function)
+$ nslookup stdemo.blob.core.windows.net
+Non-authoritative answer:
+Name:    stdemo.privatelink.blob.core.windows.net
+Address: 10.20.1.4
+Aliases: stdemo.blob.core.windows.net
+
+# vom Laptop im Internet
+$ nslookup stdemo.blob.core.windows.net
+Name:    &lt;öffentlicher Storage-Cluster-Name&gt;
+Address: 20.&lt;…&gt;            # öffentliche IP, Zugriff aber gesperrt (Public Access aus)</pre>
+<p class="small">Erwartetes Ergebnis (laut Doku, nicht ausgeführt). Hier gibt es keine Azure CLI und keinen Account.</p>
+<ol>
+  <li><code>groupIds: ['blob']</code> wählt die <b>Sub-Resource</b>. Für <code>dfs</code>, <code>queue</code>, <code>table</code> und <code>file</code> braucht es je einen eigenen PE.</li>
+  <li>Die <b>DNS Zone Group</b> legt den A-Record automatisch an und löscht ihn mit dem PE. Ohne sie pflegt man Records von Hand.</li>
+  <li>Von innen zeigt der Name auf <code>10.20.1.4</code>. Von aussen auf die öffentliche IP. Der gleiche Name, zwei Antworten: <b>Split-Horizon DNS</b>.</li>
+  <li>Der PE allein sperrt nichts. Erst <code>publicNetworkAccess: 'Disabled'</code> auf dem Storage Account schliesst den öffentlichen Weg.</li>
+</ol>
+
+<h2>4. Details, die Interviewer fragen</h2>
+<ol>
+  <li><b>Reservierte IPs:</b> Azure reserviert in jedem Subnetz 5 Adressen: die ersten vier und die letzte. Ein <code>/29</code> hat also nur 3 nutzbare IPs.</li>
+  <li><b>Adressplanung:</b> VNets, die man peeren will, dürfen sich nicht überschneiden. Das gilt auch für On-Premises-Netze.</li>
+  <li><b>NSG-Regeln:</b> Jede Regel hat Priorität (100–4096, kleiner zuerst), Richtung, Quelle, Ziel, Port, Protokoll und Allow/Deny. Die erste passende Regel gewinnt.</li>
+  <li><b>Default-Regeln:</b> erlauben Verkehr im VNet und vom Load Balancer, erlauben ausgehend ins Internet und verbieten den Rest (Priorität 65000–65500). Man kann sie nur mit höherer Priorität überstimmen.</li>
+  <li><b>Stateful:</b> Eine NSG merkt sich Verbindungen. Die Antwort auf eine erlaubte Anfrage braucht keine eigene Regel.</li>
+  <li><b>Service Tags und ASGs:</b> <b>Service Tags</b> (z. B. <code>Storage.SwitzerlandNorth</code>, <code>AzureKeyVault</code>) sind von Microsoft gepflegte IP-Gruppen. <b>Application Security Groups</b> gruppieren eigene NICs nach Rolle.</li>
+  <li><b>NSG auf Subnetz und NIC:</b> Beide werden geprüft. Eingehend erst Subnetz, dann NIC. Ausgehend umgekehrt.</li>
+  <li><b>Private Endpoint:</b> Eine NIC mit privater IP, die auf eine Ressource und Sub-Resource zeigt. Verkehr geht nur hinein in den Dienst, der Dienst baut keine Verbindungen ins VNet auf.</li>
+  <li><b>PE und NSG/UDR:</b> Auf PE-Subnetzen sind Network Policies standardmässig aus. Mit <code>privateEndpointNetworkPolicies: Enabled</code> wirken NSG und UDR auch auf PEs.</li>
+  <li><b>Service Endpoint:</b> Er schaltet auf Subnetz-Ebene einen optimierten Weg zum <b>öffentlichen</b> Endpoint eines Dienstes. Der Dienst sieht die private Quell-IP und erlaubt das Subnetz in seiner Firewall.</li>
+  <li><b>Service Endpoint Grenzen:</b> keine private IP, nicht von On-Premises nutzbar, gilt für den ganzen Dienst-Typ. Gegen Daten-Abfluss braucht es <b>Service Endpoint Policies</b>.</li>
+  <li><b>Private DNS Zone:</b> Sie gilt nur in VNets mit <b>Virtual Network Link</b>. <b>Auto-Registration</b> trägt nur VMs ein, keine Private Endpoints.</li>
+  <li><b>Zonen-Namen:</b> Blob <code>privatelink.blob.core.windows.net</code>, Key Vault <code>privatelink.vaultcore.azure.net</code>, Event Hub <code>privatelink.servicebus.windows.net</code>, Functions/App Service <code>privatelink.azurewebsites.net</code>.</li>
+  <li><b>On-Premises DNS:</b> On-Prem-Server kennen die Private Zones nicht. Lösung: <b>Azure DNS Private Resolver</b> mit Inbound Endpoint und Conditional Forwarder.</li>
+  <li><b>VNet Integration (Functions/App Service):</b> nur <b>ausgehend</b>. Sie braucht ein eigenes, delegiertes Subnetz. Eingehend privat geht nur über einen Private Endpoint auf die App.</li>
+  <li><b>Delegation je Plan:</b> Flex Consumption: <code>Microsoft.App/environments</code>, min. <code>/27</code>. Elastic Premium und Dedicated: <code>Microsoft.Web/serverFarms</code>, min. <code>/28</code>, empfohlen <code>/26</code> (Linux). Der klassische Consumption-Plan hat keine VNet Integration.</li>
+  <li><b>Route All:</b> Linux-Apps (ausser Flex Consumption) müssen <code>vnetRouteAllEnabled</code> setzen. Sonst geht nur privater Verkehr (RFC 1918) ins VNet.</li>
+  <li><b>Functions-Storage hinter PE:</b> <code>AzureWebJobsStorage</code> braucht PEs für blob, queue und table. Mit Azure-Files-Content-Share zusätzlich file.</li>
+  <li><b>Hub-Spoke:</b> Ein <b>Hub</b>-VNet hält gemeinsame Dienste: Azure Firewall, VPN/ExpressRoute Gateway, DNS Resolver. <b>Spokes</b> sind die Workload-VNets und peeren mit dem Hub.</li>
+  <li><b>Peering ist nicht transitiv:</b> Spoke A erreicht Spoke B nicht über den Hub. Dafür braucht es eine UDR auf die Firewall im Hub, oder Virtual WAN.</li>
+  <li><b>Kosten:</b> Private Endpoints kosten pro Stunde und pro GB. Service Endpoints sind gratis.</li>
+</ol>
+
+<h2>5. Vergleich</h2>
+<ul>
+  <li><b>Private Endpoint vs Service Endpoint:</b> PE gibt dem Dienst eine private IP im VNet, auch von On-Prem nutzbar, pro Ressource. SE nutzt den öffentlichen Endpoint über das Backbone, pro Subnetz und Dienst-Typ, gratis.</li>
+  <li><b>NSG vs Azure Firewall:</b> NSG filtert L3/L4 pro Subnetz, gratis. Azure Firewall ist zentral, stateful, mit FQDN-Regeln, TLS-Inspektion (Premium) und Logs.</li>
+  <li><b>VNet Integration vs Private Endpoint auf die App:</b> Integration = ausgehend von der App ins VNet. PE = eingehend ins VNet zur App.</li>
+  <li><b>VNet Peering vs VPN Gateway:</b> Peering verbindet VNets direkt über das Backbone, schnell. VPN verbindet über verschlüsselte Tunnel, auch zu On-Prem.</li>
+  <li><b>Hub-Spoke vs Virtual WAN:</b> Hub-Spoke baut man selbst und kontrolliert alles. Virtual WAN ist ein verwalteter Hub mit transitivem Routing.</li>
+  <li><b>Azure vs Kubernetes:</b> NSG ≈ NetworkPolicy auf Netzwerk-Ebene. Cilium-Policies wirken im Cluster, NSGs auf Subnetz und NIC.</li>
+</ul>
+
+<h2>6. In der Produktion</h2>
+<ol>
+  <li><b>DNS löst öffentlich auf:</b> Die Zone ist nicht mit dem VNet verlinkt, oder ein eigener DNS-Server leitet nicht an <code>168.63.129.16</code> weiter. Symptom: 403 oder Timeout. Lösung: Zone verlinken, Forwarder prüfen.</li>
+  <li><b>Doppelte Zonen:</b> Zwei Teams legen je eine Zone <code>privatelink.blob…</code> an. Records fehlen in der jeweils anderen. Lösung: eine zentrale Zone im Hub, Records per Azure Policy.</li>
+  <li><b>Subnetz zu klein:</b> Die Function skaliert nicht, weil IPs fehlen. Lösung: Subnetz gross genug planen. Eine Integration lässt sich nicht einfach vergrössern.</li>
+  <li><b>Route All vergessen:</b> Die Linux-Function erreicht ein öffentliches Ziel nicht über NAT Gateway oder Firewall. Lösung: <code>vnetRouteAllEnabled=true</code>.</li>
+  <li><b>Subnetz blockiert:</b> App gelöscht, ohne die Integration zu lösen. Die Delegation bleibt, das Subnetz lässt sich nicht löschen. Lösung: Integration vorher entfernen.</li>
+  <li><b>NSG blockiert den Load Balancer:</b> Eine „Deny All“-Regel mit hoher Priorität blockiert Health Probes. Lösung: <code>AzureLoadBalancer</code> erlauben.</li>
+  <li><b>Plattform-Dienst braucht Public:</b> Manche Integrationen gehen nicht privat, z. B. Event-Grid-Zustellung von Defender-Ergebnissen. Lösung: bewusste, dokumentierte Ausnahme mit Auth und Monitoring.</li>
+</ol>
+
+<h2>7. Diagnose: Werkzeuge und Befehle</h2>
+<ul>
+  <li><code>nslookup</code> / <code>nameresolver</code> aus der Kudu-Konsole oder einem Pod: zeigt, ob die private IP kommt.</li>
+  <li><code>tcpping &lt;host&gt;:443</code> (App Service Kudu) oder <code>nc -vz</code>: prüft TCP-Erreichbarkeit.</li>
+  <li><b>Network Watcher – IP Flow Verify:</b> sagt, welche NSG-Regel ein Paket erlaubt oder blockiert.</li>
+  <li><b>Effective Security Rules</b> und <b>Effective Routes</b> einer NIC: <code>az network nic list-effective-nsg</code>, <code>az network nic show-effective-route-table</code>.</li>
+  <li><b>Connection Troubleshoot</b>: testet den ganzen Weg von Quelle zu Ziel.</li>
+  <li><b>VNet Flow Logs</b> mit Traffic Analytics: wer spricht mit wem. NSG Flow Logs werden abgelöst.</li>
+  <li><code>az network private-endpoint dns-zone-group list</code> und <code>az network private-dns record-set a list</code>: fehlen Records?</li>
+  <li><b>Diagnose-Detektoren</b> der Function App unter „Diagnose and solve problems“ (Netzwerk- und Key-Vault-Detektoren).</li>
+</ul>
+
+<h2>8. Senior-Punkte</h2>
+<div class="senior">
+<ol>
+  <li><b>DNS ist der schwierige Teil,</b> nicht der Private Endpoint. Zonen zentral, Records automatisch per Zone Group oder Policy.</li>
+  <li><b>Private Endpoint plus Public Access aus.</b> Sonst ist es nur ein zusätzlicher Weg, kein geschlossener.</li>
+  <li><b>Ausnahmen bewusst entscheiden:</b> Nicht jeder Dienst kann privat sein. Ausnahme dokumentieren, mit Identität absichern, überwachen.</li>
+  <li><b>Adressraum früh planen:</b> keine Überschneidungen mit anderen VNets und On-Prem, Subnetze mit Reserve für Skalierung.</li>
+  <li><b>Defense in Depth:</b> Netzwerk (PE, NSG) und Identität (Managed Identity, RBAC) zusammen. Netzwerk allein ist keine Autorisierung.</li>
+  <li><b>Hub-Spoke ab mehreren Workloads:</b> zentrale Firewall, DNS und Egress. Für ein einzelnes Projekt reicht oft ein VNet.</li>
+</ol>
+</div>
+
+<h2>9. Aus dem Projekt</h2>
+<p>„Bei DigiSanté sind Functions, Storage, Key Vault und Event Hub nur über Private Endpoints erreichbar; Event Grid ist eine bewusste Ausnahme mit öffentlichem Zugriff.“ <span class="small">(Prüfen und durch dein echtes Beispiel ersetzen.)</span></p>
+
+<h2>10. Fallen</h2>
+<div class="trap">
+<ul>
+  <li>„Ein Private Endpoint sperrt den öffentlichen Zugang.“ → <b>Falsch.</b> Public Network Access muss man extra abschalten.</li>
+  <li>„Service Endpoint und Private Endpoint sind dasselbe.“ → <b>Falsch.</b> SE nutzt die öffentliche IP des Dienstes, PE eine private IP im VNet.</li>
+  <li>„VNet Integration macht die Function privat erreichbar.“ → <b>Falsch.</b> Sie wirkt nur ausgehend. Eingehend braucht es einen Private Endpoint.</li>
+  <li>„Peering ist transitiv.“ → <b>Falsch.</b> Spoke zu Spoke braucht Routing über eine Firewall oder Virtual WAN.</li>
+  <li>„Im Code muss ich die privatelink-URL eintragen.“ → <b>Falsch.</b> Die normale URL bleibt. DNS löst sie auf die private IP auf.</li>
+  <li>„Auto-Registration trägt Private Endpoints ein.“ → <b>Falsch.</b> Nur VMs. PEs brauchen eine DNS Zone Group oder Policy.</li>
+  <li>„Ein /29 reicht für 8 Ressourcen.“ → <b>Falsch.</b> Azure reserviert 5 IPs, es bleiben 3.</li>
+</ul>
+</div>
+
+<h2>11. Fragen</h2>
+<details><summary>Was ist ein VNet?</summary><p>Ein privates, isoliertes Netz in einer Region mit eigenem Adressraum. Es verbindet Azure-Ressourcen ohne Internet.</p></details>
+<details><summary>Wie viele IPs reserviert Azure pro Subnetz?</summary><p>Fünf: die ersten vier und die letzte Adresse.</p></details>
+<details><summary>Was ist eine NSG?</summary><p>Eine stateful Regelliste auf Subnetz oder NIC. Regeln nach Priorität, die erste passende gewinnt.</p></details>
+<details><summary>Welche Default-Regeln hat eine NSG?</summary><p>VNet-intern erlaubt, Load Balancer eingehend erlaubt, Internet ausgehend erlaubt, alles andere verboten.</p></details>
+<details><summary>Was sind Service Tags?</summary><p>Von Microsoft gepflegte IP-Gruppen für Dienste, z. B. Storage oder AzureKeyVault. Man nutzt sie statt fester IPs in NSG-Regeln.</p></details>
+<details><summary>Was ist ein Private Endpoint?</summary><p>Eine NIC mit privater IP im eigenen Subnetz, die über Private Link auf eine bestimmte Ressource zeigt.</p></details>
+<details><summary>Private Endpoint vs Service Endpoint?</summary><p>PE: private IP, pro Ressource, auch von On-Prem, kostet. SE: öffentlicher Endpoint über Backbone, pro Subnetz, gratis, nicht von On-Prem.</p></details>
+<details><summary>Wie funktioniert DNS mit Private Endpoints?</summary><p>Der öffentliche Name zeigt per CNAME auf privatelink.*. Eine verlinkte Private DNS Zone löst diesen auf die private IP auf.</p></details>
+<details><summary>Was ist 168.63.129.16?</summary><p>Die virtuelle IP von Azure DNS und Plattform-Diensten. Eigene DNS-Server sollten Azure-Zonen dorthin weiterleiten.</p></details>
+<details><summary>Wie lösen On-Prem-Clients Private Endpoints auf?</summary><p>Über Azure DNS Private Resolver mit Inbound Endpoint und einen Conditional Forwarder für die privatelink-Zonen.</p></details>
+<details><summary>Was ist eine DNS Zone Group?</summary><p>Eine Verknüpfung des Private Endpoints mit einer Private DNS Zone. Sie legt A-Records automatisch an und löscht sie wieder.</p></details>
+<details><summary>Was ist VNet Integration bei Functions?</summary><p>Ausgehender Verkehr der App läuft über ein delegiertes Subnetz ins VNet. Sie macht die App nicht privat erreichbar.</p></details>
+<details><summary>Welche Pläne unterstützen VNet Integration?</summary><p>Flex Consumption, Elastic Premium und Dedicated. Der klassische Consumption-Plan nicht.</p></details>
+<details><summary>Was macht vnetRouteAllEnabled?</summary><p>Es schickt allen ausgehenden Verkehr ins VNet, nicht nur private Ziele. Dann gelten NSG, UDR, Firewall und NAT Gateway.</p></details>
+<details><summary>Wie mache ich eine Function nur privat erreichbar?</summary><p>Private Endpoint auf die App (privatelink.azurewebsites.net) und Public Network Access auf der App abschalten.</p></details>
+<details><summary>Was braucht der Functions-Storage hinter einem PE?</summary><p>PEs für blob, queue und table, bei Azure-Files-Content-Share auch file, plus VNet Integration der App.</p></details>
+<details><summary>Was ist Hub-Spoke?</summary><p>Ein zentrales Hub-VNet mit Firewall, Gateway und DNS, verbunden per Peering mit Workload-VNets (Spokes).</p></details>
+<details><summary>Ist VNet Peering transitiv?</summary><p>Nein. Spoke-zu-Spoke-Verkehr braucht eine UDR auf eine Firewall oder NVA im Hub, oder Virtual WAN.</p></details>
+<details><summary>NSG vs Azure Firewall?</summary><p>NSG: L3/L4 pro Subnetz, gratis. Azure Firewall: zentral, FQDN- und Applikationsregeln, Threat Intelligence, Logging.</p></details>
+<details><summary>Wirken NSGs auf Private Endpoints?</summary><p>Nur wenn Network Policies im PE-Subnetz aktiviert sind. Standardmässig nicht.</p></details>
+<details><summary>Wie prüfen Sie, ob eine NSG ein Paket blockiert?</summary><p>Network Watcher IP Flow Verify und Effective Security Rules. Dazu VNet Flow Logs.</p></details>
+<details><summary>Szenario: Nach Umstellung auf Private Endpoint bekommt die Function 403 vom Storage. Was prüfen Sie?</summary><p>Zuerst DNS aus der App: kommt die private IP? Dann Zone-Link, Zone Group, VNet Integration mit Route All und die NSG.</p></details>
+<details><summary>Szenario: Zwei Spokes können nicht miteinander sprechen, beide sind mit dem Hub gepeert. Warum?</summary><p>Peering ist nicht transitiv. Lösung: UDR in beiden Spokes auf die Hub-Firewall und Firewall-Regeln, oder direktes Peering.</p></details>
+<details><summary>Szenario: Ein Dienst kann sein Event nur über einen öffentlichen Endpoint zustellen. Wie gehen Sie vor?</summary><p>Bewusste Ausnahme für genau diesen Dienst. Mit Entra-Auth oder Managed Identity absichern, Zugriff loggen und die Ausnahme dokumentieren.</p></details>
+
+</body>
+</html>

@@ -2,7 +2,7 @@
 
 Generated from content/syllabus.json. Priority 1 = asked in almost every interview. Mark: **Projekt** = shown in CV/Gmail · **— kein Projekt** = no project experience · **? prüfen** = unclear, you decide.
 
-404 topics · P1 239 · P2 125 · P3 40 · written 95
+404 topics · P1 239 · P2 125 · P3 40 · written 110
 
 ## Java 21 (core + advanced) (40)
 Sources: Java SE 21/25 docs (docs.oracle.com) · JVM Specification · OpenJDK source + JEPs (openjdk.org) · Oracle Java SE 21 Developer exam 1Z0-830 topics
@@ -286,13 +286,13 @@ Sources: Apache Spark 3.5/4 documentation · Databricks Spark developer exam top
 
 | P | Topic | Project | Written |
 |---|---|---|---|
-| 1 | Spark-Architektur: Driver, Executor, Cluster Manager | Projekt |  |
-| 1 | RDD vs DataFrame vs Dataset | Projekt |  |
+| 1 | Spark-Architektur: Driver, Executor, Cluster Manager | Projekt | ✓ |
+| 1 | RDD vs DataFrame vs Dataset | Projekt | ✓ |
 | 1 | Lazy Evaluation, DAG, Jobs, Stages, Tasks | Projekt |  |
 | 1 | Narrow vs Wide Transformations | Projekt |  |
 | 1 | Shuffle: was es ist und warum es teuer ist | Projekt |  |
-| 1 | Partitionen: repartition vs coalesce | Projekt |  |
-| 1 | Joins: Broadcast, Sort-Merge, Shuffle Hash | Projekt |  |
+| 1 | Partitionen: repartition vs coalesce | Projekt | ✓ |
+| 1 | Joins: Broadcast, Sort-Merge, Shuffle Hash | Projekt | ✓ |
 | 1 | Data Skew und Salting | ? prüfen |  |
 | 1 | Adaptive Query Execution | ? prüfen |  |
 | 1 | Spark-Speicher und OutOfMemory | ? prüfen |  |
@@ -308,7 +308,7 @@ Sources: Apache Iceberg spec and docs (iceberg.apache.org)
 
 | P | Topic | Project | Written |
 |---|---|---|---|
-| 1 | Was ist ein Table Format? Iceberg-Grundlagen | Projekt |  |
+| 1 | Was ist ein Table Format? Iceberg-Grundlagen | Projekt | ✓ |
 | 1 | Metadaten: metadata.json, Manifest List, Manifests | ? prüfen |  |
 | 1 | Snapshots und Time Travel | ? prüfen |  |
 | 1 | Hidden Partitioning und Partition Evolution | Projekt |  |
@@ -394,15 +394,15 @@ Sources: Microsoft Learn: AZ-204 and AZ-305 skills outlines · Azure Architectur
 | P | Topic | Project | Written |
 |---|---|---|---|
 | 1 | Azure-Grundlagen: Tenant bis Region | ? prüfen | ✓ |
-| 1 | Compute: Functions vs Container Apps vs App Service vs AKS | Projekt |  |
-| 1 | Azure Functions: Trigger, Bindings, Pläne, Durable Functions | Projekt |  |
+| 1 | Compute: Functions vs Container Apps vs App Service vs AKS | Projekt | ✓ |
+| 1 | Azure Functions: Trigger, Bindings, Pläne, Durable Functions | Projekt | ✓ |
 | 1 | Event Grid vs Event Hub vs Service Bus | Projekt |  |
-| 1 | Blob Storage: Tiers, SAS, Lifecycle, ADLS Gen2 | Projekt |  |
-| 1 | VNet, Subnetze, NSG, Private Endpoints, Private DNS | Projekt |  |
-| 1 | Entra ID, Managed Identity, Workload Identity, RBAC | Projekt |  |
+| 1 | Blob Storage | Projekt | ✓ |
+| 1 | Azure Networking | Projekt | ✓ |
+| 1 | Azure Identity | Projekt | ✓ |
 | 1 | Key Vault: Secrets, Keys, Zertifikate | Projekt |  |
-| 1 | Azure Monitor, Log Analytics, Application Insights | Projekt |  |
-| 1 | AKS: Node Pools, Netzwerk, Identity, ACR | Projekt |  |
+| 1 | Azure Monitor, Log Analytics, Application Insights | Projekt | ✓ |
+| 1 | AKS: Node Pools, Netzwerk, Identity, ACR | Projekt | ✓ |
 | 1 | Azure DevOps: Pipelines, Repos, Environments | Projekt |  |
 | 2 | Defender for Cloud und Malware Scanning | Projekt |  |
 | 2 | Daten-Services: ADF, Synapse, Fabric, Databricks | — kein Projekt |  |
@@ -509,9 +509,9 @@ Sources: angular.dev guides (v20) · RxJS docs
 | 1 | RxJS-Operatoren: switchMap, mergeMap, concatMap, exhaustMap | Projekt | ✓ |
 | 1 | Subject, BehaviorSubject, ReplaySubject | Projekt | ✓ |
 | 1 | Routing, Guards, Resolver, Lazy Loading | Projekt | ✓ |
-| 1 | Reactive Forms vs Template Forms | Projekt |  |
-| 1 | HttpClient und Interceptors | Projekt |  |
-| 1 | Angular 14 bis 20: was ist neu | ? prüfen |  |
+| 1 | Reactive Forms vs Template Forms | Projekt | ✓ |
+| 1 | HttpClient und Interceptors | Projekt | ✓ |
+| 1 | Angular 14 bis 20: was ist neu | ? prüfen | ✓ |
 | 2 | Performance: trackBy, @defer, Bundle-Grösse | ? prüfen |  |
 | 2 | Angular-Tests | ? prüfen |  |
 
