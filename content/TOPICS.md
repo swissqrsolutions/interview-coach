@@ -2,7 +2,7 @@
 
 Generated from content/syllabus.json. Priority 1 = asked in almost every interview. Mark: **Projekt** = shown in CV/Gmail · **— kein Projekt** = no project experience · **? prüfen** = unclear, you decide.
 
-404 topics · P1 239 · P2 125 · P3 40 · written 93
+404 topics · P1 239 · P2 125 · P3 40 · written 95
 
 ## Java 21 (core + advanced) (40)
 Sources: Java SE 21/25 docs (docs.oracle.com) · JVM Specification · OpenJDK source + JEPs (openjdk.org) · Oracle Java SE 21 Developer exam 1Z0-830 topics
@@ -393,7 +393,7 @@ Sources: Microsoft Learn: AZ-204 and AZ-305 skills outlines · Azure Architectur
 
 | P | Topic | Project | Written |
 |---|---|---|---|
-| 1 | Grundlagen: Tenant, Subscription, Resource Group, Regionen (Schweiz) | ? prüfen |  |
+| 1 | Azure-Grundlagen: Tenant bis Region | ? prüfen | ✓ |
 | 1 | Compute: Functions vs Container Apps vs App Service vs AKS | Projekt |  |
 | 1 | Azure Functions: Trigger, Bindings, Pläne, Durable Functions | Projekt |  |
 | 1 | Event Grid vs Event Hub vs Service Bus | Projekt |  |
@@ -508,7 +508,7 @@ Sources: angular.dev guides (v20) · RxJS docs
 | 1 | RxJS: Observable, Subscription, Hot vs Cold | Projekt | ✓ |
 | 1 | RxJS-Operatoren: switchMap, mergeMap, concatMap, exhaustMap | Projekt | ✓ |
 | 1 | Subject, BehaviorSubject, ReplaySubject | Projekt | ✓ |
-| 1 | Routing, Guards, Resolver, Lazy Loading | Projekt |  |
+| 1 | Routing, Guards, Resolver, Lazy Loading | Projekt | ✓ |
 | 1 | Reactive Forms vs Template Forms | Projekt |  |
 | 1 | HttpClient und Interceptors | Projekt |  |
 | 1 | Angular 14 bis 20: was ist neu | ? prüfen |  |

@@ -34,7 +34,9 @@ Copy their `<head>`/`<style>` block, classes (`.kern`, `.senior`, `.trap`, `.sma
 
 ## Facts
 - Current versions (e.g. Java 21/25, PostgreSQL 17, Kafka 4.x with KRaft, Kubernetes 1.3x, Angular 20, Spring Boot 3.x).
-- Official docs and specs only (list them under the title in the `.small` line). No outdated tutorials as sources. Verify with WebFetch when unsure.
+- Official docs and specs only (list them under the title in the `.small` line). No outdated tutorials as sources.
+- QUALITY RULE: every version number, default value, limit and "since X" claim must be checked with WebFetch on the official page. If you cannot confirm it, either drop it or write it without the number. Do not leave "from memory" facts in the page.
+- Before finishing, re-read each page once as an interviewer: is every answer correct, complete, and current? Fix what is wrong.
 
 ## Examples (important)
 - Do NOT install or download anything. Do not spend time on tooling.
