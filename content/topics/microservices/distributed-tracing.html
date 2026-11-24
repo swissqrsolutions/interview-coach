@@ -1,0 +1,247 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Distributed Tracing und Korrelation</title>
+<style>
+  body { font: 17px/1.55 -apple-system, system-ui, sans-serif; max-width: 760px; margin: 0 auto; padding: 16px; color: #1d1d1f; }
+  h1 { font-size: 28px; margin: 8px 0 4px; }
+  h2 { font-size: 21px; margin: 32px 0 8px; padding-top: 12px; border-top: 2px solid #e5e5ea; }
+  .kern { background: #eef6ff; border-left: 4px solid #0a66c2; padding: 10px 14px; border-radius: 6px; }
+  .senior { background: #f0faf0; border-left: 4px solid #2e7d32; padding: 10px 14px; border-radius: 6px; }
+  .trap { background: #fff4f2; border-left: 4px solid #c62828; padding: 10px 14px; border-radius: 6px; }
+  code { background: #f2f2f7; padding: 1px 5px; border-radius: 4px; font-size: 15px; }
+  pre { background: #1e1e1e; color: #e6e6e6; padding: 12px; border-radius: 8px; overflow-x: auto; font-size: 13.5px; line-height: 1.45; }
+  svg { width: 100%; height: auto; display: block; margin: 10px 0; }
+  ol li, ul li { margin: 4px 0; }
+  details { border: 1px solid #e5e5ea; border-radius: 8px; padding: 8px 12px; margin: 6px 0; }
+  summary { font-weight: 600; cursor: pointer; }
+  details p { margin: 6px 0 2px; }
+  .small { color: #6e6e73; font-size: 14px; }
+</style>
+</head>
+<body>
+
+<h1>Distributed Tracing und Korrelation</h1>
+<p class="small">Microservices · Tier 1 · Quellen: W3C Trace Context (traceparent, tracestate), W3C Baggage, OpenTelemetry-Doku (Concepts: Traces, Context Propagation, Sampling, Collector, Java Agent, SDK-Umgebungsvariablen), Spring Boot 3 Referenz (Actuator: Tracing), Micrometer Tracing Doku</p>
+
+<div class="kern">
+<b>Kern:</b> <b>Distributed Tracing</b> ist das Verfolgen eines Requests über alle Services, die er berührt. Es löst das Problem, dass ein Fehler oder eine Verzögerung in einem von zehn Services sonst unsichtbar bleibt. Ein <b>Trace</b> ist der ganze Weg, ein <b>Span</b> ist ein Arbeitsschritt darin. Die <b>Trace-ID</b> reist im HTTP-Header <code>traceparent</code> mit und erscheint in jeder Logzeile.
+</div>
+
+<h2>1. Wo sitzt Tracing im System?</h2>
+<svg viewBox="0 0 720 300" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="a" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="10" y="20" width="140" height="56" rx="8" fill="#fff" stroke="#555"/><text x="80" y="44" text-anchor="middle">Gateway</text><text x="80" y="62" text-anchor="middle" font-size="12">SDK / Agent</text>
+  <line x1="150" y1="48" x2="198" y2="48" stroke="#555" stroke-width="2" marker-end="url(#a)"/><text x="174" y="40" text-anchor="middle" font-size="11">traceparent</text>
+  <rect x="200" y="20" width="140" height="56" rx="8" fill="#fff" stroke="#555"/><text x="270" y="44" text-anchor="middle">Order</text><text x="270" y="62" text-anchor="middle" font-size="12">SDK / Agent</text>
+  <line x1="340" y1="48" x2="388" y2="48" stroke="#555" stroke-width="2" marker-end="url(#a)"/><text x="364" y="40" text-anchor="middle" font-size="11">traceparent</text>
+  <rect x="390" y="20" width="140" height="56" rx="8" fill="#fff" stroke="#555"/><text x="460" y="44" text-anchor="middle">Payment</text><text x="460" y="62" text-anchor="middle" font-size="12">SDK / Agent</text>
+  <line x1="80" y1="76" x2="300" y2="146" stroke="#555" stroke-width="1.5" marker-end="url(#a)"/>
+  <line x1="270" y1="76" x2="320" y2="146" stroke="#555" stroke-width="1.5" marker-end="url(#a)"/>
+  <line x1="460" y1="76" x2="350" y2="146" stroke="#555" stroke-width="1.5" marker-end="url(#a)"/><text x="470" y="120" font-size="12">OTLP (4317 gRPC / 4318 HTTP)</text>
+  <rect x="200" y="148" width="250" height="60" rx="8" fill="#dbe9fb" stroke="#0a66c2"/><text x="325" y="172" text-anchor="middle" font-weight="700">OTel Collector</text><text x="325" y="192" text-anchor="middle" font-size="12">receive → process → export</text>
+  <line x1="325" y1="208" x2="200" y2="238" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <line x1="325" y1="208" x2="450" y2="238" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="80" y="240" width="220" height="50" rx="8" fill="#0a66c2"/><text x="190" y="262" text-anchor="middle" fill="#fff" font-weight="700">Tracing-Backend</text><text x="190" y="280" text-anchor="middle" fill="#fff" font-size="12">Jaeger · Tempo · App Insights</text>
+  <rect x="360" y="240" width="220" height="50" rx="8" fill="#e8f5e9" stroke="#2e7d32"/><text x="470" y="262" text-anchor="middle" font-weight="700">Logs mit traceId</text><text x="470" y="280" text-anchor="middle" font-size="12">Loki · Elastic · Log Analytics</text>
+  <rect x="590" y="20" width="120" height="56" rx="8" fill="#f7f7fa" stroke="#999" stroke-dasharray="5 4"/><text x="650" y="44" text-anchor="middle" font-size="12">Kafka-Header</text><text x="650" y="62" text-anchor="middle" font-size="12">auch traceparent</text>
+  <line x1="530" y1="48" x2="588" y2="48" stroke="#999" stroke-width="1.5" marker-end="url(#a)"/>
+</svg>
+<ol>
+  <li>Jeder Service hat ein <b>OpenTelemetry SDK</b> oder den <b>Java Agent</b>. Er erzeugt Spans automatisch für HTTP, JDBC und Kafka.</li>
+  <li>Beim Aufruf schreibt der Service den Header <b>traceparent</b>. Der nächste Service liest ihn und hängt sich an denselben Trace.</li>
+  <li>Bei Messaging reist der Kontext in den <b>Message-Headern</b>, z. B. Kafka-Record-Header.</li>
+  <li>Die Services senden ihre Spans per <b>OTLP</b> (OpenTelemetry Protocol) an den <b>Collector</b>.</li>
+  <li>Der Collector filtert, sampelt und exportiert an ein <b>Backend</b> wie Jaeger, Grafana Tempo oder Azure Application Insights.</li>
+  <li>Die Logs enthalten dieselbe <b>traceId</b>. So springt man vom Trace zu den Logs und zurück.</li>
+</ol>
+
+<h2>2. Die Reise eines Requests (die Geschichte zum Merken)</h2>
+<svg viewBox="0 0 720 290" font-family="-apple-system, system-ui, sans-serif" font-size="13">
+  <text x="10" y="22" font-weight="700" font-size="14">Trace 6513…b438 (eine Trace-ID für alles)</text>
+  <line x1="150" y1="40" x2="710" y2="40" stroke="#999"/><text x="150" y="34" font-size="11">0 ms</text><text x="690" y="34" font-size="11">t</text>
+  <text x="10" y="72">Gateway</text><rect x="150" y="55" width="540" height="26" rx="4" fill="#0a66c2"/><text x="160" y="73" fill="#fff">SERVER POST /checkout (Root Span)</text>
+  <text x="10" y="112">Gateway</text><rect x="175" y="95" width="500" height="26" rx="4" fill="#5b8fd4"/><text x="185" y="113" fill="#fff">CLIENT POST order</text>
+  <text x="10" y="152">Order</text><rect x="190" y="135" width="470" height="26" rx="4" fill="#dbe9fb" stroke="#0a66c2"/><text x="200" y="153">SERVER POST /orders</text>
+  <text x="10" y="192">Order</text><rect x="220" y="175" width="110" height="26" rx="4" fill="#eee" stroke="#777"/><text x="230" y="193">JDBC INSERT</text>
+  <rect x="350" y="175" width="290" height="26" rx="4" fill="#dbe9fb" stroke="#0a66c2"/><text x="360" y="193">CLIENT POST payment</text>
+  <text x="10" y="232">Payment</text><rect x="365" y="215" width="260" height="26" rx="4" fill="#fff4f2" stroke="#c62828"/><text x="375" y="233" fill="#c62828">SERVER POST /payments · ERROR</text>
+  <text x="150" y="275" font-size="12">Jede Zeile ist ein Span. Kind-Spans zeigen über parent-id auf ihren Eltern-Span.</text>
+</svg>
+<ol>
+  <li><b>Der Request kommt an.</b> Das Gateway findet keinen <code>traceparent</code>. Es startet einen neuen Trace mit einer zufälligen <b>Trace-ID</b> (16 Bytes). Der erste Span heisst <b>Root Span</b>.</li>
+  <li><b>Die Sampling-Entscheidung fällt.</b> Der <b>Sampler</b> entscheidet am Anfang, ob der Trace gespeichert wird. Das Ergebnis steht im Flag <code>01</code> (sampled).</li>
+  <li><b>Das Gateway ruft Order auf.</b> Es erzeugt einen <b>CLIENT-Span</b> und schreibt <code>traceparent: 00-&lt;trace-id&gt;-&lt;span-id&gt;-01</code> in den Header. Das heisst <b>Inject</b>.</li>
+  <li><b>Order liest den Header.</b> Das heisst <b>Extract</b>. Order erzeugt einen <b>SERVER-Span</b> mit derselben Trace-ID. Seine <b>parent-id</b> ist die Span-ID des Aufrufers.</li>
+  <li><b>Order schreibt Logs.</b> Die Trace-ID und Span-ID stehen im <b>MDC</b> (Mapped Diagnostic Context). Jede Logzeile trägt sie automatisch.</li>
+  <li><b>Payment scheitert.</b> Der Span bekommt den Status <b>Error</b> und das Exception-Event. Im Backend ist der rote Span sofort sichtbar.</li>
+  <li><b>Export.</b> Jeder Span geht nach seinem Ende gebündelt (<b>BatchSpanProcessor</b>) an den Collector. Das Backend setzt den Baum über die parent-ids zusammen.</li>
+</ol>
+
+<h2>3. Beispiel: traceparent über 3 Services</h2>
+<pre>TP = re.compile(r"^00-([0-9a-f]{32})-([0-9a-f]{16})-([0-9a-f]{2})$")
+
+def start_span(service, name, headers):
+    m = TP.match(headers.get("traceparent", ""))
+    if m:  trace_id, parent, flags = m.groups()             # Trace fortsetzen (Extract)
+    else:  trace_id, parent, flags = new_id(16), None, "01" # Root Span: neuer Trace
+    span = {"service": service, "trace": trace_id, "id": new_id(8), "parent": parent}
+    ...
+
+def outgoing(span, flags):                                   # Inject
+    return {"traceparent": f"00-{span['trace']}-{span['id']}-{flags}"}
+
+# gateway() -> order(outgoing(...)) -> payment(outgoing(...)); payment wirft 402</pre>
+<pre>[gateway ] traceId=6513270e269e0d37f2a74de452e6b438 spanId=0c5c7fd0a6a3a450 request in (no traceparent -> new trace)
+           -> calls order with traceparent:   00-6513270e269e0d37f2a74de452e6b438-0c5c7fd0a6a3a450-01
+[order   ] traceId=6513270e269e0d37f2a74de452e6b438 spanId=d23f0824128b2f33 order 1001 created
+           -> calls payment with traceparent: 00-6513270e269e0d37f2a74de452e6b438-d23f0824128b2f33-01
+[payment ] traceId=6513270e269e0d37f2a74de452e6b438 spanId=1818e811892f902b charge 49.90 CHF -> declined
+[order   ] traceId=6513270e269e0d37f2a74de452e6b438 spanId=d23f0824128b2f33 payment returned 402
+
+Span tree (one trace, parent -> child):
+gateway: POST /checkout  span=0c5c7fd0a6a3a450 parent=-  31 ms
+  order: POST /orders  span=d23f0824128b2f33 parent=0c5c7fd0a6a3a450  31 ms
+    payment: POST /payments  span=1818e811892f902b parent=d23f0824128b2f33  31 ms  ERROR</pre>
+<p class="small">Echte Ausgabe, Python 3.12 (Simulation ohne OpenTelemetry, Seed 7). Vereinfacht: echte SDKs erzeugen zusätzlich je einen CLIENT-Span pro Aufruf.</p>
+<ol>
+  <li>Alle drei Services loggen dieselbe <b>traceId</b>. Eine Suche nach dieser ID findet alle Logzeilen des Requests.</li>
+  <li>Jeder Service hat eine eigene <b>spanId</b>. Die parent-id im Header ist immer die Span-ID des Aufrufers.</li>
+  <li>Der Span-Baum entsteht nur aus <code>parent</code>-Verweisen. Kein Service kennt den ganzen Baum.</li>
+  <li>Der Fehler steht im Span von Payment. Order sieht nur den Status 402.</li>
+</ol>
+<p><b>Konfiguration in Spring Boot 3</b> (Micrometer Tracing mit OTel-Bridge; Laufzeit-Ausgabe nicht gezeigt):</p>
+<pre>&lt;!-- pom.xml --&gt;
+spring-boot-starter-actuator
+io.micrometer:micrometer-tracing-bridge-otel
+io.opentelemetry:opentelemetry-exporter-otlp
+
+# application.yml
+spring.application.name: order-service
+management:
+  tracing:
+    sampling:
+      probability: 1.0          # Standard 0.1 = 10 %
+  otlp:
+    tracing:
+      endpoint: http://otel-collector:4318/v1/traces
+# Logs: Spring Boot 3.2+ fügt traceId/spanId automatisch in das Log-Muster ein.</pre>
+<pre># Alternative ohne Code: OpenTelemetry Java Agent
+java -javaagent:opentelemetry-javaagent.jar \
+     -Dotel.service.name=order-service \
+     -Dotel.exporter.otlp.endpoint=http://otel-collector:4317 \
+     -Dotel.traces.sampler=parentbased_traceidratio \
+     -Dotel.traces.sampler.arg=0.1 \
+     -jar order.jar</pre>
+
+<h2>4. Details, die Interviewer fragen</h2>
+<ol>
+  <li><b>traceparent-Format:</b> <code>version-traceid-parentid-flags</code>, z. B. <code>00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01</code>. Trace-ID: 16 Bytes (32 Hex). Parent-ID: 8 Bytes (16 Hex). Nur Nullen sind ungültig.</li>
+  <li><b>trace-flags:</b> Das Bit <code>01</code> heisst <b>sampled</b>. Der Aufrufer hat den Trace aufgezeichnet. Der Empfänger folgt dieser Entscheidung meist.</li>
+  <li><b>tracestate:</b> Ein zweiter Header für herstellerspezifische Daten, z. B. von Datadog oder Dynatrace. Er ist optional.</li>
+  <li><b>Baggage:</b> <b>Baggage</b> ist ein eigener W3C-Header für Schlüssel-Wert-Paare, z. B. <code>tenantId</code>. Er reist mit, ist aber kein Teil des Spans. Keine Geheimnisse hineinschreiben.</li>
+  <li><b>B3:</b> <b>B3</b> ist das ältere Header-Format von Zipkin (<code>X-B3-TraceId</code>). Heute ist W3C Standard. Gemischte Landschaften brauchen beide Propagatoren.</li>
+  <li><b>Span-Inhalt:</b> Ein Span hat Name, Start, Ende, <b>Attribute</b> (Schlüssel-Wert), <b>Events</b> (Zeitpunkte, z. B. Exception), <b>Status</b> (Unset, Ok, Error) und <b>Links</b> zu anderen Traces.</li>
+  <li><b>Span Kind:</b> SERVER (eingehend), CLIENT (ausgehend), PRODUCER und CONSUMER (Messaging), INTERNAL (intern). Das Backend leitet daraus die Service-Map ab.</li>
+  <li><b>Semantic Conventions:</b> OpenTelemetry legt Attributnamen fest, z. B. <code>http.request.method</code>, <code>http.response.status_code</code>, <code>db.system</code>. So verstehen alle Backends die Daten gleich.</li>
+  <li><b>OTel-Bausteine:</b> Die <b>API</b> ist die Schnittstelle im Code. Das <b>SDK</b> implementiert sie (Sampler, Processor, Exporter). Der <b>Agent</b> instrumentiert per Bytecode ohne Code-Änderung. Der <b>Collector</b> ist ein eigener Prozess zwischen App und Backend.</li>
+  <li><b>Head-based Sampling:</b> Die Entscheidung fällt am Anfang des Traces. Es ist billig, verpasst aber seltene Fehler. Standard im OTel SDK: <code>parentbased_always_on</code>.</li>
+  <li><b>Tail-based Sampling:</b> Die Entscheidung fällt nach dem ganzen Trace, im Collector (<code>tail_sampling</code>-Processor). So behält man alle Fehler und langsamen Traces. Dafür braucht der Collector Speicher, und alle Spans eines Traces müssen zur selben Instanz.</li>
+  <li><b>ParentBased Sampler:</b> Er übernimmt die Entscheidung des Aufrufers. So gibt es keine halben Traces.</li>
+  <li><b>Correlation ID vs Trace-ID:</b> Eine <b>Correlation ID</b> ist eine selbst erzeugte ID im Header, z. B. <code>X-Correlation-ID</code>. Die Trace-ID ersetzt sie meist. Eine fachliche ID (Auftragsnummer) bleibt trotzdem nützlich, oft als Baggage oder Attribut.</li>
+  <li><b>Micrometer Tracing:</b> Micrometer Tracing ist die Fassade in Spring Boot 3. Es ersetzt <b>Spring Cloud Sleuth</b>. Unter ihm liegt eine <b>Bridge</b>: OpenTelemetry oder Brave.</li>
+  <li><b>Observation API:</b> Mit <code>@Observed</code> oder <code>Observation.createNotStarted(...)</code> erzeugt Spring einen Span <b>und</b> eine Timer-Metrik in einem Schritt.</li>
+  <li><b>Kontext über Threads:</b> Der Kontext liegt in einem ThreadLocal. Bei <code>@Async</code>, eigenen Executors und Reactor geht er verloren. Lösung: <b>Context Propagation</b> (<code>ContextSnapshot</code>, <code>ContextPropagatingTaskDecorator</code>) oder ein instrumentierter Executor.</li>
+  <li><b>Kafka:</b> Mit <code>spring.kafka.template.observation-enabled=true</code> und <code>spring.kafka.listener.observation-enabled=true</code> reist der Kontext in den Record-Headern.</li>
+</ol>
+
+<h2>5. Vergleich</h2>
+<ul>
+  <li><b>Logs:</b> einzelne Ereignisse mit Text. Gut für Details. Ohne Trace-ID schwer über Services zu verbinden.</li>
+  <li><b>Metriken:</b> Zahlen über die Zeit, z. B. Fehlerrate. Billig und gut für Alarme. Sie zeigen nicht, welcher Request betroffen war.</li>
+  <li><b>Traces:</b> der Weg eines Requests mit Zeiten. Gut, um den langsamen Service zu finden. Teuer, darum Sampling.</li>
+  <li><b>Exemplars:</b> eine Trace-ID an einem Metrik-Punkt. So springt man von der Latenz-Spitze direkt zum Trace.</li>
+  <li><b>OTel Java Agent vs Micrometer Tracing:</b> Der Agent braucht keinen Code und deckt viele Bibliotheken ab. Micrometer ist Spring-nativ und verbindet Traces mit Metriken. Beide gleichzeitig erzeugen doppelte Spans.</li>
+  <li><b>Collector vs direkter Export:</b> Direkt ins Backend ist einfacher. Der Collector entkoppelt, puffert, sampelt und wechselt das Backend ohne neuen Build.</li>
+  <li><b>Jaeger, Zipkin, Tempo, Application Insights:</b> alles Backends. OpenTelemetry ist nur das Format und die Sammlung, kein Speicher.</li>
+</ul>
+
+<h2>6. In der Produktion</h2>
+<ol>
+  <li><b>Zerrissene Traces:</b> Ein Service ohne Instrumentierung oder ein Proxy verwirft den Header. Der Trace zerfällt in zwei. Lösung: alle Hops instrumentieren, Gateway und Mesh leiten <code>traceparent</code> weiter.</li>
+  <li><b>Trace endet bei @Async oder Kafka:</b> Der Kontext geht beim Thread-Wechsel verloren. Lösung: Context Propagation aktivieren, Observation für Kafka einschalten.</li>
+  <li><b>Kosten explodieren:</b> 100 % Sampling bei hoher Last erzeugt Terabytes. Lösung: Head-Sampling 1–10 % plus Tail-Sampling für Fehler und langsame Traces.</li>
+  <li><b>Fehler fehlen im Backend:</b> Head-Sampling 10 % verwirft 90 % der Fehler-Traces. Lösung: Tail-Sampling im Collector.</li>
+  <li><b>Logs ohne traceId:</b> Ein eigenes Log-Muster überschreibt den Standard. Lösung: <code>%X{traceId}</code> und <code>%X{spanId}</code> ins Muster oder JSON-Logging mit MDC.</li>
+  <li><b>Persönliche Daten in Spans:</b> SQL-Parameter oder Header landen als Attribute im Backend. Lösung: Attribute im Collector filtern (<code>attributes</code>- oder <code>redaction</code>-Processor).</li>
+  <li><b>Collector als Engpass:</b> Ein einzelner Collector fällt aus, Spans gehen verloren. Lösung: mehrere Instanzen, Agent-plus-Gateway-Muster, Queue im Exporter.</li>
+</ol>
+
+<h2>7. Diagnose: Werkzeuge und Befehle</h2>
+<ul>
+  <li><b>Header prüfen:</b> <code>curl -v -H "traceparent: 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01" http://order/api</code> und dann die Trace-ID im Backend suchen.</li>
+  <li><b>Collector-Debug:</b> Der <code>debug</code>-Exporter gibt empfangene Spans im Collector-Log aus.</li>
+  <li><b>Agent-Debug:</b> <code>-Dotel.javaagent.debug=true</code> zeigt erzeugte Spans im App-Log.</li>
+  <li><b>Collector-Metriken:</b> <code>otelcol_receiver_accepted_spans</code>, <code>otelcol_exporter_send_failed_spans</code>, <code>otelcol_processor_dropped_spans</code> (Namen je nach Version).</li>
+  <li><b>Trace-Ansicht:</b> Jaeger oder Tempo zeigt die Wasserfall-Ansicht. Die längste Kette ohne Parallelität ist der <b>kritische Pfad</b>.</li>
+  <li><b>Log-Suche:</b> in Kibana, Loki oder Log Analytics nach <code>traceId</code> filtern.</li>
+  <li><b>Actuator:</b> <code>/actuator/metrics/http.server.requests</code> zeigt Latenzen. Mit Exemplars verlinkt Prometheus auf Traces.</li>
+</ul>
+
+<h2>8. Senior-Punkte</h2>
+<div class="senior">
+<ol>
+  <li><b>Tracing ist ein Plattform-Thema.</b> Ein Service ohne Propagation zerreisst alle Traces. Darum gilt der Standard für alle Teams, z. B. über eine gemeinsame Library oder den Agent.</li>
+  <li><b>Sampling ist eine Kostenentscheidung.</b> Head-Sampling niedrig, Tail-Sampling für Fehler. Die Regeln liegen im Collector, nicht in jeder App.</li>
+  <li><b>Logs, Metriken und Traces verbinden.</b> Gleiche <code>service.name</code>, traceId in Logs, Exemplars in Metriken. Erst dann geht man vom Alarm zum Request.</li>
+  <li><b>Herstellerneutral bleiben.</b> OTLP und der Collector erlauben einen Backend-Wechsel ohne Code-Änderung.</li>
+  <li><b>Asynchrone Grenzen bewusst modellieren.</b> Bei Batch und Fan-out passt ein <b>Span Link</b> oft besser als ein Parent.</li>
+  <li><b>Datenschutz einplanen.</b> Attribute sind Daten wie Logs. Sie brauchen Regeln für Inhalt und Aufbewahrung.</li>
+</ol>
+</div>
+
+<h2>9. Aus dem Projekt</h2>
+<p>„Bei DAZiT haben wir OpenTelemetry-Tracing und Health Checks in allen Services eingeführt. Shared Services liefen dort für mehr als fünf Teams. Mit der traceId fanden wir den Service, der einen Request langsam machte.“ <span class="small">(Prüfen und durch dein echtes Beispiel ersetzen.)</span></p>
+
+<h2>10. Fallen</h2>
+<div class="trap">
+<ul>
+  <li>„Ein Trace ist ein langer Log-Eintrag.“ → <b>Falsch.</b> Ein Trace ist ein Baum von Spans mit Zeiten und Eltern-Beziehung.</li>
+  <li>„OpenTelemetry speichert die Traces.“ → <b>Falsch.</b> OTel erzeugt und transportiert sie. Speichern tut das Backend.</li>
+  <li>„Mit 10 % Sampling sehe ich 10 % aller Fehler, das reicht.“ → <b>Riskant.</b> Seltene Fehler fehlen dann. Tail-Sampling behält sie.</li>
+  <li>„Der Kontext reist automatisch überall mit.“ → <b>Falsch.</b> Bei Thread-Wechsel, eigenen Executors und manchen Clients geht er verloren.</li>
+  <li>„Baggage ist gratis.“ → <b>Falsch.</b> Baggage reist in jedem Request mit und ist für Dritte sichtbar.</li>
+  <li>„Spring Cloud Sleuth ist der Weg in Spring Boot 3.“ → <b>Falsch.</b> Sleuth unterstützt Boot 3 nicht. Der Nachfolger ist Micrometer Tracing.</li>
+</ul>
+</div>
+
+<h2>11. Fragen</h2>
+<details><summary>Was ist Distributed Tracing?</summary><p>Das Verfolgen eines Requests über alle Services. Jeder Arbeitsschritt ist ein Span. Alle Spans teilen eine Trace-ID.</p></details>
+<details><summary>Was ist der Unterschied zwischen Trace und Span?</summary><p>Ein Trace ist der ganze Weg eines Requests. Ein Span ist ein einzelner Schritt mit Start, Ende und Eltern-Span.</p></details>
+<details><summary>Wie sieht der traceparent-Header aus?</summary><p>00-traceid-parentid-flags. Trace-ID 32 Hex-Zeichen, Parent-ID 16 Hex-Zeichen, Flags 01 für sampled.</p></details>
+<details><summary>Was bedeutet die parent-id im Header?</summary><p>Die Span-ID des Aufrufers. Der Empfänger setzt sie als Eltern seines neuen Spans.</p></details>
+<details><summary>Was ist Context Propagation?</summary><p>Das Weitergeben von Trace-ID und Span-ID über Prozessgrenzen. Inject schreibt den Header, Extract liest ihn.</p></details>
+<details><summary>Was ist tracestate?</summary><p>Ein optionaler W3C-Header für herstellerspezifische Daten. Er ergänzt traceparent.</p></details>
+<details><summary>Was ist Baggage?</summary><p>Schlüssel-Wert-Paare, die mit dem Request mitreisen, z. B. tenantId. Sie sind kein Teil des Spans und für Empfänger sichtbar.</p></details>
+<details><summary>Welche Teile hat OpenTelemetry?</summary><p>API, SDK, Instrumentierungs-Bibliotheken und Java Agent, OTLP als Protokoll und der Collector.</p></details>
+<details><summary>Was macht der OTel Collector?</summary><p>Er empfängt Telemetrie, verarbeitet sie (Batching, Filter, Sampling) und exportiert sie an ein oder mehrere Backends.</p></details>
+<details><summary>Java Agent oder SDK im Code?</summary><p>Der Agent instrumentiert ohne Code-Änderung viele Bibliotheken. Das SDK im Code erlaubt eigene Spans und feine Steuerung.</p></details>
+<details><summary>Head- vs Tail-based Sampling?</summary><p>Head entscheidet am Anfang, billig, aber blind für spätere Fehler. Tail entscheidet nach dem Trace im Collector und behält Fehler und langsame Traces.</p></details>
+<details><summary>Was macht ein ParentBased Sampler?</summary><p>Er übernimmt die Sampling-Entscheidung des Aufrufers aus dem Flag. So bleiben Traces vollständig.</p></details>
+<details><summary>Was ist Micrometer Tracing?</summary><p>Die Tracing-Fassade in Spring Boot 3. Nachfolger von Spring Cloud Sleuth. Darunter liegt eine Bridge zu OpenTelemetry oder Brave.</p></details>
+<details><summary>Wie kommt die traceId in die Logs?</summary><p>Über den MDC. Spring Boot 3.2+ fügt traceId und spanId automatisch ins Log-Muster ein, wenn Tracing aktiv ist.</p></details>
+<details><summary>Correlation ID oder Trace-ID?</summary><p>Die Trace-ID ersetzt die selbstgebaute Correlation ID meist. Eine fachliche ID als Attribut oder Baggage bleibt nützlich.</p></details>
+<details><summary>Wie funktioniert Tracing über Kafka?</summary><p>Der Producer schreibt traceparent in die Record-Header, der Consumer liest ihn. Span Kinds PRODUCER und CONSUMER. In Spring: observation-enabled einschalten.</p></details>
+<details><summary>Warum bricht der Trace bei @Async ab?</summary><p>Der Kontext liegt im ThreadLocal des alten Threads. Lösung: Context Propagation über einen TaskDecorator oder instrumentierten Executor.</p></details>
+<details><summary>Was ist ein Span Link?</summary><p>Ein Verweis auf einen Span in einem anderen Trace. Gut für Batch-Verarbeitung, wenn eine Nachricht aus vielen Quellen kommt.</p></details>
+<details><summary>Was sind Semantic Conventions?</summary><p>Festgelegte Attributnamen wie http.request.method. So verstehen alle Backends die Daten gleich.</p></details>
+<details><summary>Logs, Metriken, Traces: wofür was?</summary><p>Metriken für Alarme und Trends, Traces für den Weg und die Latenz, Logs für Details. Die traceId verbindet sie.</p></details>
+<details><summary>Was ist der Standardwert für Sampling in Spring Boot 3?</summary><p>management.tracing.sampling.probability ist 0.1, also 10 %. Lokal setzt man oft 1.0.</p></details>
+<details><summary>Szenario: Im Tracing-Backend endet jeder Trace beim Order-Service. Was prüfen Sie?</summary><p>Ob Order den Header ausgehend schreibt: instrumentierter HTTP-Client, Thread-Wechsel, Kafka-Observation. Mit curl und gesetztem traceparent testen, Agent-Debug einschalten.</p></details>
+<details><summary>Szenario: Die Tracing-Kosten verdoppeln sich jeden Monat. Was tun Sie?</summary><p>Head-Sampling senken, Tail-Sampling im Collector für Fehler und langsame Traces. Laute Spans (Health Checks) filtern. Attribute kürzen.</p></details>
+<details><summary>Szenario: Ein Kunde meldet einen Fehler mit Uhrzeit. Wie finden Sie die Ursache über 8 Services?</summary><p>Im Gateway-Log die Requests der Zeit suchen, traceId nehmen. Im Backend den Trace öffnen, den roten Span finden. Dann die Logs dieses Service nach der traceId filtern.</p></details>
+
+</body>
+</html>

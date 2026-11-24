@@ -1,0 +1,265 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Outbox Pattern und CDC</title>
+<style>
+  body { font: 17px/1.55 -apple-system, system-ui, sans-serif; max-width: 760px; margin: 0 auto; padding: 16px; color: #1d1d1f; }
+  h1 { font-size: 28px; margin: 8px 0 4px; }
+  h2 { font-size: 21px; margin: 32px 0 8px; padding-top: 12px; border-top: 2px solid #e5e5ea; }
+  .kern { background: #eef6ff; border-left: 4px solid #0a66c2; padding: 10px 14px; border-radius: 6px; }
+  .senior { background: #f0faf0; border-left: 4px solid #2e7d32; padding: 10px 14px; border-radius: 6px; }
+  .trap { background: #fff4f2; border-left: 4px solid #c62828; padding: 10px 14px; border-radius: 6px; }
+  code { background: #f2f2f7; padding: 1px 5px; border-radius: 4px; font-size: 15px; }
+  pre { background: #1e1e1e; color: #e6e6e6; padding: 12px; border-radius: 8px; overflow-x: auto; font-size: 13.5px; line-height: 1.45; }
+  svg { width: 100%; height: auto; display: block; margin: 10px 0; }
+  ol li, ul li { margin: 4px 0; }
+  details { border: 1px solid #e5e5ea; border-radius: 8px; padding: 8px 12px; margin: 6px 0; }
+  summary { font-weight: 600; cursor: pointer; }
+  details p { margin: 6px 0 2px; }
+  .small { color: #6e6e73; font-size: 14px; }
+</style>
+</head>
+<body>
+
+<h1>Outbox Pattern und Change Data Capture</h1>
+<p class="small">Microservices · Tier 1 · Quellen: microservices.io (Transactional outbox, Polling publisher, Transaction log tailing, Idempotent consumer), Debezium 3.x Doku (Outbox Event Router, PostgreSQL Connector), Debezium-Blog „Reliable Microservices Data Exchange With the Outbox Pattern“, Kleppmann DDIA Kap. 11</p>
+
+<div class="kern">
+<b>Kern:</b> Das <b>Transactional Outbox Pattern</b> schreibt Geschäftsdaten und ausgehendes Event in <b>einer lokalen Transaktion</b>. Das Event landet in einer <b>Outbox-Tabelle</b>, nicht direkt im Broker. Ein Relay oder <b>Change Data Capture</b> (CDC) bringt es danach zum Broker. So löst es das <b>Dual-Write-Problem</b>: DB und Broker sind nie dauerhaft uneinig.
+</div>
+
+<h2>1. Wo sitzt die Outbox?</h2>
+<svg viewBox="0 0 720 300" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="a" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="10" y="20" width="160" height="56" rx="8" fill="#0a66c2" stroke="#0a66c2"/><text x="90" y="44" text-anchor="middle" fill="#fff" font-weight="700">Order Service</text><text x="90" y="63" text-anchor="middle" fill="#fff" font-size="12">Geschäftslogik</text>
+  <line x1="90" y1="76" x2="90" y2="114" stroke="#555" stroke-width="2" marker-end="url(#a)"/><text x="100" y="100" font-size="12">1 Transaktion</text>
+  <rect x="10" y="116" width="300" height="110" rx="10" fill="#f7f7fa" stroke="#999" stroke-dasharray="5 4"/><text x="160" y="136" text-anchor="middle" font-weight="700">orders DB (PostgreSQL)</text>
+  <rect x="24" y="148" width="130" height="62" rx="6" fill="#fff" stroke="#555"/><text x="89" y="176" text-anchor="middle">orders</text><text x="89" y="194" text-anchor="middle" font-size="12">Geschäftsdaten</text>
+  <rect x="166" y="148" width="130" height="62" rx="6" fill="#e8f5e9" stroke="#2e7d32"/><text x="231" y="176" text-anchor="middle" font-weight="700">outbox</text><text x="231" y="194" text-anchor="middle" font-size="12">Events als Zeilen</text>
+  <line x1="310" y1="180" x2="378" y2="180" stroke="#555" stroke-width="2" marker-end="url(#a)"/><text x="344" y="170" text-anchor="middle" font-size="12">WAL</text>
+  <rect x="380" y="150" width="150" height="60" rx="8" fill="#dbe9fb" stroke="#0a66c2"/><text x="455" y="175" text-anchor="middle" font-weight="700">Relay</text><text x="455" y="194" text-anchor="middle" font-size="12">Polling oder Debezium</text>
+  <line x1="530" y1="180" x2="578" y2="180" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="580" y="150" width="130" height="60" rx="8" fill="#fff" stroke="#555"/><text x="645" y="175" text-anchor="middle" font-weight="700">Kafka</text><text x="645" y="194" text-anchor="middle" font-size="12">outbox.event.order</text>
+  <line x1="645" y1="150" x2="645" y2="78" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="560" y="20" width="150" height="56" rx="8" fill="#fff" stroke="#555"/><text x="635" y="44" text-anchor="middle" font-weight="700">Consumer</text><text x="635" y="63" text-anchor="middle" font-size="12">idempotent / Inbox</text>
+  <text x="360" y="275" text-anchor="middle" font-size="13">Der Service spricht nie direkt mit Kafka. Er schreibt nur in seine eigene DB.</text>
+</svg>
+<ol>
+  <li><b>Order Service</b> schreibt die Bestellung und das Event in <b>einer</b> DB-Transaktion.</li>
+  <li><b>orders</b> enthält die Geschäftsdaten. <b>outbox</b> enthält die Events als Zeilen.</li>
+  <li>Der <b>Relay</b> liest neue Outbox-Zeilen. Entweder per <b>Polling</b> oder aus dem <b>WAL</b> (Write-Ahead Log, das Änderungsprotokoll der DB).</li>
+  <li>Der Relay publiziert das Event nach <b>Kafka</b>.</li>
+  <li>Der <b>Consumer</b> verarbeitet es <b>idempotent</b>, denn der Relay kann doppelt senden.</li>
+</ol>
+
+<h2>2. Die Reise eines Events (die Geschichte zum Merken)</h2>
+<svg viewBox="0 0 720 300" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="b" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker><marker id="r" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#c62828"/></marker></defs>
+  <rect x="10" y="40" width="160" height="76" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="90" y="64" text-anchor="middle" font-weight="700">1. Commit</text><text x="90" y="84" text-anchor="middle" font-size="12">INSERT orders</text><text x="90" y="100" text-anchor="middle" font-size="12">INSERT outbox</text>
+  <line x1="170" y1="78" x2="208" y2="78" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="210" y="40" width="150" height="76" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="285" y="64" text-anchor="middle" font-weight="700">2. Lesen</text><text x="285" y="84" text-anchor="middle" font-size="12">WAL oder</text><text x="285" y="100" text-anchor="middle" font-size="12">WHERE sent = 0</text>
+  <line x1="360" y1="78" x2="398" y2="78" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="400" y="40" width="150" height="76" rx="10" fill="#0a66c2" stroke="#0a66c2"/><text x="475" y="64" text-anchor="middle" fill="#fff" font-weight="700">3. Publish</text><text x="475" y="84" text-anchor="middle" fill="#fff" font-size="12">Key = aggregateid</text><text x="475" y="100" text-anchor="middle" fill="#fff" font-size="12">Kafka bestätigt</text>
+  <line x1="550" y1="78" x2="588" y2="78" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="590" y="40" width="120" height="76" rx="10" fill="#e8f5e9" stroke="#2e7d32"/><text x="650" y="64" text-anchor="middle" font-weight="700">4. Merken</text><text x="650" y="84" text-anchor="middle" font-size="12">Offset / sent=1</text><text x="650" y="100" text-anchor="middle" font-size="12">Aufräumen</text>
+  <path d="M475,116 C475,200 285,200 285,120" fill="none" stroke="#c62828" stroke-width="2" stroke-dasharray="6 4" marker-end="url(#r)"/>
+  <text x="380" y="214" text-anchor="middle" fill="#c62828" font-weight="700">Crash zwischen 3 und 4</text>
+  <text x="380" y="234" text-anchor="middle" fill="#c62828" font-size="12">Relay startet neu → liest dieselbe Zeile → sendet nochmal</text>
+  <text x="380" y="270" text-anchor="middle" font-size="13">Ergebnis: at-least-once. Der Consumer muss Duplikate erkennen.</text>
+</svg>
+<ol>
+  <li><b>Commit:</b> Der Service schreibt Bestellung und Outbox-Zeile in einer Transaktion. Beide sind da oder keine.</li>
+  <li><b>Lesen:</b> Der <b>Polling Publisher</b> fragt die Tabelle regelmässig ab. <b>CDC</b> mit Debezium liest stattdessen das WAL.</li>
+  <li><b>Publish:</b> Der Relay sendet das Event nach Kafka. Key ist die <b>Aggregate-ID</b>. So landen Events einer Bestellung in derselben Partition.</li>
+  <li><b>Merken:</b> Der Relay merkt sich den Fortschritt: Debezium speichert den <b>Offset</b> (Position im WAL), Polling setzt <code>sent = 1</code>.</li>
+  <li><b>Crash dazwischen:</b> Das Event ist in Kafka, der Fortschritt nicht gespeichert. Nach dem Neustart sendet der Relay es nochmal.</li>
+  <li><b>Folge:</b> Die Outbox garantiert <b>at-least-once</b>, nicht exactly-once. Die Event-ID macht Duplikate erkennbar.</li>
+</ol>
+
+<h2>3. Beispiel: Dual Write gegen Outbox</h2>
+<pre>broker = []                     # steht für Kafka
+
+# A) Dual Write: DB-Commit, dann Crash vor dem Publish
+with db: db.execute("INSERT INTO orders VALUES (1, 120)")
+raise Crash("process killed")
+broker.append({"type": "OrderCreated", "id": 1})      # wird nie erreicht
+
+# B) Dual Write: erst Publish, dann scheitert der DB-Commit
+broker.append({"type": "OrderCreated", "id": 2})
+with db:
+    db.execute("INSERT INTO orders VALUES (2, 80)")
+    raise Crash("constraint violation, rollback")
+
+# C) Outbox: Crash in der Transaktion
+with db:
+    db.execute("INSERT INTO orders VALUES (3, 50)")
+    db.execute("INSERT INTO outbox(id,aggregatetype,aggregateid,type,payload) VALUES (?,?,?,?,?)", ...)
+    raise Crash("process killed before commit")
+
+# D) Outbox-Relay: Publish, dann Crash vor "sent=1", Neustart
+for eid, ... in db.execute("SELECT ... FROM outbox WHERE sent=0 ORDER BY rowid"):
+    broker.append({"id": eid, ...})
+    raise Crash("relay killed after publish")           # beim 2. Lauf: UPDATE outbox SET sent=1</pre>
+<pre>A) dual write: DB commit, then crash before publish
+    process killed
+    orders=1 events=0  -> order without event
+B) dual write: publish, then DB commit fails
+    constraint violation, rollback
+    orders=0 events=1  -> ghost event
+C) outbox: crash inside the transaction
+    process killed before commit
+    orders=0 outbox=0  -> both or nothing
+D) outbox: commit, relay publishes, crashes before marking sent
+    relay killed after publish
+    orders=1 events=['e-4', 'e-4']  -> at-least-once, duplicate
+    consumer dedupes by event id: applied=1</pre>
+<p class="small">Echte Ausgabe, Python 3.12 + SQLite (Simulation: eine Python-Liste steht für Kafka, eine Exception für den Prozessabsturz).</p>
+<ol>
+  <li><b>A:</b> Die Bestellung existiert, das Event nie. Andere Services erfahren nichts davon.</li>
+  <li><b>B:</b> Das Event ist draussen, die Bestellung nicht. Das ist ein <b>Ghost Event</b>: Andere reagieren auf etwas, das es nicht gibt.</li>
+  <li><b>C:</b> Mit Outbox rollt die DB beides zurück. Es gibt weder Bestellung noch Event.</li>
+  <li><b>D:</b> Der Relay sendet das Event zweimal. Der Consumer erkennt das Duplikat an der Event-ID <code>e-4</code> und wendet es nur einmal an.</li>
+</ol>
+<p><b>Debezium-Konfiguration (Kafka Connect, PostgreSQL):</b></p>
+<pre>-- Outbox-Tabelle im Order Service (Spaltennamen = Debezium-Standard)
+CREATE TABLE outbox (
+  id            uuid PRIMARY KEY,
+  aggregatetype varchar(255) NOT NULL,   -- bestimmt das Topic
+  aggregateid   varchar(255) NOT NULL,   -- wird der Kafka-Key
+  type          varchar(255) NOT NULL,   -- z. B. OrderCreated
+  payload       jsonb
+);
+-- postgresql.conf: wal_level = logical
+
+{
+  "name": "orders-outbox",
+  "config": {
+    "connector.class": "io.debezium.connector.postgresql.PostgresConnector",
+    "plugin.name": "pgoutput",
+    "database.hostname": "orders-db",
+    "database.port": "5432",
+    "database.user": "debezium",
+    "database.password": "${file:/secrets/db.properties:password}",
+    "database.dbname": "orders",
+    "topic.prefix": "orders",
+    "table.include.list": "public.outbox",
+    "transforms": "outbox",
+    "transforms.outbox.type": "io.debezium.transforms.outbox.EventRouter",
+    "transforms.outbox.route.by.field": "aggregatetype",
+    "transforms.outbox.route.topic.replacement": "outbox.event.${routedByValue}",
+    "transforms.outbox.table.field.event.key": "aggregateid"
+  }
+}</pre>
+<p class="small">Konfiguration nach Debezium-Doku (Outbox Event Router); hier nicht ausgeführt, kein Kafka vorhanden. Die letzten zwei Router-Zeilen sind die Standardwerte, nur zur Verdeutlichung.</p>
+<ol>
+  <li><code>EventRouter</code> ist eine <b>SMT</b> (Single Message Transformation). Sie macht aus einer Outbox-Zeile ein sauberes Event.</li>
+  <li><code>aggregatetype = order</code> ergibt das Topic <code>outbox.event.order</code>.</li>
+  <li><code>aggregateid</code> wird der Kafka-Key. Das sichert die Reihenfolge pro Bestellung.</li>
+  <li>Die <code>id</code> ist die eindeutige Event-ID. Laut Doku dient sie z. B. zum Entfernen von Duplikaten.</li>
+</ol>
+
+<h2>4. Details, die Interviewer fragen</h2>
+<ol>
+  <li><b>Dual-Write-Problem:</b> Ein Service schreibt in zwei Systeme ohne gemeinsame Transaktion. Ein Crash dazwischen lässt sie dauerhaft uneinig.</li>
+  <li><b>Warum kein 2PC mit Kafka:</b> Kafka nimmt nicht an XA-Transaktionen mit einer Datenbank teil. Die Outbox braucht nur die lokale DB-Transaktion.</li>
+  <li><b>Polling Publisher:</b> Ein <b>Polling Publisher</b> fragt <code>SELECT … WHERE sent = 0</code> in Abständen ab. Einfach, aber Last auf der DB und Verzögerung durch das Intervall.</li>
+  <li><b>Transaction Log Tailing:</b> <b>CDC</b> liest das Änderungsprotokoll der DB: WAL bei PostgreSQL, Binlog bei MySQL. Debezium macht das als Kafka-Connect-Connector.</li>
+  <li><b>Reihenfolge:</b> Kafka ordnet nur innerhalb einer Partition. Darum ist der Key die Aggregate-ID. Events verschiedener Aggregate haben keine feste Reihenfolge.</li>
+  <li><b>Reihenfolge beim Polling:</b> Zwei parallele Transaktionen committen in anderer Reihenfolge als ihre IDs. Ein Poller kann so eine Zeile überspringen. CDC liest in Commit-Reihenfolge.</li>
+  <li><b>Mehrere Poller:</b> Laufen zwei Relay-Instanzen, senden sie dieselbe Zeile doppelt. Lösung: Leader-Wahl oder <code>SELECT … FOR UPDATE SKIP LOCKED</code>.</li>
+  <li><b>Aufräumen:</b> Beim Polling löscht ein Job gesendete Zeilen. Mit Debezium kann man die Zeile in derselben Transaktion gleich wieder löschen: Das WAL enthält das INSERT trotzdem. Der Event Router ignoriert DELETEs.</li>
+  <li><b>Replication Slot:</b> PostgreSQL hält das WAL, bis Debezium es gelesen hat. Steht der Connector, wächst das WAL und füllt die Platte.</li>
+  <li><b>Inbox Pattern:</b> Das <b>Inbox Pattern</b> ist das Gegenstück beim Consumer. Er speichert die Event-ID in einer Inbox-Tabelle, in derselben Transaktion wie seine Änderung. Duplikate scheitern am Primary Key.</li>
+  <li><b>CDC ohne Outbox:</b> Debezium kann auch Geschäftstabellen direkt streamen. Dann wird das interne Schema zum öffentlichen Vertrag. Die Outbox trennt beides.</li>
+  <li><b>Payload-Design:</b> Das Event enthält, was Consumer brauchen, und ist versioniert. Ein Schema Registry (Avro, JSON Schema) hilft gegen Brüche.</li>
+</ol>
+
+<h2>5. Vergleich</h2>
+<table>
+  <tr><th align="left">Aspekt</th><th align="left">Polling Publisher</th><th align="left">CDC (Debezium)</th></tr>
+  <tr><td>Aufbau</td><td>Job im Service, SQL-Abfrage</td><td>Kafka Connect + Connector</td></tr>
+  <tr><td>Latenz</td><td>Polling-Intervall</td><td>meist Millisekunden</td></tr>
+  <tr><td>DB-Last</td><td>wiederholte Abfragen</td><td>liest nur das Log</td></tr>
+  <tr><td>Reihenfolge</td><td>Lücken bei parallelen Commits möglich</td><td>Commit-Reihenfolge</td></tr>
+  <tr><td>Betrieb</td><td>einfach</td><td>Connector, Slot, WAL überwachen</td></tr>
+</table>
+<ul>
+  <li><b>Outbox vs Event Sourcing:</b> Beim <b>Event Sourcing</b> sind die Events selbst die Daten. Dort gibt es kein Dual Write. Die Outbox ergänzt ein normales Tabellenmodell.</li>
+  <li><b>Outbox vs Listen-to-yourself:</b> Der Service publiziert zuerst und reagiert selbst auf sein Event. Das vermeidet Dual Write, macht den Service aber vom Broker abhängig.</li>
+  <li><b>Outbox vs Kafka-Transaktionen:</b> Kafka-Transaktionen gelten nur innerhalb von Kafka. Sie schliessen keine externe DB ein.</li>
+</ul>
+
+<h2>6. In der Produktion</h2>
+<ol>
+  <li><b>Platte voll durch WAL:</b> Der Debezium-Connector steht, der Replication Slot hält das WAL. Lösung: Alarm auf Slot-Grösse, <code>max_slot_wal_keep_size</code> setzen.</li>
+  <li><b>Wenig Verkehr, WAL wächst trotzdem:</b> Andere Tabellen schreiben viel, die Outbox kaum. Der Slot-Fortschritt bleibt stehen. Lösung: Debezium <b>Heartbeat</b> (<code>heartbeat.interval.ms</code>).</li>
+  <li><b>Outbox-Tabelle wächst endlos:</b> Niemand löscht gesendete Zeilen. Lösung: sofort löschen (CDC) oder Aufräum-Job (Polling).</li>
+  <li><b>Doppelte Events nach Neustart:</b> Der Relay sendet erneut. Lösung: idempotente Consumer oder Inbox.</li>
+  <li><b>Falsche Reihenfolge:</b> Events einer Bestellung landen in verschiedenen Partitionen. Lösung: Aggregate-ID als Key.</li>
+  <li><b>Failover der DB:</b> Nach einem Wechsel zur Replica fehlt eventuell der Replication Slot. Lösung: Slot-Failover der DB nutzen (PostgreSQL 17+ unterstützt synchronisierte Failover-Slots) oder neu snapshotten.</li>
+</ol>
+
+<h2>7. Diagnose: Werkzeuge und Kennzahlen</h2>
+<ul>
+  <li><b>Outbox-Rückstand (Polling):</b> <code>SELECT count(*), min(created_at) FROM outbox WHERE sent = 0;</code></li>
+  <li><b>Replication Slots:</b> <code>SELECT slot_name, active, pg_size_pretty(pg_wal_lsn_diff(pg_current_wal_lsn(), restart_lsn)) FROM pg_replication_slots;</code></li>
+  <li><b>Connector-Status:</b> <code>curl http://connect:8083/connectors/orders-outbox/status</code> über die Kafka-Connect-REST-API.</li>
+  <li><b>Debezium-Metriken</b> (JMX): <code>MilliSecondsBehindSource</code> zeigt, wie weit CDC hinterherhinkt.</li>
+  <li><b>Topic ansehen:</b> <code>kafka-console-consumer.sh --topic outbox.event.order --property print.key=true --from-beginning</code>.</li>
+  <li><b>Consumer Lag:</b> <code>kafka-consumer-groups.sh --describe --group billing</code>.</li>
+</ul>
+
+<h2>8. Senior-Punkte</h2>
+<div class="senior">
+<ol>
+  <li><b>Jeder Dual Write ist ein Bug,</b> der nur auf den richtigen Crash wartet.</li>
+  <li><b>Outbox heisst at-least-once.</b> Idempotente Consumer sind Pflicht, nicht optional.</li>
+  <li><b>Die Outbox ist ein öffentlicher Vertrag.</b> Events werden bewusst entworfen und versioniert, nicht aus Tabellen kopiert.</li>
+  <li><b>CDC ist Betrieb.</b> Replication Slots, WAL-Grösse und Connector-Status gehören ins Monitoring.</li>
+  <li><b>Einfach starten:</b> Polling reicht für wenig Last. CDC lohnt sich bei Volumen oder Latenz-Anforderungen.</li>
+  <li><b>Reihenfolge nur pro Aggregat versprechen.</b> Globale Reihenfolge kostet Parallelität.</li>
+</ol>
+</div>
+
+<h2>9. Aus dem Projekt</h2>
+<p>„Bei MATCH ist die Nachrichtentabelle in MSSQL mit LakehouseStatus = Pending eine Art Outbox. Der .NET-Worker pollt sie und startet Spark-Jobs nur, wenn Arbeit da ist. Spark beansprucht die Nachrichten atomar mit <code>UPDATE … OUTPUT INSERTED.*</code>.“ <span class="small">(Prüfen und durch dein echtes Beispiel ersetzen.)</span></p>
+
+<h2>10. Fallen</h2>
+<div class="trap">
+<ul>
+  <li>„Die Outbox gibt exactly-once.“ → <b>Falsch.</b> Sie gibt at-least-once. Duplikate löst der Consumer.</li>
+  <li>„Erst Kafka senden, dann DB schreiben, ist sicher.“ → <b>Falsch.</b> Scheitert die DB, gibt es ein Ghost Event.</li>
+  <li>„@Transactional deckt auch kafkaTemplate.send() ab.“ → <b>Falsch.</b> Die DB-Transaktion schliesst Kafka nicht ein.</li>
+  <li>„Debezium braucht keine Wartung.“ → <b>Falsch.</b> Ein stehender Connector füllt über den Replication Slot die Platte.</li>
+  <li>„Kafka hält alle Events in Reihenfolge.“ → <b>Falsch.</b> Nur innerhalb einer Partition.</li>
+</ul>
+</div>
+
+<h2>11. Fragen</h2>
+<details><summary>Was ist das Dual-Write-Problem?</summary><p>Ein Service schreibt in DB und Broker ohne gemeinsame Transaktion. Ein Crash dazwischen lässt beide dauerhaft uneinig: Daten ohne Event oder Event ohne Daten.</p></details>
+<details><summary>Was ist das Transactional Outbox Pattern?</summary><p>Daten und Event werden in einer lokalen Transaktion geschrieben, das Event in eine Outbox-Tabelle. Ein Relay publiziert es danach zum Broker.</p></details>
+<details><summary>Welche Zustellgarantie gibt die Outbox?</summary><p>At-least-once. Ein Relay-Crash nach dem Senden führt zu einem Duplikat.</p></details>
+<details><summary>Was ist ein Polling Publisher?</summary><p>Ein Job fragt die Outbox regelmässig nach ungesendeten Zeilen ab, sendet sie und markiert sie als gesendet.</p></details>
+<details><summary>Was ist Change Data Capture?</summary><p>CDC liest das Änderungsprotokoll der DB, bei PostgreSQL das WAL, und macht daraus Events. Debezium ist das bekannteste Werkzeug.</p></details>
+<details><summary>Polling oder CDC – was wählen Sie?</summary><p>Polling bei wenig Last und einfachem Betrieb. CDC bei viel Volumen, niedriger Latenz oder strenger Reihenfolge.</p></details>
+<details><summary>Was macht der Debezium Outbox Event Router?</summary><p>Eine SMT, die Outbox-Zeilen in Events umbaut. Das Topic kommt aus aggregatetype, der Key aus aggregateid, der Inhalt aus payload.</p></details>
+<details><summary>Welche Spalten hat die Debezium-Outbox-Tabelle standardmässig?</summary><p>id, aggregatetype, aggregateid, type und payload.</p></details>
+<details><summary>Wie sichern Sie die Reihenfolge der Events?</summary><p>Die Aggregate-ID als Kafka-Key. Alle Events eines Aggregats landen in derselben Partition und bleiben in Reihenfolge.</p></details>
+<details><summary>Warum kann ein Poller Events überspringen?</summary><p>Parallele Transaktionen committen in anderer Reihenfolge als ihre IDs. Liest der Poller „alles nach ID X“, fehlt eine später committete kleinere ID.</p></details>
+<details><summary>Wie räumen Sie die Outbox auf?</summary><p>Polling: Job löscht gesendete Zeilen. CDC: Zeile in derselben Transaktion gleich wieder löschen. Das WAL enthält das INSERT trotzdem.</p></details>
+<details><summary>Was ist ein Replication Slot und warum ist er gefährlich?</summary><p>PostgreSQL hält das WAL, bis der Slot-Consumer es gelesen hat. Steht Debezium, wächst das WAL und füllt die Platte.</p></details>
+<details><summary>Was ist das Inbox Pattern?</summary><p>Der Consumer speichert die Event-ID in einer Inbox-Tabelle, in derselben Transaktion wie seine Änderung. Duplikate scheitern am Primary Key.</p></details>
+<details><summary>Warum nicht einfach Kafka-Transaktionen?</summary><p>Sie gelten nur innerhalb von Kafka. Eine externe Datenbank ist nicht Teil davon.</p></details>
+<details><summary>Warum nicht CDC direkt auf der orders-Tabelle?</summary><p>Dann wird das interne Schema zum öffentlichen Vertrag. Jede Spaltenänderung bricht Consumer. Die Outbox entkoppelt beides.</p></details>
+<details><summary>Hilft @Transactional in Spring gegen Dual Write?</summary><p>Nein. Die DB-Transaktion umfasst Kafka nicht. Ein Rollback nach dem Senden lässt ein Ghost Event zurück.</p></details>
+<details><summary>Wie verhindern Sie Doppelsendungen mit mehreren Relay-Instanzen?</summary><p>Leader-Wahl, sodass nur einer pollt. Oder SELECT … FOR UPDATE SKIP LOCKED, sodass jede Zeile nur einer Instanz gehört.</p></details>
+<details><summary>Was gehört in den Payload eines Outbox-Events?</summary><p>Was Consumer brauchen, mit Event-ID, Typ und Version. Keine internen Tabellenstrukturen. Schema Registry gegen Brüche.</p></details>
+<details><summary>Was ist der Unterschied zwischen Outbox und Event Sourcing?</summary><p>Beim Event Sourcing sind die Events die Daten selbst. Die Outbox ergänzt ein normales Tabellenmodell um ausgehende Events.</p></details>
+<details><summary>Szenario: Die Datenbank-Platte läuft voll, obwohl die Tabellen klein sind. Was prüfen Sie?</summary><p>pg_replication_slots: Ein inaktiver Debezium-Slot hält das WAL. Connector-Status prüfen und reparieren. Danach max_slot_wal_keep_size und Alarm auf Slot-Grösse.</p></details>
+<details><summary>Szenario: Billing hat für manche Bestellungen nie ein Event bekommen. Die Bestellungen sind in der DB. Woran liegt es?</summary><p>Wahrscheinlich Dual Write: DB-Commit, dann Crash vor dem Senden. Fix: Transactional Outbox. Bestehende Lücken per Abgleich-Job nachsenden.</p></details>
+<details><summary>Szenario: Ein Consumer sieht OrderShipped vor OrderCreated. Was ist falsch?</summary><p>Die Events liegen in verschiedenen Partitionen, z. B. ohne Key oder mit wechselndem Key. Fix: Aggregate-ID als Key. Beim Polling zusätzlich in Commit-Reihenfolge lesen oder auf CDC wechseln.</p></details>
+
+</body>
+</html>

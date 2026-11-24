@@ -2,7 +2,7 @@
 
 Generated from content/syllabus.json. Priority 1 = asked in almost every interview. Mark: **Projekt** = shown in CV/Gmail · **— kein Projekt** = no project experience · **? prüfen** = unclear, you decide.
 
-404 topics · P1 239 · P2 125 · P3 40 · written 31
+404 topics · P1 239 · P2 125 · P3 40 · written 43
 
 ## Java 21 (core + advanced) (40)
 Sources: Java SE 21/25 docs (docs.oracle.com) · JVM Specification · OpenJDK source + JEPs (openjdk.org) · Oracle Java SE 21 Developer exam 1Z0-830 topics
@@ -101,18 +101,18 @@ Sources: microservices.io patterns (Chris Richardson) · Azure Architecture Cent
 
 | P | Topic | Project | Written |
 |---|---|---|---|
-| 1 | Monolith vs Modulith vs Microservices | Projekt |  |
-| 1 | Service-Schnitt mit DDD und Bounded Contexts | ? prüfen |  |
-| 1 | Synchrone vs asynchrone Kommunikation | Projekt |  |
-| 1 | API Gateway und BFF | ? prüfen |  |
-| 1 | Database per Service und Datenkonsistenz | ? prüfen |  |
-| 1 | Saga: Choreografie vs Orchestrierung, Kompensation | ? prüfen |  |
-| 1 | Outbox Pattern und Change Data Capture | ? prüfen |  |
-| 1 | Idempotenz in verteilten Systemen | Projekt |  |
-| 1 | Resilience: Timeout, Retry, Circuit Breaker, Bulkhead | ? prüfen |  |
-| 1 | Distributed Tracing und Korrelation | Projekt |  |
-| 1 | Event-Driven Architecture: Events, Commands, Event-Design | Projekt |  |
-| 1 | Deployment: Rolling, Blue-Green, Canary, Feature Flags | Projekt |  |
+| 1 | Monolith vs Modulith vs Microservices | Projekt | ✓ |
+| 1 | Service-Schnitt mit DDD und Bounded Contexts | ? prüfen | ✓ |
+| 1 | Synchrone vs asynchrone Kommunikation | Projekt | ✓ |
+| 1 | API Gateway und BFF | ? prüfen | ✓ |
+| 1 | Database per Service und Datenkonsistenz | ? prüfen | ✓ |
+| 1 | Saga: Choreografie vs Orchestrierung | ? prüfen | ✓ |
+| 1 | Outbox Pattern und CDC | ? prüfen | ✓ |
+| 1 | Idempotenz in verteilten Systemen | Projekt | ✓ |
+| 1 | Resilience: Timeout, Retry, Circuit Breaker, Bulkhead | ? prüfen | ✓ |
+| 1 | Distributed Tracing und Korrelation | Projekt | ✓ |
+| 1 | Event-Driven Architecture: Events, Commands, Event-Design | Projekt | ✓ |
+| 1 | Deployment: Rolling, Blue-Green, Canary, Feature Flags | Projekt | ✓ |
 | 2 | Service Discovery und Load Balancing | ? prüfen |  |
 | 2 | CQRS und Event Sourcing | — kein Projekt |  |
 | 2 | Migration vom Monolithen: Strangler Fig | ? prüfen |  |

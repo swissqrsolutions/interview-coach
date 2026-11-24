@@ -1,0 +1,252 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Deployment: Rolling, Blue-Green, Canary, Feature Flags</title>
+<style>
+  body { font: 17px/1.55 -apple-system, system-ui, sans-serif; max-width: 760px; margin: 0 auto; padding: 16px; color: #1d1d1f; }
+  h1 { font-size: 28px; margin: 8px 0 4px; }
+  h2 { font-size: 21px; margin: 32px 0 8px; padding-top: 12px; border-top: 2px solid #e5e5ea; }
+  .kern { background: #eef6ff; border-left: 4px solid #0a66c2; padding: 10px 14px; border-radius: 6px; }
+  .senior { background: #f0faf0; border-left: 4px solid #2e7d32; padding: 10px 14px; border-radius: 6px; }
+  .trap { background: #fff4f2; border-left: 4px solid #c62828; padding: 10px 14px; border-radius: 6px; }
+  code { background: #f2f2f7; padding: 1px 5px; border-radius: 4px; font-size: 15px; }
+  pre { background: #1e1e1e; color: #e6e6e6; padding: 12px; border-radius: 8px; overflow-x: auto; font-size: 13.5px; line-height: 1.45; }
+  svg { width: 100%; height: auto; display: block; margin: 10px 0; }
+  ol li, ul li { margin: 4px 0; }
+  details { border: 1px solid #e5e5ea; border-radius: 8px; padding: 8px 12px; margin: 6px 0; }
+  summary { font-weight: 600; cursor: pointer; }
+  details p { margin: 6px 0 2px; }
+  .small { color: #6e6e73; font-size: 14px; }
+</style>
+</head>
+<body>
+
+<h1>Deployment: Rolling, Blue-Green, Canary, Feature Flags</h1>
+<p class="small">Microservices · Tier 1 · Quellen: kubernetes.io (Deployments: Strategy, maxSurge, maxUnavailable, Rollback; Pod Lifecycle: Probes), Argo Rollouts Doku (Canary, BlueGreen, Analysis), Argo CD Doku (Sync, Rollback), Martin Fowler „Feature Toggles“ (Pete Hodgson), „BlueGreenDeployment“, „ParallelChange“</p>
+
+<div class="kern">
+<b>Kern:</b> Eine <b>Deployment-Strategie</b> legt fest, wie eine neue Version die alte ersetzt. Sie löst das Problem, ohne Ausfall zu releasen und einen Fehler schnell zurückzunehmen. Die vier Grundformen sind <b>Rolling Update</b>, <b>Blue-Green</b>, <b>Canary</b> und <b>Feature Flags</b>. <b>Deployment</b> (Code ausrollen) und <b>Release</b> (Funktion für Nutzer einschalten) sind zwei verschiedene Schritte.
+</div>
+
+<h2>1. Wo sitzt die Deployment-Strategie?</h2>
+<svg viewBox="0 0 720 300" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="a" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="10" y="20" width="120" height="56" rx="8" fill="#fff" stroke="#555"/><text x="70" y="44" text-anchor="middle">Git (Manifeste)</text><text x="70" y="62" text-anchor="middle" font-size="12">image: v2</text>
+  <line x1="130" y1="48" x2="178" y2="48" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="180" y="20" width="130" height="56" rx="8" fill="#fff" stroke="#555"/><text x="245" y="44" text-anchor="middle">Argo CD</text><text x="245" y="62" text-anchor="middle" font-size="12">sync ins Cluster</text>
+  <line x1="310" y1="48" x2="358" y2="48" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="360" y="8" width="350" height="200" rx="12" fill="#f7f7fa" stroke="#999" stroke-dasharray="5 4"/><text x="535" y="28" text-anchor="middle" font-weight="700">Kubernetes-Cluster</text>
+  <rect x="375" y="40" width="320" height="40" rx="8" fill="#dbe9fb" stroke="#0a66c2"/><text x="535" y="65" text-anchor="middle">Deployment / Rollout-Controller (Strategie)</text>
+  <line x1="460" y1="80" x2="460" y2="108" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <line x1="610" y1="80" x2="610" y2="108" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="385" y="110" width="150" height="40" rx="6" fill="#eee" stroke="#777"/><text x="460" y="135" text-anchor="middle">ReplicaSet v1</text>
+  <rect x="545" y="110" width="140" height="40" rx="6" fill="#0a66c2"/><text x="615" y="135" text-anchor="middle" fill="#fff">ReplicaSet v2</text>
+  <rect x="385" y="160" width="300" height="38" rx="6" fill="#fff" stroke="#555"/><text x="535" y="184" text-anchor="middle">Service / Ingress / Mesh: Traffic-Split</text>
+  <rect x="10" y="230" width="210" height="56" rx="8" fill="#e8f5e9" stroke="#2e7d32"/><text x="115" y="254" text-anchor="middle">Feature-Flag-Dienst</text><text x="115" y="272" text-anchor="middle" font-size="12">Funktion an/aus zur Laufzeit</text>
+  <line x1="220" y1="258" x2="440" y2="200" stroke="#2e7d32" stroke-width="1.5" stroke-dasharray="5 4" marker-end="url(#a)"/>
+  <rect x="490" y="230" width="220" height="56" rx="8" fill="#fff4f2" stroke="#c62828"/><text x="600" y="254" text-anchor="middle">Prometheus-Metriken</text><text x="600" y="272" text-anchor="middle" font-size="12">Fehlerrate → weiter oder Abbruch</text>
+  <line x1="600" y1="230" x2="600" y2="200" stroke="#c62828" stroke-width="1.5" marker-end="url(#a)"/>
+</svg>
+<ol>
+  <li>Die gewünschte Version steht in <b>Git</b>. <b>Argo CD</b> gleicht das Cluster mit Git ab (<b>GitOps</b>).</li>
+  <li>Ein Kubernetes-<b>Deployment</b> verwaltet <b>ReplicaSets</b>. Pro Version gibt es ein ReplicaSet.</li>
+  <li>Die <b>Strategie</b> im Controller bestimmt, wie schnell v2 wächst und v1 schrumpft.</li>
+  <li>Der <b>Service</b>, ein Ingress oder ein Service Mesh verteilt den Traffic auf die Pods.</li>
+  <li>Ein <b>Feature Flag</b> schaltet Code zur Laufzeit an oder aus, ohne neues Deployment.</li>
+  <li><b>Metriken</b> entscheiden bei Canary, ob es weitergeht oder abbricht.</li>
+</ol>
+
+<h2>2. Die Reise eines Releases (die Geschichte zum Merken)</h2>
+<svg viewBox="0 0 720 270" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="b" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker><marker id="r" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#c62828"/></marker></defs>
+  <rect x="10" y="30" width="120" height="70" rx="10" fill="#eee" stroke="#777"/><text x="70" y="58" text-anchor="middle" font-weight="700">1. Expand</text><text x="70" y="78" text-anchor="middle" font-size="12">DB: neue Spalte</text>
+  <line x1="130" y1="65" x2="158" y2="65" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="160" y="30" width="120" height="70" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="220" y="58" text-anchor="middle" font-weight="700">2. Deploy</text><text x="220" y="78" text-anchor="middle" font-size="12">v2, Flag aus</text>
+  <line x1="280" y1="65" x2="308" y2="65" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="310" y="30" width="120" height="70" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="370" y="58" text-anchor="middle" font-weight="700">3. Canary</text><text x="370" y="78" text-anchor="middle" font-size="12">10 % → 50 %</text>
+  <line x1="430" y1="65" x2="458" y2="65" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="460" y="30" width="120" height="70" rx="10" fill="#0a66c2"/><text x="520" y="58" text-anchor="middle" fill="#fff" font-weight="700">4. Release</text><text x="520" y="78" text-anchor="middle" fill="#fff" font-size="12">Flag an</text>
+  <line x1="580" y1="65" x2="608" y2="65" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="610" y="30" width="100" height="70" rx="10" fill="#eee" stroke="#777"/><text x="660" y="58" text-anchor="middle" font-weight="700">5. Contract</text><text x="660" y="78" text-anchor="middle" font-size="12">alte Spalte weg</text>
+  <path d="M370,100 C370,190 220,190 220,102" fill="none" stroke="#c62828" stroke-width="2" stroke-dasharray="6 4" marker-end="url(#r)"/>
+  <text x="300" y="210" text-anchor="middle" fill="#c62828" font-weight="700">Analyse rot → Abort</text>
+  <text x="300" y="228" text-anchor="middle" fill="#c62828" font-size="12">Traffic zurück auf v1</text>
+  <path d="M520,100 C520,170 560,170 560,170" fill="none" stroke="#c62828" stroke-width="2" stroke-dasharray="6 4"/>
+  <text x="560" y="190" text-anchor="middle" fill="#c62828" font-weight="700">Fehler → Flag aus</text>
+  <text x="560" y="208" text-anchor="middle" fill="#c62828" font-size="12">Sekunden, kein Deployment</text>
+</svg>
+<ol>
+  <li><b>Expand.</b> Die DB bekommt die neue Spalte, die alte bleibt. Alte und neue Version funktionieren mit diesem Schema. Das ist der erste Teil von <b>Expand-Contract</b>.</li>
+  <li><b>Deploy.</b> v2 geht ins Cluster, die neue Funktion ist hinter einem <b>Feature Flag</b> aus. Nutzer merken nichts. Das ist ein <b>Dark Launch</b>.</li>
+  <li><b>Canary.</b> 10 % des Traffics gehen auf v2. Eine <b>Analyse</b> vergleicht Fehlerrate und Latenz. Ist sie rot, bricht der Rollout ab.</li>
+  <li><b>Weiter.</b> Bei grün steigt der Anteil auf 50 %, dann 100 %. v1 wird abgebaut.</li>
+  <li><b>Release.</b> Das Team schaltet das Flag an, zuerst für interne Nutzer, dann für alle. Bei Fehlern schaltet es in Sekunden zurück.</li>
+  <li><b>Contract.</b> Läuft keine alte Version mehr, entfernt eine spätere Migration die alte Spalte. Danach wird auch das Flag gelöscht.</li>
+</ol>
+
+<h2>3. Beispiel: Rolling Update vs Canary bei einem Bug</h2>
+<p>v2 hat einen fachlichen Bug: 20 % ihrer Requests scheitern. Die Readiness Probe bleibt grün. 10 Replicas, 10 000 Requests pro Runde.</p>
+<pre>surge   = ceil(REPLICAS * 25 / 100)    # maxSurge rundet auf   -> 3
+unavail = floor(REPLICAS * 25 / 100)   # maxUnavailable rundet ab -> 2
+# Rolling: pro Runde alte Pods stoppen bis min. 8 ready, neue bis max. 13 Pods starten
+# Canary: setWeight 10/25/50/100, Analyse: Fehlerrate der Canary-Pods &lt; 5 %, sonst Abort</pre>
+<pre>Rolling update: replicas=10 maxSurge=3 maxUnavailable=2 (max 13 pods, min 8 ready)
+  round 1: v1 ready= 8 v2 ready= 0 v2 starting=5  traffic v2=  0%  failed=   0
+  round 2: v1 ready= 3 v2 ready= 5 v2 starting=5  traffic v2= 62%  failed=1250
+  round 3: v1 ready= 0 v2 ready=10 v2 starting=0  traffic v2=100%  failed=2000
+  -> rollout complete, nobody stopped it. failed requests so far: 3250
+  -> alert fires, 'kubectl rollout undo' needs similar rounds again.
+
+Canary (Argo-Rollouts style): steps=[10, 25, 50, 100]%, analysis: canary error rate &lt; 5%
+  setWeight  10%: failed= 200  canary error rate=20%  analysis=FAIL -> abort, 100% back to v1
+  -> failed requests in total: 200</pre>
+<p class="small">Echte Ausgabe, Python 3.12 (vereinfachte Simulation, kein Kubernetes). Der echte Controller arbeitet ereignisgesteuert, nicht in Runden.</p>
+<ol>
+  <li><b>Rundung:</b> 25 % von 10 sind 2,5. <code>maxSurge</code> rundet auf 3, <code>maxUnavailable</code> ab auf 2. Also maximal 13 Pods, mindestens 8 bereit.</li>
+  <li><b>Rolling:</b> Kubernetes sieht nur die Readiness. Der fachliche Bug ist unsichtbar. Der Rollout läuft bis 100 %. 3250 Requests scheitern, bevor jemand reagiert.</li>
+  <li><b>Canary:</b> Die Analyse misst die Fehlerrate der neuen Pods. Schon bei 10 % ist sie 20 %. Der Rollout bricht automatisch ab: 200 Fehler statt 3250.</li>
+  <li><b>Lehre:</b> Canary hilft nur mit einer automatischen <b>Analyse</b> über echte Metriken.</li>
+</ol>
+<p><b>Konfiguration</b> (Manifeste, keine Laufzeit-Ausgabe):</p>
+<pre># Kubernetes Deployment: Rolling Update
+spec:
+  replicas: 10
+  minReadySeconds: 10          # Pod muss 10 s ready sein, bevor er zählt
+  progressDeadlineSeconds: 600 # Standard: nach 10 min ohne Fortschritt "failed"
+  revisionHistoryLimit: 10     # alte ReplicaSets für Rollback
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 25%            # Standard
+      maxUnavailable: 0        # nie unter 10 bereite Pods</pre>
+<pre># Argo Rollouts: Canary mit Analyse
+apiVersion: argoproj.io/v1alpha1
+kind: Rollout
+spec:
+  strategy:
+    canary:
+      canaryService: order-canary
+      stableService: order-stable
+      trafficRouting:
+        nginx: { stableIngress: order }
+      analysis:
+        templates: [ { templateName: error-rate } ]
+        startingStep: 1
+      steps:
+        - setWeight: 10
+        - pause: { duration: 5m }
+        - setWeight: 50
+        - pause: { duration: 10m }
+        - setWeight: 100</pre>
+
+<h2>4. Details, die Interviewer fragen</h2>
+<ol>
+  <li><b>Recreate:</b> Recreate stoppt alle alten Pods, dann startet es die neuen. Es gibt eine Ausfallzeit. Nützlich, wenn zwei Versionen nie gleichzeitig laufen dürfen.</li>
+  <li><b>RollingUpdate:</b> Der Standard in Kubernetes. Pods werden schrittweise ersetzt. Alte und neue Version laufen kurz <b>gleichzeitig</b>.</li>
+  <li><b>maxSurge:</b> So viele Pods darf es <b>über</b> der Soll-Anzahl geben. Standard 25 %, Prozent rundet auf. Mehr Surge heisst schneller, aber mehr Ressourcen.</li>
+  <li><b>maxUnavailable:</b> So viele Pods dürfen <b>unter</b> der Soll-Anzahl fehlen. Standard 25 %, Prozent rundet ab. Beide gleichzeitig 0 ist nicht erlaubt.</li>
+  <li><b>Readiness Probe:</b> Die <b>Readiness Probe</b> sagt, ob ein Pod Traffic bekommen darf. Der Rollout wartet auf sie. Ohne sie bekommt ein startender Pod sofort Traffic.</li>
+  <li><b>Liveness Probe:</b> Die <b>Liveness Probe</b> startet einen hängenden Pod neu. Sie darf keine Abhängigkeiten prüfen, sonst startet ein DB-Ausfall alle Pods neu.</li>
+  <li><b>Graceful Shutdown:</b> Kubernetes sendet SIGTERM und wartet <code>terminationGracePeriodSeconds</code> (Standard 30 s). Der Pod muss laufende Requests beenden. Spring Boot: <code>server.shutdown=graceful</code>. Ein kurzer <code>preStop</code>-Sleep gibt dem Endpoint-Update Zeit.</li>
+  <li><b>Rollback in Kubernetes:</b> <code>kubectl rollout undo deployment/order</code> geht auf das vorherige ReplicaSet zurück. Mit GitOps wird das beim nächsten Sync überschrieben. Dort ist der Rollback ein <code>git revert</code>.</li>
+  <li><b>Blue-Green:</b> Zwei vollständige Umgebungen: Blue (live) und Green (neu). Man testet Green, dann schaltet der Router um. Rollback heisst zurückschalten. Preis: doppelte Ressourcen während des Wechsels.</li>
+  <li><b>Blue-Green in Argo Rollouts:</b> <code>activeService</code> zeigt auf die Live-Version, <code>previewService</code> auf die neue. Mit <code>autoPromotionEnabled: false</code> wartet der Wechsel auf eine manuelle Freigabe.</li>
+  <li><b>Canary:</b> Ein kleiner Teil des Traffics geht auf die neue Version. Metriken entscheiden über den nächsten Schritt. Ohne Traffic-Router teilt Argo Rollouts über die Anzahl Pods, also nur grob.</li>
+  <li><b>Analysis:</b> Ein <b>AnalysisTemplate</b> fragt z. B. Prometheus ab: Fehlerrate unter 1 %? Scheitert die Analyse, setzt Argo Rollouts den Traffic auf die stabile Version zurück (<b>Abort</b>).</li>
+  <li><b>Feature Flag Typen (Fowler):</b> <b>Release Toggle</b> (unfertigen Code verstecken, kurzlebig), <b>Experiment Toggle</b> (A/B-Test), <b>Ops Toggle</b> (Not-Aus für teure Funktionen), <b>Permissioning Toggle</b> (Funktion für bestimmte Nutzer).</li>
+  <li><b>Dark Launch:</b> Neuer Code läuft in Produktion, aber Nutzer sehen das Ergebnis nicht. Oft mit gespiegeltem Traffic (<b>Shadow Traffic</b>), um Last und Fehler zu messen.</li>
+  <li><b>Expand-Contract:</b> Auch <b>Parallel Change</b> genannt. Erst erweitern (neue Spalte, beide schreiben), dann migrieren, dann alte Teile entfernen. So passt das Schema immer zu zwei Versionen.</li>
+  <li><b>DB-Migration im Rollout:</b> Flyway oder Liquibase laufen beim Start oder als eigener Job vor dem Deployment. Eine Migration darf die laufende alte Version nicht brechen.</li>
+</ol>
+
+<h2>5. Vergleich</h2>
+<ul>
+  <li><b>Recreate:</b> einfach, Ausfallzeit, keine gemischten Versionen.</li>
+  <li><b>Rolling Update:</b> kein Ausfall, kaum Zusatzressourcen. Aber gemischte Versionen und langsamer Rollback. Fehler erreichen schnell alle Nutzer.</li>
+  <li><b>Blue-Green:</b> sofortiges Umschalten und sofortiger Rollback. Doppelte Ressourcen. Die DB ist meist geteilt, also trotzdem Expand-Contract.</li>
+  <li><b>Canary:</b> kleinster Schaden bei Fehlern, Entscheidung über Metriken. Braucht Traffic-Splitting, gute Metriken und genug Traffic für Statistik.</li>
+  <li><b>Feature Flags:</b> trennen Release vom Deployment. Rollback in Sekunden. Preis: Code-Komplexität und technische Schuld durch alte Flags.</li>
+  <li><b>A/B-Test vs Canary:</b> Canary prüft technische Gesundheit einer Version. Ein A/B-Test misst fachliches Verhalten von Nutzergruppen.</li>
+  <li><b>Kubernetes Deployment vs Argo Rollouts:</b> Das Deployment kann nur Rolling und Recreate. Argo Rollouts (oder Flagger) bringt Canary, Blue-Green und Analyse.</li>
+</ul>
+
+<h2>6. In der Produktion</h2>
+<ol>
+  <li><b>Fehler 502 bei jedem Rollout:</b> Pods bekommen Traffic vor dem Start oder nach SIGTERM. Lösung: Readiness Probe, Graceful Shutdown, <code>preStop</code>-Sleep, <code>maxUnavailable: 0</code>.</li>
+  <li><b>Rollout hängt:</b> Neue Pods werden nie ready. Nach <code>progressDeadlineSeconds</code> meldet Kubernetes <code>ProgressDeadlineExceeded</code>. Es macht aber <b>kein</b> automatisches Rollback. Lösung: Pipeline prüft <code>kubectl rollout status</code> und reagiert.</li>
+  <li><b>Rollback bricht die DB:</b> v2 hat eine Spalte gelöscht, v1 braucht sie. Lösung: Expand-Contract, destruktive Migrationen erst Releases später.</li>
+  <li><b>Gemischte Versionen streiten:</b> v1 und v2 lesen dieselben Events oder Caches in verschiedenen Formaten. Lösung: abwärtskompatible Formate, Tolerant Reader.</li>
+  <li><b>Canary sieht nichts:</b> Zu wenig Traffic, die Statistik ist zufällig. Lösung: längere Pausen, Mindestanzahl Requests in der Analyse.</li>
+  <li><b>Flag-Friedhof:</b> Hunderte alte Flags, niemand kennt ihre Wirkung. Lösung: Ablaufdatum und Owner pro Flag, Löschen als Teil der Definition of Done.</li>
+  <li><b>Manueller Rollback mit GitOps verpufft:</b> <code>kubectl rollout undo</code> wird von Argo CD mit Self-Heal wieder überschrieben. Lösung: Rollback über <code>git revert</code>.</li>
+</ol>
+
+<h2>7. Diagnose: Werkzeuge und Befehle</h2>
+<ul>
+  <li><code>kubectl rollout status deployment/order</code>: wartet und zeigt den Fortschritt.</li>
+  <li><code>kubectl rollout history deployment/order</code>: alle Revisionen. <code>--revision=3</code> zeigt Details.</li>
+  <li><code>kubectl rollout undo deployment/order --to-revision=3</code>: Rollback auf eine bestimmte Revision.</li>
+  <li><code>kubectl rollout pause|resume deployment/order</code>: Rollout anhalten, z. B. für einen manuellen Check.</li>
+  <li><code>kubectl get rs -l app=order</code> und <code>kubectl describe deployment order</code>: ReplicaSets und Events.</li>
+  <li><code>kubectl argo rollouts get rollout order --watch</code>: Schritte, Gewicht und Analyse-Ergebnis. <code>abort</code> und <code>promote</code> steuern manuell.</li>
+  <li><code>argocd app history order</code> und <code>argocd app diff order</code>: was Argo CD synchronisiert hat.</li>
+  <li><b>Metriken pro Version:</b> Fehlerrate und Latenz mit Label <code>version</code> oder <code>rollouts-pod-template-hash</code> in Grafana.</li>
+</ul>
+
+<h2>8. Senior-Punkte</h2>
+<div class="senior">
+<ol>
+  <li><b>Deployment und Release trennen.</b> Code geht oft und klein raus. Die Funktion schaltet das Business per Flag frei.</li>
+  <li><b>Rollback planen, nicht hoffen.</b> Jede Änderung braucht einen Weg zurück. Die DB ist der schwierigste Teil, darum Expand-Contract.</li>
+  <li><b>Canary ohne Analyse ist nur langsames Rolling.</b> Wert entsteht erst durch automatische Entscheidungen über SLO-Metriken.</li>
+  <li><b>Strategie nach Risiko wählen.</b> Interner Batch-Job: Rolling reicht. Zahlungsweg: Canary mit Analyse. Grosse Migration: Parallelbetrieb mit Feature Switch.</li>
+  <li><b>GitOps ist die Quelle der Wahrheit.</b> Rollback ist ein Commit. Manuelle Cluster-Änderungen gehen verloren oder verursachen Drift.</li>
+  <li><b>Flags sind Schulden.</b> Release Toggles leben Tage bis Wochen, dann werden sie gelöscht.</li>
+</ol>
+</div>
+
+<h2>9. Aus dem Projekt</h2>
+<p>„Bei MATCH ging die neue Lakehouse-Lösung parallel zum Altsystem live, gesteuert über einen Feature Switch. Deployments liefen per GitOps mit Argo CD. Ein Rollback war ein <code>git revert</code>, keine manuelle Änderung im Cluster.“ <span class="small">(Prüfen und durch dein echtes Beispiel ersetzen.)</span></p>
+
+<h2>10. Fallen</h2>
+<div class="trap">
+<ul>
+  <li>„Kubernetes rollt bei Fehlern automatisch zurück.“ → <b>Falsch.</b> Es markiert den Rollout nur als gescheitert. Rollback macht die Pipeline, Argo Rollouts oder ein Mensch.</li>
+  <li>„Blue-Green löst das DB-Problem.“ → <b>Falsch.</b> Beide Umgebungen teilen meist die DB. Das Schema muss beide Versionen tragen.</li>
+  <li>„Rolling Update hat keine gemischten Versionen.“ → <b>Falsch.</b> Während des Rollouts laufen v1 und v2 gleichzeitig.</li>
+  <li>„Canary heisst 10 % der Pods.“ → <b>Nur ohne Traffic-Router.</b> Mit Ingress oder Mesh ist der Traffic-Anteil unabhängig von der Pod-Zahl.</li>
+  <li>„Ein Feature Flag ist ein if, das man stehen lässt.“ → <b>Falsch.</b> Alte Flags machen Code unlesbar und gefährlich. Sie brauchen ein Ablaufdatum.</li>
+  <li>„<code>kubectl rollout undo</code> reicht mit Argo CD.“ → <b>Falsch.</b> Self-Heal setzt den Stand aus Git wieder durch.</li>
+</ul>
+</div>
+
+<h2>11. Fragen</h2>
+<details><summary>Was ist der Unterschied zwischen Deployment und Release?</summary><p>Deployment bringt Code in die Produktion. Release macht eine Funktion für Nutzer sichtbar. Feature Flags trennen beides.</p></details>
+<details><summary>Welche Strategien kennt ein Kubernetes Deployment?</summary><p>RollingUpdate (Standard) und Recreate. Canary und Blue-Green braucht man mit Argo Rollouts, Flagger oder eigenen Services.</p></details>
+<details><summary>Was bedeuten maxSurge und maxUnavailable?</summary><p>maxSurge: Pods über der Soll-Anzahl. maxUnavailable: Pods, die unter der Soll-Anzahl fehlen dürfen. Beide Standard 25 %.</p></details>
+<details><summary>Wie rundet Kubernetes die Prozentwerte?</summary><p>maxSurge rundet auf, maxUnavailable rundet ab. Bei 10 Replicas: 3 und 2.</p></details>
+<details><summary>Wie erreichen Sie ein Rolling Update ohne Kapazitätsverlust?</summary><p>maxUnavailable: 0 und maxSurge mindestens 1. Dazu Readiness Probe und Graceful Shutdown.</p></details>
+<details><summary>Welche Rolle spielt die Readiness Probe beim Rollout?</summary><p>Erst wenn sie grün ist, bekommt der Pod Traffic und zählt als verfügbar. Dann baut der Rollout den nächsten alten Pod ab.</p></details>
+<details><summary>Was passiert bei progressDeadlineSeconds?</summary><p>Nach 600 s ohne Fortschritt setzt Kubernetes die Condition ProgressDeadlineExceeded. Ein automatisches Rollback gibt es nicht.</p></details>
+<details><summary>Wie machen Sie ein Rollback in Kubernetes?</summary><p>kubectl rollout undo, optional --to-revision. Mit GitOps stattdessen git revert und Sync.</p></details>
+<details><summary>Was ist Blue-Green Deployment?</summary><p>Zwei komplette Umgebungen. Die neue wird getestet, dann schaltet der Router um. Rollback heisst zurückschalten.</p></details>
+<details><summary>Was ist ein Canary Release?</summary><p>Ein kleiner Traffic-Anteil geht auf die neue Version. Metriken entscheiden schrittweise über mehr Traffic oder Abbruch.</p></details>
+<details><summary>Wie entscheidet Argo Rollouts über einen Canary?</summary><p>Über ein AnalysisTemplate, das z. B. Prometheus abfragt. Scheitert es, macht Argo Rollouts einen Abort und schickt allen Traffic auf stable.</p></details>
+<details><summary>Blue-Green vs Canary?</summary><p>Blue-Green schaltet alles auf einmal um und braucht doppelte Ressourcen. Canary erhöht schrittweise und begrenzt den Schaden.</p></details>
+<details><summary>Was ist ein Feature Flag?</summary><p>Ein Schalter im Code, der eine Funktion zur Laufzeit an- oder ausschaltet. Ohne neues Deployment.</p></details>
+<details><summary>Welche Arten von Feature Toggles gibt es?</summary><p>Release, Experiment, Ops und Permissioning Toggles. Sie unterscheiden sich in Lebensdauer und Dynamik.</p></details>
+<details><summary>Was ist ein Dark Launch?</summary><p>Neuer Code läuft in Produktion, aber Nutzer sehen nichts. Man misst Last und Fehler vor dem Release.</p></details>
+<details><summary>Was ist Expand-Contract?</summary><p>Erst das Schema erweitern, dann Code und Daten migrieren, dann Altes entfernen. So passen alte und neue Version jederzeit zur DB.</p></details>
+<details><summary>Warum darf eine Migration keine Spalte direkt umbenennen?</summary><p>Die alte Version läuft während des Rollouts noch und sucht die alte Spalte. Und ein Rollback wäre unmöglich.</p></details>
+<details><summary>Was gehört zu einem Graceful Shutdown?</summary><p>SIGTERM abfangen, keine neuen Requests annehmen, laufende beenden. Spring Boot: server.shutdown=graceful. Dazu ein kurzer preStop-Sleep.</p></details>
+<details><summary>Wann wählen Sie Recreate?</summary><p>Wenn zwei Versionen nie gleichzeitig laufen dürfen, z. B. bei einem exklusiven Lock oder inkompatiblem Format. Ausfallzeit muss akzeptabel sein.</p></details>
+<details><summary>Wie macht man Rollback mit Argo CD?</summary><p>git revert des Commits, Argo CD synchronisiert den alten Stand. Manuelle Änderungen überschreibt Self-Heal.</p></details>
+<details><summary>Warum braucht Canary genug Traffic?</summary><p>Bei wenigen Requests ist die Fehlerrate Zufall. Die Analyse braucht eine Mindestzahl Requests für eine sichere Entscheidung.</p></details>
+<details><summary>Szenario: Bei jedem Deployment gibt es für ein paar Sekunden 502-Fehler. Was prüfen Sie?</summary><p>Readiness Probe, Graceful Shutdown, preStop-Sleep, maxUnavailable. Oft bekommt ein Pod nach SIGTERM noch Traffic, weil das Endpoint-Update später ankommt.</p></details>
+<details><summary>Szenario: Eine neue Version hat einen fachlichen Bug, aber alle Probes sind grün. Wie verhindern Sie das nächste Mal grossen Schaden?</summary><p>Canary mit automatischer Analyse auf Fehlerrate und Latenz. Neue Funktion hinter einem Feature Flag. So begrenzt man den Schaden auf wenige Prozent.</p></details>
+<details><summary>Szenario: Sie müssen ein grosses Altsystem ablösen, ohne Big Bang. Wie gehen Sie vor?</summary><p>Neue Lösung parallel betreiben, per Feature Switch umschalten. Ergebnisse automatisch vergleichen. Rollback ist Schalter zurück oder git revert.</p></details>
+
+</body>
+</html>

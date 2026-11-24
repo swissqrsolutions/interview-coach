@@ -1,0 +1,224 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Idempotenz in verteilten Systemen</title>
+<style>
+  body { font: 17px/1.55 -apple-system, system-ui, sans-serif; max-width: 760px; margin: 0 auto; padding: 16px; color: #1d1d1f; }
+  h1 { font-size: 28px; margin: 8px 0 4px; }
+  h2 { font-size: 21px; margin: 32px 0 8px; padding-top: 12px; border-top: 2px solid #e5e5ea; }
+  .kern { background: #eef6ff; border-left: 4px solid #0a66c2; padding: 10px 14px; border-radius: 6px; }
+  .senior { background: #f0faf0; border-left: 4px solid #2e7d32; padding: 10px 14px; border-radius: 6px; }
+  .trap { background: #fff4f2; border-left: 4px solid #c62828; padding: 10px 14px; border-radius: 6px; }
+  code { background: #f2f2f7; padding: 1px 5px; border-radius: 4px; font-size: 15px; }
+  pre { background: #1e1e1e; color: #e6e6e6; padding: 12px; border-radius: 8px; overflow-x: auto; font-size: 13.5px; line-height: 1.45; }
+  svg { width: 100%; height: auto; display: block; margin: 10px 0; }
+  ol li, ul li { margin: 4px 0; }
+  details { border: 1px solid #e5e5ea; border-radius: 8px; padding: 8px 12px; margin: 6px 0; }
+  summary { font-weight: 600; cursor: pointer; }
+  details p { margin: 6px 0 2px; }
+  .small { color: #6e6e73; font-size: 14px; }
+</style>
+</head>
+<body>
+
+<h1>Idempotenz in verteilten Systemen</h1>
+<p class="small">Microservices · Tier 1 · Quellen: microservices.io (Idempotent consumer, Transactional outbox), Azure Architecture Center (Saga, Idempotent Consumer), RFC 9110 Abschnitt 9.2.2 (idempotente HTTP-Methoden), IETF-Entwurf „The Idempotency-Key HTTP Header Field“, Apache Kafka Doku (Idempotent Producer, Transactions), Kleppmann DDIA Kap. 11</p>
+
+<div class="kern">
+<b>Kern:</b> Eine Operation ist <b>idempotent</b>, wenn sie einmal oder mehrmals ausgeführt <b>dasselbe Ergebnis</b> hat. In verteilten Systemen kommen Nachrichten und Requests <b>at-least-once</b>, also eventuell doppelt. Idempotenz löst das Problem, dass ein <b>Retry</b> sonst doppelt bucht, zählt oder versendet.
+</div>
+
+<h2>1. Wo entstehen Duplikate?</h2>
+<svg viewBox="0 0 720 310" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="a" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="10" y="40" width="130" height="56" rx="8" fill="#fff" stroke="#555"/><text x="75" y="64" text-anchor="middle" font-weight="700">Client</text><text x="75" y="83" text-anchor="middle" font-size="12">Retry nach Timeout</text>
+  <line x1="140" y1="68" x2="198" y2="68" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="200" y="40" width="150" height="56" rx="8" fill="#0a66c2" stroke="#0a66c2"/><text x="275" y="64" text-anchor="middle" fill="#fff" font-weight="700">Payment API</text><text x="275" y="83" text-anchor="middle" fill="#fff" font-size="12">Idempotency-Key</text>
+  <line x1="350" y1="68" x2="408" y2="68" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="410" y="40" width="130" height="56" rx="8" fill="#f7f7fa" stroke="#999"/><text x="475" y="64" text-anchor="middle" font-weight="700">Broker</text><text x="475" y="83" text-anchor="middle" font-size="12">Redelivery</text>
+  <line x1="540" y1="68" x2="588" y2="68" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="590" y="40" width="120" height="56" rx="8" fill="#0a66c2" stroke="#0a66c2"/><text x="650" y="64" text-anchor="middle" fill="#fff" font-weight="700">Consumer</text><text x="650" y="83" text-anchor="middle" fill="#fff" font-size="12">Dedupe</text>
+  <line x1="275" y1="96" x2="275" y2="168" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <line x1="650" y1="96" x2="650" y2="168" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="180" y="170" width="190" height="60" rx="8" fill="#e8f5e9" stroke="#2e7d32"/><text x="275" y="194" text-anchor="middle" font-weight="700">payments DB</text><text x="275" y="214" text-anchor="middle" font-size="12">idempotency_key (UNIQUE)</text>
+  <rect x="540" y="170" width="170" height="60" rx="8" fill="#e8f5e9" stroke="#2e7d32"/><text x="625" y="194" text-anchor="middle" font-weight="700">billing DB</text><text x="625" y="214" text-anchor="middle" font-size="12">processed_message (PK)</text>
+  <text x="75" y="130" text-anchor="middle" fill="#c62828" font-size="12">Antwort verloren?</text>
+  <text x="475" y="130" text-anchor="middle" fill="#c62828" font-size="12">Ack verloren?</text>
+  <text x="360" y="280" text-anchor="middle" font-size="13">Jeder Pfeil kann doppelt laufen. Jede Senke braucht einen Schutz.</text>
+</svg>
+<ol>
+  <li><b>Client:</b> Er bekommt keine Antwort und sendet den Request erneut. Der erste kam aber vielleicht an.</li>
+  <li><b>Payment API:</b> Sie erkennt die Wiederholung am <b>Idempotency Key</b>. Das ist eine eindeutige ID, die der Client pro Vorgang mitschickt.</li>
+  <li><b>Broker:</b> Er liefert erneut, wenn das <b>Ack</b> (Bestätigung) des Consumers fehlt.</li>
+  <li><b>Consumer:</b> Er erkennt die Wiederholung an der <b>Message-ID</b> in einer <b>Dedupe-Tabelle</b>.</li>
+  <li><b>Datenbank:</b> Ein <b>UNIQUE-Constraint</b> ist der letzte, sichere Schutz. Er hält auch bei parallelen Duplikaten.</li>
+</ol>
+
+<h2>2. Die Reise einer doppelten Nachricht (die Geschichte zum Merken)</h2>
+<svg viewBox="0 0 720 300" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="b" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker><marker id="r" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#c62828"/></marker></defs>
+  <rect x="10" y="40" width="150" height="70" rx="10" fill="#eee" stroke="#777"/><text x="85" y="64" text-anchor="middle" font-weight="700">1. Zustellung</text><text x="85" y="84" text-anchor="middle" font-size="12">m-1: +10</text><text x="85" y="100" text-anchor="middle" font-size="12">Saldo 100</text>
+  <line x1="160" y1="75" x2="198" y2="75" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="200" y="40" width="160" height="70" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="280" y="64" text-anchor="middle" font-weight="700">2. Transaktion</text><text x="280" y="84" text-anchor="middle" font-size="12">INSERT m-1 + UPDATE</text><text x="280" y="100" text-anchor="middle" font-size="12">Saldo 110, COMMIT</text>
+  <line x1="360" y1="75" x2="398" y2="75" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="400" y="40" width="150" height="70" rx="10" fill="#fff4f2" stroke="#c62828"/><text x="475" y="64" text-anchor="middle" fill="#c62828" font-weight="700">3. Crash</text><text x="475" y="84" text-anchor="middle" fill="#c62828" font-size="12">vor dem Ack</text><text x="475" y="100" text-anchor="middle" fill="#c62828" font-size="12">Broker weiss nichts</text>
+  <path d="M475,110 C475,190 85,190 85,114" fill="none" stroke="#c62828" stroke-width="2" stroke-dasharray="6 4" marker-end="url(#r)"/>
+  <text x="280" y="176" text-anchor="middle" fill="#c62828" font-size="12">Redelivery: m-1 nochmal</text>
+  <rect x="200" y="210" width="330" height="60" rx="10" fill="#e8f5e9" stroke="#2e7d32"/><text x="365" y="234" text-anchor="middle" font-weight="700">4. INSERT m-1 scheitert (PK)</text><text x="365" y="254" text-anchor="middle" font-size="12">Rollback, Ack senden, Saldo bleibt 110</text>
+  <line x1="85" y1="190" x2="198" y2="238" stroke="#2e7d32" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="580" y="40" width="130" height="70" rx="10" fill="#0a66c2" stroke="#0a66c2"/><text x="645" y="64" text-anchor="middle" fill="#fff" font-weight="700">Ohne Schutz</text><text x="645" y="84" text-anchor="middle" fill="#fff" font-size="12">Saldo 120</text><text x="645" y="100" text-anchor="middle" fill="#fff" font-size="12">falsch</text>
+</svg>
+<ol>
+  <li><b>Zustellung:</b> Der Broker liefert Nachricht <code>m-1</code>: „Saldo +10“. Der Saldo ist 100.</li>
+  <li><b>Transaktion:</b> Der Consumer schreibt <code>m-1</code> in <code>processed_message</code> und erhöht den Saldo. Beides in <b>einer</b> Transaktion. Saldo 110.</li>
+  <li><b>Crash vor dem Ack:</b> Der Consumer stirbt, bevor er dem Broker bestätigt. Kafka hat den <b>Offset</b> nicht gespeichert.</li>
+  <li><b>Redelivery:</b> Nach dem Neustart kommt <code>m-1</code> erneut.</li>
+  <li><b>Dedupe:</b> Das INSERT von <code>m-1</code> scheitert am <b>Primary Key</b>. Die Transaktion rollt zurück. Der Consumer sendet nur das Ack. Saldo bleibt 110.</li>
+  <li><b>Ohne Schutz:</b> Der Consumer würde erneut addieren. Saldo 120, falsch.</li>
+</ol>
+
+<h2>3. Beispiel: doppelte Zustellung mit und ohne Schutz</h2>
+<pre>deliveries = [("m-1", 10), ("m-1", 10), ("m-1", 10)]    # dieselbe Nachricht, 3× geliefert
+
+# 1) naiver Consumer
+for mid, amount in deliveries:
+    with c: c.execute("UPDATE account SET balance=balance+? WHERE id=1", (amount,))
+
+# 2) idempotenter Consumer: Dedupe-Tabelle in derselben Transaktion
+for mid, amount in deliveries:
+    try:
+        with c:
+            c.execute("INSERT INTO processed_message VALUES (?)", (mid,))   # PRIMARY KEY
+            c.execute("UPDATE account SET balance=balance+? WHERE id=1", (amount,))
+    except sqlite3.IntegrityError as e:
+        print("skipped", e)
+
+# 3) Statistik: 10 alte + 3 neue Trades, Job läuft zweimal (Retry)
+c.execute("UPDATE daily_stats SET trades=trades+3")                    # addieren
+c.execute("""INSERT INTO daily_stats VALUES ('2026-11-23', ?)
+             ON CONFLICT(day) DO UPDATE SET trades=excluded.trades""", (10 + 3,))   # ersetzen</pre>
+<pre>1) naive consumer
+   balance = 130 (expected 110)
+2) idempotent consumer: dedupe table in the same transaction
+   m-1: applied
+   m-1: skipped (UNIQUE constraint failed: processed_message.message_id)
+   m-1: skipped (UNIQUE constraint failed: processed_message.message_id)
+   balance = 110
+3) statistics: add vs replace (10 old + 3 new trades, job retried)
+   add     after retry: 16
+   replace after retry: 13
+sqlite 3.49.1</pre>
+<p class="small">Echte Ausgabe, Python 3.12 + SQLite 3.49 (Simulation: eine Liste steht für die Zustellungen des Brokers).</p>
+<ol>
+  <li><b>Naiv:</b> Drei Zustellungen addieren dreimal 10. Saldo 130 statt 110.</li>
+  <li><b>Dedupe-Tabelle:</b> Die erste Zustellung gewinnt. Die zweite und dritte scheitern am <b>UNIQUE-Constraint</b>. Saldo 110.</li>
+  <li>Das INSERT und das UPDATE liegen in <b>einer Transaktion</b>. Darum gibt es nie „Saldo geändert, aber ID nicht gespeichert“.</li>
+  <li><b>Addieren:</b> Ein wiederholter Job addiert 3 zweimal: 10 + 3 + 3 = 16.</li>
+  <li><b>Ersetzen:</b> Der Job berechnet den Wert neu aus den Quelldaten und schreibt ihn per <b>Upsert</b>. Auch nach dem Retry: 13.</li>
+</ol>
+
+<h2>4. Details, die Interviewer fragen</h2>
+<ol>
+  <li><b>Zustellgarantien:</b>
+    <ul><li><b>at-most-once:</b> höchstens einmal, Verlust möglich. Ack vor der Verarbeitung.</li>
+    <li><b>at-least-once:</b> mindestens einmal, Duplikate möglich. Ack nach der Verarbeitung.</li>
+    <li><b>exactly-once:</b> genau einmal. In der Praxis meist at-least-once plus Idempotenz.</li></ul></li>
+  <li><b>Natürliche Idempotenz:</b> Manche Operationen sind von sich aus idempotent. <code>SET status='PAID'</code> ja, <code>balance = balance + 10</code> nein.</li>
+  <li><b>HTTP:</b> Laut RFC 9110 sind <code>GET</code>, <code>HEAD</code>, <code>PUT</code>, <code>DELETE</code> idempotent. <code>POST</code> und <code>PATCH</code> sind es nicht. Idempotent heisst: gleiche Wirkung, nicht gleiche Antwort.</li>
+  <li><b>Idempotency Key:</b> Der Client erzeugt pro Vorgang eine UUID und sendet sie als Header <code>Idempotency-Key</code>. Der Server speichert Key und Antwort. Bei Wiederholung gibt er die gespeicherte Antwort zurück.</li>
+  <li><b>Gleicher Key, anderer Inhalt:</b> Der Server speichert einen Hash des Request-Bodys. Weicht er ab, lehnt er den Request mit einem Fehler ab.</li>
+  <li><b>Gleichzeitige Duplikate:</b> „Erst SELECT, dann INSERT“ hat eine <b>Race Condition</b>. Zwei Requests sehen beide „neu“. Nur ein <b>UNIQUE-Constraint</b> oder ein atomarer Claim ist sicher.</li>
+  <li><b>Dedupe-Tabelle:</b> Sie speichert verarbeitete Message-IDs. Sie liegt in derselben DB wie die Geschäftsdaten, sonst fehlt die gemeinsame Transaktion.</li>
+  <li><b>Upsert:</b> Ein <b>Upsert</b> fügt ein oder aktualisiert. PostgreSQL: <code>INSERT … ON CONFLICT DO UPDATE</code>. SQL Server: <code>MERGE</code>. Wiederholt ergibt er denselben Zustand.</li>
+  <li><b>Ersetzen statt Addieren:</b> Aggregate werden aus den Quelldaten neu berechnet und ersetzt. Ein Retry ändert das Ergebnis dann nicht.</li>
+  <li><b>Versionen:</b> Eine <b>Versionsnummer</b> pro Datensatz verwirft alte oder doppelte Updates: <code>UPDATE … WHERE version = 4</code>.</li>
+  <li><b>Kafka Idempotent Producer:</b> Er verhindert Duplikate durch Producer-Retries mit Producer-ID und Sequenznummer. Seit Kafka 3.0 ist <code>enable.idempotence=true</code> Standard.</li>
+  <li><b>Kafka Exactly-Once:</b> Kafka-Transaktionen machen „lesen, verarbeiten, schreiben“ innerhalb von Kafka atomar. Seiteneffekte ausserhalb (DB, E-Mail, REST) deckt das nicht ab.</li>
+  <li><b>Aufbewahrung:</b> Dedupe-Einträge brauchen eine Ablaufzeit. Sie muss länger sein als das längste mögliche Retry-Fenster.</li>
+</ol>
+
+<h2>5. Vergleich</h2>
+<ul>
+  <li><b>Natürliche Idempotenz</b> (SET, PUT, DELETE): kein Zusatzspeicher. Funktioniert nur, wenn die Operation einen absoluten Zustand setzt.</li>
+  <li><b>Dedupe-Tabelle / Inbox:</b> funktioniert für jede Operation. Kostet eine Tabelle, Aufräumen und eine Transaktion pro Nachricht.</li>
+  <li><b>Idempotency Key + gespeicherte Antwort:</b> für APIs mit Seiteneffekten, z. B. Zahlungen. Client und Server müssen mitspielen.</li>
+  <li><b>Upsert / Ersetzen:</b> ideal für Pipelines und Aggregate. Setzt voraus, dass man den Zielwert vollständig neu berechnen kann.</li>
+  <li><b>Versionsprüfung:</b> verhindert alte Updates und Lost Updates. Braucht eine Version im Datensatz und in der Nachricht.</li>
+  <li><b>Kafka Exactly-Once:</b> stark innerhalb von Kafka. Hilft nicht bei externen Seiteneffekten.</li>
+</ul>
+
+<h2>6. In der Produktion</h2>
+<ol>
+  <li><b>Doppelte Zahlung:</b> Der Client wiederholt nach Timeout, die erste Zahlung war schon durch. Lösung: Idempotency Key, beim Drittanbieter mitgeben.</li>
+  <li><b>Parallele Duplikate:</b> Zwei Consumer-Instanzen verarbeiten dieselbe Nachricht gleichzeitig nach einem Rebalance. Lösung: UNIQUE-Constraint, kein Check-then-Insert.</li>
+  <li><b>Dedupe ausserhalb der Transaktion:</b> ID in Redis, Daten in PostgreSQL. Ein Crash dazwischen verliert die Nachricht oder verdoppelt sie. Lösung: ID in derselben DB.</li>
+  <li><b>Statistik verdoppelt:</b> Ein Batch-Job addiert bei jedem Retry. Lösung: neu berechnen und ersetzen, oder Partition löschen und neu schreiben.</li>
+  <li><b>Dedupe-Tabelle wächst endlos:</b> Lösung: Ablaufzeit und Aufräum-Job, Partitionierung nach Datum.</li>
+  <li><b>Doppelte E-Mails:</b> E-Mail-Versand ist nicht idempotent. Lösung: Versand mit Message-ID protokollieren, vorher prüfen, und Versand-Schritt spät in den Ablauf legen.</li>
+</ol>
+
+<h2>7. Diagnose: Werkzeuge und Kennzahlen</h2>
+<ul>
+  <li><b>Duplikate finden:</b> <code>SELECT message_id, count(*) FROM payments GROUP BY message_id HAVING count(*) &gt; 1;</code></li>
+  <li><b>Metrik „skipped duplicates“:</b> Zähler im Consumer. Ein Sprung zeigt Redeliveries, z. B. nach Rebalance.</li>
+  <li><b>Kafka Rebalances:</b> Consumer-Logs mit „Revoking partitions“ und <code>kafka-consumer-groups.sh --describe</code>.</li>
+  <li><b>Tracing</b> mit Idempotency Key und Correlation ID im Log: zeigt, welche Requests Wiederholungen waren.</li>
+  <li><b>Retry-Test:</b> Jeden Job im Test zweimal laufen lassen. Das Ergebnis muss gleich sein.</li>
+  <li><b>Abgleich-Job:</b> Summen in Quelle und Ziel vergleichen, z. B. Anzahl Trades pro Tag.</li>
+</ul>
+
+<h2>8. Senior-Punkte</h2>
+<div class="senior">
+<ol>
+  <li><b>Exactly-once ist at-least-once plus Idempotenz.</b> Kleppmann nennt das „effectively-once“.</li>
+  <li><b>Die Datenbank entscheidet, nicht der Code.</b> UNIQUE-Constraints und atomare Updates halten auch bei Races.</li>
+  <li><b>Dedupe und Änderung in eine Transaktion.</b> Sonst verschiebt man das Problem nur.</li>
+  <li><b>Zustand setzen statt Delta anwenden.</b> „Saldo = 110“ ist idempotent, „Saldo + 10“ nicht.</li>
+  <li><b>Jeder Job muss zweimal laufen dürfen.</b> Das gehört in die Definition of Done.</li>
+  <li><b>Idempotenz ist ein API-Vertrag.</b> Key, Ablaufzeit und Verhalten bei abweichendem Body werden dokumentiert.</li>
+</ol>
+</div>
+
+<h2>9. Aus dem Projekt</h2>
+<p>„Bei MATCH ist die Ingestion idempotent: Spark beansprucht Nachrichten atomar mit <code>UPDATE … OUTPUT INSERTED.*</code>, schreibt pro Nachricht DELETE und APPEND in einer Iceberg-Transaktion und ersetzt Statistiken statt zu addieren. Aus 10 alten und 3 neuen Trades wird 13, ein Retry würde beim Addieren 16 ergeben. Hängende Nachrichten setzt die Stale-Job-Recovery nach einem Timeout auf Pending zurück.“ <span class="small">(Prüfen und durch dein echtes Beispiel ersetzen.)</span></p>
+
+<h2>10. Fallen</h2>
+<div class="trap">
+<ul>
+  <li>„Kafka hat exactly-once, also brauche ich keine Idempotenz.“ → <b>Falsch.</b> Das gilt nur innerhalb von Kafka, nicht für DB-Writes oder REST-Aufrufe.</li>
+  <li>„Ich prüfe mit SELECT, ob die ID schon da ist.“ → <b>Unsicher.</b> Zwei parallele Duplikate sehen beide nichts. UNIQUE-Constraint nutzen.</li>
+  <li>„Idempotent heisst, die Antwort ist immer gleich.“ → <b>Falsch.</b> Die Wirkung ist gleich. DELETE liefert beim zweiten Mal eventuell 404.</li>
+  <li>„PUT ist immer idempotent.“ → <b>Nur per Definition.</b> Eine schlechte Implementierung kann trotzdem addieren.</li>
+  <li>„Retries schaden nicht.“ → <b>Falsch.</b> Ohne Idempotenz verdoppeln sie Seiteneffekte.</li>
+</ul>
+</div>
+
+<h2>11. Fragen</h2>
+<details><summary>Was bedeutet Idempotenz?</summary><p>Eine Operation hat einmal oder mehrmals ausgeführt dieselbe Wirkung.</p></details>
+<details><summary>Warum ist Idempotenz in verteilten Systemen so wichtig?</summary><p>Netzwerke verlieren Antworten, Broker liefern erneut, Clients wiederholen. Ohne Idempotenz wird ein Retry zu einer doppelten Buchung.</p></details>
+<details><summary>Was ist der Unterschied zwischen at-most-once, at-least-once und exactly-once?</summary><p>At-most-once: Verlust möglich, keine Duplikate. At-least-once: kein Verlust, Duplikate möglich. Exactly-once: genau einmal, praktisch at-least-once plus Idempotenz.</p></details>
+<details><summary>Gibt es echtes exactly-once?</summary><p>Nicht über Systemgrenzen hinweg. Man erreicht die Wirkung „genau einmal“ durch at-least-once und idempotente Verarbeitung.</p></details>
+<details><summary>Welche HTTP-Methoden sind idempotent?</summary><p>GET, HEAD, OPTIONS, PUT und DELETE. POST und PATCH nicht.</p></details>
+<details><summary>Wie machen Sie einen POST idempotent?</summary><p>Mit einem Idempotency Key im Header. Der Server speichert Key und Antwort und gibt bei Wiederholung die gespeicherte Antwort zurück.</p></details>
+<details><summary>Was passiert bei gleichem Idempotency Key und anderem Body?</summary><p>Der Server erkennt es am gespeicherten Hash des Bodys und lehnt den Request mit einem Fehler ab.</p></details>
+<details><summary>Was ist ein idempotenter Consumer?</summary><p>Ein Consumer, der doppelte Nachrichten erkennt und nur einmal anwendet, meist über eine Tabelle verarbeiteter Message-IDs.</p></details>
+<details><summary>Warum muss die Dedupe-Tabelle in derselben DB liegen?</summary><p>Damit ID und Änderung in einer Transaktion committen. Sonst gibt es bei einem Crash Verlust oder Duplikat.</p></details>
+<details><summary>Warum reicht „SELECT, dann INSERT“ nicht?</summary><p>Zwei gleichzeitige Duplikate sehen beide „noch nicht da“ und verarbeiten beide. Nur ein UNIQUE-Constraint ist atomar.</p></details>
+<details><summary>Was ist natürliche Idempotenz?</summary><p>Die Operation setzt einen absoluten Zustand, z. B. status = 'PAID'. Wiederholen ändert nichts.</p></details>
+<details><summary>Was ist ein Upsert?</summary><p>Einfügen oder aktualisieren in einem Befehl, z. B. INSERT … ON CONFLICT DO UPDATE. Wiederholt ergibt er denselben Zustand.</p></details>
+<details><summary>Wie machen Sie einen Batch-Job idempotent?</summary><p>Ziel-Partition oder Datensätze ersetzen statt anhängen: löschen und neu schreiben in einer Transaktion, oder Upsert. Aggregate neu berechnen statt addieren.</p></details>
+<details><summary>Was macht der Kafka Idempotent Producer?</summary><p>Er verhindert Duplikate durch Producer-Retries mit Producer-ID und Sequenznummer pro Partition. Seit Kafka 3.0 Standard.</p></details>
+<details><summary>Was decken Kafka-Transaktionen ab, was nicht?</summary><p>Lesen, Verarbeiten und Schreiben innerhalb von Kafka atomar. Nicht abgedeckt: Writes in eine externe DB, E-Mails, REST-Aufrufe.</p></details>
+<details><summary>Wie lange speichern Sie Idempotency Keys?</summary><p>Länger als das längste Retry-Fenster von Client und Broker. Danach löscht ein Job sie.</p></details>
+<details><summary>Wie helfen Versionsnummern?</summary><p>Ein Update gilt nur für eine bestimmte Version. Doppelte oder alte Nachrichten ändern dann nichts.</p></details>
+<details><summary>Ist DELETE idempotent, obwohl es beim zweiten Mal 404 liefert?</summary><p>Ja. Idempotenz betrifft die Wirkung auf dem Server, nicht den Statuscode.</p></details>
+<details><summary>Wie testen Sie Idempotenz?</summary><p>Jede Nachricht und jeden Job im Test zweimal verarbeiten. Der Endzustand muss gleich sein. Dazu parallele Duplikate testen.</p></details>
+<details><summary>Wie machen Sie Seiteneffekte wie E-Mails idempotent?</summary><p>Versand mit eindeutiger ID protokollieren und vorher prüfen. Bei Drittanbietern deren Idempotency Key nutzen. Ein Rest-Risiko bleibt beim Crash direkt nach dem Senden.</p></details>
+<details><summary>Szenario: Ein Kunde wurde nach einem Timeout zweimal belastet. Was ändern Sie?</summary><p>Idempotency Key pro Zahlungsvorgang vom Client, Speicherung mit UNIQUE-Constraint, gespeicherte Antwort bei Wiederholung. Den Key auch an den Zahlungsanbieter weitergeben.</p></details>
+<details><summary>Szenario: Eine Tagesstatistik ist nach einem Job-Neustart zu hoch. Woran liegt es?</summary><p>Der Job addiert statt zu ersetzen, und der Retry hat doppelt addiert. Fix: Wert aus den Quelldaten neu berechnen und per Upsert ersetzen, oder Partition in einer Transaktion löschen und neu schreiben.</p></details>
+<details><summary>Szenario: Nach einem Kafka-Rebalance tauchen doppelte Buchungen auf. Was tun Sie?</summary><p>Nach dem Rebalance werden Nachrichten seit dem letzten Commit erneut geliefert. Fix: idempotenter Consumer mit Message-ID-Tabelle in derselben Transaktion, UNIQUE-Constraint. Danach Duplikate per Abfrage finden und bereinigen.</p></details>
+
+</body>
+</html>

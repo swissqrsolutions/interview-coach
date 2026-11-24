@@ -1,0 +1,241 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Event-Driven Architecture: Events, Commands, Event-Design</title>
+<style>
+  body { font: 17px/1.55 -apple-system, system-ui, sans-serif; max-width: 760px; margin: 0 auto; padding: 16px; color: #1d1d1f; }
+  h1 { font-size: 28px; margin: 8px 0 4px; }
+  h2 { font-size: 21px; margin: 32px 0 8px; padding-top: 12px; border-top: 2px solid #e5e5ea; }
+  .kern { background: #eef6ff; border-left: 4px solid #0a66c2; padding: 10px 14px; border-radius: 6px; }
+  .senior { background: #f0faf0; border-left: 4px solid #2e7d32; padding: 10px 14px; border-radius: 6px; }
+  .trap { background: #fff4f2; border-left: 4px solid #c62828; padding: 10px 14px; border-radius: 6px; }
+  code { background: #f2f2f7; padding: 1px 5px; border-radius: 4px; font-size: 15px; }
+  pre { background: #1e1e1e; color: #e6e6e6; padding: 12px; border-radius: 8px; overflow-x: auto; font-size: 13.5px; line-height: 1.45; }
+  svg { width: 100%; height: auto; display: block; margin: 10px 0; }
+  ol li, ul li { margin: 4px 0; }
+  details { border: 1px solid #e5e5ea; border-radius: 8px; padding: 8px 12px; margin: 6px 0; }
+  summary { font-weight: 600; cursor: pointer; }
+  details p { margin: 6px 0 2px; }
+  .small { color: #6e6e73; font-size: 14px; }
+</style>
+</head>
+<body>
+
+<h1>Event-Driven Architecture: Events, Commands, Event-Design</h1>
+<p class="small">Microservices · Tier 1 · Quellen: Martin Fowler „What do you mean by ‚Event-Driven‘?“, CloudEvents Spec 1.0.2, Apache Kafka Doku (Partitions, Ordering, Producer Idempotence), Confluent Schema Registry Doku (Compatibility Types), microservices.io (Saga, Transactional Outbox), Azure Architecture Center (Event-driven architecture style, Choreography pattern)</p>
+
+<div class="kern">
+<b>Kern:</b> Eine <b>Event-Driven Architecture</b> ist ein Stil, bei dem Services über <b>Events</b> kommunizieren, also Meldungen über etwas, das passiert ist. Sie löst das Problem der engen Kopplung: Der Sender kennt seine Empfänger nicht. Neue Empfänger kommen dazu, ohne den Sender zu ändern. Der Preis ist <b>Eventual Consistency</b>, also Daten, die erst nach kurzer Zeit überall gleich sind.
+</div>
+
+<h2>1. Wo sitzen Events im System?</h2>
+<svg viewBox="0 0 720 290" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="a" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="10" y="40" width="170" height="110" rx="8" fill="#fff" stroke="#555"/><text x="95" y="64" text-anchor="middle" font-weight="700">Order Service</text>
+  <rect x="25" y="76" width="140" height="30" rx="5" fill="#eee" stroke="#777"/><text x="95" y="96" text-anchor="middle" font-size="12">orders-Tabelle</text>
+  <rect x="25" y="112" width="140" height="30" rx="5" fill="#eee" stroke="#777"/><text x="95" y="132" text-anchor="middle" font-size="12">outbox-Tabelle</text>
+  <line x1="180" y1="127" x2="238" y2="127" stroke="#555" stroke-width="2" marker-end="url(#a)"/><text x="209" y="118" text-anchor="middle" font-size="11">Relay</text>
+  <rect x="240" y="30" width="250" height="200" rx="12" fill="#dbe9fb" stroke="#0a66c2"/><text x="365" y="52" text-anchor="middle" font-weight="700">Broker (Kafka / Event Hub)</text>
+  <text x="365" y="74" text-anchor="middle" font-size="12">Topic „order-events“</text>
+  <rect x="255" y="86" width="220" height="30" rx="5" fill="#fff" stroke="#0a66c2"/><text x="365" y="106" text-anchor="middle" font-size="12">Partition 0: e1 e4 e7 …</text>
+  <rect x="255" y="122" width="220" height="30" rx="5" fill="#fff" stroke="#0a66c2"/><text x="365" y="142" text-anchor="middle" font-size="12">Partition 1: e2 e5 …</text>
+  <rect x="255" y="158" width="220" height="30" rx="5" fill="#fff" stroke="#0a66c2"/><text x="365" y="178" text-anchor="middle" font-size="12">Partition 2: e3 e6 …</text>
+  <text x="365" y="212" text-anchor="middle" font-size="12">Reihenfolge nur pro Partition</text>
+  <line x1="490" y1="70" x2="548" y2="50" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <line x1="490" y1="130" x2="548" y2="130" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <line x1="490" y1="190" x2="548" y2="210" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="550" y="25" width="160" height="50" rx="8" fill="#fff" stroke="#555"/><text x="630" y="47" text-anchor="middle">Payment</text><text x="630" y="64" text-anchor="middle" font-size="11">Consumer Group A</text>
+  <rect x="550" y="105" width="160" height="50" rx="8" fill="#fff" stroke="#555"/><text x="630" y="127" text-anchor="middle">Shipping</text><text x="630" y="144" text-anchor="middle" font-size="11">Consumer Group B</text>
+  <rect x="550" y="185" width="160" height="50" rx="8" fill="#fff" stroke="#555"/><text x="630" y="207" text-anchor="middle">Analytics</text><text x="630" y="224" text-anchor="middle" font-size="11">Consumer Group C</text>
+  <text x="365" y="270" text-anchor="middle" font-size="12">Der Producer kennt keinen Consumer. Jede Gruppe liest alles in eigenem Tempo.</text>
+</svg>
+<ol>
+  <li>Der <b>Producer</b> (Order Service) speichert seine Daten und das Event in <b>einer</b> DB-Transaktion. Das Event steht in einer <b>Outbox-Tabelle</b>.</li>
+  <li>Ein <b>Relay</b> (z. B. Debezium oder ein Poller) schreibt das Event aus der Outbox in den <b>Broker</b>.</li>
+  <li>Der Broker speichert Events in einem <b>Topic</b>. Ein Topic ist in <b>Partitionen</b> geteilt. Nur innerhalb einer Partition gilt eine feste Reihenfolge.</li>
+  <li>Jeder interessierte Service liest als eigene <b>Consumer Group</b>. Jede Gruppe bekommt alle Events.</li>
+  <li>Der Producer weiss nicht, wer liest. Ein neuer Consumer wie Analytics braucht keine Änderung am Producer.</li>
+</ol>
+
+<h2>2. Die Reise einer Bestellung (die Geschichte zum Merken)</h2>
+<svg viewBox="0 0 720 280" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="b" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker><marker id="r" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#c62828"/></marker></defs>
+  <rect x="10" y="20" width="150" height="56" rx="10" fill="#fff4f2" stroke="#c62828"/><text x="85" y="44" text-anchor="middle" font-weight="700">Command</text><text x="85" y="63" text-anchor="middle" font-size="12">PlaceOrder</text>
+  <line x1="160" y1="48" x2="208" y2="48" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="210" y="20" width="140" height="56" rx="10" fill="#fff" stroke="#555"/><text x="280" y="44" text-anchor="middle" font-weight="700">Order</text><text x="280" y="63" text-anchor="middle" font-size="12">prüft, speichert</text>
+  <line x1="350" y1="48" x2="398" y2="48" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="400" y="20" width="160" height="56" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="480" y="44" text-anchor="middle" font-weight="700">Event</text><text x="480" y="63" text-anchor="middle" font-size="12">OrderPlaced</text>
+  <line x1="480" y1="76" x2="300" y2="128" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <line x1="480" y1="76" x2="600" y2="128" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="210" y="130" width="160" height="56" rx="10" fill="#fff" stroke="#555"/><text x="290" y="154" text-anchor="middle" font-weight="700">Payment</text><text x="290" y="173" text-anchor="middle" font-size="12">bucht → PaymentDone</text>
+  <rect x="520" y="130" width="160" height="56" rx="10" fill="#fff" stroke="#555"/><text x="600" y="154" text-anchor="middle" font-weight="700">Stock</text><text x="600" y="173" text-anchor="middle" font-size="12">reserviert</text>
+  <line x1="290" y1="186" x2="290" y2="218" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="210" y="220" width="160" height="50" rx="10" fill="#e8f5e9" stroke="#2e7d32"/><text x="290" y="250" text-anchor="middle">Shipping versendet</text>
+  <path d="M600,186 C600,240 470,250 372,248" fill="none" stroke="#c62828" stroke-width="2" stroke-dasharray="6 4" marker-end="url(#r)"/>
+  <text x="520" y="262" text-anchor="middle" font-size="12" fill="#c62828">StockFailed → Kompensation</text>
+</svg>
+<ol>
+  <li><b>Ein Command kommt an.</b> Der Client schickt <code>PlaceOrder</code>. Ein <b>Command</b> ist ein Auftrag an genau einen Empfänger. Er darf abgelehnt werden.</li>
+  <li><b>Order entscheidet.</b> Der Order Service prüft und speichert. Dann schreibt er das Event <code>OrderPlaced</code> in die Outbox.</li>
+  <li><b>Das Event ist eine Tatsache.</b> Ein <b>Event</b> ist in der Vergangenheit benannt und unveränderlich. Niemand kann es ablehnen.</li>
+  <li><b>Viele reagieren.</b> Payment und Stock lesen <code>OrderPlaced</code> unabhängig voneinander. Keiner wartet auf den anderen.</li>
+  <li><b>Kette ohne Dirigent.</b> Payment veröffentlicht <code>PaymentDone</code>, Shipping reagiert darauf. Das ist <b>Choreografie</b>: jeder Service kennt nur seine Events.</li>
+  <li><b>Etwas scheitert.</b> Stock meldet <code>StockFailed</code>. Payment reagiert mit einer Rückbuchung. Das ist eine <b>Kompensation</b> in einer <b>Saga</b>, weil es keine verteilte Transaktion gibt.</li>
+</ol>
+
+<h2>3. Beispiel: Reihenfolge mit und ohne Key</h2>
+<pre>for oid in ("A-1", "B-2", "C-3"):
+    for typ in ("OrderPlaced", "OrderPaid", "OrderShipped"):
+        events.append({"type": typ, "orderId": oid})
+
+p = crc32(orderId) % 3 if with_key else i % 3      # Key-Hash vs Round Robin
+# Consumer der 3 Partitionen laufen parallel (zufällig verschränkt).
+# Prüfung: Paid nur nach Placed, Shipped nur nach Paid.</pre>
+<pre>WITH key=orderId
+  partition 0: B-2:Placed, B-2:Paid, B-2:Shipped, C-3:Placed, C-3:Paid, C-3:Shipped
+  partition 1: A-1:Placed, A-1:Paid, A-1:Shipped
+  partition 2:
+  out-of-order problems: 0
+WITHOUT key (round robin)
+  partition 0: A-1:Placed, B-2:Placed, C-3:Placed
+  partition 1: A-1:Paid, B-2:Paid, C-3:Paid
+  partition 2: A-1:Shipped, B-2:Shipped, C-3:Shipped
+  out-of-order problems: 6
+    - OrderShipped for A-1 but state=PLACED
+    - OrderShipped for B-2 but state=None
+    - OrderPlaced for B-2 but state=SHIPPED
+    - OrderPaid for A-1 but state=SHIPPED
+    - OrderShipped for C-3 but state=None
+    - OrderPlaced for C-3 but state=SHIPPED
+
+v1 consumer reads v2 event: {'type': 'OrderPlaced', 'orderId': 'D-4', 'amount': 49.9} -> unknown field 'currency' ignored</pre>
+<p class="small">Echte Ausgabe, Python 3.12 (Simulation eines partitionierten Logs, kein Kafka; Seed 3).</p>
+<ol>
+  <li><b>Mit Key:</b> Alle Events einer Bestellung landen in derselben Partition. Die Reihenfolge pro Bestellung bleibt. Null Probleme.</li>
+  <li><b>Ohne Key:</b> Die Events einer Bestellung liegen in drei Partitionen. Parallele Consumer lesen sie in falscher Reihenfolge. Sechs Fehler bei neun Events.</li>
+  <li><b>Schiefe Verteilung:</b> Mit nur drei Keys bleibt Partition 2 leer. Ein Key mit viel Last erzeugt eine <b>Hot Partition</b>.</li>
+  <li><b>Tolerant Reader:</b> Der alte Consumer ignoriert das neue Feld <code>currency</code>. So bricht ein neues optionales Feld keinen Consumer.</li>
+</ol>
+<p><b>Ein Event im CloudEvents-Format</b> (Struktur, keine Laufzeit-Ausgabe):</p>
+<pre>{
+  "specversion": "1.0",
+  "id": "7f3c2a10-5b1e-4c55-9d1e-2f6a0c1b8e42",
+  "source": "/order-service",
+  "type": "ch.example.order.placed.v1",
+  "subject": "order/1001",
+  "time": "2026-11-24T09:15:00Z",
+  "datacontenttype": "application/json",
+  "data": { "orderId": "1001", "customerId": "C-77", "amount": 49.90, "currency": "CHF" }
+}</pre>
+
+<h2>4. Details, die Interviewer fragen</h2>
+<ol>
+  <li><b>Event, Command, Query:</b> Ein <b>Event</b> meldet eine Tatsache in der Vergangenheit (<code>OrderPlaced</code>), an beliebig viele Empfänger. Ein <b>Command</b> verlangt eine Aktion (<code>PlaceOrder</code>), an genau einen Empfänger. Eine <b>Query</b> fragt Daten ab und ändert nichts.</li>
+  <li><b>Event Notification:</b> Das Event enthält nur die ID und den Typ. Der Empfänger ruft beim Sender die Details ab. Kleine Events, aber Rückkopplung und mehr Last beim Sender.</li>
+  <li><b>Event-Carried State Transfer:</b> Das Event enthält alle nötigen Daten. Der Empfänger hält eine lokale Kopie. Er funktioniert auch, wenn der Sender down ist. Preis: grössere Events, doppelte Daten.</li>
+  <li><b>Event Sourcing:</b> Der Zustand <b>ist</b> die Liste der Events. Den aktuellen Zustand erhält man durch Abspielen (<b>Replay</b>). Das ist ein Speichermuster innerhalb eines Service, kein Integrationsmuster.</li>
+  <li><b>Domain Event vs Integration Event:</b> Ein <b>Domain Event</b> lebt innerhalb eines Bounded Context. Ein <b>Integration Event</b> ist der öffentliche Vertrag nach aussen. Interne Events nicht ungefiltert veröffentlichen.</li>
+  <li><b>Event-Design:</b> Name im Präteritum und fachlich (<code>OrderCancelled</code>, nicht <code>OrderUpdated</code>). Mit <code>eventId</code>, Zeitpunkt, Version und Aggregat-ID. Keine internen DB-Strukturen.</li>
+  <li><b>CloudEvents:</b> CloudEvents ist eine CNCF-Spezifikation für Event-Metadaten. Pflichtattribute: <code>id</code>, <code>source</code>, <code>specversion</code>, <code>type</code>. <code>source</code> + <code>id</code> ist eindeutig. Azure Event Grid unterstützt es nativ.</li>
+  <li><b>Reihenfolge:</b> Kafka garantiert die Reihenfolge nur pro Partition. Der Key bestimmt die Partition. Darum alle Events eines Aggregats mit dessen ID als Key senden.</li>
+  <li><b>Mehr Partitionen später:</b> Wächst die Anzahl Partitionen, zeigt ein Key auf eine andere Partition. Alte und neue Events eines Keys liegen dann getrennt. Darum Partitionen früh grosszügig planen.</li>
+  <li><b>Zustellung:</b> Die Regel ist <b>at-least-once</b>, also mindestens einmal. Duplikate kommen vor. Der Consumer muss <b>idempotent</b> sein, z. B. über eine Tabelle verarbeiteter <code>eventId</code>s.</li>
+  <li><b>Transactional Outbox:</b> Das Muster löst das <b>Dual-Write-Problem</b>: DB schreiben und Event senden sind zwei Systeme. Die Outbox macht daraus eine DB-Transaktion. Ein Relay sendet danach.</li>
+  <li><b>Schema-Evolution:</b> Neue Felder optional mit Default hinzufügen. Felder nie umbenennen oder Typen ändern. Eine <b>Schema Registry</b> prüft die Regeln beim Deployment.</li>
+  <li><b>Kompatibilität:</b> <b>BACKWARD</b>: neue Consumer lesen alte Events (Confluent-Standard). <b>FORWARD</b>: alte Consumer lesen neue Events. <b>FULL</b>: beides. <b>TRANSITIVE</b> prüft gegen alle früheren Versionen, nicht nur die letzte.</li>
+  <li><b>Breaking Change:</b> Ein neues Topic oder ein neuer Typ mit Version (<code>order.placed.v2</code>). Eine Zeit lang beide Versionen parallel publizieren.</li>
+  <li><b>Choreografie vs Orchestrierung:</b> Bei <b>Choreografie</b> reagiert jeder Service auf Events, ohne Zentrale. Bei <b>Orchestrierung</b> sendet ein Orchestrator Commands und kennt den Ablauf. Choreografie koppelt lose, ist aber schwer zu überblicken.</li>
+  <li><b>Dead Letter Queue:</b> Eine <b>DLQ</b> nimmt Events auf, die nach mehreren Versuchen scheitern. So blockiert ein kaputtes Event (<b>Poison Message</b>) nicht die ganze Partition.</li>
+</ol>
+
+<h2>5. Vergleich</h2>
+<ul>
+  <li><b>Synchron (REST/gRPC):</b> sofortige Antwort, einfache Fehlerbehandlung. Aber zeitliche Kopplung: Ist der Empfänger down, scheitert der Aufruf.</li>
+  <li><b>Asynchron mit Events:</b> lose Kopplung, Puffer bei Lastspitzen. Aber Eventual Consistency, schwereres Debugging, Duplikate.</li>
+  <li><b>Event Notification vs Event-Carried State Transfer:</b> kleine Events mit Rückruf gegen grosse Events mit lokaler Kopie.</li>
+  <li><b>Event Sourcing vs CRUD:</b> vollständige Historie und Replay gegen Einfachheit. Event Sourcing nur, wenn die Historie fachlich wichtig ist.</li>
+  <li><b>Kafka / Event Hub:</b> ein <b>Log</b>, Events bleiben gespeichert, Replay möglich, Reihenfolge pro Partition.</li>
+  <li><b>RabbitMQ / Service Bus Queue:</b> eine <b>Queue</b>, Nachricht weg nach Bestätigung. Gut für Commands und Arbeitsverteilung.</li>
+  <li><b>Azure Event Grid:</b> Push-basiertes Routing von diskreten Events, z. B. „Blob erstellt“. Kein Log für Replay.</li>
+</ul>
+
+<h2>6. In der Produktion</h2>
+<ol>
+  <li><b>Event verloren nach DB-Commit:</b> Der Service schreibt die DB, stürzt vor dem Senden ab. Lösung: Transactional Outbox.</li>
+  <li><b>Doppelte Verarbeitung:</b> Ein Consumer stürzt nach der Arbeit, aber vor dem Offset-Commit ab. Das Event kommt wieder. Lösung: idempotenter Consumer mit <code>eventId</code>-Tabelle.</li>
+  <li><b>Falsche Reihenfolge:</b> Events ohne Key oder mit wechselndem Key. Lösung: Aggregat-ID als Key. Oder Versionsnummer im Event, ältere Events verwerfen.</li>
+  <li><b>Consumer bricht nach Producer-Deployment:</b> Ein Feld wurde umbenannt. Lösung: Schema Registry mit Kompatibilitätsprüfung in CI, nur additive Änderungen.</li>
+  <li><b>Poison Message blockiert Partition:</b> Ein Event wirft immer eine Exception. Lösung: begrenzte Retries, dann DLQ, Alarm auf DLQ.</li>
+  <li><b>Consumer Lag wächst:</b> Der Consumer ist langsamer als der Producer. Lösung: mehr Partitionen und Consumer-Instanzen, Verarbeitung beschleunigen. Mehr Consumer als Partitionen bringt nichts.</li>
+  <li><b>Niemand versteht den Ablauf:</b> Zehn Services reagieren in Ketten aufeinander. Lösung: Event-Katalog (z. B. AsyncAPI), Tracing über Events, bei langen Abläufen Orchestrierung.</li>
+</ol>
+
+<h2>7. Diagnose: Werkzeuge und Metriken</h2>
+<ul>
+  <li><b>Consumer Lag:</b> <code>kafka-consumer-groups.sh --bootstrap-server … --describe --group shipping</code> zeigt Offset, Log-End und Lag pro Partition.</li>
+  <li><b>Event Hub:</b> Metriken <code>IncomingMessages</code>, <code>OutgoingMessages</code>, <code>ThrottledRequests</code> im Azure Monitor.</li>
+  <li><b>Event Grid:</b> Metriken <code>DeliverySuccessCount</code>, <code>DeliveryAttemptFailCount</code>, <code>DeadLetteredCount</code>.</li>
+  <li><b>DLQ-Grösse:</b> Alarm, sobald die DLQ wächst.</li>
+  <li><b>Tracing:</b> traceparent in Message-Headern verbindet Producer- und Consumer-Spans.</li>
+  <li><b>Schema Registry:</b> <code>POST /compatibility/subjects/&lt;subject&gt;/versions/latest</code> prüft ein neues Schema vor dem Deployment.</li>
+  <li><b>Outbox-Tabelle:</b> Anzahl unveröffentlichter Zeilen als Metrik. Wächst sie, hängt das Relay.</li>
+</ul>
+
+<h2>8. Senior-Punkte</h2>
+<div class="senior">
+<ol>
+  <li><b>Ein Event ist ein öffentlicher Vertrag.</b> Es braucht Versionierung, Dokumentation und einen Owner, wie eine REST-API.</li>
+  <li><b>Events nicht als versteckte Commands nutzen.</b> <code>SendEmailRequested</code> an genau einen Empfänger ist ein Command. Dann besser eine Queue.</li>
+  <li><b>Idempotenz ist Pflicht.</b> At-least-once ist der Normalfall. Exactly-once gilt nur innerhalb von Kafka, nicht für Seiteneffekte wie E-Mails.</li>
+  <li><b>Reihenfolge nur dort, wo sie zählt.</b> Pro Aggregat ja, global fast nie. Globale Ordnung kostet Parallelität.</li>
+  <li><b>Choreografie für kurze Abläufe, Orchestrierung für lange.</b> Ab etwa vier Schritten mit Kompensation wird ein Orchestrator klarer.</li>
+  <li><b>Eventual Consistency mit dem Business klären.</b> Die UI muss zeigen, dass etwas „in Bearbeitung“ ist.</li>
+</ol>
+</div>
+
+<h2>9. Aus dem Projekt</h2>
+<p>„Bei DigiSanté antwortet die Upload-Funktion direkt nach dem Blob-Schreiben. Das Scan-Ergebnis von Microsoft Defender kommt über Event Grid und Event Hub. Eine eigene Funktion gibt die Datei frei oder löscht sie.“ <span class="small">(Prüfen und durch dein echtes Beispiel ersetzen. Bei DAZiT gab es zusätzlich Kafka und Event-Design.)</span></p>
+
+<h2>10. Fallen</h2>
+<div class="trap">
+<ul>
+  <li>„Kafka garantiert die Reihenfolge.“ → <b>Nur pro Partition.</b> Ohne Key gibt es keine Ordnung pro Aggregat.</li>
+  <li>„Mit Kafka bekomme ich exactly-once.“ → <b>Nur innerhalb von Kafka</b> (Transaktionen, Read-Process-Write). Externe Seiteneffekte brauchen Idempotenz.</li>
+  <li>„Event Sourcing heisst, wir nutzen Kafka.“ → <b>Falsch.</b> Event Sourcing ist ein Speichermuster. Kafka ist ein Transport.</li>
+  <li>„<code>OrderUpdated</code> mit allen Feldern ist ein gutes Event.“ → <b>Schwach.</b> Der Consumer muss raten, was passiert ist. Fachliche Events sind besser.</li>
+  <li>„Mehr Consumer machen es schneller.“ → <b>Nur bis zur Anzahl Partitionen.</b> Weitere Consumer bleiben untätig.</li>
+  <li>„Ein Feld umbenennen ist harmlos.“ → <b>Falsch.</b> Für alte Consumer ist es Löschen plus Hinzufügen, also ein Breaking Change.</li>
+</ul>
+</div>
+
+<h2>11. Fragen</h2>
+<details><summary>Was ist eine Event-Driven Architecture?</summary><p>Services kommunizieren über Events, also Meldungen über Geschehenes. Der Sender kennt die Empfänger nicht. Das koppelt lose.</p></details>
+<details><summary>Event vs Command vs Query?</summary><p>Event: Tatsache in der Vergangenheit, an viele. Command: Auftrag an einen, darf abgelehnt werden. Query: Abfrage ohne Änderung.</p></details>
+<details><summary>Wie benennen Sie Events?</summary><p>Fachlich und im Präteritum: OrderPlaced, PaymentFailed. Nicht technisch wie OrderTableUpdated.</p></details>
+<details><summary>Event Notification vs Event-Carried State Transfer?</summary><p>Notification enthält nur ID und Typ, der Empfänger fragt nach. State Transfer enthält alle Daten, der Empfänger hält eine Kopie und ist unabhängig vom Sender.</p></details>
+<details><summary>Was ist Event Sourcing?</summary><p>Der Zustand wird als Folge von Events gespeichert. Der aktuelle Zustand entsteht durch Replay. Snapshots beschleunigen das.</p></details>
+<details><summary>Domain Event vs Integration Event?</summary><p>Domain Events bleiben im Bounded Context. Integration Events sind der öffentliche, stabile Vertrag nach aussen.</p></details>
+<details><summary>Was ist CloudEvents?</summary><p>Eine CNCF-Spezifikation für Event-Metadaten. Pflicht: id, source, specversion, type. Optional z. B. time, subject, datacontenttype.</p></details>
+<details><summary>Wie sichern Sie die Reihenfolge in Kafka?</summary><p>Gleicher Key für alle Events eines Aggregats. Dann landen sie in derselben Partition. Dazu idempotenter Producer gegen Vertauschung bei Retries.</p></details>
+<details><summary>Was passiert, wenn man Partitionen hinzufügt?</summary><p>Keys werden neu verteilt. Neue Events eines Keys landen in einer anderen Partition als alte. Die Reihenfolge pro Key kann kurz brechen.</p></details>
+<details><summary>Was ist at-least-once und was folgt daraus?</summary><p>Ein Event kommt mindestens einmal, manchmal doppelt. Der Consumer muss idempotent sein.</p></details>
+<details><summary>Wie bauen Sie einen idempotenten Consumer?</summary><p>Die eventId in einer Tabelle speichern, in derselben Transaktion wie die Änderung. Bekannte IDs überspringen. Oder Operationen so bauen, dass Wiederholung nichts ändert.</p></details>
+<details><summary>Was ist das Dual-Write-Problem?</summary><p>DB und Broker sind zwei Systeme ohne gemeinsame Transaktion. Einer kann gelingen, der andere scheitern.</p></details>
+<details><summary>Wie funktioniert die Transactional Outbox?</summary><p>Daten und Event in einer DB-Transaktion speichern, das Event in einer Outbox-Tabelle. Ein Relay oder CDC (Debezium) sendet es danach an den Broker.</p></details>
+<details><summary>Wie entwickeln Sie ein Event-Schema weiter?</summary><p>Nur optionale Felder mit Default hinzufügen. Nichts umbenennen oder umtypisieren. Eine Schema Registry prüft die Kompatibilität.</p></details>
+<details><summary>BACKWARD vs FORWARD Compatibility?</summary><p>BACKWARD: neue Consumer lesen alte Daten. FORWARD: alte Consumer lesen neue Daten. FULL: beides.</p></details>
+<details><summary>Was ist ein Tolerant Reader?</summary><p>Ein Consumer, der unbekannte Felder ignoriert und nur liest, was er braucht. So überlebt er additive Änderungen.</p></details>
+<details><summary>Choreografie vs Orchestrierung?</summary><p>Choreografie: Services reagieren auf Events, keine Zentrale. Orchestrierung: ein Orchestrator steuert mit Commands. Choreografie ist loser, Orchestrierung übersichtlicher.</p></details>
+<details><summary>Was ist eine Saga?</summary><p>Eine Folge lokaler Transaktionen über mehrere Services. Scheitert ein Schritt, machen Kompensationen die vorherigen rückgängig.</p></details>
+<details><summary>Was ist eine Dead Letter Queue?</summary><p>Ein Ablageort für Events, die nach mehreren Versuchen scheitern. So blockiert eine Poison Message nicht den Rest.</p></details>
+<details><summary>Kafka vs RabbitMQ?</summary><p>Kafka ist ein Log mit Aufbewahrung, Replay und Reihenfolge pro Partition. RabbitMQ ist ein Broker mit Queues, gut für Commands und Routing.</p></details>
+<details><summary>Event Grid vs Event Hub?</summary><p>Event Grid verteilt einzelne Events per Push, z. B. Blob-Ereignisse. Event Hub ist ein Log für grosse Datenströme mit Partitionen, ähnlich Kafka.</p></details>
+<details><summary>Wann ist Event-Driven die falsche Wahl?</summary><p>Wenn der Nutzer sofort eine konsistente Antwort braucht. Oder bei einfachen Abläufen, wo ein REST-Aufruf reicht.</p></details>
+<details><summary>Szenario: Kunden sehen bezahlte Bestellungen als „offen“. Woran liegt es?</summary><p>Möglich: falsche Reihenfolge (OrderPaid vor OrderPlaced, kein Key) oder Consumer Lag. Prüfen: Key, Partitionen, Lag. Lösung: Aggregat-ID als Key, Versionsnummer im Event.</p></details>
+<details><summary>Szenario: Nach einem Deployment des Producers stürzen zwei Consumer ab. Was tun Sie?</summary><p>Rollback des Producers. Ursache meist ein Breaking Change im Schema. Danach Schema Registry mit Kompatibilitätsprüfung in CI und nur additive Änderungen.</p></details>
+<details><summary>Szenario: Ab und zu fehlt ein Event, obwohl die DB-Daten da sind. Warum?</summary><p>Dual-Write: Die DB wurde geschrieben, das Senden scheiterte. Lösung: Transactional Outbox mit Relay oder CDC.</p></details>
+
+</body>
+</html>
