@@ -1,0 +1,220 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Kataloge: Nessie, REST, Hive, Glue</title>
+<style>
+  body { font: 17px/1.55 -apple-system, system-ui, sans-serif; max-width: 760px; margin: 0 auto; padding: 16px; color: #1d1d1f; }
+  h1 { font-size: 28px; margin: 8px 0 4px; }
+  h2 { font-size: 21px; margin: 32px 0 8px; padding-top: 12px; border-top: 2px solid #e5e5ea; }
+  .kern { background: #eef6ff; border-left: 4px solid #0a66c2; padding: 10px 14px; border-radius: 6px; }
+  .senior { background: #f0faf0; border-left: 4px solid #2e7d32; padding: 10px 14px; border-radius: 6px; }
+  .trap { background: #fff4f2; border-left: 4px solid #c62828; padding: 10px 14px; border-radius: 6px; }
+  code { background: #f2f2f7; padding: 1px 5px; border-radius: 4px; font-size: 15px; }
+  pre { background: #1e1e1e; color: #e6e6e6; padding: 12px; border-radius: 8px; overflow-x: auto; font-size: 13.5px; line-height: 1.45; }
+  svg { width: 100%; height: auto; display: block; margin: 10px 0; }
+  ol li, ul li { margin: 4px 0; }
+  details { border: 1px solid #e5e5ea; border-radius: 8px; padding: 8px 12px; margin: 6px 0; }
+  summary { font-weight: 600; cursor: pointer; }
+  details p { margin: 6px 0 2px; }
+  .small { color: #6e6e73; font-size: 14px; }
+</style>
+</head>
+<body>
+
+<h1>Kataloge: Nessie, REST, Hive, Glue</h1>
+<p class="small">Iceberg · Tier 1 · Quellen: Iceberg Table Spec (Commit-Protokoll), Iceberg REST Catalog OpenAPI Spec (<code>rest-catalog-open-api.yaml</code>), Iceberg Docs 1.x (Spark Configuration, Hive, AWS Glue, JDBC, Nessie), Project Nessie Docs (Server Configuration, Version Store Types, Iceberg REST, Nessie GC), Apache Polaris Docs</p>
+
+<div class="kern">
+<b>Kern:</b> Ein <b>Iceberg-Katalog</b> ist der Dienst, der für jede Tabelle den Zeiger auf die aktuelle <code>metadata.json</code> hält. Er macht Commits atomar: Ein Commit gilt nur, wenn der Katalog den Zeiger von „alt“ auf „neu“ tauschen kann. Ohne Katalog wüsste keine Engine, welche Version einer Tabelle gilt.
+</div>
+
+<h2>1. Wo sitzt der Katalog?</h2>
+<svg viewBox="0 0 720 320" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="a" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="20" y="20" width="150" height="44" rx="8" fill="#fff" stroke="#555"/><text x="95" y="47" text-anchor="middle">Spark (schreibt)</text>
+  <rect x="20" y="90" width="150" height="44" rx="8" fill="#fff" stroke="#555"/><text x="95" y="117" text-anchor="middle">Dremio (liest)</text>
+  <rect x="20" y="160" width="150" height="44" rx="8" fill="#fff" stroke="#555"/><text x="95" y="187" text-anchor="middle">Trino / Flink</text>
+  <line x1="170" y1="42" x2="258" y2="100" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <line x1="170" y1="112" x2="258" y2="112" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <line x1="170" y1="182" x2="258" y2="124" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="260" y="80" width="200" height="64" rx="10" fill="#0a66c2"/><text x="360" y="106" text-anchor="middle" fill="#fff" font-weight="700">Katalog</text><text x="360" y="126" text-anchor="middle" fill="#fff" font-size="12">Nessie · REST · HMS · Glue</text>
+  <line x1="360" y1="144" x2="360" y2="186" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="260" y="188" width="200" height="40" rx="8" fill="#fff" stroke="#555"/><text x="360" y="213" text-anchor="middle" font-size="13">Backend (z. B. Postgres)</text>
+  <line x1="460" y1="112" x2="538" y2="112" stroke="#555" stroke-width="2" stroke-dasharray="6 4" marker-end="url(#a)"/>
+  <text x="500" y="102" text-anchor="middle" font-size="11">Zeiger</text>
+  <rect x="540" y="80" width="170" height="64" rx="10" fill="#fff" stroke="#555"/><text x="625" y="106" text-anchor="middle">v42.metadata.json</text><text x="625" y="126" text-anchor="middle" font-size="12">im Object Store</text>
+  <line x1="625" y1="144" x2="625" y2="186" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="540" y="188" width="170" height="40" rx="8" fill="#eee" stroke="#777"/><text x="625" y="213" text-anchor="middle" font-size="13">Manifests + Parquet</text>
+  <rect x="200" y="260" width="510" height="44" rx="8" fill="#f7f7fa" stroke="#999" stroke-dasharray="5 4"/><text x="455" y="287" text-anchor="middle" font-size="13">Object Store (MinIO, S3, ADLS): alle Dateien, aber kein „aktuell“</text>
+</svg>
+<ol>
+  <li><b>Engines:</b> Spark, Dremio, Trino oder Flink fragen den Katalog nach einer Tabelle. Beispiel: <code>lake.silver.trades</code>.</li>
+  <li><b>Katalog:</b> antwortet mit dem Ort der aktuellen <code>metadata.json</code>. Moderne Kataloge (REST) liefern die Metadaten direkt mit.</li>
+  <li><b>Backend:</b> speichert den Zeiger dauerhaft. Beispiel: Nessie mit PostgreSQL, Hive Metastore mit einer relationalen DB.</li>
+  <li><b>metadata.json:</b> liegt im Object Store. Ab hier liest die Engine selbst: Manifest List, Manifests, Parquet.</li>
+  <li><b>Object Store:</b> enthält alle Dateien aller Versionen. Welche Version gilt, weiss nur der Katalog.</li>
+</ol>
+
+<h2>2. Die Reise eines Commits (die Geschichte zum Merken)</h2>
+<svg viewBox="0 0 720 310" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="b" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker><marker id="r" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#c62828"/></marker></defs>
+  <rect x="10" y="20" width="160" height="64" rx="10" fill="#eee" stroke="#777"/><text x="90" y="46" text-anchor="middle" font-weight="700">1. Basis lesen</text><text x="90" y="66" text-anchor="middle" font-size="12">Snapshot 41</text>
+  <line x1="170" y1="52" x2="198" y2="52" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="200" y="20" width="160" height="64" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="280" y="46" text-anchor="middle" font-weight="700">2. Dateien</text><text x="280" y="66" text-anchor="middle" font-size="12">Parquet + Manifests</text>
+  <line x1="360" y1="52" x2="388" y2="52" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="390" y="20" width="150" height="64" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="465" y="46" text-anchor="middle" font-weight="700">3. Neue</text><text x="465" y="66" text-anchor="middle" font-size="12">metadata.json v42</text>
+  <line x1="540" y1="52" x2="568" y2="52" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="570" y="20" width="140" height="64" rx="10" fill="#0a66c2"/><text x="640" y="46" text-anchor="middle" fill="#fff" font-weight="700">4. CAS</text><text x="640" y="66" text-anchor="middle" fill="#fff" font-size="12">41 → 42 ?</text>
+  <line x1="640" y1="84" x2="640" y2="136" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="520" y="138" width="190" height="60" rx="10" fill="#2e7d32"/><text x="615" y="162" text-anchor="middle" fill="#fff" font-weight="700">ja: Commit sichtbar</text><text x="615" y="182" text-anchor="middle" fill="#fff" font-size="12">alle Leser sehen v42</text>
+  <path d="M600,84 C560,240 300,240 280,90" fill="none" stroke="#c62828" stroke-width="2" stroke-dasharray="6 4" marker-end="url(#r)"/>
+  <text x="420" y="232" text-anchor="middle" fill="#c62828" font-weight="700">nein: jemand war schneller</text>
+  <text x="420" y="252" text-anchor="middle" fill="#c62828" font-size="12">neu lesen, Konflikt prüfen, Metadaten neu schreiben, nochmal</text>
+</svg>
+<ol>
+  <li><b>Basis lesen:</b> Spark lädt die Tabelle beim Katalog. Aktuell ist Snapshot 41 in <code>v41.metadata.json</code>.</li>
+  <li><b>Dateien schreiben:</b> Spark schreibt neue Parquet-Dateien und Manifests in den Object Store. Noch sieht sie niemand.</li>
+  <li><b>Neue Metadaten:</b> Spark schreibt <code>v42.metadata.json</code> mit dem neuen Snapshot.</li>
+  <li><b>Compare-and-Swap (CAS):</b> Spark sagt dem Katalog: „Setze den Zeiger auf v42, aber nur wenn er noch auf v41 steht.“ Das ist der <b>atomare Pointer Swap</b>.</li>
+  <li><b>Erfolg:</b> Der Katalog tauscht den Zeiger. Ab sofort sehen alle Engines Snapshot 42. Es gibt keinen halben Zustand.</li>
+  <li><b>Konflikt:</b> Hat ein anderer Writer schon v42 committet, lehnt der Katalog ab. Spark lädt die neue Basis, prüft echte Konflikte und versucht es erneut. Standard sind 4 Wiederholungen (<code>commit.retry.num-retries</code>).</li>
+  <li><b>Kein Lock während des Schreibens:</b> Das ist <b>optimistische Nebenläufigkeit</b>. Nur der letzte kleine Schritt ist atomar.</li>
+</ol>
+
+<h2>3. Beispiel: Spark mit Nessie als REST-Katalog und ein Commit-Konflikt</h2>
+<pre># spark-defaults.conf: Nessie über die Iceberg-REST-API
+spark.sql.extensions              org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions
+spark.sql.catalog.lake            org.apache.iceberg.spark.SparkCatalog
+spark.sql.catalog.lake.type       rest
+spark.sql.catalog.lake.uri        http://nessie:19120/iceberg
+spark.sql.catalog.lake.warehouse  warehouse
+
+# Nessie-Server (application.properties): Postgres statt RocksDB
+nessie.version.store.type=JDBC2
+nessie.version.store.persist.jdbc.datasource=postgresql
+quarkus.datasource.postgresql.jdbc.url=jdbc:postgresql://nessie-db:5432/nessie</pre>
+<pre># Was Spark beim Commit an den REST-Katalog schickt (gekürzt)
+POST /iceberg/v1/{prefix}/namespaces/silver/tables/trades
+{ "requirements": [ { "type": "assert-ref-snapshot-id", "ref": "main",
+                      "snapshot-id": 41 } ],
+  "updates":      [ { "action": "add-snapshot", "snapshot": { "snapshot-id": 42, ... } },
+                    { "action": "set-snapshot-ref", "ref-name": "main",
+                      "type": "branch", "snapshot-id": 42 } ] }
+
+# Antwort, wenn ein anderer Writer schneller war
+HTTP/1.1 409 Conflict
+{ "error": { "type": "CommitFailedException", "code": 409,
+             "message": "Requirement failed: branch main has changed ..." } }</pre>
+<p class="small">Erwartetes Ergebnis (laut Doku, nicht ausgeführt). Struktur laut Iceberg REST OpenAPI Spec und Nessie-Doku. IDs und Text der Fehlermeldung sind Beispielwerte.</p>
+<ol>
+  <li><code>type = rest</code> heisst: Spark spricht nur die offene REST-API. Der gleiche Client geht auch gegen Polaris, Unity Catalog oder andere REST-Kataloge.</li>
+  <li><code>JDBC2</code> mit PostgreSQL ist laut Nessie-Doku das Production-Backend. <code>ROCKSDB</code> ist nur für einen einzelnen Knoten.</li>
+  <li><b>requirements</b> sind die Bedingungen des CAS. Hier: „<code>main</code> zeigt noch auf Snapshot 41.“</li>
+  <li><b>updates</b> sind die Änderungen. Hier: neuen Snapshot hinzufügen und <code>main</code> darauf zeigen lassen.</li>
+  <li><b>409</b> ist der Konflikt. Der Iceberg-Client lädt dann neu und versucht es automatisch nochmal.</li>
+</ol>
+
+<h2>4. Details, die Interviewer fragen</h2>
+<ol>
+  <li><b>REST Catalog Spec:</b> eine offene OpenAPI-Spezifikation des Iceberg-Projekts. Wichtige Endpunkte: <code>GET /v1/config</code>, Namespaces, <code>loadTable</code>, <code>commitTable</code> und <code>POST /v1/{prefix}/transactions/commit</code> für Commits über mehrere Tabellen.</li>
+  <li><b>Server-seitiger Commit:</b> Beim REST-Katalog prüft der Server die requirements und schreibt die neue <code>metadata.json</code>. Der Client muss den Speicher des Katalogs nicht kennen.</li>
+  <li><b>Credential Vending:</b> Der REST-Katalog kann beim <code>loadTable</code> kurzlebige Speicher-Credentials mitgeben (Header <code>X-Iceberg-Access-Delegation: vended-credentials</code>). Dann braucht die Engine keine festen S3-Keys. Alternative: <code>remote-signing</code>.</li>
+  <li><b>Nessie:</b> ein transaktionaler Katalog mit <b>Git-Semantik</b>. Er kennt Commits, Branches, Tags und Merges über alle Tabellen. Beispiel: auf einem Branch <code>etl</code> laden, prüfen, dann nach <code>main</code> mergen.</li>
+  <li><b>Nessie-Zugriff:</b> zwei Wege. Der eigene Iceberg-Client (<code>type = nessie</code>, <code>uri = …/api/v2</code>, <code>ref = main</code>) oder die Iceberg-REST-API unter <code>/iceberg</code>. Neue Setups nehmen REST.</li>
+  <li><b>Nessie Version Store:</b> <code>nessie.version.store.type</code> wählt das Backend. <code>IN_MEMORY</code> nur für Tests, <code>ROCKSDB</code> nur ein Knoten, <code>JDBC2</code> (PostgreSQL), <code>MONGODB2</code> und <code>BIGTABLE</code> für Production.</li>
+  <li><b>Apache Polaris:</b> ein Open-Source-Katalog, der die REST-Spec umsetzt. Er bringt Rollen-basierte Rechte (RBAC) und Credential Vending mit.</li>
+  <li><b>Hive Metastore (HMS):</b> speichert den Zeiger als Table Property <code>metadata_location</code>. Der Commit nutzt einen HMS-Lock oder ein atomares Alter-Table. Weit verbreitet, aber Hive-Infrastruktur nötig.</li>
+  <li><b>AWS Glue:</b> speichert <code>metadata_location</code> als Parameter der Glue-Tabelle. Der Swap nutzt die optimistische Versionierung von Glue (<code>VersionId</code>). Gut in AWS, mit Athena und EMR.</li>
+  <li><b>JDBC-Katalog:</b> eine Tabelle <code>iceberg_tables</code> in einer SQL-Datenbank. Der Swap ist ein <code>UPDATE … WHERE metadata_location = &lt;alt&gt;</code>. Einfach, aber ohne eigene API für andere Engines.</li>
+  <li><b>Hadoop-Katalog:</b> nutzt das Umbenennen von Dateien als Swap. Auf Object Stores wie S3 ist Umbenennen nicht atomar. Darum nicht für Production auf S3 oder MinIO.</li>
+  <li><b>Spark-Konfiguration:</b> <code>spark.sql.catalog.&lt;name&gt;.type</code> kennt <code>hive</code>, <code>hadoop</code>, <code>rest</code>, <code>glue</code>, <code>nessie</code> und <code>jdbc</code>. Eigene Klassen kommen über <code>catalog-impl</code>.</li>
+  <li><b>Mehrere Tabellen atomar:</b> Iceberg selbst ist atomar pro Tabelle. Nessie-Commits und der REST-Endpunkt <code>transactions/commit</code> können mehrere Tabellen gemeinsam ändern, wenn der Server es unterstützt.</li>
+</ol>
+
+<h2>5. Vergleich</h2>
+<ul>
+  <li><b>REST (Spec):</b> offen, Engine-neutral, Server macht den Commit, Credential Vending. Heute der Standard für neue Plattformen.</li>
+  <li><b>Nessie:</b> REST plus Git-Semantik: Branches, Tags, Multi-Table-Commits. Braucht ein solides Backend und eigene GC (nessie-gc).</li>
+  <li><b>Polaris / Unity Catalog / Lakekeeper:</b> REST-Kataloge mit Fokus auf Governance und Rechte. Gut für viele Teams und Engines.</li>
+  <li><b>Hive Metastore:</b> alt und bewährt. Viele Engines können es, aber man betreibt Hive-Infrastruktur.</li>
+  <li><b>AWS Glue:</b> verwaltet, billig in AWS. Bindet an AWS.</li>
+  <li><b>JDBC:</b> minimal, eine SQL-Tabelle. Gut für kleine Setups und Tests.</li>
+  <li><b>Hadoop (Dateisystem):</b> nur für HDFS oder lokale Tests, nicht für Object Stores.</li>
+</ul>
+
+<h2>6. In der Produktion</h2>
+<ol>
+  <li><b>Katalog-Zustand weg nach Pod-Neustart:</b> Nessie lief mit eingebettetem RocksDB oder In-Memory. Ein Reschedule ohne dauerhaftes Volume verliert die Zeiger. Die Dateien sind noch da, aber keiner weiss, welche Version gilt. Lösung: <code>JDBC2</code> mit PostgreSQL, mit Backup.</li>
+  <li><b>Viele Commit-Konflikte:</b> Mehrere Jobs schreiben gleichzeitig in dieselbe Tabelle. Retries laufen aus, Jobs scheitern mit <code>CommitFailedException</code>. Lösung: Writer serialisieren (z. B. atomares Claimen von Arbeit), weniger und grössere Commits, Retries erhöhen.</li>
+  <li><b>Iceberg-GC löscht Daten anderer Branches:</b> <code>expire_snapshots</code> auf Nessie-Tabellen sieht nur einen Branch. Lösung: <code>gc.enabled = false</code> und nessie-gc, oder nur einen Branch nutzen.</li>
+  <li><b>Hadoop-Katalog auf S3:</b> Zwei Writer überschreiben sich, weil Umbenennen nicht atomar ist. Lösung: echter Katalog (REST, JDBC, Nessie).</li>
+  <li><b>Statische S3-Keys in jeder Engine:</b> schwer zu rotieren, zu breite Rechte. Lösung: Credential Vending über einen REST-Katalog.</li>
+  <li><b>Katalog als Single Point of Failure:</b> Fällt der Katalog aus, kann keine Engine lesen oder schreiben. Lösung: mehrere Replicas, HA-Datenbank, Monitoring.</li>
+</ol>
+
+<h2>7. Diagnose: Werkzeuge und Befehle</h2>
+<ul>
+  <li><code>curl http://nessie:19120/iceberg/v1/config</code>: prüft, ob der REST-Katalog antwortet und welche Defaults er gibt.</li>
+  <li><code>curl http://nessie:19120/api/v2/trees</code>: listet Nessie-Branches und Tags.</li>
+  <li><code>SELECT * FROM lake.silver.trades.metadata_log_entries</code>: welche <code>metadata.json</code>-Dateien es gab und wann.</li>
+  <li><code>SELECT * FROM lake.silver.trades.refs</code>: Branches und Tags der Tabelle.</li>
+  <li><b>Spark-Log:</b> <code>CommitFailedException</code> und Retry-Meldungen zeigen Konflikte.</li>
+  <li><b>Nessie-Metriken:</b> Prometheus-Endpunkt von Quarkus (<code>/q/metrics</code>) für Latenz und Fehler.</li>
+  <li><b>Backend:</b> Gesundheit und Backups der PostgreSQL-Datenbank hinter Nessie.</li>
+</ul>
+
+<h2>8. Senior-Punkte</h2>
+<div class="senior">
+<ol>
+  <li><b>Der Katalog ist das wertvollste Stück im Lakehouse.</b> Die Dateien sind wertlos, wenn niemand weiss, welche Version gilt. Er braucht HA, Backup und ein echtes Backend.</li>
+  <li><b>REST-Spec zuerst.</b> Wer nur REST spricht, kann den Katalog später wechseln. Proprietäre Client-Kataloge binden Engines an einen Anbieter.</li>
+  <li><b>Git-Semantik ist ein Werkzeug, kein Muss.</b> Nessie-Branches sind stark für isolierte Loads und Tests. Aber sie verlangen eigene GC und Disziplin.</li>
+  <li><b>Sicherheit gehört in den Katalog.</b> Credential Vending und RBAC im Katalog sind besser als S3-Keys in jeder Engine.</li>
+  <li><b>Atomar ist nur der Zeiger.</b> Alles davor ist optimistisch. Viele parallele Writer brauchen Koordination ausserhalb von Iceberg.</li>
+  <li><b>Cloud-Wahl prägt den Katalog:</b> AWS → Glue oder S3 Tables. Offen und mehrere Engines → REST (Nessie, Polaris). Bestehendes Hadoop → HMS.</li>
+</ol>
+</div>
+
+<h2>9. Aus dem Projekt</h2>
+<p>„Bei MATCH lief Nessie zuerst mit eingebettetem RocksDB, sodass der Katalog-Zustand bei einem Pod-Reschedule verloren gehen konnte; ich habe Nessie auf ein PostgreSQL-Backend umgestellt, denn der Katalog ist das wertvollste Stück des Lakehouse.“ <span class="small">(Prüfen und durch dein echtes Beispiel ersetzen.)</span></p>
+
+<h2>10. Fallen</h2>
+<div class="trap">
+<ul>
+  <li>„Der Katalog speichert die Daten oder Metadaten.“ → <b>Falsch.</b> Er speichert vor allem den Zeiger auf die aktuelle <code>metadata.json</code>. Alles andere liegt im Object Store.</li>
+  <li>„Iceberg sperrt die Tabelle während des Schreibens.“ → <b>Falsch.</b> Iceberg arbeitet optimistisch. Nur der Zeiger-Tausch ist atomar.</li>
+  <li>„Der Hadoop-Katalog reicht auf S3.“ → <b>Falsch.</b> Umbenennen ist auf Object Stores nicht atomar.</li>
+  <li>„Nessie ist ein eigenes Table Format.“ → <b>Falsch.</b> Nessie ist ein Katalog. Die Tabellen bleiben normale Iceberg-Tabellen.</li>
+  <li>„RocksDB in Nessie ist für Production auf Kubernetes ok.“ → <b>Falsch.</b> Nur für einen Knoten mit dauerhaftem Volume. Production: <code>JDBC2</code> mit PostgreSQL.</li>
+  <li>„Ein Iceberg-Commit ist immer über mehrere Tabellen atomar.“ → <b>Falsch.</b> Nur pro Tabelle. Mehrere Tabellen brauchen Nessie oder <code>transactions/commit</code>.</li>
+</ul>
+</div>
+
+<h2>11. Fragen</h2>
+<details><summary>Was macht ein Iceberg-Katalog?</summary><p>Er hält pro Tabelle den Zeiger auf die aktuelle <code>metadata.json</code>. Er macht Commits atomar durch einen Compare-and-Swap auf diesen Zeiger.</p></details>
+<details><summary>Was ist der atomare Pointer Swap?</summary><p>Der Writer sagt: „Setze den Zeiger auf die neue Version, aber nur wenn er noch auf meiner Basis steht.“ Klappt es, ist der Commit sichtbar. Sonst gibt es einen Konflikt.</p></details>
+<details><summary>Was passiert bei einem Commit-Konflikt?</summary><p>Der Client lädt die neue Basis und prüft, ob sich seine Änderungen wirklich überschneiden. Wenn nicht, schreibt er neue Metadaten und versucht es erneut, standardmässig bis zu 4 Mal.</p></details>
+<details><summary>Was ist die Iceberg REST Catalog Spec?</summary><p>Eine offene OpenAPI-Spezifikation für Kataloge. Jede Engine mit REST-Client kann damit jeden REST-Katalog nutzen.</p></details>
+<details><summary>Was sind requirements und updates in einem REST-Commit?</summary><p>Requirements sind Bedingungen, z. B. <code>assert-ref-snapshot-id</code>. Updates sind Änderungen, z. B. <code>add-snapshot</code> und <code>set-snapshot-ref</code>. Der Server wendet die Updates nur an, wenn alle Requirements stimmen.</p></details>
+<details><summary>Was ist Credential Vending?</summary><p>Der Katalog gibt beim Laden einer Tabelle kurzlebige Speicher-Credentials mit. Die Engine braucht keine festen S3-Keys.</p></details>
+<details><summary>Was ist Nessie?</summary><p>Ein transaktionaler Katalog mit Git-Semantik: Commits, Branches, Tags und Merges über mehrere Tabellen. Er spricht auch die Iceberg-REST-API.</p></details>
+<details><summary>Wofür nutzt man Nessie-Branches?</summary><p>Für isolierte Loads und Tests. Man schreibt auf einen Branch, prüft die Daten und merged dann atomar nach <code>main</code>.</p></details>
+<details><summary>Welches Backend für Nessie in Production?</summary><p><code>JDBC2</code> mit PostgreSQL, <code>MONGODB2</code> oder <code>BIGTABLE</code>. <code>ROCKSDB</code> nur auf einem Knoten, <code>IN_MEMORY</code> nur für Tests.</p></details>
+<details><summary>Wie speichert der Hive Metastore den Zeiger?</summary><p>Als Table Property <code>metadata_location</code>. Der Commit nutzt einen Lock oder ein atomares Alter-Table im Metastore.</p></details>
+<details><summary>Wie funktioniert der Glue-Katalog?</summary><p>Die Glue-Tabelle hat den Parameter <code>metadata_location</code>. Der Swap nutzt die optimistische Versionierung von Glue.</p></details>
+<details><summary>Wie funktioniert der JDBC-Katalog?</summary><p>Eine SQL-Tabelle mit <code>metadata_location</code> pro Tabelle. Der Swap ist ein <code>UPDATE</code> mit dem alten Wert in der <code>WHERE</code>-Klausel.</p></details>
+<details><summary>Warum ist der Hadoop-Katalog auf S3 gefährlich?</summary><p>Er nutzt Umbenennen als atomaren Schritt. Auf Object Stores ist Umbenennen nicht atomar, also können sich Writer überschreiben.</p></details>
+<details><summary>Was ist Apache Polaris?</summary><p>Ein Open-Source-REST-Katalog für Iceberg. Er bringt Rechteverwaltung (RBAC) und Credential Vending für mehrere Engines.</p></details>
+<details><summary>Sind Iceberg-Commits über mehrere Tabellen atomar?</summary><p>Nicht von selbst. Iceberg ist atomar pro Tabelle. Nessie-Commits oder der REST-Endpunkt <code>transactions/commit</code> können mehrere Tabellen zusammen ändern.</p></details>
+<details><summary>Wie konfigurieren Sie einen Katalog in Spark?</summary><p>Mit <code>spark.sql.catalog.&lt;name&gt; = org.apache.iceberg.spark.SparkCatalog</code>, dazu <code>type</code> (z. B. <code>rest</code>), <code>uri</code> und <code>warehouse</code>.</p></details>
+<details><summary>Was passiert, wenn der Katalog ausfällt?</summary><p>Keine Engine kann Tabellen laden oder committen. Die Dateien sind sicher, aber unbenutzbar. Darum braucht der Katalog HA und Backups.</p></details>
+<details><summary>Warum darf man bei Nessie nicht einfach expire_snapshots laufen lassen?</summary><p>Iceberg sieht nur die Snapshots eines Branches. Andere Branches brauchen vielleicht dieselben Dateien. Darum empfiehlt Iceberg <code>gc.enabled = false</code> und nessie-gc.</p></details>
+<details><summary>Welchen Katalog wählen Sie für eine neue Plattform?</summary><p>Einen REST-Katalog, damit alle Engines über eine offene API arbeiten. Nessie bei Bedarf an Branches, Polaris bei Fokus auf Rechte, Glue in reinem AWS.</p></details>
+<details><summary>Szenario: Nach einem Pod-Neustart sind alle Tabellen in Nessie leer oder unbekannt. Was ist passiert?</summary><p>Nessie lief mit In-Memory oder RocksDB ohne dauerhaftes Volume. Der Zeiger-Zustand ist weg, die Dateien nicht. Lösung: <code>JDBC2</code> mit PostgreSQL und Backups. Die Tabellen lassen sich mit <code>register_table</code> aus der letzten <code>metadata.json</code> wieder anmelden.</p></details>
+<details><summary>Szenario: Zwei Ingest-Jobs scheitern immer wieder mit CommitFailedException. Was tun Sie?</summary><p>Prüfen, ob sie dieselbe Tabelle gleichzeitig ändern. Arbeit atomar claimen, damit sich Jobs nicht überlappen. Weniger, grössere Commits und mehr Retries.</p></details>
+<details><summary>Szenario: Ein Team will von Nessie auf Polaris wechseln. Was ist der Aufwand?</summary><p>Wenn alle Engines nur die REST-API nutzen, ändert sich vor allem die Konfiguration. Die Tabellen meldet man mit <code>register_table</code> neu an. Nessie-Branches und -Historie gehen dabei nicht mit.</p></details>
+
+</body>
+</html>

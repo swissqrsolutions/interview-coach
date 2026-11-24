@@ -1,0 +1,222 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Merge-on-Read vs Copy-on-Write, Delete Files</title>
+<style>
+  body { font: 17px/1.55 -apple-system, system-ui, sans-serif; max-width: 760px; margin: 0 auto; padding: 16px; color: #1d1d1f; }
+  h1 { font-size: 28px; margin: 8px 0 4px; }
+  h2 { font-size: 21px; margin: 32px 0 8px; padding-top: 12px; border-top: 2px solid #e5e5ea; }
+  .kern { background: #eef6ff; border-left: 4px solid #0a66c2; padding: 10px 14px; border-radius: 6px; }
+  .senior { background: #f0faf0; border-left: 4px solid #2e7d32; padding: 10px 14px; border-radius: 6px; }
+  .trap { background: #fff4f2; border-left: 4px solid #c62828; padding: 10px 14px; border-radius: 6px; }
+  code { background: #f2f2f7; padding: 1px 5px; border-radius: 4px; font-size: 15px; }
+  pre { background: #1e1e1e; color: #e6e6e6; padding: 12px; border-radius: 8px; overflow-x: auto; font-size: 13.5px; line-height: 1.45; }
+  svg { width: 100%; height: auto; display: block; margin: 10px 0; }
+  ol li, ul li { margin: 4px 0; }
+  details { border: 1px solid #e5e5ea; border-radius: 8px; padding: 8px 12px; margin: 6px 0; }
+  summary { font-weight: 600; cursor: pointer; }
+  details p { margin: 6px 0 2px; }
+  .small { color: #6e6e73; font-size: 14px; }
+</style>
+</head>
+<body>
+
+<h1>Merge-on-Read vs Copy-on-Write, Delete Files</h1>
+<p class="small">Iceberg · Tier 1 · Quellen: Apache Iceberg Table Spec (v2, v3: Delete Formats, Deletion Vectors, Scan Planning), Iceberg Docs 1.x (Configuration: Write properties, Spark Writes, Spark Procedures, Metadata Tables), Puffin Spec (<code>deletion-vector-v1</code>)</p>
+
+<div class="kern">
+<b>Kern:</b> <b>Copy-on-Write (CoW)</b> und <b>Merge-on-Read (MoR)</b> sind zwei Arten, wie Iceberg Zeilen löscht oder ändert. CoW schreibt jede betroffene Datendatei komplett neu. MoR schreibt nur kleine <b>Delete Files</b>, und der Leser wendet sie beim Lesen an. CoW ist teuer beim Schreiben und billig beim Lesen, MoR ist umgekehrt.
+</div>
+
+<h2>1. Wo sitzen die Delete Files?</h2>
+<svg viewBox="0 0 720 330" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="a" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="270" y="10" width="180" height="40" rx="8" fill="#fff" stroke="#555"/><text x="360" y="35" text-anchor="middle">Catalog (Nessie)</text>
+  <line x1="360" y1="50" x2="360" y2="72" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="250" y="74" width="220" height="40" rx="8" fill="#fff" stroke="#555"/><text x="360" y="99" text-anchor="middle">metadata.json</text>
+  <line x1="360" y1="114" x2="360" y2="136" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="250" y="138" width="220" height="40" rx="8" fill="#fff" stroke="#555"/><text x="360" y="157" text-anchor="middle">Manifest List</text><text x="360" y="172" text-anchor="middle" font-size="11">pro Snapshot</text>
+  <line x1="320" y1="178" x2="180" y2="210" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <line x1="400" y1="178" x2="540" y2="210" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="80" y="212" width="200" height="40" rx="8" fill="#dbe9fb" stroke="#0a66c2"/><text x="180" y="231" text-anchor="middle">Data Manifests</text><text x="180" y="246" text-anchor="middle" font-size="11">content = data</text>
+  <rect x="440" y="212" width="200" height="40" rx="8" fill="#fff4f2" stroke="#c62828"/><text x="540" y="231" text-anchor="middle">Delete Manifests</text><text x="540" y="246" text-anchor="middle" font-size="11">content = deletes</text>
+  <line x1="180" y1="252" x2="180" y2="274" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <line x1="540" y1="252" x2="540" y2="274" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="60" y="276" width="240" height="44" rx="8" fill="#0a66c2"/><text x="180" y="296" text-anchor="middle" fill="#fff">Data Files</text><text x="180" y="312" text-anchor="middle" fill="#fff" font-size="11">Parquet, unveränderlich</text>
+  <rect x="400" y="276" width="280" height="44" rx="8" fill="#c62828"/><text x="540" y="296" text-anchor="middle" fill="#fff">Delete Files</text><text x="540" y="312" text-anchor="middle" fill="#fff" font-size="11">Position · Equality · Deletion Vector (Puffin)</text>
+  <line x1="400" y1="298" x2="304" y2="298" stroke="#c62828" stroke-width="2" stroke-dasharray="6 4" marker-end="url(#a)"/>
+  <text x="352" y="290" text-anchor="middle" font-size="11" fill="#c62828">maskiert</text>
+</svg>
+<ol>
+  <li><b>Catalog:</b> hält den Zeiger auf die aktuelle <code>metadata.json</code>. Beispiel: Nessie im MATCH-Lakehouse.</li>
+  <li><b>metadata.json:</b> kennt Schema, Partition Spec und alle Snapshots.</li>
+  <li><b>Manifest List:</b> listet pro Snapshot alle Manifests auf. Jedes Manifest hat einen Typ: Daten oder Deletes.</li>
+  <li><b>Data Manifests:</b> listen <b>Data Files</b>, also Parquet-Dateien mit Zeilen. Sie werden nie verändert.</li>
+  <li><b>Delete Manifests:</b> listen <b>Delete Files</b>. Ein Delete File sagt: „Diese Zeilen gibt es nicht mehr.“</li>
+  <li>Der Leser kombiniert beides. Er liest Data Files und blendet gelöschte Zeilen aus. Das ist das „Merge“ in Merge-on-Read.</li>
+  <li>Delete Files gibt es erst ab <b>Format v2</b>. In v1 ist nur Copy-on-Write möglich.</li>
+</ol>
+
+<h2>2. Die Reise eines DELETE (die Geschichte zum Merken)</h2>
+<svg viewBox="0 0 720 320" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="b" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="250" y="10" width="220" height="44" rx="10" fill="#eee" stroke="#777"/><text x="360" y="30" text-anchor="middle" font-weight="700">DELETE … WHERE</text><text x="360" y="46" text-anchor="middle" font-size="12">message_id = 4711</text>
+  <line x1="300" y1="54" x2="190" y2="88" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <line x1="420" y1="54" x2="530" y2="88" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="40" y="90" width="300" height="60" rx="10" fill="#fff" stroke="#555"/><text x="190" y="114" text-anchor="middle" font-weight="700">Copy-on-Write</text><text x="190" y="134" text-anchor="middle" font-size="12">Datei lesen, Rest neu schreiben</text>
+  <rect x="380" y="90" width="300" height="60" rx="10" fill="#fff" stroke="#555"/><text x="530" y="114" text-anchor="middle" font-weight="700">Merge-on-Read</text><text x="530" y="134" text-anchor="middle" font-size="12">nur Positionen notieren</text>
+  <line x1="190" y1="150" x2="190" y2="178" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <line x1="530" y1="150" x2="530" y2="178" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="40" y="180" width="300" height="56" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="190" y="203" text-anchor="middle">Snapshot: 1 Datei ersetzt</text><text x="190" y="222" text-anchor="middle" font-size="12">512 MB geschrieben</text>
+  <rect x="380" y="180" width="300" height="56" rx="10" fill="#fff4f2" stroke="#c62828"/><text x="530" y="203" text-anchor="middle">Snapshot: 1 Delete File</text><text x="530" y="222" text-anchor="middle" font-size="12">wenige KB geschrieben</text>
+  <line x1="190" y1="236" x2="190" y2="264" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <line x1="530" y1="236" x2="530" y2="264" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="40" y="266" width="300" height="44" rx="10" fill="#2e7d32"/><text x="190" y="293" text-anchor="middle" fill="#fff">Lesen: nur Data Files</text>
+  <rect x="380" y="266" width="300" height="44" rx="10" fill="#0a66c2"/><text x="530" y="293" text-anchor="middle" fill="#fff">Lesen: Data + Deletes mergen</text>
+</svg>
+<ol>
+  <li><b>Planen:</b> Spark fragt den Catalog nach dem aktuellen Snapshot. Mit den Min/Max-Statistiken der Manifests findet es die Dateien, die <code>message_id = 4711</code> enthalten können.</li>
+  <li><b>Copy-on-Write:</b> Spark liest jede betroffene Datei ganz. Es schreibt alle Zeilen ausser den gelöschten in eine neue Datei. Der Commit ersetzt die alte Datei durch die neue (Operation <code>overwrite</code>).</li>
+  <li><b>Merge-on-Read:</b> Spark liest nur die betroffenen Zeilen und merkt sich Dateipfad und Zeilenposition. Es schreibt ein <b>Position Delete File</b> (v2) oder einen <b>Deletion Vector</b> (v3). Der Commit fügt nur dieses kleine File hinzu (Operation <code>delete</code> oder <code>overwrite</code>).</li>
+  <li><b>Sonderfall ganze Datei:</b> Passen alle Zeilen einer Datei zum Filter, entfernt Iceberg die Datei nur aus den Metadaten. Das ist in beiden Modi ein reiner Metadaten-Delete.</li>
+  <li><b>Atomarer Commit:</b> Der neue Snapshot wird erst sichtbar, wenn der Catalog den Zeiger tauscht. Leser sehen entweder alles oder nichts.</li>
+  <li><b>Lesen danach:</b> Bei CoW liest der Leser nur Data Files. Bei MoR lädt er zusätzlich die Delete Files und filtert gelöschte Positionen aus. Je mehr Delete Files, desto langsamer.</li>
+  <li><b>Aufräumen:</b> Später schreibt <code>rewrite_data_files</code> die Daten neu und wendet die Deletes an. Danach braucht niemand mehr die Delete Files.</li>
+</ol>
+
+<h2>3. Beispiel: von CoW auf MoR umstellen und Delete Files sehen</h2>
+<pre>-- Spark SQL mit Iceberg SQL Extensions, Catalog "lake"
+ALTER TABLE lake.silver.trades SET TBLPROPERTIES (
+  'format-version'    = '3',
+  'write.delete.mode' = 'merge-on-read',
+  'write.update.mode' = 'merge-on-read',
+  'write.merge.mode'  = 'merge-on-read'
+);
+
+DELETE FROM lake.silver.trades WHERE message_id = 4711;
+
+SELECT snapshot_id, operation,
+       summary['added-delete-files']     AS add_del,
+       summary['added-position-deletes'] AS pos_del
+FROM lake.silver.trades.snapshots ORDER BY committed_at DESC LIMIT 1;
+
+SELECT content, file_format, record_count, referenced_data_file
+FROM lake.silver.trades.delete_files;</pre>
+<pre>snapshot_id          operation  add_del  pos_del
+7310428810092311422  delete     2        1840
+
+content  file_format  record_count  referenced_data_file
+1        PUFFIN       1210          s3://lake/silver/trades/data/received_date_day=2026-11-20/.../00007-...parquet
+1        PUFFIN       630           s3://lake/silver/trades/data/received_date_day=2026-11-21/.../00002-...parquet</pre>
+<p class="small">Erwartetes Ergebnis (laut Doku, nicht ausgeführt). IDs, Pfade und Zahlen sind Beispielwerte. Die Spalten stammen aus den Iceberg-Metadatentabellen <code>snapshots</code> und <code>delete_files</code>.</p>
+<ol>
+  <li>Die drei <code>write.*.mode</code>-Properties gelten getrennt für <code>DELETE</code>, <code>UPDATE</code> und <code>MERGE</code>. Standard ist überall <code>copy-on-write</code>.</li>
+  <li><code>content = 1</code> heisst Position Deletes. <code>2</code> wäre Equality Deletes, <code>0</code> Daten.</li>
+  <li><code>PUFFIN</code> zeigt: In v3 sind es <b>Deletion Vectors</b> in Puffin-Dateien, nicht mehr Parquet-Position-Delete-Files.</li>
+  <li><code>referenced_data_file</code> zeigt: Ein Deletion Vector gehört genau zu einer Datendatei.</li>
+  <li>Kein einziges Data File wurde neu geschrieben. Der Preis kommt beim Lesen und bei der späteren Compaction.</li>
+</ol>
+
+<h2>4. Details, die Interviewer fragen</h2>
+<ol>
+  <li><b>Position Delete File (v2):</b> eine Parquet-Datei mit den Spalten <code>file_path</code> und <code>pos</code>. Sie markiert die Zeile Nummer <code>pos</code> in genau dieser Datei als gelöscht. Beispiel: <code>(…/00007.parquet, 4711)</code>.</li>
+  <li><b>Equality Delete File:</b> löscht alle Zeilen, deren Spalten bestimmte Werte haben. Beispiel: <code>id = 42</code> mit <code>equality_ids = [id]</code>. Der Writer muss die alte Zeile nicht finden. Darum nutzt <b>Flink</b> sie für Upserts aus Streams.</li>
+  <li><b>Deletion Vector (v3):</b> ein <b>Roaring Bitmap</b>, also eine komprimierte Bitmenge der gelöschten Positionen. Er liegt als Blob <code>deletion-vector-v1</code> in einer <b>Puffin</b>-Datei. Das Format ist mit den Deletion Vectors von Delta Lake kompatibel.</li>
+  <li><b>Höchstens ein DV pro Datendatei:</b> Die v3-Spec erlaubt pro Snapshot nur einen Deletion Vector pro Data File. Ein neuer Delete muss den alten DV mergen. So muss der Leser nie viele kleine Deletes pro Datei sammeln.</li>
+  <li><b>Position Deletes in v3:</b> Neue Position Delete Files sind in v3 nicht mehr erlaubt. Alte aus v2 bleiben gültig. Schreibt man einen DV für eine Datei, ersetzt er ihre alten Position Deletes.</li>
+  <li><b>Sequence Numbers:</b> Jeder Commit bekommt eine <b>Data Sequence Number</b>. Ein Position Delete gilt für Data Files mit gleicher oder kleinerer Nummer. Ein Equality Delete gilt nur für <b>strikt kleinere</b> Nummern. So löscht ein Upsert nicht die eigene neue Zeile.</li>
+  <li><b>Spark schreibt keine Equality Deletes:</b> Spark schreibt bei MoR immer Position Deletes oder DVs. Equality Deletes kommen meist von Flink oder CDC-Tools.</li>
+  <li><b>UPDATE bei MoR:</b> Iceberg ändert keine Zeile in einer Datei. Ein UPDATE ist ein Delete der alten Zeile plus ein Insert der neuen Zeile in eine neue Datei.</li>
+  <li><b>MERGE INTO:</b> nutzt <code>write.merge.mode</code>. Bei CoW schreibt es jede Datei mit einem Treffer neu. Bei MoR schreibt es Deletes plus neue Zeilen.</li>
+  <li><b>Isolation Level:</b> <code>write.delete.isolation-level</code> ist standardmässig <code>serializable</code>. <code>snapshot</code> erlaubt mehr parallele Commits, prüft aber weniger Konflikte.</li>
+  <li><b>Delete Granularity:</b> <code>write.delete.granularity</code> ist <code>partition</code> oder <code>file</code>. <code>file</code> schreibt ein Delete File pro Datendatei: mehr Dateien, aber gezielteres Lesen und einfacheres Aufräumen.</li>
+  <li><b>Dateigrössen:</b> <code>write.target-file-size-bytes</code> ist 512 MB. <code>write.delete.target-file-size-bytes</code> ist 64 MB.</li>
+  <li><b>Format Version:</b> <code>format-version</code> ist standardmässig 2. MoR braucht mindestens v2. Für Deletion Vectors braucht es v3, und jede lesende Engine muss v3 können.</li>
+</ol>
+
+<h2>5. Vergleich</h2>
+<ul>
+  <li><b>Copy-on-Write:</b> Schreiben teuer (ganze Dateien neu), Lesen am schnellsten, keine Delete Files. Gut für seltene, grosse Batch-Änderungen und leselastige Tabellen.</li>
+  <li><b>MoR mit Position Deletes (v2):</b> Schreiben billig, Lesen etwas teurer. Viele kleine Delete Files pro Datei möglich. Braucht regelmässige Compaction.</li>
+  <li><b>MoR mit Deletion Vectors (v3):</b> wie Position Deletes, aber ein kompakter Bitmap pro Datei. Lesen günstiger, weniger kleine Dateien. Alle Engines müssen v3 lesen können.</li>
+  <li><b>MoR mit Equality Deletes:</b> Schreiben am billigsten, der Writer sucht nichts. Lesen am teuersten: Jede ältere Datei muss gegen die Werte geprüft werden. Nur für Streaming-Upserts, mit enger Compaction.</li>
+  <li><b>Metadaten-Delete:</b> Trifft der Filter ganze Dateien oder Partitionen, schreibt Iceberg gar nichts neu. Das ist immer am billigsten.</li>
+</ul>
+
+<h2>6. In der Produktion</h2>
+<ol>
+  <li><b>Abfragen werden mit der Zeit langsamer:</b> Delete Files sammeln sich an. Jeder Scan muss sie laden und anwenden. Lösung: <code>rewrite_data_files</code> mit <code>delete-file-threshold</code> oder <code>delete-ratio-threshold</code>, regelmässig geplant.</li>
+  <li><b>Equality Deletes sprengen das Lesen:</b> Ein Flink-Upsert-Stream schreibt pro Checkpoint neue Equality Deletes. Leser müssen sie gegen alle älteren Dateien prüfen. Lösung: häufige Compaction, oder in v3 auf Position Deletes/DVs setzen, wo möglich.</li>
+  <li><b>Eine Engine kann die Tabelle nicht mehr lesen:</b> Nach dem Wechsel auf v3 versteht eine ältere Engine Deletion Vectors nicht. Lösung: Vor dem Upgrade alle Leser prüfen (Spark, Dremio, Trino). Das Upgrade lässt sich nicht zurückdrehen.</li>
+  <li><b>Compaction-Commit schlägt fehl:</b> Ein MoR-Delete trifft Dateien, die die Compaction gerade umschreibt. Der Commit der Compaction scheitert mit einem Konflikt. Lösung: <code>partial-progress.enabled</code>, kleinere Dateigruppen, Compaction ausserhalb der Ingest-Fenster.</li>
+  <li><b>CoW macht Schreib-Jobs langsam und teuer:</b> Ein MERGE trifft wenige Zeilen in vielen Dateien. Dann wird jede dieser 512-MB-Dateien neu geschrieben. Lösung: <code>write.merge.mode = merge-on-read</code> und eine Partitionierung, die Änderungen lokal hält.</li>
+  <li><b>Speicher wächst:</b> Alte Data Files und Delete Files bleiben, solange alte Snapshots sie brauchen. Lösung: <code>expire_snapshots</code> nach der Compaction.</li>
+</ol>
+
+<h2>7. Diagnose: Werkzeuge und Abfragen</h2>
+<ul>
+  <li><code>SELECT * FROM t.delete_files</code>: alle aktuellen Delete Files mit <code>content</code>, <code>record_count</code>, <code>file_format</code>.</li>
+  <li><code>SELECT partition, position_delete_record_count, position_delete_file_count, equality_delete_file_count FROM t.partitions</code>: welche Partition die meisten Deletes hat.</li>
+  <li><code>SELECT operation, summary FROM t.snapshots</code>: Keys wie <code>added-delete-files</code>, <code>added-position-deletes</code>, <code>added-equality-deletes</code>, <code>total-delete-files</code>.</li>
+  <li><code>SHOW TBLPROPERTIES t</code>: aktuelle <code>write.*.mode</code> und <code>format-version</code>.</li>
+  <li><b>Spark UI</b> und Scan-Metriken: Anzahl gelesener Delete Files pro Scan. Im <b>Dremio Query Profile</b> sieht man die Scan-Zeit pro Phase.</li>
+  <li><code>CALL lake.system.rewrite_data_files(table =&gt; 't', options =&gt; map('delete-file-threshold','2'))</code>: gezielt Dateien mit vielen Deletes neu schreiben.</li>
+</ul>
+
+<h2>8. Senior-Punkte</h2>
+<div class="senior">
+<ol>
+  <li><b>Die Wahl gilt pro Operation.</b> DELETE, UPDATE und MERGE haben je eine eigene Property. Man kann z. B. DELETE als MoR und MERGE als CoW fahren.</li>
+  <li><b>MoR ist eine Schuld, die man später zahlt.</b> Ohne geplante Compaction wird jede MoR-Tabelle langsam. MoR und Wartung gehören zusammen in ein Design.</li>
+  <li><b>Faustregel:</b> viele kleine Änderungen, oft geschrieben → MoR. Wenige grosse Änderungen, sehr oft gelesen → CoW.</li>
+  <li><b>Equality Deletes nur bewusst.</b> Sie sind schnell für den Writer, aber teuer für alle Leser. Spark-Batch-Jobs brauchen sie nicht.</li>
+  <li><b>v3-Upgrade ist eine Plattform-Entscheidung.</b> Deletion Vectors lohnen sich, aber nur wenn jede Engine v3 liest. Der Engpass ist meist die Lese-Engine, nicht Spark.</li>
+  <li><b>Partitionierung entscheidet die Kosten.</b> Ein Delete, der in einer Partition bleibt, berührt wenige Dateien. Ein Delete über alle Partitionen erzeugt viele Delete Files oder viele neu geschriebene Dateien.</li>
+</ol>
+</div>
+
+<h2>9. Aus dem Projekt</h2>
+<p>„Bei MATCH lösche ich bei einem Re-Import mit Merge-on-Read alle Zeilen mit <code>message_id = X</code> und hänge die neuen Zeilen an, beides in einer Iceberg-Transaktion; die Delete Files räumt die periodische <code>rewrite_data_files</code>-Compaction wieder weg.“ <span class="small">(Prüfen und durch dein echtes Beispiel ersetzen.)</span></p>
+
+<h2>10. Fallen</h2>
+<div class="trap">
+<ul>
+  <li>„Merge-on-Read ändert Zeilen direkt in der Parquet-Datei.“ → <b>Falsch.</b> Data Files sind unveränderlich. MoR schreibt zusätzliche Delete Files.</li>
+  <li>„MoR ist immer schneller.“ → <b>Falsch.</b> Nur beim Schreiben. Das Lesen wird langsamer, bis die Compaction läuft.</li>
+  <li>„Iceberg nutzt standardmässig Merge-on-Read.“ → <b>Falsch.</b> Standard ist <code>copy-on-write</code> für DELETE, UPDATE und MERGE.</li>
+  <li>„Spark schreibt Equality Deletes.“ → <b>Falsch.</b> Spark schreibt Position Deletes (v2) oder Deletion Vectors (v3). Equality Deletes kommen meist von Flink.</li>
+  <li>„In v3 gibt es keine Position Deletes mehr.“ → <b>Halb falsch.</b> Neue dürfen nicht geschrieben werden. Alte aus v2 bleiben gültig, bis man sie neu schreibt.</li>
+  <li>„Ein DELETE schreibt bei CoW immer Dateien neu.“ → <b>Falsch.</b> Trifft er ganze Dateien, ist es ein reiner Metadaten-Delete.</li>
+</ul>
+</div>
+
+<h2>11. Fragen</h2>
+<details><summary>Was ist der Unterschied zwischen Copy-on-Write und Merge-on-Read?</summary><p>CoW schreibt betroffene Datendateien ganz neu. MoR schreibt nur Delete Files, und der Leser wendet sie an. CoW kostet beim Schreiben, MoR beim Lesen.</p></details>
+<details><summary>Welche Table Properties steuern den Modus?</summary><p><code>write.delete.mode</code>, <code>write.update.mode</code> und <code>write.merge.mode</code>. Werte: <code>copy-on-write</code> (Standard) oder <code>merge-on-read</code>.</p></details>
+<details><summary>Ab welcher Format Version gibt es Delete Files?</summary><p>Ab v2. In v1 gibt es nur Copy-on-Write. Deletion Vectors brauchen v3.</p></details>
+<details><summary>Was ist ein Position Delete File?</summary><p>Eine Datei mit Paaren aus <code>file_path</code> und <code>pos</code>. Jedes Paar markiert eine Zeile in einer bestimmten Datendatei als gelöscht.</p></details>
+<details><summary>Was ist ein Equality Delete File?</summary><p>Eine Datei mit Spaltenwerten, z. B. <code>id = 42</code>. Alle älteren Zeilen mit diesen Werten gelten als gelöscht. Der Writer muss die Zeile nicht suchen.</p></details>
+<details><summary>Warum sind Equality Deletes teuer beim Lesen?</summary><p>Der Leser muss jede ältere Datendatei gegen alle Werte prüfen. Er weiss nicht, in welcher Datei die Zeile liegt.</p></details>
+<details><summary>Was ist ein Deletion Vector?</summary><p>Ein Roaring Bitmap der gelöschten Zeilenpositionen einer Datendatei. Er liegt als <code>deletion-vector-v1</code>-Blob in einer Puffin-Datei. Neu in Format v3.</p></details>
+<details><summary>Wie viele Deletion Vectors darf eine Datendatei haben?</summary><p>Höchstens einen pro Snapshot. Ein neuer Delete merged den alten Vector. Das hält das Lesen billig.</p></details>
+<details><summary>Was passiert mit alten Position Deletes nach einem Upgrade auf v3?</summary><p>Sie bleiben gültig. Neue Position Delete Files sind verboten. Ein neuer DV für eine Datei ersetzt ihre alten Position Deletes.</p></details>
+<details><summary>Welche Rolle spielen Sequence Numbers bei Deletes?</summary><p>Ein Position Delete gilt für Data Files mit gleicher oder kleinerer Sequence Number. Ein Equality Delete nur für strikt kleinere. So löscht ein Upsert nicht seine eigene neue Zeile.</p></details>
+<details><summary>Wie funktioniert ein UPDATE bei Merge-on-Read?</summary><p>Als Delete der alten Zeile plus Insert der neuen Zeile in eine neue Datei. Keine Datei wird verändert.</p></details>
+<details><summary>Wann schreibt ein DELETE gar keine Dateien?</summary><p>Wenn der Filter ganze Dateien oder Partitionen trifft. Dann entfernt Iceberg die Dateien nur aus den Metadaten.</p></details>
+<details><summary>Welche Engine schreibt welche Delete-Art?</summary><p>Spark schreibt Position Deletes oder DVs. Flink schreibt bei Upserts Equality Deletes. Lesen müssen alle Engines alle Arten können.</p></details>
+<details><summary>Wann wählen Sie Copy-on-Write?</summary><p>Bei seltenen, grossen Änderungen und vielen Lesern. Dann zahlt man einmal beim Schreiben und liest danach schnell.</p></details>
+<details><summary>Wann wählen Sie Merge-on-Read?</summary><p>Bei häufigen, kleinen Änderungen, z. B. Re-Imports oder CDC. Dann ist Schreiben schnell, aber man braucht Compaction.</p></details>
+<details><summary>Wie werden Delete Files wieder entfernt?</summary><p><code>rewrite_data_files</code> schreibt die Daten neu und wendet die Deletes an. <code>rewrite_position_delete_files</code> fasst Position Deletes zusammen. <code>expire_snapshots</code> löscht danach die alten Dateien physisch.</p></details>
+<details><summary>Was bedeuten delete-file-threshold und delete-ratio-threshold?</summary><p>Optionen von <code>rewrite_data_files</code>. Eine Datei wird neu geschrieben, wenn sie mindestens so viele Delete Files hat oder ein bestimmter Anteil ihrer Zeilen gelöscht ist (Standard 0.3).</p></details>
+<details><summary>Was ist write.delete.granularity?</summary><p>Sie steuert, ob Spark ein Delete File pro Partition oder pro Datendatei schreibt. <code>file</code> erzeugt mehr, aber gezieltere Delete Files.</p></details>
+<details><summary>Welchen Isolation Level nutzt ein DELETE?</summary><p>Standard ist <code>serializable</code>. <code>snapshot</code> erlaubt mehr parallele Commits, erkennt aber weniger Konflikte.</p></details>
+<details><summary>Wie sehen Sie, wie viele Deletes eine Tabelle hat?</summary><p>Über die Metadatentabellen <code>delete_files</code>, <code>partitions</code> und <code>snapshots</code>. Dort stehen Anzahl und Art der Delete Files.</p></details>
+<details><summary>Warum ist das Deletion-Vector-Format wichtig für Interoperabilität?</summary><p>Iceberg v3 nutzt dasselbe Bitmap-Format wie Delta Lake. Das erleichtert Werkzeuge, die beide Formate lesen oder übersetzen.</p></details>
+<details><summary>Szenario: Eine MoR-Tabelle wird jede Woche langsamer, obwohl die Datenmenge gleich bleibt. Was tun Sie?</summary><p>In <code>partitions</code> und <code>delete_files</code> prüfen, ob sich Delete Files ansammeln. Dann regelmässig <code>rewrite_data_files</code> mit Delete-Schwelle und danach <code>expire_snapshots</code> planen.</p></details>
+<details><summary>Szenario: Ein täglicher MERGE trifft 0,1 % der Zeilen, schreibt aber 2 TB. Warum?</summary><p>Die Tabelle nutzt Copy-on-Write. Jede Datei mit einem Treffer wird ganz neu geschrieben. Lösung: <code>write.merge.mode = merge-on-read</code> plus Compaction.</p></details>
+<details><summary>Szenario: Nach dem Upgrade auf v3 bricht ein Dashboard ab. Woran denken Sie?</summary><p>Die Lese-Engine versteht Deletion Vectors oder v3-Metadaten nicht. Vor einem Upgrade müssen alle Engines v3 unterstützen. Das Upgrade lässt sich nicht zurückdrehen.</p></details>
+
+</body>
+</html>

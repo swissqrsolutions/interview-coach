@@ -1,0 +1,232 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>HTTP-Methoden</title>
+<style>
+  body { font: 17px/1.55 -apple-system, system-ui, sans-serif; max-width: 760px; margin: 0 auto; padding: 16px; color: #1d1d1f; }
+  h1 { font-size: 28px; margin: 8px 0 4px; }
+  h2 { font-size: 21px; margin: 32px 0 8px; padding-top: 12px; border-top: 2px solid #e5e5ea; }
+  .kern { background: #eef6ff; border-left: 4px solid #0a66c2; padding: 10px 14px; border-radius: 6px; }
+  .senior { background: #f0faf0; border-left: 4px solid #2e7d32; padding: 10px 14px; border-radius: 6px; }
+  .trap { background: #fff4f2; border-left: 4px solid #c62828; padding: 10px 14px; border-radius: 6px; }
+  code { background: #f2f2f7; padding: 1px 5px; border-radius: 4px; font-size: 15px; }
+  pre { background: #1e1e1e; color: #e6e6e6; padding: 12px; border-radius: 8px; overflow-x: auto; font-size: 13.5px; line-height: 1.45; }
+  svg { width: 100%; height: auto; display: block; margin: 10px 0; }
+  ol li, ul li { margin: 4px 0; }
+  details { border: 1px solid #e5e5ea; border-radius: 8px; padding: 8px 12px; margin: 6px 0; }
+  summary { font-weight: 600; cursor: pointer; }
+  details p { margin: 6px 0 2px; }
+  .small { color: #6e6e73; font-size: 14px; }
+</style>
+</head>
+<body>
+
+<h1>HTTP-Methoden: sicher und idempotent</h1>
+<p class="small">REST · Tier 1 · Quellen: RFC 9110 (HTTP Semantics, §9), RFC 5789 (PATCH), RFC 7396 (JSON Merge Patch), RFC 6902 (JSON Patch), RFC 10008 (QUERY), draft-ietf-httpapi-idempotency-key-header-09</p>
+
+<div class="kern">
+<b>Kern:</b> Eine <b>HTTP-Methode</b> ist das Verb eines Requests, also was der Client mit der Ressource will. RFC 9110 gibt jeder Methode zwei Eigenschaften: <b>sicher</b> (nur lesen) und <b>idempotent</b> (Wiederholen ändert nichts mehr). Davon hängen Caches, automatische Retries und das API-Design ab.
+</div>
+
+<h2>1. Wo sitzen die HTTP-Methoden?</h2>
+<svg viewBox="0 0 720 300" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="a" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="10" y="40" width="130" height="70" rx="8" fill="#fff" stroke="#555"/><text x="75" y="68" text-anchor="middle" font-weight="700">Client</text><text x="75" y="88" text-anchor="middle" font-size="12">Browser · App · Service</text>
+  <line x1="140" y1="75" x2="198" y2="75" stroke="#555" stroke-width="2" marker-end="url(#a)"/><text x="169" y="66" text-anchor="middle" font-size="12">Methode</text>
+  <rect x="200" y="40" width="150" height="70" rx="8" fill="#dbe9fb" stroke="#0a66c2"/><text x="275" y="68" text-anchor="middle" font-weight="700">Proxy / Cache</text><text x="275" y="88" text-anchor="middle" font-size="12">cacht nur GET/HEAD</text>
+  <line x1="350" y1="75" x2="408" y2="75" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="410" y="40" width="150" height="70" rx="8" fill="#dbe9fb" stroke="#0a66c2"/><text x="485" y="68" text-anchor="middle" font-weight="700">API Gateway</text><text x="485" y="88" text-anchor="middle" font-size="12">Retry nur idempotent</text>
+  <line x1="560" y1="75" x2="608" y2="75" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="610" y="40" width="100" height="70" rx="8" fill="#0a66c2"/><text x="660" y="68" text-anchor="middle" fill="#fff" font-weight="700">Service</text><text x="660" y="88" text-anchor="middle" fill="#fff" font-size="12">Controller</text>
+  <line x1="660" y1="110" x2="660" y2="168" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="610" y="170" width="100" height="50" rx="8" fill="#fff" stroke="#555"/><text x="660" y="200" text-anchor="middle">Datenbank</text>
+  <rect x="10" y="160" width="560" height="120" rx="8" fill="#f7f7fa" stroke="#999"/>
+  <text x="290" y="182" text-anchor="middle" font-weight="700">Eigenschaften laut RFC 9110 / 5789</text>
+  <text x="30" y="208" font-size="13">GET · HEAD · OPTIONS · TRACE: sicher + idempotent</text>
+  <text x="30" y="230" font-size="13">PUT · DELETE: nicht sicher, aber idempotent</text>
+  <text x="30" y="252" font-size="13">POST · PATCH: weder sicher noch idempotent</text>
+  <text x="30" y="272" font-size="13" fill="#2e7d32">QUERY (RFC 10008): sicher + idempotent, mit Body</text>
+</svg>
+<ol>
+  <li><b>Client:</b> wählt die Methode. Beispiel: <code>GET /orders/42</code> liest eine Bestellung.</li>
+  <li><b>Proxy oder Cache:</b> speichert Antworten nur für sichere Methoden, praktisch GET und HEAD.</li>
+  <li><b>API Gateway oder HTTP-Client:</b> wiederholt nach einem Timeout nur idempotente Requests automatisch.</li>
+  <li><b>Service:</b> muss die versprochene Semantik einhalten. Ein GET, das Daten ändert, bricht alle Schichten davor.</li>
+  <li><b>Datenbank:</b> setzt die Idempotenz um, z. B. mit Upsert oder eindeutigem Schlüssel.</li>
+</ol>
+
+<h2>2. Die Reise einer Bestellung (die Geschichte zum Merken)</h2>
+<svg viewBox="0 0 720 330" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="b" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker><marker id="r" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#c62828"/></marker></defs>
+  <rect x="10" y="20" width="160" height="60" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="90" y="44" text-anchor="middle" font-weight="700">1. POST /orders</text><text x="90" y="64" text-anchor="middle" font-size="12">201 + Location</text>
+  <line x1="170" y1="50" x2="208" y2="50" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="210" y="20" width="150" height="60" rx="10" fill="#eee" stroke="#777"/><text x="285" y="44" text-anchor="middle" font-weight="700">2. GET /orders/1</text><text x="285" y="64" text-anchor="middle" font-size="12">200 + ETag</text>
+  <line x1="360" y1="50" x2="398" y2="50" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="400" y="20" width="150" height="60" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="475" y="44" text-anchor="middle" font-weight="700">3. PATCH</text><text x="475" y="64" text-anchor="middle" font-size="12">nur Teile ändern</text>
+  <line x1="550" y1="50" x2="588" y2="50" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="590" y="20" width="120" height="60" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="650" y="44" text-anchor="middle" font-weight="700">4. PUT</text><text x="650" y="64" text-anchor="middle" font-size="12">alles ersetzen</text>
+  <line x1="650" y1="80" x2="650" y2="128" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="560" y="130" width="150" height="60" rx="10" fill="#0a66c2"/><text x="635" y="154" text-anchor="middle" fill="#fff" font-weight="700">5. DELETE</text><text x="635" y="174" text-anchor="middle" fill="#fff" font-size="12">204, dann 404</text>
+  <rect x="10" y="130" width="330" height="80" rx="10" fill="#fff4f2" stroke="#c62828"/><text x="175" y="154" text-anchor="middle" font-weight="700" fill="#c62828">Timeout beim POST</text><text x="175" y="174" text-anchor="middle" font-size="12">Retry ohne Schutz → zweite Bestellung</text><text x="175" y="194" text-anchor="middle" font-size="12">Schutz: Idempotency-Key</text>
+  <path d="M90,80 C90,105 120,115 140,128" fill="none" stroke="#c62828" stroke-width="2" stroke-dasharray="6 4" marker-end="url(#r)"/>
+  <rect x="10" y="240" width="700" height="70" rx="10" fill="#e8f5e9" stroke="#2e7d32"/><text x="360" y="266" text-anchor="middle" font-weight="700">Regel</text><text x="360" y="288" text-anchor="middle" font-size="13">Idempotent heisst: gleicher Endzustand auf dem Server. Der Statuscode darf sich ändern.</text>
+</svg>
+<ol>
+  <li><b>POST anlegen:</b> Der Client schickt <code>POST /orders</code>. Der Server vergibt die ID. Er antwortet mit <b>201 Created</b> und dem Header <code>Location: /orders/1</code>.</li>
+  <li><b>Timeout:</b> Die Antwort geht verloren. Der Client weiss nicht, ob die Bestellung existiert. Ein blindes Retry erzeugt eine zweite Bestellung. Lösung: ein <b>Idempotency-Key</b>-Header, den der Server speichert.</li>
+  <li><b>GET lesen:</b> <code>GET /orders/1</code> liefert 200 und ein <b>ETag</b>, also eine Versionskennung der Ressource.</li>
+  <li><b>PATCH ändern:</b> Der Client schickt nur die geänderten Felder. Mit <code>If-Match: "etag"</code> verhindert er, dass er fremde Änderungen überschreibt.</li>
+  <li><b>PUT ersetzen:</b> Der Client schickt die ganze Ressource. Zweimal senden ergibt denselben Zustand.</li>
+  <li><b>DELETE löschen:</b> Der erste Aufruf liefert 204. Der zweite liefert 404. Der Zustand ist gleich: Die Bestellung ist weg. Das ist idempotent.</li>
+</ol>
+
+<h2>3. Beispiel: Methoden-Semantik live</h2>
+<pre># methods_demo.py (gekürzt): http.server + urllib, ohne Bibliotheken
+def do_POST(self):                 # neue ID pro Aufruf
+    i = str(next(ids)); orders[i] = self.body()
+    self.send(201, orders[i], Location=f"/orders/{i}")
+def do_PUT(self):                  # ersetzt komplett
+    i = self.oid(); existed = i in orders
+    orders[i] = self.body()
+    self.send(200 if existed else 201, orders[i])
+def do_PATCH(self):                # nur application/merge-patch+json
+    if self.headers["Content-Type"] != "application/merge-patch+json":
+        return self.send(415, Accept_Patch="application/merge-patch+json")
+    orders[i] = merge_patch(orders[i], self.body())   # null = Feld löschen
+def do_DELETE(self):
+    self.send(204) if orders.pop(self.oid(), None) is not None else self.send(404)</pre>
+<pre>1) POST zweimal
+POST   /orders    -> 201 {"item": "Buch", "qty": 1}  Location: /orders/1
+POST   /orders    -> 201 {"item": "Buch", "qty": 1}  Location: /orders/2
+2) PUT zweimal
+PUT    /orders/7  -> 201 {"item": "Stift", "qty": 2}
+PUT    /orders/7  -> 200 {"item": "Stift", "qty": 2}
+3) PATCH (Merge Patch)
+PATCH  /orders/7  -> 200 {"item": "Stift", "qty": 5, "note": "Express"}
+PATCH  /orders/7  -> 200 {"item": "Stift", "qty": 5}
+PATCH  /orders/7  -> 415  Accept-Patch: application/merge-patch+json
+4) DELETE zweimal
+DELETE /orders/7  -> 204
+DELETE /orders/7  -> 404
+Bestellungen am Ende: ['1', '2']</pre>
+<p class="small">Echte Ausgabe, Python 3.12 (<code>http.server</code> + <code>urllib</code>).</p>
+<ol>
+  <li>Zwei gleiche POST erzeugen <b>zwei</b> Bestellungen (1 und 2). POST ist nicht idempotent.</li>
+  <li>Zwei gleiche PUT ergeben <b>einen</b> Zustand. Erst 201 (neu angelegt), dann 200 (ersetzt). RFC 9110 verlangt genau das.</li>
+  <li>Der erste Merge Patch ändert <code>qty</code> und fügt <code>note</code> hinzu. Der zweite löscht <code>note</code> mit <code>null</code>.</li>
+  <li>Ein falscher <code>Content-Type</code> ergibt <b>415</b> mit <code>Accept-Patch</code>. So empfiehlt es RFC 5789.</li>
+  <li>DELETE: 204, dann 404. Der Statuscode ändert sich, der Zustand nicht. Das bleibt idempotent.</li>
+</ol>
+
+<h2>4. Details, die Interviewer fragen</h2>
+<ol>
+  <li><b>Sicher (safe):</b> Eine Methode ist sicher, wenn der Client keine Zustandsänderung verlangt. RFC 9110 nennt GET, HEAD, OPTIONS und TRACE. Logging oder Zähler auf dem Server sind trotzdem erlaubt. Der Client ist dafür nicht verantwortlich.</li>
+  <li><b>Idempotent:</b> Mehrere gleiche Requests haben denselben <b>beabsichtigten Effekt</b> wie einer. Das gilt für PUT, DELETE und alle sicheren Methoden. Die Antwort darf sich unterscheiden.</li>
+  <li><b>Warum Idempotenz zählt:</b> RFC 9110 erlaubt, idempotente Requests nach einem Verbindungsfehler automatisch zu wiederholen. Für POST ist das nicht erlaubt.</li>
+  <li><b>GET:</b> liest eine Repräsentation. Ein Body im GET hat <b>keine definierte Semantik</b>. Manche Server lehnen ihn ab. Komplexe Suchen gehen per POST oder neu per QUERY.</li>
+  <li><b>HEAD:</b> wie GET, aber ohne Body. Gut, um Grösse oder ETag zu prüfen.</li>
+  <li><b>POST:</b> der Allzweck: Ressource ohne bekannte ID anlegen, Daten an einen Prozess geben, Aktion auslösen. Bei Anlage: <b>201</b> mit <code>Location</code>.</li>
+  <li><b>PUT:</b> ersetzt die <b>ganze</b> Ressource an einer bekannten URI. Neu angelegt: <b>201</b>. Geändert: <b>200</b> oder <b>204</b>. Fehlende Felder bedeuten „leer“, nicht „unverändert“.</li>
+  <li><b>PATCH (RFC 5789):</b> ändert nur Teile. PATCH ist <b>weder sicher noch idempotent</b>. Der Server muss alle Änderungen <b>atomar</b> anwenden. Bei Konflikt-Gefahr soll der Client <code>If-Match</code> mit ETag senden.</li>
+  <li><b>JSON Merge Patch (RFC 7396):</b> Media Type <code>application/merge-patch+json</code>. Das Patch-Dokument sieht aus wie die Ressource. <code>null</code> löscht ein Feld. Arrays werden immer <b>ganz ersetzt</b>. Man kann keinen Wert auf <code>null</code> setzen.</li>
+  <li><b>JSON Patch (RFC 6902):</b> Media Type <code>application/json-patch+json</code>. Ein Array von Operationen: <code>add</code>, <code>remove</code>, <code>replace</code>, <code>move</code>, <code>copy</code>, <code>test</code>. Pfade sind <b>JSON Pointer</b> wie <code>/items/0/qty</code>. Scheitert eine Operation, scheitert das ganze Dokument.</li>
+  <li><b><code>test</code>-Operation:</b> prüft einen Wert vor der Änderung, z. B. <code>{"op":"test","path":"/status","value":"NEW"}</code>. Das ist optimistisches Locking im Patch selbst.</li>
+  <li><b>DELETE:</b> entfernt die Zuordnung der URI. Antwort: <b>204</b> (fertig, kein Body), <b>200</b> (mit Statusbeschreibung) oder <b>202</b> (noch nicht ausgeführt).</li>
+  <li><b>OPTIONS:</b> fragt die Fähigkeiten einer Ressource ab. Browser nutzen es für den <b>CORS-Preflight</b>.</li>
+  <li><b>QUERY (RFC 10008, Juni 2026):</b> eine neue Methode mit Body, die sicher und idempotent ist. Sie löst „GET mit Body“ sauber. Unterstützung in Frameworks und Proxys ist noch jung.</li>
+  <li><b>Idempotency-Key:</b> ein Header für POST und PATCH, noch ein IETF-Draft. Der Server speichert Key und Antwort. Gleicher Key mit anderem Body: <b>422</b>. Original läuft noch: <b>409</b>. Fehlender Key: <b>400</b>.</li>
+  <li><b>Cachebar:</b> GET- und HEAD-Antworten sind cachebar. POST-Antworten nur mit expliziter Frische und passendem <code>Content-Location</code>. In der Praxis cacht niemand POST.</li>
+</ol>
+
+<h2>5. Vergleich</h2>
+<ul>
+  <li><b>GET:</b> sicher, idempotent, cachebar, kein Body.</li>
+  <li><b>POST:</b> nicht sicher, nicht idempotent. Server vergibt die ID.</li>
+  <li><b>PUT:</b> nicht sicher, idempotent. Client kennt die URI und schickt alles.</li>
+  <li><b>PATCH:</b> nicht sicher, nicht idempotent (kann idempotent gebaut werden). Nur Änderungen.</li>
+  <li><b>DELETE:</b> nicht sicher, idempotent.</li>
+  <li><b>QUERY:</b> sicher, idempotent, mit Body.</li>
+  <li><b>Merge Patch vs JSON Patch:</b> Merge Patch ist einfach und lesbar, kann aber keine Array-Elemente und kein explizites <code>null</code>. JSON Patch kann alles, ist aber schwerer zu lesen und zu validieren.</li>
+  <li><b>PUT vs POST zum Anlegen:</b> PUT, wenn der Client die ID bestimmt (z. B. natürlicher Schlüssel). POST, wenn der Server sie vergibt.</li>
+</ul>
+
+<h2>6. In der Produktion</h2>
+<ol>
+  <li><b>Doppelte Zahlungen oder Bestellungen:</b> Client oder Gateway wiederholen ein POST nach Timeout. Lösung: Idempotency-Key, eindeutiger fachlicher Schlüssel in der DB, oder PUT mit Client-ID.</li>
+  <li><b>GET mit Seiteneffekt:</b> Ein Link <code>GET /orders/1/delete</code> wird von einem Crawler oder Prefetch aufgerufen. Daten sind weg. Lösung: Ändern nur mit unsicheren Methoden.</li>
+  <li><b>Lost Update:</b> Zwei Clients machen PUT auf dieselbe Ressource. Der zweite überschreibt den ersten. Lösung: ETag mit <code>If-Match</code>, Antwort <b>412</b> bei Konflikt.</li>
+  <li><b>PUT löscht Felder:</b> Ein Client schickt nur zwei Felder per PUT. Der Rest wird leer. Lösung: PATCH für Teiländerungen, PUT nur mit voller Repräsentation.</li>
+  <li><b>PATCH ohne Format:</b> Der Server nimmt <code>application/json</code> und rät die Semantik. <code>null</code> bedeutet mal „löschen“, mal „ignorieren“. Lösung: Merge Patch oder JSON Patch explizit festlegen.</li>
+  <li><b>Proxy blockiert Methoden:</b> Alte Firewalls lassen nur GET und POST durch. Notlösung: <code>X-HTTP-Method-Override</code>. Besser: Infrastruktur korrigieren.</li>
+</ol>
+
+<h2>7. Diagnose: Werkzeuge und Befehle</h2>
+<ul>
+  <li><code>curl -i -X PATCH -H 'Content-Type: application/merge-patch+json' -d '{"qty":5}' URL</code>: Methode, Header und Status direkt sehen.</li>
+  <li><code>curl -i -X OPTIONS URL</code>: zeigt <code>Allow</code> und <code>Accept-Patch</code>, falls der Server sie setzt.</li>
+  <li><b>Access-Logs</b> am Gateway: doppelte POST mit gleichem Body in kurzer Zeit zeigen Retry-Probleme.</li>
+  <li><b>Retry-Konfiguration</b> prüfen: Spring Retry, Resilience4j, Service Mesh. Retries nur für idempotente Methoden einschalten.</li>
+  <li><b>Distributed Tracing</b> (OpenTelemetry): zeigt, ob ein Request zweimal beim Service ankam.</li>
+  <li><b>Datenbank:</b> Unique Constraint auf den fachlichen Schlüssel zeigt Duplikate als Fehler statt stiller Daten.</li>
+</ul>
+
+<h2>8. Senior-Punkte</h2>
+<div class="senior">
+<ol>
+  <li><b>Idempotenz ist eine Server-Eigenschaft,</b> keine Eigenschaft des Verbs. PUT ist nur idempotent, wenn der Code es auch ist. Ein PUT, das einen Zähler erhöht, bricht den Vertrag.</li>
+  <li><b>Jeder Retry braucht Idempotenz.</b> In verteilten Systemen gibt es kein „genau einmal“ über das Netz. Es gibt nur „mindestens einmal“ plus idempotente Verarbeitung.</li>
+  <li><b>PATCH-Format ist eine API-Entscheidung.</b> Merge Patch für einfache Objekte. JSON Patch für Listen und präzise Operationen. Das Format gehört in den Vertrag (OpenAPI).</li>
+  <li><b>Optimistic Locking über HTTP</b> mit ETag und <code>If-Match</code> ist günstiger als Locks in der DB über mehrere Requests.</li>
+  <li><b>Komplexe Suchen:</b> GET mit Query-Parametern bleibt Standard. Zu lange URLs → POST auf eine Such-Ressource. QUERY ist die saubere Zukunft, aber Werkzeuge müssen nachziehen.</li>
+  <li><b>Nicht alles muss CRUD sein.</b> Eine Aktion wie „stornieren“ kann ein POST auf eine Unterressource sein. Wichtig ist die richtige Semantik, nicht die Reinheit.</li>
+</ol>
+</div>
+
+<h2>9. Aus dem Projekt</h2>
+<p>„Bei MATCH sendet ein .NET-Worker Spark-Jobs per REST API. Doppelte Läufe verhindert ein atomarer Claim (<code>Pending → Processing</code>) und Replace-statt-Add. Das ist Idempotenz auf Server-Seite.“ <span class="small">(Prüfen und durch dein echtes Beispiel ersetzen.)</span></p>
+
+<h2>10. Fallen</h2>
+<div class="trap">
+<ul>
+  <li>„Idempotent heisst, die Antwort ist immer gleich.“ → <b>Falsch.</b> Der beabsichtigte Zustand ist gleich. DELETE liefert erst 204, dann 404.</li>
+  <li>„PATCH ist idempotent.“ → <b>Falsch.</b> RFC 5789: weder sicher noch idempotent. Ein Patch wie „füge Element an“ ändert bei jedem Aufruf.</li>
+  <li>„PUT ist zum Ändern, POST zum Anlegen.“ → <b>Zu einfach.</b> PUT kann anlegen (201), wenn der Client die URI kennt. POST kann auch Aktionen auslösen.</li>
+  <li>„Sicher heisst, der Server darf nichts schreiben.“ → <b>Falsch.</b> Logs und Statistiken sind erlaubt. Der Client verlangt nur keine Änderung.</li>
+  <li>„In Merge Patch setzt <code>null</code> ein Feld auf null.“ → <b>Falsch.</b> <code>null</code> löscht das Feld.</li>
+  <li>„GET mit Body ist verboten.“ → <b>Ungenau.</b> Der Body hat keine definierte Semantik. Clients sollen ihn nicht senden, Server können ihn ablehnen.</li>
+</ul>
+</div>
+
+<h2>11. Fragen</h2>
+<details><summary>Was bedeutet „sichere Methode“?</summary><p>Der Client verlangt keine Zustandsänderung, die Methode ist im Kern nur lesend. Laut RFC 9110: GET, HEAD, OPTIONS, TRACE.</p></details>
+<details><summary>Was bedeutet „idempotent“?</summary><p>Mehrere gleiche Requests haben denselben beabsichtigten Effekt wie einer. Idempotent sind PUT, DELETE und alle sicheren Methoden.</p></details>
+<details><summary>Ist jede sichere Methode idempotent?</summary><p>Ja. Wer nichts ändert, ändert auch beim zehnten Mal nichts. Umgekehrt gilt es nicht: PUT ist idempotent, aber nicht sicher.</p></details>
+<details><summary>Warum ist POST nicht idempotent?</summary><p>Jeder POST kann eine neue Ressource oder Aktion erzeugen. Zwei gleiche POST können zwei Bestellungen anlegen.</p></details>
+<details><summary>Warum ist DELETE idempotent, obwohl der zweite Aufruf 404 liefert?</summary><p>Idempotenz betrifft den Zustand, nicht die Antwort. Nach beiden Aufrufen ist die Ressource weg.</p></details>
+<details><summary>PUT oder PATCH?</summary><p>PUT ersetzt die ganze Ressource und ist idempotent. PATCH ändert nur Teile und ist nicht garantiert idempotent.</p></details>
+<details><summary>PUT oder POST zum Anlegen?</summary><p>PUT, wenn der Client die URI bestimmt. POST, wenn der Server die ID vergibt. Antwort jeweils 201.</p></details>
+<details><summary>Welche Statuscodes liefert PUT?</summary><p>201 beim Anlegen. 200 oder 204 beim Ersetzen. Das verlangt RFC 9110.</p></details>
+<details><summary>Welche Statuscodes liefert DELETE?</summary><p>204 ohne Body, 200 mit Statusbeschreibung oder 202, wenn das Löschen noch nicht ausgeführt ist.</p></details>
+<details><summary>Was ist JSON Merge Patch?</summary><p>RFC 7396, Media Type application/merge-patch+json. Das Patch sieht aus wie die Ressource, null löscht ein Feld, Arrays werden ganz ersetzt.</p></details>
+<details><summary>Was ist JSON Patch?</summary><p>RFC 6902, application/json-patch+json. Eine Liste von Operationen (add, remove, replace, move, copy, test) mit JSON-Pointer-Pfaden. Scheitert eine, scheitert alles.</p></details>
+<details><summary>Wann JSON Patch statt Merge Patch?</summary><p>Wenn man einzelne Array-Elemente ändern, ein Feld explizit auf null setzen oder vorher mit test prüfen will.</p></details>
+<details><summary>Was macht die test-Operation?</summary><p>Sie prüft einen Wert vor den Änderungen. Stimmt er nicht, wird das ganze Patch nicht angewendet.</p></details>
+<details><summary>Was antwortet der Server bei unbekanntem Patch-Format?</summary><p>415 Unsupported Media Type, am besten mit Accept-Patch, das die erlaubten Formate nennt.</p></details>
+<details><summary>Darf ein GET einen Body haben?</summary><p>Ein Body hat keine definierte Semantik. Clients sollen ihn nicht senden, Server und Proxys können ihn ablehnen.</p></details>
+<details><summary>Was ist die QUERY-Methode?</summary><p>RFC 10008: eine sichere und idempotente Methode mit Body. Sie ersetzt das Muster „POST für Suchen“.</p></details>
+<details><summary>Wofür ist HEAD gut?</summary><p>Metadaten ohne Body holen, z. B. Content-Length oder ETag prüfen.</p></details>
+<details><summary>Wofür ist OPTIONS gut?</summary><p>Fähigkeiten einer Ressource abfragen. Browser senden es als CORS-Preflight vor nicht-einfachen Requests.</p></details>
+<details><summary>Wie macht man POST idempotent?</summary><p>Mit einem Idempotency-Key-Header. Der Server speichert Key und Antwort und liefert bei Wiederholung dieselbe Antwort.</p></details>
+<details><summary>Was passiert bei gleichem Idempotency-Key mit anderem Body?</summary><p>Der Draft empfiehlt 422. Läuft der Original-Request noch, empfiehlt er 409.</p></details>
+<details><summary>Sind POST-Antworten cachebar?</summary><p>Nur mit expliziter Frische und Content-Location gleich der Ziel-URI. In der Praxis werden sie nicht gecacht.</p></details>
+<details><summary>Wie verhindert man Lost Updates bei PUT oder PATCH?</summary><p>Mit ETag und If-Match. Hat sich die Ressource geändert, antwortet der Server 412 Precondition Failed.</p></details>
+<details><summary>Darf ein Gateway einen fehlgeschlagenen POST wiederholen?</summary><p>Nicht automatisch. Nur idempotente Requests dürfen nach Verbindungsfehlern automatisch wiederholt werden.</p></details>
+<details><summary>Ist ein PUT, der einen Zähler erhöht, idempotent?</summary><p>Nein. Die Methode verspricht Idempotenz, der Code bricht sie. Solche Aktionen gehören in POST.</p></details>
+<details><summary>Szenario: Kunden zahlen manchmal doppelt. Woran denken Sie?</summary><p>An Retries bei POST nach Timeout, im Client oder Gateway. Lösung: Idempotency-Key, Unique Constraint auf die Zahlungs-ID, Retries im Gateway nur für idempotente Methoden.</p></details>
+<details><summary>Szenario: Nach einem PUT eines Mobile-Clients fehlen Felder. Warum?</summary><p>Der Client schickt nur geänderte Felder per PUT. PUT ersetzt alles, fehlende Felder werden leer. Lösung: PATCH mit Merge Patch oder volle Repräsentation senden.</p></details>
+<details><summary>Szenario: Zwei Sachbearbeiter ändern dieselbe Akte, eine Änderung verschwindet. Was tun Sie?</summary><p>Lost Update. ETag bei GET liefern, If-Match bei PUT/PATCH verlangen, bei Abweichung 412. Optional 428 Precondition Required, wenn If-Match fehlt.</p></details>
+
+</body>
+</html>

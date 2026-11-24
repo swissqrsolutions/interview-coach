@@ -1,0 +1,224 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Bean-Lebenszyklus</title>
+<style>
+  body { font: 17px/1.55 -apple-system, system-ui, sans-serif; max-width: 760px; margin: 0 auto; padding: 16px; color: #1d1d1f; }
+  h1 { font-size: 28px; margin: 8px 0 4px; }
+  h2 { font-size: 21px; margin: 32px 0 8px; padding-top: 12px; border-top: 2px solid #e5e5ea; }
+  .kern { background: #eef6ff; border-left: 4px solid #0a66c2; padding: 10px 14px; border-radius: 6px; }
+  .senior { background: #f0faf0; border-left: 4px solid #2e7d32; padding: 10px 14px; border-radius: 6px; }
+  .trap { background: #fff4f2; border-left: 4px solid #c62828; padding: 10px 14px; border-radius: 6px; }
+  code { background: #f2f2f7; padding: 1px 5px; border-radius: 4px; font-size: 15px; }
+  pre { background: #1e1e1e; color: #e6e6e6; padding: 12px; border-radius: 8px; overflow-x: auto; font-size: 13.5px; line-height: 1.45; }
+  svg { width: 100%; height: auto; display: block; margin: 10px 0; }
+  ol li, ul li { margin: 4px 0; }
+  details { border: 1px solid #e5e5ea; border-radius: 8px; padding: 8px 12px; margin: 6px 0; }
+  summary { font-weight: 600; cursor: pointer; }
+  details p { margin: 6px 0 2px; }
+  .small { color: #6e6e73; font-size: 14px; }
+</style>
+</head>
+<body>
+
+<h1>Bean-Lebenszyklus</h1>
+<p class="small">Spring · Tier 1 · Quellen: Spring Framework Reference 7.x (Core: „Customizing the Nature of a Bean“, „Container Extension Points“, „Bean Scopes“), Spring Framework 7.0 Release Notes, Spring Boot 4.x Reference („Graceful Shutdown“, Application Properties), Spring Boot 3.4 Release Notes, Quellcode <code>ApplicationContextAwareProcessor</code></p>
+
+<div class="kern">
+<b>Kern:</b> Der <b>Bean-Lebenszyklus</b> ist die feste Reihenfolge, in der Spring eine Bean erzeugt, füllt, initialisiert und zerstört. An jedem Schritt gibt es <b>Erweiterungspunkte</b> wie <code>BeanPostProcessor</code> und <code>@PostConstruct</code>. Wer die Reihenfolge kennt, versteht Proxies, <code>@Transactional</code> und viele Startfehler.
+</div>
+
+<h2>1. Wo sitzt der Lebenszyklus?</h2>
+<svg viewBox="0 0 720 300" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="a" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="10" y="30" width="150" height="60" rx="8" fill="#fff" stroke="#555"/><text x="85" y="56" text-anchor="middle" font-weight="700">BeanDefinitions</text><text x="85" y="75" text-anchor="middle" font-size="12">Baupläne</text>
+  <line x1="160" y1="60" x2="198" y2="60" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="200" y="20" width="210" height="80" rx="8" fill="#dbe9fb" stroke="#0a66c2"/><text x="305" y="46" text-anchor="middle" font-weight="700">BeanFactoryPostProcessor</text><text x="305" y="66" text-anchor="middle" font-size="12">ändert Baupläne,</text><text x="305" y="84" text-anchor="middle" font-size="12">noch keine Beans</text>
+  <line x1="410" y1="60" x2="448" y2="60" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="450" y="20" width="260" height="80" rx="8" fill="#0a66c2"/><text x="580" y="46" text-anchor="middle" fill="#fff" font-weight="700">BeanFactory erzeugt Beans</text><text x="580" y="66" text-anchor="middle" fill="#fff" font-size="12">Instanz → Füllen → Aware</text><text x="580" y="84" text-anchor="middle" fill="#fff" font-size="12">→ Init → fertig</text>
+  <line x1="580" y1="100" x2="580" y2="148" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="450" y="150" width="260" height="60" rx="8" fill="#fff" stroke="#555"/><text x="580" y="175" text-anchor="middle" font-weight="700">BeanPostProcessor</text><text x="580" y="194" text-anchor="middle" font-size="12">vor und nach Init: z. B. Proxy</text>
+  <line x1="450" y1="180" x2="372" y2="180" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="200" y="150" width="170" height="60" rx="8" fill="#e8f5e9" stroke="#2e7d32"/><text x="285" y="175" text-anchor="middle" font-weight="700">Singleton-Cache</text><text x="285" y="194" text-anchor="middle" font-size="12">Bean ist bereit</text>
+  <line x1="285" y1="210" x2="285" y2="248" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="160" y="250" width="250" height="44" rx="8" fill="#fff4f2" stroke="#c62828"/><text x="285" y="277" text-anchor="middle">Context schliessen → Destroy</text>
+</svg>
+<ol>
+  <li><b>BeanDefinitions:</b> Spring liest zuerst alle Baupläne (Scan, <code>@Bean</code>, Auto-Configuration).</li>
+  <li><b>BeanFactoryPostProcessor (BFPP):</b> Er ändert die Baupläne, bevor eine normale Bean existiert. Beispiel: <code>PropertySourcesPlaceholderConfigurer</code> ersetzt <code>${db.url}</code>.</li>
+  <li><b>BeanFactory:</b> Sie erzeugt jede Bean in festen Schritten: Instanz, Füllen, Aware, Initialisierung.</li>
+  <li><b>BeanPostProcessor (BPP):</b> Er bekommt jede fertige Instanz vor und nach der Initialisierung. Er kann sie ersetzen, z. B. durch einen AOP-Proxy.</li>
+  <li><b>Singleton-Cache:</b> Fertige Singletons liegen dort. Jede weitere Anfrage bekommt dieselbe Instanz.</li>
+  <li><b>Destroy:</b> Beim Schliessen des Contexts ruft Spring die Destroy-Callbacks der Singletons auf.</li>
+</ol>
+
+<h2>2. Die Reise einer Bean (die Geschichte zum Merken)</h2>
+<svg viewBox="0 0 720 360" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="b" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="10" y="20" width="160" height="60" rx="10" fill="#eee" stroke="#777"/><text x="90" y="45" text-anchor="middle" font-weight="700">1. Instanziieren</text><text x="90" y="65" text-anchor="middle" font-size="12">Konstruktor</text>
+  <line x1="170" y1="50" x2="196" y2="50" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="198" y="20" width="160" height="60" rx="10" fill="#eee" stroke="#777"/><text x="278" y="45" text-anchor="middle" font-weight="700">2. Füllen</text><text x="278" y="65" text-anchor="middle" font-size="12">Felder, Setter</text>
+  <line x1="358" y1="50" x2="384" y2="50" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="386" y="20" width="150" height="60" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="461" y="45" text-anchor="middle" font-weight="700">3. Aware</text><text x="461" y="65" text-anchor="middle" font-size="12">Name, Factory</text>
+  <line x1="536" y1="50" x2="562" y2="50" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="564" y="20" width="146" height="60" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="637" y="45" text-anchor="middle" font-weight="700">4. BPP before</text><text x="637" y="65" text-anchor="middle" font-size="12">@PostConstruct</text>
+  <line x1="637" y1="80" x2="637" y2="128" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="440" y="130" width="270" height="60" rx="10" fill="#fff" stroke="#555"/><text x="575" y="155" text-anchor="middle" font-weight="700">5. afterPropertiesSet()</text><text x="575" y="175" text-anchor="middle" font-size="12">dann init-method</text>
+  <line x1="440" y1="160" x2="372" y2="160" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="160" y="130" width="210" height="60" rx="10" fill="#fff" stroke="#2e7d32" stroke-width="2"/><text x="265" y="155" text-anchor="middle" font-weight="700">6. BPP after</text><text x="265" y="175" text-anchor="middle" font-size="12">hier entsteht der Proxy</text>
+  <line x1="265" y1="190" x2="265" y2="238" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="160" y="240" width="210" height="56" rx="10" fill="#0a66c2"/><text x="265" y="264" text-anchor="middle" fill="#fff" font-weight="700">7. Bereit</text><text x="265" y="283" text-anchor="middle" fill="#fff" font-size="12">im Cache, wird injiziert</text>
+  <line x1="370" y1="268" x2="438" y2="268" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="440" y="240" width="270" height="56" rx="10" fill="#fff4f2" stroke="#c62828"/><text x="575" y="264" text-anchor="middle" font-weight="700">8. Destroy</text><text x="575" y="283" text-anchor="middle" font-size="12">@PreDestroy → destroy() → destroy-method</text>
+</svg>
+<ol>
+  <li><b>Instanziieren:</b> Spring ruft den Konstruktor von <code>ReportCache</code> auf. Konstruktor-Abhängigkeiten werden hier übergeben. Die Felder mit <code>@Autowired</code> sind noch <code>null</code>.</li>
+  <li><b>Füllen (populate):</b> Der <code>AutowiredAnnotationBeanPostProcessor</code> setzt Felder und Setter mit <code>@Autowired</code> und <code>@Value</code>.</li>
+  <li><b>Aware-Callbacks:</b> Die Bean bekommt Infos über den Container: <code>BeanNameAware</code>, <code>BeanClassLoaderAware</code>, <code>BeanFactoryAware</code>. <code>ApplicationContextAware</code> und ähnliche ruft ein spezieller BPP im nächsten Schritt auf.</li>
+  <li><b>BPP before:</b> Jeder BeanPostProcessor ruft <code>postProcessBeforeInitialization</code> auf. Hier ruft der <code>CommonAnnotationBeanPostProcessor</code> die <code>@PostConstruct</code>-Methode auf.</li>
+  <li><b>Init-Callbacks:</b> Danach <code>InitializingBean.afterPropertiesSet()</code>, dann eine eigene <code>initMethod</code>. Hier lädt <code>ReportCache</code> zum Beispiel seine Daten.</li>
+  <li><b>BPP after:</b> Jeder BeanPostProcessor ruft <code>postProcessAfterInitialization</code> auf. Hier erzeugt der Auto-Proxy-Creator einen <b>AOP-Proxy</b> für <code>@Transactional</code> oder <code>@Async</code>. Ab jetzt sehen andere Beans nur noch den Proxy.</li>
+  <li><b>Bereit:</b> Die Bean liegt im Cache. Sind alle Singletons fertig, kommen <code>SmartInitializingSingleton</code>, <code>SmartLifecycle.start()</code> und <code>ContextRefreshedEvent</code>. Spring Boot sendet am Ende <code>ApplicationReadyEvent</code>.</li>
+  <li><b>Destroy:</b> Beim Schliessen stoppt Spring zuerst <code>SmartLifecycle</code>-Beans nach Phase. Dann ruft es <code>@PreDestroy</code>, <code>DisposableBean.destroy()</code> und die eigene <code>destroyMethod</code> auf.</li>
+</ol>
+
+<h2>3. Beispiel: alle Callbacks sichtbar machen</h2>
+<pre>@Component
+class ReportCache implements BeanNameAware, ApplicationContextAware,
+                             InitializingBean, DisposableBean {
+  @Autowired private Clock clock;
+
+  ReportCache()                          { log("1 constructor, clock=" + clock); }
+  public void setBeanName(String n)      { log("3 BeanNameAware: " + n); }
+  public void setApplicationContext(ApplicationContext c) { log("3 ApplicationContextAware"); }
+  @PostConstruct void postConstruct()    { log("4 @PostConstruct, clock=" + (clock != null)); }
+  public void afterPropertiesSet()       { log("5 afterPropertiesSet"); }
+  @PreDestroy void preDestroy()          { log("8 @PreDestroy"); }
+  public void destroy()                  { log("8 DisposableBean.destroy"); }
+}
+
+@Component
+class TracingBpp implements BeanPostProcessor {
+  public Object postProcessBeforeInitialization(Object b, String n) { if (n.equals("reportCache")) log("4 BPP before"); return b; }
+  public Object postProcessAfterInitialization(Object b, String n)  { if (n.equals("reportCache")) log("6 BPP after");  return b; }
+}</pre>
+<pre>1 constructor, clock=null
+3 BeanNameAware: reportCache
+3 ApplicationContextAware
+4 @PostConstruct, clock=true
+4 BPP before
+5 afterPropertiesSet
+6 BPP after
+... Started DemoApplication ...
+8 @PreDestroy
+8 DisposableBean.destroy</pre>
+<p class="small">Erwartetes Ergebnis (laut Doku, nicht ausgeführt). <code>@PostConstruct</code> läuft selbst in einem BPP (<code>CommonAnnotationBeanPostProcessor</code>). Dieser ist <code>PriorityOrdered</code> und läuft vor einem eigenen BPP ohne Ordnung.</p>
+<ol>
+  <li>Im Konstruktor ist das Feld <code>clock</code> noch <code>null</code>. Feld-Injection passiert erst in Schritt 2.</li>
+  <li>Aware-Callbacks kommen nach dem Füllen, aber vor der Initialisierung.</li>
+  <li><code>@PostConstruct</code> sieht alle Abhängigkeiten. Darum gehört Init-Logik dorthin, nicht in den Konstruktor (bei Field-Injection).</li>
+  <li><code>@PreDestroy</code> läuft vor <code>DisposableBean.destroy()</code>. Die Reihenfolge ist dieselbe wie bei Init.</li>
+  <li>Echter Code sollte nur <code>@PostConstruct</code> und <code>@PreDestroy</code> nutzen. Die Interfaces koppeln die Klasse an Spring.</li>
+</ol>
+
+<h2>4. Details, die Interviewer fragen</h2>
+<ol>
+  <li><b>Init-Reihenfolge:</b> <code>@PostConstruct</code> → <code>afterPropertiesSet()</code> → eigene <code>initMethod</code>. Destroy gleich: <code>@PreDestroy</code> → <code>destroy()</code> → <code>destroyMethod</code>. Heisst eine Methode in zwei Mechanismen gleich, läuft sie nur einmal.</li>
+  <li><b>@PostConstruct ist Jakarta:</b> Die Annotation kommt aus <code>jakarta.annotation</code>. Spring Framework 7 unterstützt <code>javax.annotation.PostConstruct</code> nicht mehr.</li>
+  <li><b>BeanPostProcessor:</b> Er arbeitet auf <b>Instanzen</b>. Er hat zwei Methoden: vor und nach der Initialisierung. Er darf eine andere Instanz zurückgeben, z. B. einen Proxy.</li>
+  <li><b>BeanFactoryPostProcessor:</b> Er arbeitet auf <b>BeanDefinitions</b>, also vor jeder normalen Bean. Er darf keine normalen Beans anfassen, sonst entstehen sie zu früh.</li>
+  <li><b>BeanDefinitionRegistryPostProcessor:</b> Eine Unterart des BFPP, die neue BeanDefinitions registriert. Der <code>ConfigurationClassPostProcessor</code> liest so alle <code>@Configuration</code>-Klassen.</li>
+  <li><b>Static @Bean für BFPP und BPP:</b> Eine <code>@Bean</code>-Methode für einen BFPP sollte <code>static</code> sein. Sonst muss Spring die Konfigurationsklasse zu früh erzeugen, und <code>@Autowired</code> oder <code>@Value</code> darin fehlen.</li>
+  <li><b>BPPs werden nicht geproxied:</b> AOP-Auto-Proxying ist selbst ein BPP. BPPs und Beans, die sie direkt referenzieren, entstehen früh und bekommen keine Aspekte. Log: „is not eligible for getting processed by all BeanPostProcessors“.</li>
+  <li><b>Proxy entsteht nach Init:</b> In <code>@PostConstruct</code> arbeitet man auf dem rohen Objekt. Ein Aufruf einer eigenen <code>@Transactional</code>-Methode dort hat keine Transaktion.</li>
+  <li><b>Prototype-Beans:</b> Spring ruft Init-Callbacks auf, aber <b>keine Destroy-Callbacks</b>. Der Aufrufer muss Ressourcen selbst freigeben.</li>
+  <li><b>Inferred destroy method:</b> Für <code>@Bean</code> erkennt Spring eine öffentliche <code>close()</code>- oder <code>shutdown()</code>-Methode automatisch. Abschalten mit <code>@Bean(destroyMethod = "")</code>.</li>
+  <li><b>SmartLifecycle:</b> Für Komponenten, die starten und stoppen (Consumer, Scheduler). Niedrige Phase startet zuerst und stoppt zuletzt. Standard-Timeout pro Phase beim Stoppen: 30 Sekunden.</li>
+  <li><b>Graceful Shutdown in Boot:</b> Seit Boot 3.4 standardmässig aktiv. Der Webserver nimmt keine neuen Requests an und wartet auf laufende. Timeout über <code>spring.lifecycle.timeout-per-shutdown-phase</code> (Standard 30s).</li>
+  <li><b>Lazy Init:</b> <code>@Lazy</code> oder <code>spring.main.lazy-initialization=true</code> erzeugt Beans erst beim ersten Zugriff. Start schneller, Fehler später.</li>
+  <li><b>FactoryBean:</b> Eine Bean, die eine andere Bean herstellt. <code>getBean("x")</code> liefert das Produkt, <code>getBean("&amp;x")</code> die Fabrik selbst.</li>
+</ol>
+
+<h2>5. Vergleich</h2>
+<ul>
+  <li><b>Konstruktor:</b> nur eigene Felder setzen. Feld-Injektionen sind noch <code>null</code>, kein Proxy.</li>
+  <li><b>@PostConstruct:</b> Init mit allen Abhängigkeiten. Standard-Wahl, ohne Spring-Kopplung.</li>
+  <li><b>InitializingBean.afterPropertiesSet:</b> gleiche Aufgabe, aber an Spring gekoppelt. Nur für Infrastruktur-Code.</li>
+  <li><b>@Bean(initMethod):</b> für Fremdklassen, die man nicht ändern kann.</li>
+  <li><b>SmartInitializingSingleton:</b> läuft, wenn alle Singletons fertig sind.</li>
+  <li><b>ApplicationReadyEvent:</b> die App ist ganz gestartet, Proxies existieren. Gut für Warm-up und Start-Jobs.</li>
+  <li><b>BeanFactoryPostProcessor vs BeanPostProcessor:</b> BFPP ändert Baupläne vor den Beans. BPP ändert oder ersetzt fertige Bean-Instanzen.</li>
+</ul>
+
+<h2>6. In der Produktion</h2>
+<ol>
+  <li><b>Keine Transaktion beim Start:</b> <code>@PostConstruct</code> ruft eine eigene <code>@Transactional</code>-Methode auf. Es gibt keinen Proxy und keine Transaktion. Lösung: Logik in einen <code>ApplicationReadyEvent</code>-Listener in einer anderen Bean.</li>
+  <li><b>Langsamer oder hängender Start:</b> <code>@PostConstruct</code> ruft einen fremden Service übers Netz auf. Fällt er aus, startet die App nicht. Lösung: Timeout, später laden, oder Readiness Probe erst nach erfolgreichem Laden.</li>
+  <li><b>Ressourcen-Leck bei Prototypes:</b> Eine Prototype-Bean hält eine Verbindung. <code>@PreDestroy</code> läuft nie. Lösung: selbst schliessen oder Scope ändern.</li>
+  <li><b>Abgebrochene Requests bei Deployment:</b> Ohne Graceful Shutdown stoppt der Pod mitten in Requests. Lösung: Graceful Shutdown, Timeout kleiner als <code>terminationGracePeriodSeconds</code> in Kubernetes.</li>
+  <li><b>@Value ist null:</b> Ein eigener BFPP wird über eine nicht-statische <code>@Bean</code>-Methode registriert. Die Konfigurationsklasse entsteht zu früh. Lösung: Methode <code>static</code> machen.</li>
+</ol>
+
+<h2>7. Diagnose: Werkzeuge und Befehle</h2>
+<ul>
+  <li><code>logging.level.org.springframework.beans.factory=DEBUG</code>: zeigt, wann jede Bean erzeugt wird.</li>
+  <li>Log-Meldung „<b>not eligible for getting processed by all BeanPostProcessors</b>“: zeigt Beans, die zu früh entstehen und keine Proxies bekommen.</li>
+  <li><code>/actuator/startup</code> mit <code>BufferingApplicationStartup</code>: Dauer jedes Schritts, z. B. <code>spring.beans.instantiate</code>.</li>
+  <li><b>Breakpoint</b> in <code>AbstractAutowireCapableBeanFactory.initializeBean</code>: zeigt Aware, BPP before, Init, BPP after in Reihenfolge.</li>
+  <li><code>jcmd &lt;pid&gt; Thread.print</code> bei hängendem Start: zeigt, welcher <code>@PostConstruct</code> blockiert.</li>
+</ul>
+
+<h2>8. Senior-Punkte</h2>
+<div class="senior">
+<ol>
+  <li><b>@PostConstruct schlank halten.</b> Netzwerk und lange Arbeit gehören nicht in den Start einer Bean. Sie blockieren den Context und Kubernetes-Probes.</li>
+  <li><b>Der Proxy entsteht zuletzt.</b> Wer das weiss, erklärt fehlende Transaktionen beim Start und in Self-Invocation.</li>
+  <li><b>Eigene BPPs sind selten nötig.</b> Sie wirken auf jede Bean und verlangsamen den Start. Lieber Annotationen und Auto-Configuration nutzen.</li>
+  <li><b>Shutdown ist Teil des Designs:</b> Consumer stoppen, laufende Arbeit beenden, dann Ressourcen schliessen. <code>SmartLifecycle</code>-Phasen steuern die Reihenfolge.</li>
+  <li><b>Lifecycle-Interfaces nur in Infrastruktur.</b> Business-Code nutzt <code>@PostConstruct</code>, <code>@PreDestroy</code> und Events.</li>
+</ol>
+</div>
+
+<h2>9. Aus dem Projekt</h2>
+<p>„Bei DigiSanté sendet unsere Audit-Bibliothek Logs asynchron an Azure Monitor; beim Herunterfahren muss so eine Komponente ihre Puffer sauber leeren.“ <span class="small">(Prüfen und durch dein echtes Beispiel ersetzen.)</span></p>
+
+<h2>10. Fallen</h2>
+<div class="trap">
+<ul>
+  <li>„Im Konstruktor sind alle @Autowired-Felder gesetzt.“ → <b>Falsch.</b> Feld-Injection kommt erst danach. Nur Konstruktor-Parameter sind da.</li>
+  <li>„afterPropertiesSet läuft vor @PostConstruct.“ → <b>Falsch.</b> <code>@PostConstruct</code> kommt zuerst.</li>
+  <li>„@PreDestroy läuft für jede Bean.“ → <b>Falsch.</b> Nicht für Prototypes. Und nur, wenn der Context sauber schliesst (nicht bei <code>kill -9</code>).</li>
+  <li>„In @PostConstruct funktioniert @Transactional der eigenen Klasse.“ → <b>Falsch.</b> Der Proxy entsteht erst nach der Initialisierung.</li>
+  <li>„BeanFactoryPostProcessor und BeanPostProcessor sind fast gleich.“ → <b>Falsch.</b> BFPP: Baupläne vor den Beans. BPP: fertige Instanzen.</li>
+</ul>
+</div>
+
+<h2>11. Fragen</h2>
+<details><summary>Beschreiben Sie den Lebenszyklus einer Spring-Bean.</summary><p>Instanziieren, Abhängigkeiten füllen, Aware-Callbacks, BPP before mit @PostConstruct, afterPropertiesSet und initMethod, BPP after (Proxy), bereit. Beim Schliessen: @PreDestroy, destroy(), destroyMethod.</p></details>
+<details><summary>In welcher Reihenfolge laufen die Init-Callbacks?</summary><p>@PostConstruct, dann InitializingBean.afterPropertiesSet(), dann die eigene initMethod.</p></details>
+<details><summary>In welcher Reihenfolge laufen die Destroy-Callbacks?</summary><p>@PreDestroy, dann DisposableBean.destroy(), dann die eigene destroyMethod.</p></details>
+<details><summary>Was ist ein BeanPostProcessor?</summary><p>Ein Erweiterungspunkt, der jede Bean-Instanz vor und nach der Initialisierung bekommt. Er kann sie ändern oder durch einen Proxy ersetzen.</p></details>
+<details><summary>Nennen Sie Beispiele für BeanPostProcessors in Spring.</summary><p>AutowiredAnnotationBeanPostProcessor (@Autowired, @Value), CommonAnnotationBeanPostProcessor (@PostConstruct, @PreDestroy), der AOP-Auto-Proxy-Creator (@Transactional, Aspekte).</p></details>
+<details><summary>Was ist ein BeanFactoryPostProcessor?</summary><p>Er ändert BeanDefinitions, bevor normale Beans entstehen. Beispiel: PropertySourcesPlaceholderConfigurer ersetzt ${...}-Platzhalter.</p></details>
+<details><summary>BeanFactoryPostProcessor vs BeanPostProcessor?</summary><p>BFPP arbeitet auf Bauplänen und läuft einmal vor den Beans. BPP arbeitet auf jeder fertigen Instanz.</p></details>
+<details><summary>Warum sollte eine @Bean-Methode für einen BFPP static sein?</summary><p>Sonst muss Spring die Konfigurationsklasse sehr früh erzeugen. Dann fehlen dort @Autowired, @Value und Proxies.</p></details>
+<details><summary>Wann entsteht der AOP-Proxy einer Bean?</summary><p>In postProcessAfterInitialization, also nach @PostConstruct und afterPropertiesSet.</p></details>
+<details><summary>Warum hat ein @Transactional-Aufruf in @PostConstruct keine Transaktion?</summary><p>@PostConstruct läuft auf dem rohen Objekt, der Proxy existiert noch nicht. Und es ist ein Aufruf über this.</p></details>
+<details><summary>Was ist die Reihenfolge der Aware-Callbacks?</summary><p>Erst BeanNameAware, BeanClassLoaderAware, BeanFactoryAware. Dann über einen BPP EnvironmentAware, ApplicationEventPublisherAware, ApplicationContextAware und weitere.</p></details>
+<details><summary>Sollte Business-Code Aware-Interfaces nutzen?</summary><p>Nein. Sie koppeln an Spring. Besser ist die Injection der benötigten Bean, z. B. ApplicationEventPublisher.</p></details>
+<details><summary>Ruft Spring @PreDestroy für Prototype-Beans auf?</summary><p>Nein. Spring gibt die Prototype-Instanz ab und vergisst sie. Der Aufrufer muss aufräumen.</p></details>
+<details><summary>Was ist eine inferred destroy method?</summary><p>Bei @Bean ruft Spring automatisch eine öffentliche close()- oder shutdown()-Methode auf. Abschalten mit destroyMethod = "".</p></details>
+<details><summary>Was ist SmartLifecycle?</summary><p>Ein Interface für Komponenten mit start und stop, geordnet nach Phase. Niedrige Phase startet zuerst und stoppt zuletzt.</p></details>
+<details><summary>Wie funktioniert Graceful Shutdown in Spring Boot?</summary><p>Der Webserver nimmt keine neuen Requests mehr an und wartet auf laufende. Seit Boot 3.4 Standard. Timeout über spring.lifecycle.timeout-per-shutdown-phase, Standard 30s.</p></details>
+<details><summary>Wo laden Sie Daten beim Start, wenn Transaktionen nötig sind?</summary><p>In einem Listener für ApplicationReadyEvent in einer anderen Bean. Dann existieren alle Proxies.</p></details>
+<details><summary>Was ist ein FactoryBean?</summary><p>Eine Bean, die eine andere Bean herstellt. getBean("x") liefert das Produkt, getBean("&amp;x") die Fabrik.</p></details>
+<details><summary>Was bedeutet die Meldung „not eligible for getting processed by all BeanPostProcessors“?</summary><p>Die Bean ist zu früh entstanden, meist weil ein BPP sie referenziert. Sie bekommt keine Proxies, z. B. kein @Transactional.</p></details>
+<details><summary>Was macht Lazy Initialization?</summary><p>Beans entstehen erst beim ersten Zugriff. Der Start ist schneller, aber Konfigurationsfehler zeigen sich erst später.</p></details>
+<details><summary>Szenario: Daten, die beim Start in @PostConstruct gespeichert werden, sind nach dem Neustart weg. Warum?</summary><p>Ohne Proxy gibt es keine Transaktion, und je nach Setup wird nichts committed. Lösung: die Logik in einem ApplicationReadyEvent-Listener über eine andere Bean aufrufen.</p></details>
+<details><summary>Szenario: Bei jedem Deployment brechen einige Requests mit Fehlern ab. Was prüfen Sie?</summary><p>Ob Graceful Shutdown aktiv ist und der Timeout zur Kubernetes terminationGracePeriodSeconds passt. Dazu die Readiness Probe beim Herunterfahren.</p></details>
+<details><summary>Szenario: Eine Bean bekommt keine Transaktion, und im Log steht „not eligible for auto-proxying“. Was tun Sie?</summary><p>Ich suche den BPP oder BFPP, der die Bean früh anzieht. Lösung: die BPP-Methode static machen, die Abhängigkeit lazy holen (ObjectProvider) oder entfernen.</p></details>
+
+</body>
+</html>

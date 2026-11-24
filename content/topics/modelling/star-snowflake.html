@@ -1,0 +1,241 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Star vs Snowflake Schema</title>
+<style>
+  body { font: 17px/1.55 -apple-system, system-ui, sans-serif; max-width: 760px; margin: 0 auto; padding: 16px; color: #1d1d1f; }
+  h1 { font-size: 28px; margin: 8px 0 4px; }
+  h2 { font-size: 21px; margin: 32px 0 8px; padding-top: 12px; border-top: 2px solid #e5e5ea; }
+  .kern { background: #eef6ff; border-left: 4px solid #0a66c2; padding: 10px 14px; border-radius: 6px; }
+  .senior { background: #f0faf0; border-left: 4px solid #2e7d32; padding: 10px 14px; border-radius: 6px; }
+  .trap { background: #fff4f2; border-left: 4px solid #c62828; padding: 10px 14px; border-radius: 6px; }
+  code { background: #f2f2f7; padding: 1px 5px; border-radius: 4px; font-size: 15px; }
+  pre { background: #1e1e1e; color: #e6e6e6; padding: 12px; border-radius: 8px; overflow-x: auto; font-size: 13.5px; line-height: 1.45; }
+  svg { width: 100%; height: auto; display: block; margin: 10px 0; }
+  ol li, ul li { margin: 4px 0; }
+  details { border: 1px solid #e5e5ea; border-radius: 8px; padding: 8px 12px; margin: 6px 0; }
+  summary { font-weight: 600; cursor: pointer; }
+  details p { margin: 6px 0 2px; }
+  .small { color: #6e6e73; font-size: 14px; }
+</style>
+</head>
+<body>
+
+<h1>Star vs Snowflake Schema</h1>
+<p class="small">Modelling · Tier 1 · Quellen: Kimball Group „Dimensional Modeling Techniques“ (Star Schemas and OLAP Cubes, Snowflaked Dimensions, Outrigger Dimensions, Role-Playing, Degenerate und Junk Dimensions), PostgreSQL 17 Doku (EXPLAIN)</p>
+
+<div class="kern">
+<b>Kern:</b> Ein <b>Star Schema</b> ist eine Faktentabelle in der Mitte mit <b>denormalisierten</b> Dimensionstabellen direkt daneben. Ein <b>Snowflake Schema</b> normalisiert die Dimensionen weiter in Untertabellen. Star heisst weniger Joins und einfache SQL, Snowflake heisst weniger Redundanz, aber mehr Joins.
+</div>
+
+<h2>1. Wo sitzt das Star Schema?</h2>
+<svg viewBox="0 0 720 330" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="a" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="270" y="125" width="180" height="80" rx="10" fill="#0a66c2" stroke="#0a66c2"/><text x="360" y="150" text-anchor="middle" fill="#fff" font-weight="700">fact_trade</text><text x="360" y="170" text-anchor="middle" fill="#fff" font-size="12">date_key, participant_key,</text><text x="360" y="186" text-anchor="middle" fill="#fff" font-size="12">product_key, volume, value</text>
+  <rect x="20" y="20" width="180" height="60" rx="8" fill="#fff" stroke="#555"/><text x="110" y="45" text-anchor="middle" font-weight="700">dim_date</text><text x="110" y="64" text-anchor="middle" font-size="12">Tag, Monat, Jahr</text>
+  <rect x="520" y="20" width="180" height="60" rx="8" fill="#fff" stroke="#555"/><text x="610" y="45" text-anchor="middle" font-weight="700">dim_participant</text><text x="610" y="64" text-anchor="middle" font-size="12">Name, Land, Typ</text>
+  <rect x="20" y="250" width="180" height="60" rx="8" fill="#fff" stroke="#555"/><text x="110" y="275" text-anchor="middle" font-weight="700">dim_product</text><text x="110" y="294" text-anchor="middle" font-size="12">Produkt, Commodity</text>
+  <rect x="520" y="250" width="180" height="60" rx="8" fill="#fff" stroke="#555"/><text x="610" y="275" text-anchor="middle" font-weight="700">dim_market</text><text x="610" y="294" text-anchor="middle" font-size="12">Börse / OTC</text>
+  <line x1="270" y1="140" x2="200" y2="70" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <line x1="450" y1="140" x2="520" y2="70" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <line x1="270" y1="190" x2="200" y2="262" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <line x1="450" y1="190" x2="520" y2="262" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="560" y="140" width="150" height="50" rx="8" fill="#eee" stroke="#999" stroke-dasharray="5 4"/><text x="635" y="162" text-anchor="middle" font-size="12">Snowflake:</text><text x="635" y="178" text-anchor="middle" font-size="12">dim_country</text>
+  <line x1="635" y1="82" x2="635" y2="138" stroke="#999" stroke-width="1.5" stroke-dasharray="5 4" marker-end="url(#a)"/>
+</svg>
+<ol>
+  <li><b>Faktentabelle:</b> eine Zeile pro Messereignis, z. B. pro Trade. Sie enthält Fremdschlüssel und Messwerte.</li>
+  <li><b>Dimensionstabellen:</b> eine Zeile pro Objekt, z. B. pro Marktteilnehmer. Sie enthalten Text-Attribute zum Filtern und Gruppieren.</li>
+  <li><b>Star:</b> jede Dimension hängt direkt an der Faktentabelle. Ein Join pro Dimension.</li>
+  <li><b>Snowflake:</b> eine Dimension wird aufgeteilt, z. B. <code>dim_participant → dim_country</code> (gestrichelt). Ein Join mehr.</li>
+  <li><b>Platz im Datenfluss:</b> Das Star Schema ist die Präsentationsschicht. Im Lakehouse ist das typisch die <b>Gold-Schicht</b>.</li>
+</ol>
+
+<h2>2. Die Reise einer Star-Abfrage (die Geschichte zum Merken)</h2>
+<svg viewBox="0 0 720 280" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="b" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="10" y="20" width="150" height="60" rx="8" fill="#fff" stroke="#555"/><text x="85" y="45" text-anchor="middle">Dimensionen</text><text x="85" y="64" text-anchor="middle" font-size="12">filtern (WHERE)</text>
+  <line x1="160" y1="50" x2="208" y2="50" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="210" y="20" width="140" height="60" rx="8" fill="#fff" stroke="#555"/><text x="280" y="45" text-anchor="middle">Hash-Tabellen</text><text x="280" y="64" text-anchor="middle" font-size="12">kleine Key-Mengen</text>
+  <line x1="350" y1="50" x2="398" y2="50" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="400" y="20" width="150" height="60" rx="8" fill="#0a66c2" stroke="#0a66c2"/><text x="475" y="45" text-anchor="middle" fill="#fff">Fakten scannen</text><text x="475" y="64" text-anchor="middle" fill="#fff" font-size="12">Hash Join pro Dim</text>
+  <line x1="550" y1="50" x2="598" y2="50" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="600" y="20" width="110" height="60" rx="8" fill="#fff" stroke="#555"/><text x="655" y="45" text-anchor="middle">GROUP BY</text><text x="655" y="64" text-anchor="middle" font-size="12">Attribute</text>
+  <line x1="655" y1="80" x2="655" y2="148" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="580" y="150" width="130" height="50" rx="8" fill="#f0faf0" stroke="#2e7d32"/><text x="645" y="180" text-anchor="middle">Ergebnis</text>
+  <rect x="210" y="150" width="300" height="50" rx="8" fill="#fff4f2" stroke="#c62828" stroke-dasharray="5 4"/><text x="360" y="172" text-anchor="middle" fill="#c62828" font-size="13">Snowflake: zusätzlicher Join</text><text x="360" y="190" text-anchor="middle" fill="#c62828" font-size="12">dim → sub-dim vor dem Fakten-Join</text>
+  <line x1="280" y1="82" x2="300" y2="148" stroke="#c62828" stroke-width="1.5" stroke-dasharray="5 4" marker-end="url(#b)"/>
+  <text x="360" y="250" text-anchor="middle" font-size="13">Fakten: gross, schmal · Dimensionen: klein, breit</text>
+</svg>
+<ol>
+  <li><b>Die Frage:</b> „MWh und EUR pro Monat, Land und Commodity.“ Alle Gruppierungs-Attribute liegen in Dimensionen.</li>
+  <li><b>Dimensionen zuerst:</b> Die Engine liest die kleinen Dimensionen und wendet Filter an, z. B. <code>country = 'CH'</code>.</li>
+  <li><b>Hash-Tabellen:</b> Aus jeder gefilterten Dimension baut sie eine kleine Hash-Tabelle über den Surrogate Key.</li>
+  <li><b>Fakten scannen:</b> Die grosse Faktentabelle wird einmal gelesen. Jede Zeile prüft ihre Keys gegen die Hash-Tabellen: <b>Hash Join</b>.</li>
+  <li><b>Gruppieren:</b> Passende Zeilen werden nach Dimensions-Attributen summiert.</li>
+  <li><b>Snowflake:</b> Vor dem Fakten-Join braucht es einen Join Dimension → Unterdimension. Bei kleinen Dimensionen ist das billig. Bei grossen Dimensionen und vielen Ebenen wird es teurer und die SQL länger.</li>
+</ol>
+
+<h2>3. Beispiel: Star und Snowflake in PostgreSQL</h2>
+<pre>CREATE TABLE dim_date (date_key int PRIMARY KEY, full_date date, month text, year int);
+CREATE TABLE dim_participant (participant_key int PRIMARY KEY, participant_code text,
+  name text, country text, participant_type text);
+CREATE TABLE dim_product (product_key int PRIMARY KEY, product_name text,
+  commodity text, delivery_type text);
+CREATE TABLE fact_trade (date_key int REFERENCES dim_date,
+  participant_key int REFERENCES dim_participant, product_key int REFERENCES dim_product,
+  trade_id text, volume_mwh numeric, value_eur numeric);
+-- 3 Tage, 2 Teilnehmer (CH, DE), 3 Produkte (Strom Base/Peak, Gas), 5 Trades
+
+SELECT d.month, p.country, pr.commodity, sum(f.volume_mwh) AS mwh, sum(f.value_eur) AS eur
+FROM fact_trade f
+JOIN dim_date d         ON d.date_key = f.date_key
+JOIN dim_participant p  ON p.participant_key = f.participant_key
+JOIN dim_product pr     ON pr.product_key = f.product_key
+GROUP BY d.month, p.country, pr.commodity ORDER BY 1,2,3;</pre>
+<pre>  month  | country |  commodity  | mwh |  eur
+---------+---------+-------------+-----+-------
+ 2026-01 | CH      | Electricity | 120 | 10600
+ 2026-01 | DE      | Electricity |  50 |  4300
+ 2026-01 | DE      | Gas         | 300 |  9600
+ 2026-02 | CH      | Electricity |  80 |  6500
+(4 rows)</pre>
+<p>Jetzt dieselbe Frage „Volumen pro Commodity“, einmal Star, einmal Snowflake (<code>commodity</code> in eigener Tabelle <code>dim_commodity</code>):</p>
+<pre>-- Star
+EXPLAIN (COSTS OFF) SELECT pr.commodity, sum(f.volume_mwh)
+FROM fact_trade f JOIN dim_product pr ON pr.product_key = f.product_key GROUP BY pr.commodity;
+-- Snowflake
+EXPLAIN (COSTS OFF) SELECT c.commodity, sum(f.volume_mwh)
+FROM fact_trade f JOIN dim_product_sf pr ON pr.product_key = f.product_key
+JOIN dim_commodity c ON c.commodity_key = pr.commodity_key GROUP BY c.commodity;</pre>
+<pre>                     QUERY PLAN
+-----------------------------------------------------
+ HashAggregate
+   Group Key: pr.commodity
+   ->  Hash Join
+         Hash Cond: (f.product_key = pr.product_key)
+         ->  Seq Scan on fact_trade f
+         ->  Hash
+               ->  Seq Scan on dim_product pr
+(7 rows)
+
+                        QUERY PLAN
+-----------------------------------------------------------
+ HashAggregate
+   Group Key: c.commodity
+   ->  Hash Join
+         Hash Cond: (pr.commodity_key = c.commodity_key)
+         ->  Hash Join
+               Hash Cond: (f.product_key = pr.product_key)
+               ->  Seq Scan on fact_trade f
+               ->  Hash
+                     ->  Seq Scan on dim_product_sf pr
+         ->  Hash
+               ->  Seq Scan on dim_commodity c
+(11 rows)</pre>
+<p class="small">Echte Ausgabe, PostgreSQL 17.12. Demo-Tabellen danach gelöscht.</p>
+<ol>
+  <li>Die Star-Abfrage hat <b>einen Join pro Dimension</b>. Alle Attribute zum Gruppieren liegen direkt in den Dimensionen.</li>
+  <li>Der Plan ist das klassische Muster: <b>Seq Scan</b> auf den Fakten, <b>Hash</b> auf der kleinen Dimension, <b>Hash Join</b>, dann <b>HashAggregate</b>.</li>
+  <li>Im Snowflake braucht dieselbe Frage <b>einen Hash Join mehr</b>. Bei fünf Dimensionen mit je zwei Ebenen sind es schnell zehn Joins.</li>
+  <li>Das Ergebnis ist gleich. Der Unterschied liegt in Lesbarkeit, Planer-Aufwand und Join-Kosten.</li>
+</ol>
+
+<h2>4. Details, die Interviewer fragen</h2>
+<ol>
+  <li><b>Denormalisierte Dimension:</b> Hierarchien liegen flach in einer Tabelle, z. B. <code>product → commodity</code>. Kimball empfiehlt das: Nutzer verstehen es leichter und es ist meist schneller.</li>
+  <li><b>Snowflaked Dimension:</b> Kimball rät davon ab. Grund: schwer zu navigieren für Business-Nutzer und oft langsamer.</li>
+  <li><b>Outrigger:</b> eine Dimension verweist bewusst auf eine zweite Dimension. Beispiel: <code>dim_participant.first_trade_date_key → dim_date</code>. Erlaubt, aber sparsam.</li>
+  <li><b>Redundanz ist billig:</b> Dimensionen sind klein im Vergleich zu Fakten. Im Column Store komprimiert ein <b>Dictionary</b> wiederholte Texte fast auf null.</li>
+  <li><b>Surrogate Keys</b> (künstliche Integer-Schlüssel) verbinden Fakten und Dimensionen. Sie sind klein und unabhängig vom Quellsystem.</li>
+  <li><b>Role-Playing Dimension:</b> eine physische Dimension in mehreren Rollen. Beispiel: <code>dim_date</code> als Handelsdatum und als Lieferdatum, über Views oder Aliase.</li>
+  <li><b>Degenerate Dimension:</b> ein Schlüssel ohne eigene Tabelle, direkt in der Faktentabelle. Beispiel: <code>trade_id</code>.</li>
+  <li><b>Junk Dimension:</b> sammelt kleine Flags und Codes in einer Tabelle. Beispiel: <code>is_cancelled</code>, <code>order_type</code> statt zehn Mini-Dimensionen.</li>
+  <li><b>Galaxy / Fact Constellation:</b> mehrere Faktentabellen teilen dieselben <b>Conformed Dimensions</b>. Beispiel: <code>fact_trade</code> und <code>fact_order</code> nutzen dieselbe <code>dim_participant</code>.</li>
+  <li><b>Snowflake ist sinnvoll,</b> wenn eine Unterebene sehr gross ist oder eigene Attribute hat, die viele Dimensionen teilen. Oder wenn ein Tool ein normalisiertes Modell verlangt.</li>
+  <li><b>Star Schema und OLAP-Cube:</b> Kimball nennt beide als physische Form desselben dimensionalen Modells. Heute ist das Star Schema auf einem Column Store der Normalfall.</li>
+  <li><b>One Big Table (OBT):</b> Fakten und alle Attribute in einer breiten Tabelle. Ohne Joins, aber jede Attributänderung heisst: grosse Tabelle neu schreiben.</li>
+</ol>
+
+<h2>5. Vergleich</h2>
+<ul>
+  <li><b>Joins:</b> Star = ein Join pro Dimension. Snowflake = mehrere pro Dimension.</li>
+  <li><b>Redundanz:</b> Star = Attribute wiederholt in der Dimension. Snowflake = jede Ebene einmal.</li>
+  <li><b>SQL und BI:</b> Star = einfach, Self-Service geeignet. Snowflake = länger, Nutzer müssen das Modell kennen.</li>
+  <li><b>Pflege:</b> Star = ETL muss Attribute denormalisieren. Snowflake = näher an der Quelle, einfacher zu laden.</li>
+  <li><b>Speicher:</b> Snowflake spart etwas Platz in den Dimensionen. Bei Column Stores ist der Unterschied klein.</li>
+  <li><b>Gegen 3NF:</b> Snowflake ist nur in den Dimensionen normalisiert. Die Faktentabelle bleibt in beiden Formen gleich.</li>
+  <li><b>Gegen OBT:</b> OBT hat null Joins, aber riesige Rewrites bei Änderungen und keine Wiederverwendung von Dimensionen.</li>
+</ul>
+
+<h2>6. In der Produktion</h2>
+<ol>
+  <li><b>Doppelte Zeilen nach dem Join:</b> Die Dimension hat zwei Zeilen pro Key (z. B. fehlerhafter SCD2-Load). Summen verdoppeln sich. Fix: Unique-Constraint auf den Surrogate Key, Tests auf Eindeutigkeit.</li>
+  <li><b>Verlorene Fakten:</b> Ein Fakt hat einen Key, der in der Dimension fehlt. Der Inner Join filtert ihn still weg. Fix: „Unknown“-Zeile in jeder Dimension, Fremdschlüssel nie NULL.</li>
+  <li><b>Snowflake-Ketten:</b> BI-Nutzer joinen falsch oder vergessen eine Ebene. Fix: flache Views oder flache Dimensionen für die Präsentation.</li>
+  <li><b>Dimension wächst stark:</b> Eine Kunden-Dimension mit Millionen Zeilen und vielen Versionen macht den Hash Join teuer. Fix: schnell wechselnde Attribute in eine Mini-Dimension auslagern.</li>
+  <li><b>Fakt-zu-Fakt-Join:</b> Zwei Faktentabellen direkt joinen erzeugt Mehrfachzählung. Fix: jede getrennt aggregieren, dann über Conformed Dimensions zusammenführen (<b>Drill Across</b>).</li>
+</ol>
+
+<h2>7. Diagnose: Werkzeuge und Abfragen</h2>
+<ul>
+  <li><code>EXPLAIN (ANALYZE, BUFFERS)</code>: Anzahl Joins, Join-Typ, geschätzte gegen echte Zeilen.</li>
+  <li>Eindeutigkeit prüfen: <code>SELECT participant_key, count(*) FROM dim_participant GROUP BY 1 HAVING count(*) &gt; 1;</code></li>
+  <li>Waisen-Fakten finden: <code>SELECT count(*) FROM fact_trade f LEFT JOIN dim_product p USING (product_key) WHERE p.product_key IS NULL;</code></li>
+  <li>Summen-Abgleich: <code>sum(volume)</code> auf der Faktentabelle allein gegen dieselbe Summe nach allen Joins. Abweichung = Join-Problem.</li>
+  <li>Dremio Query Profile oder Spark UI: welcher Join wie viele Zeilen erzeugt, Broadcast oder Shuffle.</li>
+</ul>
+
+<h2>8. Senior-Punkte</h2>
+<div class="senior">
+<ol>
+  <li><b>Default ist Star.</b> Snowflake nur mit Grund: sehr grosse Unterebene, geteilte Hierarchie, Tool-Vorgabe.</li>
+  <li><b>Modell für Nutzer bauen.</b> Wer Self-Service-BI will, braucht flache Dimensionen mit sprechenden Namen.</li>
+  <li><b>Speicher ist selten das Argument.</b> Dimensionen sind klein, Column Stores komprimieren Redundanz weg.</li>
+  <li><b>Snowflake im Lade-Modell, Star in der Präsentation</b> ist ein üblicher Kompromiss: normalisiert laden, per View oder Gold-Job flach ausliefern.</li>
+  <li><b>Join-Korrektheit testen:</b> Summen vor und nach dem Join vergleichen. Doppelte Dimensionszeilen sind der häufigste stille Fehler.</li>
+  <li><b>Verteilte Engines:</b> kleine Dimensionen werden per <b>Broadcast Join</b> verteilt, das ist billig. Grosse Dimensionen erzeugen einen Shuffle.</li>
+</ol>
+</div>
+
+<h2>9. Aus dem Projekt</h2>
+<p>„Ein Star Schema habe ich nicht in Produktion gebaut. Bei ElCom MATCH ist die Gold-Schicht nahe dran: Statistiken pro Tag, gelesen von Dremio, aus typisierten Silver-Tabellen (Contracts, Defaults, Inside Information).“ <span class="small">(Prüfen und durch dein echtes Beispiel ersetzen.)</span></p>
+
+<h2>10. Fallen</h2>
+<div class="trap">
+<ul>
+  <li>„Snowflake ist moderner als Star.“ → Nein. Snowflake heisst hier nur „normalisierte Dimensionen“, nicht die Firma Snowflake.</li>
+  <li>„Im Snowflake ist die Faktentabelle normalisiert.“ → Nein. Nur die Dimensionen sind aufgeteilt.</li>
+  <li>„Star Schema verschwendet viel Speicher.“ → Kaum. Die Redundanz liegt in kleinen Dimensionen, die Fakten sind gleich gross.</li>
+  <li>„Mehr Normalisierung ist immer sauberer.“ → Im OLAP zählt Lesbarkeit und Abfragezeit. Die Konsistenz sichert der ETL.</li>
+  <li>„Zwei Faktentabellen kann man direkt joinen.“ → Das zählt doppelt. Erst getrennt aggregieren, dann über gemeinsame Dimensionen kombinieren.</li>
+</ul>
+</div>
+
+<h2>11. Fragen</h2>
+<details><summary>Was ist ein Star Schema?</summary><p>Eine Faktentabelle mit Messwerten und Fremdschlüsseln in der Mitte, darum herum denormalisierte Dimensionstabellen. Jede Dimension ist mit einem Join erreichbar.</p></details>
+<details><summary>Was ist ein Snowflake Schema?</summary><p>Ein Star Schema, dessen Dimensionen weiter normalisiert sind. Hierarchie-Ebenen liegen in eigenen Tabellen, z. B. Produkt → Commodity.</p></details>
+<details><summary>Welche Vorteile hat ein Star Schema?</summary><p>Wenige Joins, einfache SQL, gut für BI-Tools und Self-Service. Der Optimizer hat ein klares Muster: grosse Fakten, kleine Dimensionen.</p></details>
+<details><summary>Welche Vorteile hat ein Snowflake Schema?</summary><p>Weniger Redundanz in den Dimensionen und einfachere Pflege einzelner Ebenen. Es ist näher an normalisierten Quellsystemen.</p></details>
+<details><summary>Was empfiehlt Kimball?</summary><p>Flache, denormalisierte Dimensionen. Snowflaking rät er ab, weil Nutzer es schwer navigieren und es die Performance verschlechtern kann.</p></details>
+<details><summary>Wann wählen Sie trotzdem Snowflake?</summary><p>Wenn eine Unterebene sehr gross ist oder eigene Attribute hat, die mehrere Dimensionen teilen. Oder wenn ein Tool ein normalisiertes Modell erwartet.</p></details>
+<details><summary>Ist die Faktentabelle im Snowflake anders?</summary><p>Nein. Sie bleibt gleich. Nur die Dimensionen sind aufgeteilt.</p></details>
+<details><summary>Wie führt eine Engine eine Star-Abfrage aus?</summary><p>Sie filtert die kleinen Dimensionen, baut Hash-Tabellen und scannt die Fakten einmal mit Hash Joins. Danach gruppiert sie nach Dimensions-Attributen.</p></details>
+<details><summary>Was ist eine Role-Playing Dimension?</summary><p>Eine Dimension in mehreren Rollen, z. B. <code>dim_date</code> als Handelsdatum und Lieferdatum. Umgesetzt mit Aliasen oder Views.</p></details>
+<details><summary>Was ist eine Degenerate Dimension?</summary><p>Ein Schlüssel in der Faktentabelle ohne eigene Dimensionstabelle, z. B. <code>trade_id</code>. Er dient zum Gruppieren oder Zurückverfolgen.</p></details>
+<details><summary>Was ist eine Junk Dimension?</summary><p>Eine Tabelle für kleine Flags und Codes mit wenigen Werten. Sie ersetzt viele Mini-Dimensionen und hält die Faktentabelle schmal.</p></details>
+<details><summary>Was ist eine Outrigger-Dimension?</summary><p>Eine Dimension, die auf eine andere Dimension verweist, z. B. ein Datum im Kunden-Datensatz. Kimball erlaubt das sparsam.</p></details>
+<details><summary>Was ist ein Galaxy-Schema?</summary><p>Mehrere Faktentabellen, die dieselben Conformed Dimensions teilen. Damit lassen sich Prozesse über gemeinsame Attribute vergleichen.</p></details>
+<details><summary>Warum joint man zwei Faktentabellen nicht direkt?</summary><p>Mehrere Zeilen auf beiden Seiten multiplizieren sich, Summen werden zu gross. Richtig ist Drill Across: getrennt aggregieren, dann über Conformed Dimensions kombinieren.</p></details>
+<details><summary>Was ist One Big Table und wann passt sie?</summary><p>Alle Fakten und Attribute in einer breiten Tabelle. Sie passt für einen festen Use Case auf einem Column Store, schlecht für sich ändernde Attribute.</p></details>
+<details><summary>Spielt Speicher bei Star vs Snowflake eine Rolle?</summary><p>Kaum. Dimensionen sind klein und Column Stores komprimieren wiederholte Werte. Lesbarkeit und Joins sind wichtiger.</p></details>
+<details><summary>Wie verhindern Sie, dass Fakten beim Join verloren gehen?</summary><p>Jede Dimension bekommt eine „Unknown“-Zeile. Fakten ohne passenden Key zeigen darauf, nie auf NULL.</p></details>
+<details><summary>Wie verhalten sich Star-Joins in Spark?</summary><p>Kleine Dimensionen werden per Broadcast Join an alle Executors verteilt, die Fakten werden nicht geshuffelt. Grosse Dimensionen erzwingen einen Shuffle.</p></details>
+<details><summary>Szenario: Nach einem Load sind alle Umsätze im Dashboard doppelt so hoch. Was prüfen Sie?</summary><p>Doppelte Zeilen pro Key in einer Dimension, z. B. zwei aktive SCD2-Versionen. Summe der Fakten allein gegen Summe nach Joins vergleichen, dann Unique-Constraint einführen.</p></details>
+<details><summary>Szenario: Fachnutzer sagen, das Modell mit 25 Tabellen ist unbenutzbar. Was tun Sie?</summary><p>Ich biete flache Dimensionen oder Views als Star an. Das normalisierte Modell bleibt intern für das Laden.</p></details>
+<details><summary>Szenario: Die Summe pro Produkt stimmt, aber die Gesamtsumme ist kleiner als in der Quelle. Warum?</summary><p>Fakten mit unbekanntem Produkt-Key fallen durch den Inner Join. Fix: Unknown-Zeile in der Dimension und Ladeprüfung auf Waisen.</p></details>
+
+</body>
+</html>

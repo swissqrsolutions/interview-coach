@@ -1,0 +1,239 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Narrow vs Wide Transformations</title>
+<style>
+  body { font: 17px/1.55 -apple-system, system-ui, sans-serif; max-width: 760px; margin: 0 auto; padding: 16px; color: #1d1d1f; }
+  h1 { font-size: 28px; margin: 8px 0 4px; }
+  h2 { font-size: 21px; margin: 32px 0 8px; padding-top: 12px; border-top: 2px solid #e5e5ea; }
+  .kern { background: #eef6ff; border-left: 4px solid #0a66c2; padding: 10px 14px; border-radius: 6px; }
+  .senior { background: #f0faf0; border-left: 4px solid #2e7d32; padding: 10px 14px; border-radius: 6px; }
+  .trap { background: #fff4f2; border-left: 4px solid #c62828; padding: 10px 14px; border-radius: 6px; }
+  code { background: #f2f2f7; padding: 1px 5px; border-radius: 4px; font-size: 15px; }
+  pre { background: #1e1e1e; color: #e6e6e6; padding: 12px; border-radius: 8px; overflow-x: auto; font-size: 13.5px; line-height: 1.45; }
+  svg { width: 100%; height: auto; display: block; margin: 10px 0; }
+  ol li, ul li { margin: 4px 0; }
+  details { border: 1px solid #e5e5ea; border-radius: 8px; padding: 8px 12px; margin: 6px 0; }
+  summary { font-weight: 600; cursor: pointer; }
+  details p { margin: 6px 0 2px; }
+  .small { color: #6e6e73; font-size: 14px; }
+</style>
+</head>
+<body>
+
+<h1>Narrow vs Wide Transformations</h1>
+<p class="small">Spark · Tier 1 · Quellen: Apache Spark Docs 3.5/4.x – RDD Programming Guide (Shuffle operations), SQL Performance Tuning (Join Strategy Hints, AQE), PySpark API Reference, Spark Web UI Guide</p>
+
+<div class="kern">
+<b>Kern:</b> Eine <b>Narrow Transformation</b> braucht für jede Ausgabe-Partition nur <b>eine</b> Eingabe-Partition. Eine <b>Wide Transformation</b> braucht Daten aus <b>vielen</b> Eingabe-Partitionen. Darum braucht sie einen <b>Shuffle</b>, und jeder Shuffle beginnt eine neue Stage.
+</div>
+
+<h2>1. Wo liegt der Unterschied?</h2>
+<svg viewBox="0 0 720 300" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="a" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker><marker id="r" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#c62828"/></marker></defs>
+  <text x="170" y="22" text-anchor="middle" font-weight="700">Narrow: filter, select</text>
+  <rect x="40" y="40" width="90" height="36" rx="6" fill="#dbe9fb" stroke="#0a66c2"/><text x="85" y="63" text-anchor="middle" font-size="12">P0</text>
+  <rect x="40" y="120" width="90" height="36" rx="6" fill="#dbe9fb" stroke="#0a66c2"/><text x="85" y="143" text-anchor="middle" font-size="12">P1</text>
+  <rect x="40" y="200" width="90" height="36" rx="6" fill="#dbe9fb" stroke="#0a66c2"/><text x="85" y="223" text-anchor="middle" font-size="12">P2</text>
+  <rect x="210" y="40" width="90" height="36" rx="6" fill="#e8f5e9" stroke="#2e7d32"/><text x="255" y="63" text-anchor="middle" font-size="12">P0'</text>
+  <rect x="210" y="120" width="90" height="36" rx="6" fill="#e8f5e9" stroke="#2e7d32"/><text x="255" y="143" text-anchor="middle" font-size="12">P1'</text>
+  <rect x="210" y="200" width="90" height="36" rx="6" fill="#e8f5e9" stroke="#2e7d32"/><text x="255" y="223" text-anchor="middle" font-size="12">P2'</text>
+  <line x1="130" y1="58" x2="208" y2="58" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <line x1="130" y1="138" x2="208" y2="138" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <line x1="130" y1="218" x2="208" y2="218" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <text x="170" y="270" text-anchor="middle" font-size="12">1 : 1 · gleicher Task · kein Netzwerk</text>
+  <line x1="360" y1="10" x2="360" y2="290" stroke="#ccc" stroke-width="2"/>
+  <text x="550" y="22" text-anchor="middle" font-weight="700">Wide: groupBy, join</text>
+  <rect x="420" y="40" width="90" height="36" rx="6" fill="#dbe9fb" stroke="#0a66c2"/><text x="465" y="63" text-anchor="middle" font-size="12">P0</text>
+  <rect x="420" y="120" width="90" height="36" rx="6" fill="#dbe9fb" stroke="#0a66c2"/><text x="465" y="143" text-anchor="middle" font-size="12">P1</text>
+  <rect x="420" y="200" width="90" height="36" rx="6" fill="#dbe9fb" stroke="#0a66c2"/><text x="465" y="223" text-anchor="middle" font-size="12">P2</text>
+  <rect x="610" y="70" width="90" height="36" rx="6" fill="#e8f5e9" stroke="#2e7d32"/><text x="655" y="93" text-anchor="middle" font-size="12">Key A–M</text>
+  <rect x="610" y="170" width="90" height="36" rx="6" fill="#e8f5e9" stroke="#2e7d32"/><text x="655" y="193" text-anchor="middle" font-size="12">Key N–Z</text>
+  <line x1="510" y1="58" x2="608" y2="86" stroke="#c62828" stroke-width="2" marker-end="url(#r)"/>
+  <line x1="510" y1="62" x2="608" y2="182" stroke="#c62828" stroke-width="2" marker-end="url(#r)"/>
+  <line x1="510" y1="136" x2="608" y2="90" stroke="#c62828" stroke-width="2" marker-end="url(#r)"/>
+  <line x1="510" y1="140" x2="608" y2="186" stroke="#c62828" stroke-width="2" marker-end="url(#r)"/>
+  <line x1="510" y1="216" x2="608" y2="94" stroke="#c62828" stroke-width="2" marker-end="url(#r)"/>
+  <line x1="510" y1="220" x2="608" y2="190" stroke="#c62828" stroke-width="2" marker-end="url(#r)"/>
+  <text x="550" y="270" text-anchor="middle" font-size="12" fill="#c62828">viele : viele · Shuffle · neue Stage</text>
+</svg>
+<ol>
+  <li><b>Narrow (schmal):</b> Jede Ausgabe-Partition hängt an genau einer Eltern-Partition. Beispiel: <code>filter</code> behält oder verwirft Zeilen, ohne andere Partitionen zu sehen.</li>
+  <li><b>Wide (breit):</b> Eine Ausgabe-Partition braucht Zeilen aus allen Eltern-Partitionen. Beispiel: <code>groupBy("market")</code> braucht alle Zeilen von Markt A an einem Ort.</li>
+  <li><b>Shuffle:</b> Spark verteilt die Zeilen neu nach Schlüssel, über Disk und Netzwerk. Im Plan heisst das <code>Exchange</code>.</li>
+  <li><b>Stage-Grenze:</b> Vor dem Shuffle müssen alle Map-Tasks fertig sein. Darum beginnt nach jedem Shuffle eine neue Stage.</li>
+</ol>
+
+<h2>2. Die Reise einer Zeile durch zwei Stages (die Geschichte zum Merken)</h2>
+<svg viewBox="0 0 720 280" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="b" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker><marker id="r2" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#c62828"/></marker></defs>
+  <rect x="10" y="20" width="400" height="110" rx="12" fill="#f7f7fa" stroke="#0a66c2"/><text x="210" y="40" text-anchor="middle" font-weight="700" fill="#0a66c2">Stage 1 – ein Task pro Partition, gepipelined</text>
+  <rect x="24" y="56" width="80" height="54" rx="8" fill="#fff" stroke="#555"/><text x="64" y="80" text-anchor="middle" font-size="12">1. Scan</text><text x="64" y="96" text-anchor="middle" font-size="11">Parquet</text>
+  <line x1="104" y1="83" x2="122" y2="83" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="124" y="56" width="80" height="54" rx="8" fill="#fff" stroke="#555"/><text x="164" y="80" text-anchor="middle" font-size="12">2. filter</text><text x="164" y="96" text-anchor="middle" font-size="11">narrow</text>
+  <line x1="204" y1="83" x2="222" y2="83" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="224" y="56" width="80" height="54" rx="8" fill="#fff" stroke="#555"/><text x="264" y="80" text-anchor="middle" font-size="12">3. withColumn</text><text x="264" y="96" text-anchor="middle" font-size="11">narrow</text>
+  <line x1="304" y1="83" x2="322" y2="83" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="324" y="56" width="76" height="54" rx="8" fill="#dbe9fb" stroke="#0a66c2"/><text x="362" y="80" text-anchor="middle" font-size="12">4. partial</text><text x="362" y="96" text-anchor="middle" font-size="11">agg</text>
+  <line x1="410" y1="83" x2="478" y2="83" stroke="#c62828" stroke-width="3" marker-end="url(#r2)"/><text x="444" y="73" text-anchor="middle" font-size="12" fill="#c62828" font-weight="700">5. Shuffle</text>
+  <rect x="480" y="20" width="230" height="110" rx="12" fill="#e8f5e9" stroke="#2e7d32"/><text x="595" y="40" text-anchor="middle" font-weight="700" fill="#2e7d32">Stage 2</text>
+  <rect x="494" y="56" width="96" height="54" rx="8" fill="#fff" stroke="#555"/><text x="542" y="80" text-anchor="middle" font-size="12">6. final agg</text><text x="542" y="96" text-anchor="middle" font-size="11">pro Key</text>
+  <line x1="590" y1="83" x2="606" y2="83" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="608" y="56" width="90" height="54" rx="8" fill="#fff" stroke="#555"/><text x="653" y="80" text-anchor="middle" font-size="12">7. write</text><text x="653" y="96" text-anchor="middle" font-size="11">narrow</text>
+  <rect x="120" y="170" width="480" height="70" rx="10" fill="#fff" stroke="#999" stroke-dasharray="5 4"/><text x="360" y="196" text-anchor="middle" font-weight="700">Whole-Stage Codegen</text><text x="360" y="218" text-anchor="middle" font-size="12">Schritte 1–4 werden zu einer Java-Schleife: eine Zeile, alle Schritte, nächste Zeile</text>
+  <line x1="210" y1="130" x2="260" y2="168" stroke="#999" stroke-width="1.5" marker-end="url(#b)"/>
+</svg>
+<ol>
+  <li><b>Scan.</b> Ein Task liest seine Parquet-Partition, z. B. 128 MB Handelsdaten.</li>
+  <li><b>filter.</b> Die Zeile wird sofort geprüft. Fällt sie raus, ist sie weg. Kein Zwischenspeicher.</li>
+  <li><b>withColumn.</b> Dieselbe Zeile bekommt eine neue Spalte, im selben Task, im selben Speicher.</li>
+  <li><b>Partielle Aggregation.</b> Der Task summiert schon lokal pro Schlüssel. Aus 1 Mio. Zeilen werden z. B. 50 Teilsummen.</li>
+  <li><b>Shuffle.</b> Die Teilsummen gehen nach <code>hash(market) % 200</code> in Shuffle-Dateien. Stage 1 endet hier.</li>
+  <li><b>Finale Aggregation.</b> Jeder Task der Stage 2 holt alle Teilsummen „seiner“ Schlüssel von allen Executors.</li>
+  <li><b>write.</b> Schreiben ist wieder narrow. Es läuft im selben Task wie die finale Aggregation.</li>
+</ol>
+<p>Dieses Hintereinander von narrow Schritten ohne Zwischenspeicher heisst <b>Pipelining</b>.</p>
+
+<h2>3. Beispiel: narrow, wide und Broadcast im Plan erkennen</h2>
+<pre>from pyspark.sql import functions as F
+
+trades  = spark.read.parquet("/data/trades")
+markets = spark.read.parquet("/data/markets")           # klein: 300 Zeilen
+
+# A) nur narrow
+a = (trades.filter(F.col("price") &gt; 0)
+           .withColumn("notional", F.col("price") * F.col("volume"))
+           .select("market", "notional"))
+a.explain()
+
+# B) wide: groupBy
+b = a.groupBy("market").agg(F.sum("notional").alias("notional"))
+b.explain()
+
+# C) Join mit kleiner Tabelle: Broadcast statt Shuffle der grossen Seite
+c = a.join(F.broadcast(markets), "market")
+c.explain()</pre>
+<pre>A) == Physical Plan ==
+*(1) Project [market#1, (price#2 * cast(volume#3L as double)) AS notional#10]
++- *(1) Filter (isnotnull(price#2) AND (price#2 &gt; 0.0))
+   +- *(1) ColumnarToRow
+      +- FileScan parquet [market#1,price#2,volume#3L] ...
+
+B) == Physical Plan ==
+AdaptiveSparkPlan isFinalPlan=false
++- HashAggregate(keys=[market#1], functions=[sum(notional#10)])
+   +- Exchange hashpartitioning(market#1, 200), ENSURE_REQUIREMENTS, [plan_id=41]
+      +- HashAggregate(keys=[market#1], functions=[partial_sum(notional#10)])
+         +- Project [...] +- Filter [...] +- FileScan parquet ...
+
+C) == Physical Plan ==
+AdaptiveSparkPlan isFinalPlan=false
++- Project [market#1, notional#10, name#21]
+   +- BroadcastHashJoin [market#1], [market#20], Inner, BuildRight, false
+      :- Project [...] +- Filter [...] +- FileScan parquet trades ...
+      +- BroadcastExchange HashedRelationBroadcastMode(List(input[0, string, false])), [plan_id=55]
+         +- Filter isnotnull(market#20)
+            +- FileScan parquet markets ...</pre>
+<p class="small">Erwartetes Ergebnis (laut Doku, nicht ausgeführt). IDs variieren, Zeilen gekürzt. Ohne Shuffle verzichtet Spark bei A auf den AQE-Wrapper.</p>
+<ol>
+  <li><b>A</b> hat kein <code>Exchange</code>. Alles läuft in einer Stage. <code>*(1)</code> heisst: alle Operatoren sind in <b>Codegen-Stage 1</b> verschmolzen.</li>
+  <li><b>B</b> hat genau ein <code>Exchange hashpartitioning(market, 200)</code>. Das ist der Shuffle und die Stage-Grenze.</li>
+  <li><b>B</b> zeigt <code>partial_sum</code> vor dem Exchange. Spark verkleinert die Daten vor dem Shuffle (<b>Map-side Combine</b>).</li>
+  <li><b>C</b> hat ein <code>BroadcastExchange</code>, aber kein Exchange auf der grossen Seite. Die kleine Tabelle geht ganz an jeden Executor. Die grosse Seite bleibt narrow.</li>
+</ol>
+
+<h2>4. Details, die Interviewer fragen</h2>
+<ol>
+  <li><b>Narrow-Beispiele:</b> <code>select</code>, <code>filter</code>/<code>where</code>, <code>withColumn</code>, <code>drop</code>, <code>union</code>, <code>map</code>/<code>flatMap</code>, <code>mapPartitions</code>, <code>coalesce(n)</code> (nur verkleinern), <code>sample</code>.</li>
+  <li><b>Wide-Beispiele:</b> <code>groupBy().agg()</code>, <code>distinct</code>, <code>dropDuplicates</code>, <code>join</code> (ausser Broadcast), <code>orderBy</code>/<code>sort</code>, <code>repartition</code>, Window mit <code>partitionBy</code>, <code>reduceByKey</code>, <code>groupByKey</code>.</li>
+  <li><b>Abhängigkeits-Typen:</b> Im RDD-Modell heissen sie <b>NarrowDependency</b> (OneToOne, Range) und <b>ShuffleDependency</b>. Der DAGScheduler schneidet nur an ShuffleDependencies.</li>
+  <li><b>union ist narrow:</b> Es hängt die Partitionen nur aneinander. Kein Datentausch. Das Ergebnis hat die Summe der Partitionen.</li>
+  <li><b>coalesce vs repartition:</b> <code>coalesce(n)</code> legt Partitionen ohne Shuffle zusammen (narrow). <code>repartition(n)</code> verteilt alles neu (wide). coalesce kann aber die Parallelität der ganzen Stage senken.</li>
+  <li><b>orderBy:</b> braucht <b>Range Partitioning</b>. Spark zieht dafür zuerst eine Stichprobe (eigener Job), dann shuffelt es. Global sortieren ist teuer.</li>
+  <li><b>Broadcast Join:</b> Die kleine Seite wird an alle Executors kopiert. Die grosse Seite wird nicht geshuffelt. Automatisch unter <code>spark.sql.autoBroadcastJoinThreshold</code> (Standard 10 MB).</li>
+  <li><b>Join ohne Shuffle bei gleicher Partitionierung:</b> Sind beide Seiten schon gleich nach dem Join-Schlüssel verteilt (Bucketing, Iceberg Storage-Partitioned Join), entfällt der Exchange.</li>
+  <li><b>Map-side Combine:</b> Aggregationen rechnen vor dem Shuffle Teilergebnisse. Darum ist <code>reduceByKey</code> besser als <code>groupByKey</code> und <code>groupBy().agg()</code> billig für Summen.</li>
+  <li><b>Pipelining:</b> Narrow Schritte laufen pro Zeile hintereinander im selben Task. <b>Whole-Stage Codegen</b> macht daraus eine Java-Schleife. Keine Zwischenobjekte.</li>
+  <li><b>Fehlertoleranz:</b> Geht eine Partition nach einem narrow Schritt verloren, rechnet Spark eine Eltern-Partition neu. Nach einem wide Schritt braucht es Daten aus vielen Eltern. Darum hält Spark Shuffle-Dateien als Zwischenstand.</li>
+  <li><b>Window-Funktionen:</b> <code>Window.partitionBy("market")</code> shuffelt nach market und sortiert. Ohne <code>partitionBy</code> landen alle Daten in <b>einer</b> Partition. Spark warnt dann im Log.</li>
+</ol>
+
+<h2>5. Vergleich</h2>
+<ul>
+  <li><b>Narrow:</b> eine Eltern-Partition, kein Netzwerk, gepipelined, gleiche Stage, billig.</li>
+  <li><b>Wide:</b> viele Eltern-Partitionen, Shuffle über Disk und Netzwerk, neue Stage, teuer.</li>
+  <li><b>Broadcast Join:</b> technisch ein Datentransfer, aber kein Shuffle der grossen Seite. Gut, solange die kleine Seite in den Speicher passt.</li>
+  <li><b>reduceByKey vs groupByKey:</b> beide wide. reduceByKey aggregiert vorher lokal, groupByKey schickt jede Zeile. groupByKey kann OOM auslösen.</li>
+  <li><b>coalesce vs repartition:</b> coalesce narrow, kann ungleich sein. repartition wide, gleichmässig, kostet einen Shuffle.</li>
+</ul>
+
+<h2>6. In der Produktion</h2>
+<ol>
+  <li><b>Unnötige Shuffles:</b> <code>repartition</code> vor jedem Schritt „zur Sicherheit“. Lösung: entfernen und mit <code>explain()</code> die Exchanges zählen.</li>
+  <li><b>coalesce(1) vor write:</b> Die ganze letzte Stage läuft auf <b>einem</b> Task, inklusive Joins davor. Lösung: <code>repartition(1)</code>, wenn wirklich eine Datei nötig ist, oder mehrere Dateien akzeptieren.</li>
+  <li><b>Window ohne partitionBy:</b> Alle Daten in einer Partition, OOM oder Stunden Laufzeit. Lösung: sinnvolle <code>partitionBy</code>-Spalte.</li>
+  <li><b>groupByKey auf RDDs:</b> Ein Schlüssel mit Millionen Werten sprengt den Speicher. Lösung: <code>reduceByKey</code>/<code>aggregateByKey</code> oder DataFrame-Aggregation.</li>
+  <li><b>Broadcast zu gross:</b> Die „kleine“ Tabelle wächst. Driver oder Executor laufen in OOM oder Timeout. Lösung: Schwellwert prüfen, Broadcast-Hint nur bei sicher kleinen Tabellen.</li>
+  <li><b>distinct auf breiten Zeilen:</b> shuffelt alle Spalten. Lösung: <code>dropDuplicates(["id"])</code> auf den Schlüssel, oder früher filtern.</li>
+</ol>
+
+<h2>7. Diagnose: Werkzeuge und Befehle</h2>
+<ul>
+  <li><code>df.explain()</code>: <code>Exchange</code> = Shuffle, <code>BroadcastExchange</code> = Broadcast, <code>*(n)</code> = Codegen-Stage.</li>
+  <li><b>Spark UI, Tab Stages:</b> <b>Shuffle Write</b> und <b>Shuffle Read</b> pro Stage. Hohe Werte zeigen teure Wide Transformations.</li>
+  <li><b>DAG Visualization</b> im Job: Stages als Kästen, Shuffles als Kanten dazwischen.</li>
+  <li><b>Tab SQL / DataFrame:</b> Exchange-Knoten mit „data size“ und „records“.</li>
+  <li><code>rdd.toDebugString()</code>: Einrückung mit <code>+-</code> markiert eine Shuffle-Grenze.</li>
+</ul>
+
+<h2>8. Senior-Punkte</h2>
+<div class="senior">
+<ol>
+  <li><b>Die Kosten eines Jobs sind im Wesentlichen seine Shuffles.</b> Narrow Schritte sind fast gratis, solange keine Python-UDF dabei ist.</li>
+  <li><b>Früh filtern und Spalten weglassen,</b> bevor der erste Wide-Schritt kommt. Catalyst macht viel, aber nicht über UDFs oder Caches hinweg.</li>
+  <li><b>Daten nach dem Zugriffsmuster ablegen.</b> Partitionierung oder Bucketing nach dem Join-Schlüssel kann Shuffles ganz vermeiden.</li>
+  <li><b>coalesce ist nicht immer billiger.</b> Es spart einen Shuffle, kann aber die Parallelität der ganzen Stage zerstören.</li>
+  <li><b>Broadcast ist eine Wette auf Grösse.</b> Was heute 5 MB hat, hat in zwei Jahren vielleicht 5 GB. AQE kann zur Laufzeit umschalten.</li>
+  <li><b>Globale Sortierung nur, wenn das Ergebnis sie braucht.</b> Oft reicht <code>sortWithinPartitions</code>.</li>
+</ol>
+</div>
+
+<h2>9. Aus dem Projekt</h2>
+<p>„Bei ElCom MATCH ist die Iceberg-Tabelle nach <code>days(received_date)</code> und <code>schema_type</code> partitioniert. So liest der Tages-Job dank Partition Pruning nur einen Tag, bevor der erste Shuffle kommt.“ <span class="small">(Prüfen und durch dein echtes Beispiel ersetzen.)</span></p>
+
+<h2>10. Fallen</h2>
+<div class="trap">
+<ul>
+  <li>„Jeder Join shuffelt.“ → <b>Falsch.</b> Ein Broadcast Join shuffelt die grosse Seite nicht. Gleich partitionierte Seiten brauchen auch keinen Shuffle.</li>
+  <li>„coalesce ist immer besser als repartition.“ → <b>Falsch.</b> coalesce kann die Parallelität der ganzen Stage auf wenige Tasks senken.</li>
+  <li>„union ist wide.“ → <b>Falsch.</b> union hängt nur Partitionen aneinander.</li>
+  <li>„Mehr Transformationen = mehr Stages.“ → <b>Falsch.</b> Nur Wide Transformations erzeugen neue Stages.</li>
+  <li>„groupBy schickt alle Zeilen durchs Netz.“ → <b>Nicht ganz.</b> Bei Aggregationen wie sum geht nur die Teilsumme pro Schlüssel und Partition.</li>
+  <li>„filter nach einem join ist egal.“ → <b>Nur wenn Catalyst ihn nach vorn schieben kann.</b> Nach UDFs oder nicht-deterministischen Ausdrücken geht das nicht.</li>
+</ul>
+</div>
+
+<h2>11. Fragen</h2>
+<details><summary>Was ist eine Narrow Transformation?</summary><p>Jede Ausgabe-Partition hängt an genau einer Eingabe-Partition. Kein Shuffle, gleiche Stage. Beispiele: filter, select, withColumn.</p></details>
+<details><summary>Was ist eine Wide Transformation?</summary><p>Eine Ausgabe-Partition braucht Daten aus vielen Eingabe-Partitionen. Das braucht einen Shuffle. Beispiele: groupBy, join, distinct, orderBy.</p></details>
+<details><summary>Warum ist eine Wide Transformation eine Stage-Grenze?</summary><p>Die nächste Stage braucht die Ausgaben aller Map-Tasks. Sie kann erst starten, wenn alle Shuffle-Dateien geschrieben sind.</p></details>
+<details><summary>Was ist Pipelining?</summary><p>Narrow Schritte laufen pro Zeile hintereinander im selben Task, ohne Zwischenspeicher. Whole-Stage Codegen macht daraus eine Schleife.</p></details>
+<details><summary>Ist union narrow oder wide?</summary><p>Narrow. Es hängt die Partitionen beider Seiten nur aneinander.</p></details>
+<details><summary>Ist coalesce narrow oder wide?</summary><p>coalesce(n) zum Verkleinern ist narrow. Mit shuffle=true oder repartition wird es wide.</p></details>
+<details><summary>Ist ein Join immer wide?</summary><p>Nein. Ein Broadcast Join shuffelt die grosse Seite nicht. Sind beide Seiten gleich nach dem Schlüssel partitioniert, entfällt der Shuffle auch.</p></details>
+<details><summary>Warum ist reduceByKey besser als groupByKey?</summary><p>reduceByKey aggregiert vor dem Shuffle lokal. groupByKey schickt jede Zeile über das Netz und hält alle Werte eines Schlüssels im Speicher.</p></details>
+<details><summary>Was bedeutet *(1) im Plan?</summary><p>Die Operatoren mit derselben Nummer sind in einer Whole-Stage-Codegen-Einheit verschmolzen.</p></details>
+<details><summary>Wie erkennt man einen Shuffle im Plan?</summary><p>Am Operator Exchange, z. B. Exchange hashpartitioning oder rangepartitioning. BroadcastExchange ist ein Broadcast, kein Shuffle.</p></details>
+<details><summary>Warum ist orderBy teuer?</summary><p>Es braucht Range Partitioning über alle Daten. Spark zieht dafür eine Stichprobe und shuffelt danach alles.</p></details>
+<details><summary>Was passiert bei einer Window-Funktion ohne partitionBy?</summary><p>Alle Zeilen landen in einer Partition und einem Task. Das ist langsam und kann OOM auslösen.</p></details>
+<details><summary>Wie hängen Narrow/Wide mit Fehlertoleranz zusammen?</summary><p>Nach narrow Schritten rechnet Spark nur eine Eltern-Partition neu. Nach wide Schritten bräuchte es alle. Darum bleiben Shuffle-Dateien als Zwischenstand erhalten.</p></details>
+<details><summary>Ist mapPartitions narrow?</summary><p>Ja. Die Funktion bekommt eine ganze Partition und gibt eine Partition zurück, ohne Datentausch.</p></details>
+<details><summary>Wie vermeidet man einen Shuffle bei wiederholten Joins?</summary><p>Mit Bucketing oder Iceberg-Partitionierung nach dem Join-Schlüssel. Dann sind beide Seiten schon gleich verteilt.</p></details>
+<details><summary>Szenario: Ein Job schreibt mit coalesce(1) eine Datei und braucht Stunden. Warum?</summary><p>coalesce ist narrow und zieht die ganze letzte Stage auf einen Task, inklusive Arbeit davor. Lösung: repartition(1) direkt vor dem Write oder mehrere Dateien zulassen.</p></details>
+<details><summary>Szenario: Der Plan zeigt fünf Exchanges, fachlich braucht es zwei. Wie gehen Sie vor?</summary><p>Jedes Exchange einer Code-Stelle zuordnen. Unnötige repartition entfernen, Aggregationen zusammenlegen, kleine Join-Seiten broadcasten. Danach erneut explain() prüfen.</p></details>
+<details><summary>Szenario: Ein Join mit einer Stammdaten-Tabelle wird plötzlich langsam, die Tabelle ist gewachsen. Was ist passiert?</summary><p>Die Tabelle liegt wohl über dem Broadcast-Schwellwert. Spark wechselt zum Sort-Merge Join mit Shuffle. Prüfen mit explain(), dann Hint, Schwellwert oder AQE nutzen.</p></details>
+
+</body>
+</html>

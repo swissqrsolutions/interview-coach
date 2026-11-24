@@ -1,0 +1,213 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Late Data, Watermarks, Backfills</title>
+<style>
+  body { font: 17px/1.55 -apple-system, system-ui, sans-serif; max-width: 760px; margin: 0 auto; padding: 16px; color: #1d1d1f; }
+  h1 { font-size: 28px; margin: 8px 0 4px; }
+  h2 { font-size: 21px; margin: 32px 0 8px; padding-top: 12px; border-top: 2px solid #e5e5ea; }
+  .kern { background: #eef6ff; border-left: 4px solid #0a66c2; padding: 10px 14px; border-radius: 6px; }
+  .senior { background: #f0faf0; border-left: 4px solid #2e7d32; padding: 10px 14px; border-radius: 6px; }
+  .trap { background: #fff4f2; border-left: 4px solid #c62828; padding: 10px 14px; border-radius: 6px; }
+  code { background: #f2f2f7; padding: 1px 5px; border-radius: 4px; font-size: 15px; }
+  pre { background: #1e1e1e; color: #e6e6e6; padding: 12px; border-radius: 8px; overflow-x: auto; font-size: 13.5px; line-height: 1.45; }
+  svg { width: 100%; height: auto; display: block; margin: 10px 0; }
+  ol li, ul li { margin: 4px 0; }
+  details { border: 1px solid #e5e5ea; border-radius: 8px; padding: 8px 12px; margin: 6px 0; }
+  summary { font-weight: 600; cursor: pointer; }
+  details p { margin: 6px 0 2px; }
+  .small { color: #6e6e73; font-size: 14px; }
+</style>
+</head>
+<body>
+
+<h1>Late Data, Watermarks, Backfills</h1>
+<p class="small">Lakehouse · Tier 1 · Quellen: Spark Structured Streaming Programming Guide (Window Operations on Event Time, Handling Late Data and Watermarking, Stream-stream Joins), Apache Iceberg Docs (Spark Writes, Spark Procedures)</p>
+
+<div class="kern">
+<b>Kern:</b> <b>Late Data</b> sind Ereignisse, die nach ihrer Zeit im System ankommen. Eine Pipeline muss entscheiden: wie lange warten, was mit zu späten Daten passiert, und wie man alte Ergebnisse korrigiert. Die Werkzeuge dafür sind <b>Event Time</b>, <b>Watermarks</b> und <b>Reprocessing-Fenster</b> (Backfills).
+</div>
+
+<h2>1. Wo sitzt das Problem?</h2>
+<svg viewBox="0 0 720 300" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="a" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="10" y="30" width="130" height="60" rx="8" fill="#fff" stroke="#555"/><text x="75" y="56" text-anchor="middle" font-weight="700">Quelle</text><text x="75" y="75" text-anchor="middle" font-size="12">Event Time 12:04</text>
+  <line x1="140" y1="60" x2="198" y2="60" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="200" y="30" width="150" height="60" rx="8" fill="#fff4f2" stroke="#c62828"/><text x="275" y="56" text-anchor="middle" font-weight="700">Verzögerung</text><text x="275" y="75" text-anchor="middle" font-size="12">Netz, Retry, Offline</text>
+  <line x1="350" y1="60" x2="408" y2="60" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="410" y="30" width="140" height="60" rx="8" fill="#fff" stroke="#555"/><text x="480" y="56" text-anchor="middle" font-weight="700">Ingestion</text><text x="480" y="75" text-anchor="middle" font-size="12">Proc. Time 12:31</text>
+  <line x1="550" y1="60" x2="598" y2="60" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="600" y="30" width="110" height="60" rx="8" fill="#0a66c2"/><text x="655" y="56" text-anchor="middle" fill="#fff" font-weight="700">Fenster</text><text x="655" y="75" text-anchor="middle" fill="#fff" font-size="12">12:00–12:10</text>
+  <rect x="180" y="150" width="380" height="120" rx="10" fill="#f7f7fa" stroke="#999" stroke-dasharray="5 4"/>
+  <text x="370" y="174" text-anchor="middle" font-weight="700">Drei Entscheidungen</text>
+  <text x="370" y="200" text-anchor="middle">1. Warten: wie lange? (Watermark)</text>
+  <text x="370" y="224" text-anchor="middle">2. Zu spät: verwerfen, Seitenkanal, Korrektur?</text>
+  <text x="370" y="248" text-anchor="middle">3. Korrigieren: welche Tage neu rechnen? (Backfill)</text>
+  <line x1="655" y1="90" x2="560" y2="160" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+</svg>
+<ol>
+  <li><b>Event Time</b> ist die Zeit, zu der das Ereignis passiert ist. Sie steht in den Daten, z. B. <code>trade_time</code>.</li>
+  <li><b>Processing Time</b> ist die Zeit, zu der die Pipeline das Ereignis sieht. Sie kommt von der Uhr des Systems.</li>
+  <li>Zwischen beiden liegt eine <b>Verzögerung</b>: Netzwerk, Retries, Geräte offline, Dateien kommen gesammelt.</li>
+  <li>Ein <b>Fenster</b> (Window) gruppiert nach Event Time, z. B. „alle Trades von 12:00 bis 12:10“.</li>
+  <li>Kommt ein Ereignis nach Abschluss seines Fensters an, ist es <b>Late Data</b>. Die Pipeline braucht dafür eine Regel.</li>
+</ol>
+
+<h2>2. Die Reise eines späten Ereignisses</h2>
+<svg viewBox="0 0 720 320" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="b" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker><marker id="r" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#c62828"/></marker></defs>
+  <rect x="10" y="20" width="150" height="70" rx="10" fill="#eee" stroke="#777"/><text x="85" y="46" text-anchor="middle" font-weight="700">1. Ankunft</text><text x="85" y="66" text-anchor="middle" font-size="12">Event Time lesen</text>
+  <line x1="160" y1="55" x2="208" y2="55" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="210" y="20" width="180" height="70" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="300" y="46" text-anchor="middle" font-weight="700">2. Watermark prüfen</text><text x="300" y="66" text-anchor="middle" font-size="12">max(Event Time) − Delay</text>
+  <line x1="390" y1="55" x2="438" y2="55" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="440" y="20" width="270" height="70" rx="10" fill="#e8f5e9" stroke="#2e7d32"/><text x="575" y="46" text-anchor="middle" font-weight="700">3a. Fenster noch offen</text><text x="575" y="66" text-anchor="middle" font-size="12">State aktualisieren</text>
+  <line x1="575" y1="90" x2="575" y2="138" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="440" y="140" width="270" height="70" rx="10" fill="#0a66c2"/><text x="575" y="166" text-anchor="middle" fill="#fff" font-weight="700">4. Watermark überholt Fenster</text><text x="575" y="186" text-anchor="middle" fill="#fff" font-size="12">Ergebnis final, State löschen</text>
+  <line x1="300" y1="90" x2="300" y2="138" stroke="#c62828" stroke-width="2" marker-end="url(#r)"/>
+  <rect x="190" y="140" width="220" height="70" rx="10" fill="#fff4f2" stroke="#c62828"/><text x="300" y="166" text-anchor="middle" font-weight="700">3b. Zu spät</text><text x="300" y="186" text-anchor="middle" font-size="12">Spark: wird ignoriert</text>
+  <line x1="300" y1="210" x2="300" y2="248" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="120" y="250" width="360" height="56" rx="10" fill="#fff" stroke="#555"/><text x="300" y="274" text-anchor="middle" font-weight="700">5. Batch-Korrektur (Backfill)</text><text x="300" y="293" text-anchor="middle" font-size="12">Rohdaten behalten, betroffene Tage neu rechnen</text>
+</svg>
+<ol>
+  <li><b>Ankunft:</b> Ein Trade mit Event Time 12:04 kommt um 12:31 an. Die Pipeline liest die Event Time aus dem Datensatz, nicht die Uhr.</li>
+  <li><b>Watermark prüfen:</b> Die <b>Watermark</b> ist die Zeitgrenze, bis zu der die Engine Daten noch annimmt. Spark rechnet: grösste gesehene Event Time minus Delay. Beispiel: max 12:21, Delay 10 Minuten, Watermark 12:11.</li>
+  <li><b>Fenster noch offen (3a):</b> Liegt das Fensterende nicht unter der Watermark, zählt das Ereignis noch. Der Zwischenstand (<b>State</b>) wird aktualisiert.</li>
+  <li><b>Zu spät (3b):</b> Liegt das Fensterende unter der Watermark, ist der State schon weg. Spark ignoriert das Ereignis. Es gibt keinen eingebauten Seitenkanal dafür.</li>
+  <li><b>Fenster wird final (4):</b> Überholt die Watermark das Fensterende, löscht Spark den State. Im <b>Append Mode</b> schreibt Spark das Ergebnis genau jetzt, einmal.</li>
+  <li><b>Backfill (5):</b> Wer jedes Ereignis braucht, behält die Rohdaten (Bronze) und rechnet die betroffenen Tage im Batch neu. Das ist ein <b>Reprocessing-Fenster</b>, z. B. „die letzten 7 Tage jede Nacht“.</li>
+</ol>
+
+<h2>3. Beispiel: die Watermark-Regel Schritt für Schritt</h2>
+<p>So sieht es in Spark aus (aus der offiziellen Doku, angepasst):</p>
+<pre>from pyspark.sql.functions import window
+counts = (trades
+  .withWatermark("trade_time", "10 minutes")           # Delay
+  .groupBy(window("trade_time", "10 minutes"), "market")
+  .count())
+counts.writeStream.outputMode("append").format("console").start()</pre>
+<p>Spark läuft hier nicht. Darum zeigt eine kleine Python-Simulation dieselbe Regel: Watermark = max(Event Time) − 10 Minuten, gültig ab dem nächsten Micro-Batch.</p>
+<pre>B1 starts, watermark = none
+   12:02 dog     -> window 12:00-12:10
+   12:03 cat     -> window 12:00-12:10
+B2 starts, watermark = 11:53
+   12:12 dog     -> window 12:10-12:20
+   12:08 owl     -> window 12:00-12:10
+B3 starts, watermark = 12:02
+   12:21 cat     -> window 12:20-12:30
+   12:04 donkey  -> window 12:00-12:10
+B4 starts, watermark = 12:11
+   emit 12:00-12:10 {'dog': 1, 'cat': 1, 'owl': 1, 'donkey': 1}
+   12:09 dog     too late -> dropped</pre>
+<p class="small">Echte Ausgabe, Python 3.12 (eigene Simulation der Spark-Regel, kein Spark). Das Verhalten entspricht dem Beispiel in der Spark-Doku.</p>
+<ol>
+  <li><code>12:08 owl</code> kommt nach <code>12:12 dog</code>. Er ist <b>out of order</b>, aber nicht zu spät. Er zählt noch.</li>
+  <li><code>12:04 donkey</code> ist 17 Minuten verspätet. Die Watermark steht aber erst auf 12:02. Darum zählt er noch.</li>
+  <li>Nach B3 steigt die Watermark auf 12:11 (12:21 − 10). Das Fenster 12:00–12:10 ist damit abgeschlossen. Im Append Mode kommt es jetzt in den Sink.</li>
+  <li><code>12:09 dog</code> gehört in das abgeschlossene Fenster. Er wird verworfen. Die Spark-Doku zeigt denselben Fall mit <code>(12:04, donkey)</code>.</li>
+  <li>Wichtig: Die Watermark hängt an den <b>Daten</b>, nicht an der Uhr. Kommen keine neuen Daten, bewegt sie sich nicht.</li>
+</ol>
+
+<h2>4. Details, die Interviewer fragen</h2>
+<ol>
+  <li><b>Garantie der Watermark:</b> Spark verspricht nur eine Richtung. Daten mit weniger Verspätung als der Delay werden <b>nie</b> verworfen. Daten mit mehr Verspätung <b>können</b> noch gezählt werden, aber ohne Garantie.</li>
+  <li><b>Output Modes:</b> <b>Append</b> schreibt ein Fenster einmal, wenn es final ist. Es kommt also um den Delay verzögert. <b>Update</b> schreibt jede Änderung sofort und löscht alten State per Watermark. <b>Complete</b> behält allen State und löscht nie.</li>
+  <li><b>Regeln für <code>withWatermark</code>:</b> Es muss vor der Aggregation stehen. Es muss dieselbe Zeitspalte wie das Fenster nutzen. Auf einem Batch-DataFrame ist es ein No-op.</li>
+  <li><b>Tumbling vs Sliding Window:</b> Ein <b>Tumbling Window</b> hat feste Blöcke ohne Überlappung (10 Minuten). Ein <b>Sliding Window</b> überlappt, z. B. 10 Minuten alle 5 Minuten. Ein Ereignis zählt dann in zwei Fenstern.</li>
+  <li><b>Mehrere Streams:</b> Jeder Input hat eine eigene Watermark. Spark nimmt standardmässig das <b>Minimum</b> als globale Watermark. Mit <code>spark.sql.streaming.multipleWatermarkPolicy=max</code> geht es schneller, aber Daten vom langsamen Stream fallen weg.</li>
+  <li><b>Stream-Stream Joins:</b> Für Inner Joins sind Watermarks optional, aber ohne sie wächst der State ohne Grenze. Für Outer Joins sind Watermark und Zeitbedingung Pflicht. Spark muss wissen, wann eine Zeile sicher keinen Partner mehr findet.</li>
+  <li><b>State-Grösse:</b> Ein grosser Delay heisst mehr offene Fenster im State. Das kostet Speicher im State Store und Checkpoint-Grösse.</li>
+  <li><b>Late Data im Batch:</b> Im Batch gibt es keine Watermark. Dort heisst Late Data: Eine Datei für einen schon gerechneten Tag kommt später. Die Lösung ist ein Reprocessing-Fenster.</li>
+  <li><b>Reprocessing-Fenster:</b> Ein <b>Reprocessing-Fenster</b> ist die Zahl der Tage, die bei jedem Lauf neu gerechnet werden. Beispiel: jede Nacht die letzten 3 Tage überschreiben. Es fängt die meisten Nachzügler ohne Sonderlogik.</li>
+  <li><b>Backfill:</b> Ein <b>Backfill</b> rechnet einen grösseren historischen Zeitraum neu, z. B. nach einem Bug oder einer neuen Regel. Er braucht unveränderte Rohdaten und idempotente Jobs.</li>
+  <li><b>Idempotentes Überschreiben in Iceberg:</b> <code>INSERT OVERWRITE</code> mit <b>dynamic overwrite</b> ersetzt nur die Partitionen, die der Job schreibt. Die Iceberg-Doku empfiehlt dynamic statt static. <code>MERGE INTO</code> ersetzt nur betroffene Dateien.</li>
+  <li><b>Partition nach welchem Datum?</b> Nach Event Time partitioniert, landen Nachzügler in alten Partitionen. Das macht gezieltes Neurechnen einfach, erzeugt aber kleine Dateien in alten Partitionen. Nach Ankunftsdatum partitioniert, bleibt Schreiben einfach, aber eine Event-Time-Abfrage muss mehr Partitionen lesen.</li>
+</ol>
+
+<h2>5. Vergleich</h2>
+<ul>
+  <li><b>Event Time:</b> korrekt und reproduzierbar, braucht Watermark und State.</li>
+  <li><b>Processing Time:</b> einfach, kein Warten, aber Ergebnisse hängen vom Zufall der Ankunft ab. Ein Replay gibt andere Zahlen.</li>
+  <li><b>Ingestion Time:</b> Zeit beim Eintreffen in der Plattform. Stabiler als Processing Time, aber immer noch nicht die echte Zeit des Ereignisses.</li>
+  <li><b>Watermark (Streaming):</b> automatischer Abschluss, begrenzter State, Nachzügler über dem Delay gehen verloren.</li>
+  <li><b>Reprocessing-Fenster (Batch):</b> fängt Nachzügler der letzten N Tage, kostet Rechenzeit bei jedem Lauf.</li>
+  <li><b>Voller Backfill:</b> korrigiert alles, ist teuer und braucht Planung.</li>
+  <li><b>Lambda-Architektur:</b> schneller Stream plus später korrigierender Batch. Zwei Codepfade. <b>Kappa</b>: nur Stream, Korrektur durch Replay aus dem Log.</li>
+</ul>
+
+<h2>6. In der Produktion</h2>
+<ol>
+  <li><b>Zahlen ändern sich still:</b> Ein Tag wird neu gerechnet, und der Report vom Vortag stimmt nicht mehr. Lösung: Korrekturen sichtbar machen, z. B. mit Snapshot-ID oder Rechenzeitpunkt im Ergebnis.</li>
+  <li><b>Daten verschwinden im Stream:</b> Der Delay ist zu klein. Echte Nachzügler werden verworfen. Lösung: Verspätung messen (Event Time vs Ankunft), Delay danach wählen, Rohdaten zusätzlich speichern.</li>
+  <li><b>State wächst ohne Ende:</b> Keine Watermark, oder Output Mode Complete. Lösung: Watermark setzen, Append oder Update nutzen.</li>
+  <li><b>Watermark steht still:</b> Ein Input-Stream in einem Join oder Union liefert keine Daten mehr. Mit der Policy <code>min</code> hält das alle Fenster offen. Lösung: Quelle prüfen, Policy bewusst wählen.</li>
+  <li><b>Doppelte Zahlen nach Backfill:</b> Der Job hängt Ergebnisse an statt sie zu ersetzen. Lösung: Ergebnisse pro Tag komplett ersetzen (dynamic overwrite oder delete und insert in einer Transaktion).</li>
+  <li><b>Kleine Dateien durch Nachzügler:</b> Jeder späte Datensatz schreibt eine Datei in eine alte Partition. Lösung: Nachzügler sammeln und regelmässig kompaktieren.</li>
+</ol>
+
+<h2>7. Diagnose: Werkzeuge und Abfragen</h2>
+<ul>
+  <li><b>Verspätung messen:</b> <code>SELECT date_diff(...)</code> zwischen Ankunftszeit und Event Time, als Verteilung (p50, p95, p99, max).</li>
+  <li><b>Spark Streaming UI</b> und <code>query.lastProgress</code>: zeigt <code>eventTime.watermark</code> und Zahlen zum State.</li>
+  <li><b>Metrik für verworfene Zeilen:</b> In <code>lastProgress</code> unter <code>stateOperators</code> gibt es <code>numRowsDroppedByWatermark</code> (Klasse <code>StateOperatorProgress</code>).</li>
+  <li><b>Iceberg Metadaten-Tabellen:</b> <code>SELECT * FROM db.t.snapshots</code> zeigt, wann welche Partition neu geschrieben wurde. <code>db.t.partitions</code> zeigt Dateien pro Partition.</li>
+  <li><b>Abgleich:</b> Zeilen pro Event-Tag in Bronze gegen Silver und Gold zählen. Differenz heisst: Nachzügler noch nicht verarbeitet.</li>
+</ul>
+
+<h2>8. Senior-Punkte</h2>
+<div class="senior">
+<ol>
+  <li><b>Der Delay ist eine fachliche Entscheidung,</b> keine technische. Die Frage ist: Wie viel Vollständigkeit ist wie viel Verzögerung wert?</li>
+  <li><b>Rohdaten immer behalten.</b> Ohne unveränderte Bronze-Schicht ist kein Backfill möglich.</li>
+  <li><b>Ersetzen statt Addieren.</b> Ein ganzer Tag wird neu gerechnet und überschrieben. So ist jeder Retry und jeder Backfill sicher.</li>
+  <li><b>Streaming ist nur nötig, wenn Minuten zählen.</b> Kommen Daten als Dateien mit Fristen, ist Batch mit Reprocessing-Fenster einfacher und robuster.</li>
+  <li><b>Korrekturen brauchen Kommunikation.</b> Wer Reports nutzt, muss wissen, dass sich alte Tage ändern können.</li>
+  <li><b>Messen vor Wählen.</b> Den Delay aus der echten Verspätungsverteilung ableiten, nicht raten.</li>
+</ol>
+</div>
+
+<h2>9. Aus dem Projekt</h2>
+<p>„Bei MATCH rechnen wir die Statistik pro Tag komplett neu und überschreiben sie (replace-the-result). Kommen Meldungen für einen Tag später an, rechnet der Gold-Job diesen Tag einfach erneut, und ein Retry gibt immer dasselbe Ergebnis.“ <span class="small">(Prüfen und durch dein echtes Beispiel ersetzen. Streaming-Watermarks hast du in MATCH nicht genutzt: MATCH ist bewusst Batch.)</span></p>
+
+<h2>10. Fallen</h2>
+<div class="trap">
+<ul>
+  <li>„Die Watermark ist die aktuelle Uhrzeit minus Delay.“ → <b>Falsch.</b> Sie ist die grösste gesehene <b>Event Time</b> minus Delay.</li>
+  <li>„Alles über dem Delay wird sicher verworfen.“ → <b>Falsch.</b> Garantiert ist nur: Alles unter dem Delay wird nie verworfen. Darüber ist es offen.</li>
+  <li>„Complete Mode mit Watermark begrenzt den State.“ → <b>Falsch.</b> Complete Mode löscht nie State.</li>
+  <li>„Append Mode zeigt Fenster sofort.“ → <b>Falsch.</b> Ein Fenster kommt erst, wenn die Watermark es überholt.</li>
+  <li>„Ein Backfill ist nur ein erneuter Lauf.“ → <b>Nur wenn der Job idempotent ist.</b> Sonst gibt es doppelte Zahlen.</li>
+  <li>„Processing Time reicht für Reports.“ → <b>Falsch</b> für fachliche Zahlen. Ein Replay würde andere Ergebnisse geben.</li>
+</ul>
+</div>
+
+<h2>11. Fragen</h2>
+<details><summary>Was ist der Unterschied zwischen Event Time und Processing Time?</summary><p>Event Time ist der Zeitpunkt des Ereignisses, gespeichert in den Daten. Processing Time ist der Zeitpunkt, an dem die Pipeline es verarbeitet.</p></details>
+<details><summary>Was sind Late Data?</summary><p>Ereignisse, die ankommen, nachdem ihr Fenster schon verarbeitet oder abgeschlossen ist.</p></details>
+<details><summary>Was ist eine Watermark in Spark?</summary><p>Eine Zeitgrenze: grösste gesehene Event Time minus Delay. Fenster, deren Ende darunter liegt, gelten als abgeschlossen.</p></details>
+<details><summary>Was garantiert eine Watermark von 2 Stunden?</summary><p>Daten mit weniger als 2 Stunden Verspätung werden nie verworfen. Spätere Daten können noch zählen, aber ohne Garantie.</p></details>
+<details><summary>Was passiert mit zu späten Daten in Spark?</summary><p>Der State des Fensters ist gelöscht, die Daten werden ignoriert. Wer sie braucht, rechnet aus den Rohdaten im Batch nach.</p></details>
+<details><summary>Warum braucht man überhaupt eine Watermark?</summary><p>Ohne sie muss Spark jedes Fenster für immer offen halten. Der State wächst dann ohne Grenze.</p></details>
+<details><summary>Wann schreibt Append Mode ein Fenster?</summary><p>Erst wenn die Watermark das Fensterende überholt. Dann ist es final und wird einmal geschrieben.</p></details>
+<details><summary>Append, Update oder Complete: was nutzen Sie mit Watermarks?</summary><p>Append für finale Ergebnisse in Dateien oder Tabellen. Update für Dashboards mit laufenden Zwischenständen. Complete nur für kleine Aggregationen, weil State nie gelöscht wird.</p></details>
+<details><summary>Wo muss withWatermark stehen?</summary><p>Vor der Aggregation und auf derselben Zeitspalte wie das Fenster. Sonst wird kein State gelöscht.</p></details>
+<details><summary>Tumbling vs Sliding Window?</summary><p>Tumbling: feste Blöcke ohne Überlappung. Sliding: überlappende Fenster, ein Ereignis zählt in mehreren.</p></details>
+<details><summary>Wie wirkt die Watermark bei zwei Input-Streams?</summary><p>Standard ist das Minimum beider Watermarks. So geht nichts vom langsamen Stream verloren. Mit Policy max geht es schneller, aber Daten vom langsamen Stream fallen weg.</p></details>
+<details><summary>Brauchen Stream-Stream Joins eine Watermark?</summary><p>Für Outer Joins ja, mit Zeitbedingung. Für Inner Joins sind sie optional, aber ohne sie wächst der State unbegrenzt.</p></details>
+<details><summary>Wie wählen Sie den Delay?</summary><p>Ich messe die Verteilung der Verspätung, z. B. p99. Dann entscheide ich mit dem Fachbereich, wie lange ein Ergebnis warten darf.</p></details>
+<details><summary>Was ist ein Reprocessing-Fenster?</summary><p>Die Zahl der letzten Tage, die bei jedem Batch-Lauf neu gerechnet und überschrieben werden. Es fängt normale Nachzügler ab.</p></details>
+<details><summary>Was ist ein Backfill und was braucht er?</summary><p>Das Neurechnen eines grossen historischen Zeitraums. Er braucht unveränderte Rohdaten, idempotente Jobs und genug Rechenkapazität.</p></details>
+<details><summary>Wie machen Sie ein Neurechnen in Iceberg idempotent?</summary><p>Mit dynamic overwrite pro Partition, MERGE INTO, oder delete und insert in einer Transaktion. Das Ergebnis wird ersetzt, nicht addiert.</p></details>
+<details><summary>Warum ist „ersetzen statt addieren“ so wichtig?</summary><p>Bei einem Retry zählt Addieren doppelt. Ersetzen gibt immer dasselbe Ergebnis.</p></details>
+<details><summary>Partition nach Event-Datum oder Ankunftsdatum?</summary><p>Event-Datum macht gezieltes Neurechnen leicht, aber Nachzügler erzeugen kleine Dateien in alten Partitionen. Ankunftsdatum hält das Schreiben einfach, Event-Abfragen lesen dafür mehr.</p></details>
+<details><summary>Was ist der Preis eines grossen Delays?</summary><p>Mehr State im Speicher und im Checkpoint, und Ergebnisse kommen später.</p></details>
+<details><summary>Lambda oder Kappa für Korrekturen?</summary><p>Lambda: Stream plus korrigierender Batch, zwei Codepfade. Kappa: nur Stream, Korrektur durch Replay aus dem Log. Kappa braucht ein Log mit langer Aufbewahrung.</p></details>
+<details><summary>Wie sehen Sie verworfene Zeilen in Spark?</summary><p>In query.lastProgress unter stateOperators, Metrik numRowsDroppedByWatermark. Dazu eventTime.watermark im Fortschritt.</p></details>
+<details><summary>Bewegt sich die Watermark, wenn keine Daten kommen?</summary><p>Nein. Sie hängt an der Event Time der Daten, nicht an der Uhr.</p></details>
+<details><summary>Szenario: Der Fachbereich meldet, dass im Tagesreport Trades fehlen. Was tun Sie?</summary><p>Ich vergleiche Zeilen pro Event-Tag in Bronze und Gold. Fehlen sie nur in Gold, kamen sie nach dem Lauf. Dann rechne ich den Tag neu und führe ein Reprocessing-Fenster ein.</p></details>
+<details><summary>Szenario: Ein Streaming-Job braucht jeden Tag mehr Speicher. Woran denken Sie?</summary><p>An State ohne Grenze: keine Watermark, falsche Spalte, oder Complete Mode. Ich prüfe stateOperators in lastProgress und setze eine Watermark.</p></details>
+<details><summary>Szenario: Nach einem Bugfix müssen 6 Monate neu gerechnet werden. Wie gehen Sie vor?</summary><p>Rohdaten prüfen, Job idempotent machen, Monat für Monat mit dynamic overwrite rechnen. Vorher Ergebnisse vergleichen und den Fachbereich über geänderte Zahlen informieren.</p></details>
+
+</body>
+</html>

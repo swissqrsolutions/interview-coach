@@ -2,7 +2,7 @@
 
 Generated from content/syllabus.json. Priority 1 = asked in almost every interview. Mark: **Projekt** = shown in CV/Gmail · **— kein Projekt** = no project experience · **? prüfen** = unclear, you decide.
 
-404 topics · P1 239 · P2 125 · P3 40 · written 110
+404 topics · P1 239 · P2 125 · P3 40 · written 142
 
 ## Java 21 (core + advanced) (40)
 Sources: Java SE 21/25 docs (docs.oracle.com) · JVM Specification · OpenJDK source + JEPs (openjdk.org) · Oracle Java SE 21 Developer exam 1Z0-830 topics
@@ -55,12 +55,12 @@ Sources: Spring Framework reference · Spring Boot 3 reference · Spring Securit
 
 | P | Topic | Project | Written |
 |---|---|---|---|
-| 1 | IoC und Dependency Injection: Constructor vs Field Injection | Projekt |  |
-| 1 | Bean-Lebenszyklus, PostConstruct, BeanPostProcessor | Projekt |  |
-| 1 | Bean Scopes: singleton, prototype, request, session | Projekt |  |
+| 1 | IoC und Dependency Injection | Projekt | ✓ |
+| 1 | Bean-Lebenszyklus | Projekt | ✓ |
+| 1 | Bean Scopes | Projekt | ✓ |
 | 1 | AOP und Proxies: JDK Proxy vs CGLIB, Self-Invocation | ? prüfen |  |
 | 1 | @Transactional: wie es intern funktioniert, Fallen | Projekt |  |
-| 1 | Propagation und Isolation in Spring | Projekt |  |
+| 1 | Propagation und Isolation | Projekt | ✓ |
 | 1 | Spring Boot Auto-Configuration und Starters | Projekt |  |
 | 1 | Konfiguration: Properties, @ConfigurationProperties, Profiles | Projekt |  |
 | 1 | Spring MVC: DispatcherServlet, Request-Ablauf, Filter vs Interceptor | Projekt |  |
@@ -84,7 +84,7 @@ Sources: RFC 9110 HTTP Semantics · RFC 9457 Problem Details · OpenAPI 3.1 spec
 
 | P | Topic | Project | Written |
 |---|---|---|---|
-| 1 | HTTP-Methoden, sicher und idempotent | Projekt |  |
+| 1 | HTTP-Methoden | Projekt | ✓ |
 | 1 | HTTP-Statuscodes richtig wählen | Projekt |  |
 | 1 | Ressourcen-Design, URLs, Richardson Maturity Model | Projekt |  |
 | 1 | Pagination, Filter, Sortierung | Projekt |  |
@@ -288,14 +288,14 @@ Sources: Apache Spark 3.5/4 documentation · Databricks Spark developer exam top
 |---|---|---|---|
 | 1 | Spark-Architektur: Driver, Executor, Cluster Manager | Projekt | ✓ |
 | 1 | RDD vs DataFrame vs Dataset | Projekt | ✓ |
-| 1 | Lazy Evaluation, DAG, Jobs, Stages, Tasks | Projekt |  |
-| 1 | Narrow vs Wide Transformations | Projekt |  |
-| 1 | Shuffle: was es ist und warum es teuer ist | Projekt |  |
+| 1 | Lazy Evaluation, DAG, Jobs, Stages, Tasks | Projekt | ✓ |
+| 1 | Narrow vs Wide Transformations | Projekt | ✓ |
+| 1 | Shuffle: was es ist und warum es teuer ist | Projekt | ✓ |
 | 1 | Partitionen: repartition vs coalesce | Projekt | ✓ |
 | 1 | Joins: Broadcast, Sort-Merge, Shuffle Hash | Projekt | ✓ |
-| 1 | Data Skew und Salting | ? prüfen |  |
-| 1 | Adaptive Query Execution | ? prüfen |  |
-| 1 | Spark-Speicher und OutOfMemory | ? prüfen |  |
+| 1 | Data Skew und Salting | ? prüfen | ✓ |
+| 1 | Adaptive Query Execution | ? prüfen | ✓ |
+| 1 | Spark-Speicher und OutOfMemory | ? prüfen | ✓ |
 | 2 | Catalyst Optimizer und Tungsten | ? prüfen |  |
 | 2 | cache und persist | ? prüfen |  |
 | 2 | UDFs vs eingebaute Funktionen, Pandas UDFs | ? prüfen |  |
@@ -309,13 +309,13 @@ Sources: Apache Iceberg spec and docs (iceberg.apache.org)
 | P | Topic | Project | Written |
 |---|---|---|---|
 | 1 | Was ist ein Table Format? Iceberg-Grundlagen | Projekt | ✓ |
-| 1 | Metadaten: metadata.json, Manifest List, Manifests | ? prüfen |  |
-| 1 | Snapshots und Time Travel | ? prüfen |  |
-| 1 | Hidden Partitioning und Partition Evolution | Projekt |  |
+| 1 | Metadaten: metadata.json, Manifest List, Manifests | ? prüfen | ✓ |
+| 1 | Snapshots und Time Travel | ? prüfen | ✓ |
+| 1 | Hidden Partitioning und Partition Evolution | Projekt | ✓ |
 | 1 | Schema Evolution | ? prüfen |  |
-| 1 | Merge-on-Read vs Copy-on-Write, Delete Files | Projekt |  |
-| 1 | Wartung: Compaction, expire_snapshots, Orphan Files | Projekt |  |
-| 1 | Kataloge: Nessie, REST, Hive, Glue | Projekt |  |
+| 1 | Merge-on-Read vs Copy-on-Write, Delete Files | Projekt | ✓ |
+| 1 | Wartung: Compaction, expire_snapshots, Orphan Files | Projekt | ✓ |
+| 1 | Kataloge: Nessie, REST, Hive, Glue | Projekt | ✓ |
 | 1 | Iceberg vs Delta Lake vs Hudi | Projekt |  |
 | 2 | Gleichzeitige Writes und optimistisches Commit | ? prüfen |  |
 | 2 | Branches und Tags | ? prüfen |  |
@@ -325,12 +325,12 @@ Sources: Designing Data-Intensive Applications (Kleppmann) · Fundamentals of Da
 
 | P | Topic | Project | Written |
 |---|---|---|---|
-| 1 | Data Lake vs Warehouse vs Lakehouse | Projekt |  |
-| 1 | Medallion-Architektur | Projekt |  |
-| 1 | ETL vs ELT | Projekt |  |
+| 1 | Data Lake vs Warehouse vs Lakehouse | Projekt | ✓ |
+| 1 | Medallion-Architektur | Projekt | ✓ |
+| 1 | ETL vs ELT | Projekt | ✓ |
 | 1 | Batch vs Streaming, Lambda und Kappa | Projekt |  |
 | 1 | Idempotente und crash-sichere Pipelines | Projekt |  |
-| 1 | Late Data, Watermarks, Backfills | ? prüfen |  |
+| 1 | Late Data, Watermarks, Backfills | ? prüfen | ✓ |
 | 1 | Datenqualität und Data Contracts | ? prüfen |  |
 | 1 | Dateiformate: Parquet, Avro, ORC, CSV | Projekt |  |
 | 1 | Small-Files-Problem | Projekt |  |
@@ -353,9 +353,9 @@ Sources: Kimball Group dimensional modeling techniques · Data Vault 2.0 (Linste
 
 | P | Topic | Project | Written |
 |---|---|---|---|
-| 1 | OLTP vs OLAP | ? prüfen |  |
-| 1 | Star Schema vs Snowflake Schema | — kein Projekt |  |
-| 1 | Fakten und Dimensionen, Grain | — kein Projekt |  |
+| 1 | OLTP vs OLAP | ? prüfen | ✓ |
+| 1 | Star vs Snowflake Schema | — kein Projekt | ✓ |
+| 1 | Fakten und Dimensionen | — kein Projekt | ✓ |
 | 1 | Slowly Changing Dimensions (Typ 1, 2, 3) | — kein Projekt |  |
 | 2 | Data Vault 2.0: Hub, Link, Satellite | — kein Projekt |  |
 | 2 | Kimball vs Inmon vs One Big Table | — kein Projekt |  |
@@ -393,17 +393,17 @@ Sources: Microsoft Learn: AZ-204 and AZ-305 skills outlines · Azure Architectur
 
 | P | Topic | Project | Written |
 |---|---|---|---|
-| 1 | Azure-Grundlagen: Tenant bis Region | ? prüfen | ✓ |
+| 1 | Grundlagen: Tenant, Subscription, Resource Group, Regionen (Schweiz) | ? prüfen | ✓ |
 | 1 | Compute: Functions vs Container Apps vs App Service vs AKS | Projekt | ✓ |
 | 1 | Azure Functions: Trigger, Bindings, Pläne, Durable Functions | Projekt | ✓ |
-| 1 | Event Grid vs Event Hub vs Service Bus | Projekt |  |
+| 1 | Event Grid vs Event Hub vs Service Bus | Projekt | ✓ |
 | 1 | Blob Storage | Projekt | ✓ |
 | 1 | Azure Networking | Projekt | ✓ |
 | 1 | Azure Identity | Projekt | ✓ |
-| 1 | Key Vault: Secrets, Keys, Zertifikate | Projekt |  |
+| 1 | Azure Key Vault | Projekt | ✓ |
 | 1 | Azure Monitor, Log Analytics, Application Insights | Projekt | ✓ |
 | 1 | AKS: Node Pools, Netzwerk, Identity, ACR | Projekt | ✓ |
-| 1 | Azure DevOps: Pipelines, Repos, Environments | Projekt |  |
+| 1 | Azure DevOps: Pipelines, Repos, Environments | Projekt | ✓ |
 | 2 | Defender for Cloud und Malware Scanning | Projekt |  |
 | 2 | Daten-Services: ADF, Synapse, Fabric, Databricks | — kein Projekt |  |
 | 2 | Kosten und Governance: Tags, Policies, Budgets | ? prüfen |  |
@@ -549,12 +549,12 @@ Sources: Design Patterns (GoF) · Hexagonal Architecture (Alistair Cockburn) · 
 
 | P | Topic | Project | Written |
 |---|---|---|---|
-| 1 | SOLID | ? prüfen |  |
-| 1 | Erzeugungsmuster: Singleton, Factory, Builder | ? prüfen |  |
-| 1 | Strukturmuster: Adapter, Decorator, Facade, Proxy | ? prüfen |  |
+| 1 | SOLID | ? prüfen | ✓ |
+| 1 | Erzeugungsmuster | ? prüfen | ✓ |
+| 1 | Strukturmuster | ? prüfen | ✓ |
 | 1 | Verhaltensmuster: Strategy, Observer, Template Method, Command | ? prüfen |  |
-| 1 | Layered Architecture | ? prüfen |  |
-| 1 | Hexagonale Architektur (Ports and Adapters) | ? prüfen |  |
+| 1 | Layered Architecture | ? prüfen | ✓ |
+| 1 | Hexagonale Architektur | ? prüfen | ✓ |
 | 1 | Onion und Clean Architecture | ? prüfen |  |
 | 1 | DDD taktisch: Entity, Value Object, Aggregate, Repository | ? prüfen |  |
 | 1 | Anti-Patterns und Code Smells | ? prüfen |  |

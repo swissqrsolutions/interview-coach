@@ -1,0 +1,221 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Spark-Speicher und OutOfMemory</title>
+<style>
+  body { font: 17px/1.55 -apple-system, system-ui, sans-serif; max-width: 760px; margin: 0 auto; padding: 16px; color: #1d1d1f; }
+  h1 { font-size: 28px; margin: 8px 0 4px; }
+  h2 { font-size: 21px; margin: 32px 0 8px; padding-top: 12px; border-top: 2px solid #e5e5ea; }
+  .kern { background: #eef6ff; border-left: 4px solid #0a66c2; padding: 10px 14px; border-radius: 6px; }
+  .senior { background: #f0faf0; border-left: 4px solid #2e7d32; padding: 10px 14px; border-radius: 6px; }
+  .trap { background: #fff4f2; border-left: 4px solid #c62828; padding: 10px 14px; border-radius: 6px; }
+  code { background: #f2f2f7; padding: 1px 5px; border-radius: 4px; font-size: 15px; }
+  pre { background: #1e1e1e; color: #e6e6e6; padding: 12px; border-radius: 8px; overflow-x: auto; font-size: 13.5px; line-height: 1.45; }
+  svg { width: 100%; height: auto; display: block; margin: 10px 0; }
+  ol li, ul li { margin: 4px 0; }
+  details { border: 1px solid #e5e5ea; border-radius: 8px; padding: 8px 12px; margin: 6px 0; }
+  summary { font-weight: 600; cursor: pointer; }
+  details p { margin: 6px 0 2px; }
+  .small { color: #6e6e73; font-size: 14px; }
+</style>
+</head>
+<body>
+
+<h1>Spark-Speicher und OutOfMemory</h1>
+<p class="small">Spark · Tier 1 · Quellen: Apache Spark 3.5/4.x Doku: Tuning Spark (Memory Management Overview), Configuration (<code>spark.memory.*</code>, <code>spark.executor.memoryOverhead*</code>, <code>spark.executor.pyspark.memory</code>, <code>spark.driver.maxResultSize</code>), Running Spark on Kubernetes, Monitoring (Web UI); Kubernetes Doku: Resource Management for Pods and Containers</p>
+
+<div class="kern">
+<b>Kern:</b> Spark teilt den Speicher eines Executors in <b>Heap</b> (JVM) und <b>Overhead</b> (alles ausserhalb des Heaps). Im Heap teilen sich <b>Execution</b> (Shuffle, Join, Sort) und <b>Storage</b> (Cache) einen gemeinsamen Bereich, das <b>Unified Memory</b>. OOM heisst entweder <b>Heap voll</b> (Java-Fehler) oder <b>Container-Limit überschritten</b> (Kubernetes tötet den Pod).
+</div>
+
+<h2>1. Wo sitzt der Speicher?</h2>
+<svg viewBox="0 0 720 330" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <rect x="10" y="10" width="700" height="310" rx="12" fill="#f7f7fa" stroke="#999" stroke-dasharray="5 4"/><text x="360" y="32" text-anchor="middle" font-weight="700">Executor-Pod (Memory Limit = Heap + Overhead + offHeap + pyspark.memory)</text>
+  <rect x="30" y="45" width="440" height="260" rx="10" fill="#fff" stroke="#555"/><text x="250" y="66" text-anchor="middle" font-weight="700">JVM Heap: spark.executor.memory</text>
+  <rect x="45" y="78" width="410" height="30" rx="6" fill="#eee" stroke="#777"/><text x="250" y="98" text-anchor="middle" font-size="12">Reserved Memory: 300 MB fest</text>
+  <rect x="45" y="116" width="410" height="120" rx="6" fill="#dbe9fb" stroke="#0a66c2"/><text x="250" y="134" text-anchor="middle" font-weight="700">Unified Memory: 60 % von (Heap − 300 MB)</text>
+  <rect x="58" y="144" width="190" height="80" rx="6" fill="#0a66c2"/><text x="153" y="176" text-anchor="middle" fill="#fff" font-weight="700">Execution</text><text x="153" y="196" text-anchor="middle" fill="#fff" font-size="12">Shuffle, Join, Sort, Agg</text>
+  <rect x="254" y="144" width="190" height="80" rx="6" fill="#2e7d32"/><text x="349" y="176" text-anchor="middle" fill="#fff" font-weight="700">Storage</text><text x="349" y="196" text-anchor="middle" fill="#fff" font-size="12">cache, Broadcast</text>
+  <rect x="45" y="244" width="410" height="50" rx="6" fill="#fff" stroke="#777"/><text x="250" y="266" text-anchor="middle" font-weight="700">User Memory: 40 %</text><text x="250" y="284" text-anchor="middle" font-size="12">eigene Objekte, UDF-Daten (JVM), Metadaten</text>
+  <rect x="490" y="45" width="200" height="120" rx="10" fill="#fff4f2" stroke="#c62828"/><text x="590" y="70" text-anchor="middle" font-weight="700">memoryOverhead</text><text x="590" y="92" text-anchor="middle" font-size="12">max(384 MB, 10 %)</text><text x="590" y="110" text-anchor="middle" font-size="12">PySpark auf K8s: 40 %</text><text x="590" y="132" text-anchor="middle" font-size="12">Python-Worker, Netty,</text><text x="590" y="150" text-anchor="middle" font-size="12">Thread-Stacks, native</text>
+  <rect x="490" y="180" width="200" height="55" rx="10" fill="#fff" stroke="#555"/><text x="590" y="203" text-anchor="middle" font-weight="700">offHeap.size</text><text x="590" y="222" text-anchor="middle" font-size="12">nur wenn aktiviert</text>
+  <rect x="490" y="245" width="200" height="60" rx="10" fill="#fff" stroke="#555"/><text x="590" y="268" text-anchor="middle" font-weight="700">pyspark.memory</text><text x="590" y="288" text-anchor="middle" font-size="12">nur wenn gesetzt</text>
+</svg>
+<ol>
+  <li><b>JVM Heap</b> (<code>spark.executor.memory</code>): Speicher der Java-Objekte. Beispiel: 8 GB.</li>
+  <li><b>Reserved Memory:</b> 300 MB fest für Spark-Interna.</li>
+  <li><b>Unified Memory</b> (<code>spark.memory.fraction</code> = 0.6): gemeinsamer Bereich für Execution und Storage. Bei 8 GB sind das ca. 4,6 GB.</li>
+  <li><b>Execution:</b> Puffer für Shuffle, Join, Sort und Aggregation. Beispiel: die Hash-Tabelle eines Joins.</li>
+  <li><b>Storage:</b> gecachte DataFrames und Broadcast-Variablen. <code>spark.memory.storageFraction</code> = 0.5 davon ist vor Verdrängung geschützt.</li>
+  <li><b>User Memory:</b> die übrigen 40 %. Hier liegen eigene Datenstrukturen und Spark-Metadaten.</li>
+  <li><b>memoryOverhead:</b> alles ausserhalb des Heaps. Dazu gehören die <b>Python-Worker</b> von PySpark, wenn <code>spark.executor.pyspark.memory</code> nicht gesetzt ist.</li>
+  <li><b>Pod-Limit:</b> Kubernetes setzt das Limit auf die Summe. Wer darüber geht, wird vom Kernel getötet.</li>
+</ol>
+
+<h2>2. Die Reise eines Tasks bis zum OOM (die Geschichte zum Merken)</h2>
+<svg viewBox="0 0 720 300" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="b" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker><marker id="r" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#c62828"/></marker></defs>
+  <rect x="10" y="20" width="160" height="70" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="90" y="46" text-anchor="middle" font-weight="700">Task startet</text><text x="90" y="66" text-anchor="middle" font-size="12">fordert Execution an</text>
+  <line x1="170" y1="55" x2="218" y2="55" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="220" y="20" width="180" height="70" rx="10" fill="#fff" stroke="#555"/><text x="310" y="46" text-anchor="middle" font-weight="700">Execution voll?</text><text x="310" y="66" text-anchor="middle" font-size="12">leiht von Storage,</text><text x="310" y="82" text-anchor="middle" font-size="12">verdrängt Cache</text>
+  <line x1="400" y1="55" x2="448" y2="55" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="450" y="20" width="260" height="70" rx="10" fill="#e8f5e9" stroke="#2e7d32"/><text x="580" y="46" text-anchor="middle" font-weight="700">Immer noch voll: Spill</text><text x="580" y="66" text-anchor="middle" font-size="12">sortierte Teile auf lokale Disk</text><text x="580" y="82" text-anchor="middle" font-size="12">langsam, aber kein Absturz</text>
+  <line x1="200" y1="90" x2="120" y2="158" stroke="#c62828" stroke-width="2" marker-end="url(#r)"/>
+  <line x1="580" y1="90" x2="580" y2="158" stroke="#c62828" stroke-width="2" marker-end="url(#r)"/>
+  <rect x="10" y="160" width="330" height="80" rx="10" fill="#fff4f2" stroke="#c62828"/><text x="175" y="186" text-anchor="middle" font-weight="700">Heap-OOM</text><text x="175" y="206" text-anchor="middle" font-size="12">Objekte ausserhalb Spark-Kontrolle:</text><text x="175" y="224" text-anchor="middle" font-size="12">riesige Zeile, collect_list, User Memory</text>
+  <rect x="380" y="160" width="330" height="80" rx="10" fill="#fff4f2" stroke="#c62828"/><text x="545" y="186" text-anchor="middle" font-weight="700">Container-OOM (OOMKilled)</text><text x="545" y="206" text-anchor="middle" font-size="12">Python-Worker, Arrow, native Puffer</text><text x="545" y="224" text-anchor="middle" font-size="12">sprengen den Overhead → Exit 137</text>
+  <text x="360" y="275" text-anchor="middle" font-size="12">Driver-OOM ist eine dritte Art: collect(), toPandas(), Broadcast bauen, zu viele Tasks/Dateien</text>
+</svg>
+<ol>
+  <li><b>Task startet:</b> Ein Join-Task braucht Platz für seine Hash-Tabelle. Er fordert <b>Execution Memory</b> an. Jeder Task bekommt zwischen 1/(2N) und 1/N des Execution-Bereichs, N = laufende Tasks.</li>
+  <li><b>Leihen:</b> Ist Execution voll, leiht es sich Platz von Storage. Gecachte Blöcke werden verdrängt, aber nur bis zur geschützten Grenze (<code>storageFraction</code>).</li>
+  <li><b>Spill:</b> Reicht es immer noch nicht, schreibt der Sort- oder Aggregations-Operator Teile auf die lokale Disk. Der Task wird langsamer, stürzt aber nicht ab.</li>
+  <li><b>Heap-OOM:</b> Manche Daten kann Spark nicht spillen. Beispiel: eine einzelne riesige Zeile, ein <code>collect_list</code> über Millionen Werte, eigene Objekte im User Memory. Dann kommt <code>java.lang.OutOfMemoryError: Java heap space</code>.</li>
+  <li><b>Container-OOM:</b> Der Python-Worker eines Pandas UDF lädt einen grossen Batch. Er lebt im Overhead, nicht im Heap. Überschreitet der Pod sein Limit, tötet der Linux-Kernel ihn. Kubernetes zeigt <b>OOMKilled</b>, Exit Code 137.</li>
+  <li><b>Folge:</b> Der Driver verliert den Executor und plant die Tasks neu. Nach 4 Fehlversuchen (<code>spark.task.maxFailures</code>) bricht der Job ab.</li>
+</ol>
+
+<h2>3. Beispiel: Speicher rechnen und OOM erkennen</h2>
+<pre>spark-submit \
+  --master k8s://https://aks-api:443 --deploy-mode cluster \
+  --conf spark.executor.memory=8g \
+  --conf spark.executor.cores=4 \
+  --conf spark.driver.memory=4g \
+  --conf spark.driver.maxResultSize=1g \
+  local:///opt/spark/jobs/gold_stats.py
+
+# im Job (PySpark):
+rows = spark.table("lake.silver.trades").collect()      # 1) alles zum Driver
+pdf  = spark.table("lake.silver.trades").toPandas()     # 2) auch alles zum Driver
+
+$ kubectl -n spark describe pod gold-stats-exec-3       # 3) Executor-Pod
+$ kubectl -n spark get pod gold-stats-exec-3 -o jsonpath='{.spec.containers[0].resources}'</pre>
+<pre>Rechnung Executor (8g, PySpark auf Kubernetes):
+  Heap                 8192 MiB
+  Reserved              300 MiB
+  Unified  (0.6)       4735 MiB   davon Storage geschützt 2368 MiB
+  User     (0.4)       3157 MiB
+  Overhead (0.4, non-JVM)  3277 MiB     JVM-Job: max(384, 0.1×8192) = 819 MiB
+  Pod-Limit            11469 MiB  (= Request)
+
+1)/2) org.apache.spark.SparkException: Job aborted due to stage failure:
+      Total size of serialized results of 85 tasks (1025.4 MiB) is bigger
+      than spark.driver.maxResultSize (1024.0 MiB)
+
+3) Last State:  Terminated
+     Reason:    OOMKilled
+     Exit Code: 137
+   {"limits":{"memory":"11469Mi"},"requests":{"cpu":"4","memory":"11469Mi"}}</pre>
+<p class="small">Erwartetes Ergebnis (laut Doku, nicht ausgeführt). Spark 3.5/4.x; Zahlen nach den dokumentierten Standardwerten berechnet. Namespace, Pod- und Dateinamen sind Beispiele.</p>
+<ol>
+  <li><b>Unified Memory</b> = (8192 − 300) × 0,6 = 4735 MiB. Nur hier spillen Shuffle und Sort.</li>
+  <li><b>Overhead:</b> Für PySpark auf Kubernetes ist der Faktor 0,4. Für JVM-Jobs 0,1, mindestens 384 MiB.</li>
+  <li><b>Pod-Limit:</b> Spark setzt Request und Limit für Speicher gleich. Darum gibt es kein Überbuchen.</li>
+  <li><b>maxResultSize:</b> <code>collect()</code> und <code>toPandas()</code> holen alles zum Driver. Die 1-GB-Grenze bricht den Job sauber ab, bevor der Driver-Heap platzt.</li>
+  <li><b>OOMKilled / 137:</b> Der Kernel hat den Container getötet. Im Spark-Log steht dann kein <code>OutOfMemoryError</code>, nur ein verlorener Executor.</li>
+</ol>
+
+<h2>4. Details, die Interviewer fragen</h2>
+<ol>
+  <li><b>Unified Memory Model</b> (seit Spark 1.6): Execution und Storage teilen sich einen Bereich. Vorher waren beide fest getrennt.</li>
+  <li><b>Wer verdrängt wen:</b> Execution kann Storage verdrängen, bis Storage auf <code>storageFraction</code> schrumpft. Storage kann Execution nie verdrängen. Grund: Execution-Daten lassen sich nicht neu berechnen, ohne den Task neu zu starten.</li>
+  <li><b>spark.memory.fraction</b> (0.6): Anteil von (Heap − 300 MB) für Unified Memory. Niedriger = mehr Spill, mehr User Memory.</li>
+  <li><b>Spill:</b> Operatoren wie Sort, Hash-Aggregation und Sort-Merge Join schreiben Daten auf lokale Disk, wenn Execution voll ist. In der UI: <b>Spill (Memory)</b> und <b>Spill (Disk)</b>.</li>
+  <li><b>Off-Heap</b> (<code>spark.memory.offHeap.enabled</code>, false): Tungsten legt Execution- und Storage-Daten ausserhalb des Heaps ab. Weniger GC, aber <code>offHeap.size</code> muss ins Pod-Limit passen.</li>
+  <li><b>memoryOverhead:</b> Standard <code>executorMemory × 0.10</code>, mindestens 384 MiB. Für Kubernetes non-JVM-Jobs (PySpark) ist der Faktor 0.40.</li>
+  <li><b>spark.executor.pyspark.memory:</b> begrenzt den Python-Speicher pro Executor und wird zum Pod-Request addiert. Ohne Wert teilt sich Python den Overhead.</li>
+  <li><b>Driver-OOM:</b> <code>collect()</code>, <code>toPandas()</code>, Broadcast-Tabellen bauen, sehr viele Partitionen oder Dateien (Metadaten), sehr grosse Pläne.</li>
+  <li><b>Executor-OOM:</b> skewed Partition, zu grosse Partitionen, <code>collect_list</code>, riesige Zeilen, Broadcast zu gross für jeden Executor, zu viele Cores pro Executor.</li>
+  <li><b>Cores pro Executor:</b> Mehr Cores heisst mehr parallele Tasks, also weniger Speicher pro Task. 4–5 Cores pro Executor ist ein häufiger Kompromiss.</li>
+  <li><b>GC overhead limit exceeded:</b> Die JVM verbringt fast nur noch Zeit mit Garbage Collection. Das ist ein Heap-Problem wie OOM.</li>
+  <li><b>Cache und Speicher:</b> <code>cache()</code> auf DataFrames nutzt standardmässig Speicher und Disk (<code>MEMORY_AND_DISK</code>-Familie). Gecachte Blöcke werden bei Druck verdrängt, nicht OOM.</li>
+</ol>
+
+<h2>5. Vergleich</h2>
+<ul>
+  <li><b>Driver-OOM:</b> Heap des Drivers voll. Ursache meist Code (<code>collect</code>, <code>toPandas</code>, Broadcast). Der ganze Job stirbt.</li>
+  <li><b>Executor Heap-OOM:</b> <code>OutOfMemoryError</code> im Executor-Log. Ursache meist Skew oder grosse Partitionen. Spark wiederholt den Task.</li>
+  <li><b>Container-OOM (OOMKilled):</b> Pod über Limit, Exit 137, kein Java-Fehler. Ursache meist Python, Arrow, native Puffer. Lösung: Overhead oder <code>pyspark.memory</code>.</li>
+  <li><b>Spill:</b> kein Fehler, nur langsam. Zeichen für zu grosse Partitionen oder zu wenig Execution Memory.</li>
+  <li><b>On-Heap vs Off-Heap:</b> On-Heap ist einfach und Standard. Off-Heap spart GC, muss aber selbst im Container-Limit eingeplant werden.</li>
+</ul>
+
+<h2>6. In der Produktion</h2>
+<ol>
+  <li><b><code>collect()</code> auf grosse Daten:</b> Driver-OOM oder maxResultSize-Fehler. Lösung: <code>write</code> statt <code>collect</code>, <code>limit</code>, oder <code>toLocalIterator()</code>.</li>
+  <li><b>maxResultSize hochsetzen:</b> Der Fehler verschwindet, dann stirbt der Driver-Heap. Lösung: Ursache im Code beheben, nicht nur das Limit.</li>
+  <li><b>PySpark-Executor OOMKilled:</b> Pandas UDFs oder Python-Objekte sprengen den Overhead. Lösung: <code>memoryOverhead</code> erhöhen, <code>spark.executor.pyspark.memory</code> setzen, kleinere Arrow-Batches (<code>spark.sql.execution.arrow.maxRecordsPerBatch</code>), eingebaute Funktionen statt UDFs.</li>
+  <li><b>Executor-OOM durch Skew:</b> ein Task mit 30 GB Shuffle Read. Lösung: Skew beheben, mehr Partitionen. Mehr Speicher verschiebt nur das Problem.</li>
+  <li><b>Broadcast zu gross:</b> Driver baut die Tabelle, jeder Executor hält eine Kopie. Lösung: Threshold senken, Hint entfernen.</li>
+  <li><b>Pod passt auf keinen Knoten:</b> Ein Executor mit 64 GB Request findet keinen Knoten und bleibt <b>Pending</b>. Lösung: kleinere Executors oder einen Knotenpool, der passt; ein Autoscaler wie Karpenter wählt Knoten nach den Pod-Requests.</li>
+  <li><b>Lokale Disk voll durch Spill:</b> Spill und Shuffle-Dateien liegen im Pod (<code>emptyDir</code>). Lösung: genug ephemeral Storage oder ein Volume für <code>spark.local.dir</code>.</li>
+</ol>
+
+<h2>7. Diagnose: Werkzeuge und Befehle</h2>
+<ul>
+  <li><b>Spark UI, Stages-Tab:</b> Spill (Memory/Disk), GC Time, Shuffle Read pro Task. Max vs Median zeigt Skew.</li>
+  <li><b>Spark UI, Executors-Tab:</b> Storage Memory, GC Time, Failed Tasks, Gründe für verlorene Executors.</li>
+  <li><b>Spark UI, Storage-Tab:</b> welche DataFrames gecacht sind und wie viel davon auf Disk liegt.</li>
+  <li><code>kubectl describe pod &lt;executor&gt;</code>: <code>Reason: OOMKilled</code>, <code>Exit Code: 137</code>.</li>
+  <li><code>kubectl get pod &lt;executor&gt; -o jsonpath='{.spec.containers[0].resources}'</code>: Request und Limit prüfen.</li>
+  <li><code>kubectl logs &lt;executor&gt; --previous</code>: Log des gestorbenen Containers, z. B. <code>OutOfMemoryError</code>.</li>
+  <li><b>Prometheus/Grafana:</b> <code>container_memory_working_set_bytes</code> gegen das Limit, Pod-Restarts.</li>
+  <li><code>spark.executor.extraJavaOptions=-XX:+HeapDumpOnOutOfMemoryError</code>: Heap Dump bei JVM-OOM.</li>
+</ul>
+
+<h2>8. Senior-Punkte</h2>
+<div class="senior">
+<ol>
+  <li><b>Zuerst die Art des OOM klären:</b> Driver, Executor-Heap oder Container. Jede hat eine andere Lösung.</li>
+  <li><b>Speicher erhöhen ist die letzte Lösung.</b> Erst Partitionen, Skew und <code>collect</code> prüfen. Mehr Speicher kostet auf jedem Knoten Geld.</li>
+  <li><b>PySpark braucht Overhead.</b> Python lebt ausserhalb des Heaps. Darum ist der Standard-Faktor auf Kubernetes 0,4.</li>
+  <li><b>Kleine bis mittlere Executors</b> (4–5 Cores, 8–16 GB) sind meist robuster als riesige. Sie passen auf mehr Knoten und haben weniger GC-Pausen.</li>
+  <li><b>Request = Limit:</b> Spark-Pods überbuchen keinen Speicher. Das macht OOMKilled vorhersagbar, aber die Rechnung muss stimmen.</li>
+  <li><b>Defaults für <code>memory.fraction</code> belassen.</b> Die Doku empfiehlt es. Lieber Datenlayout und Partitionen ändern.</li>
+</ol>
+</div>
+
+<h2>9. Aus dem Projekt</h2>
+<p>„Spark-OOM-Fälle sind im Profil nicht dokumentiert; nächste echte Erfahrung: bei MATCH skaliert Karpenter Knoten für die Spark-Spitzen, Grafana/Prometheus überwachen Pod-Restarts, und in der CI wurde der SQL-Server-Testcontainer OOM-gekillt – gelöst mit 2-GB-Limit, freigemachtem Build-Server-Speicher und serialisierten schweren Test-Collections.“ <span class="small">(Prüfen und durch dein echtes Beispiel ersetzen.)</span></p>
+
+<h2>10. Fallen</h2>
+<div class="trap">
+<ul>
+  <li>„<code>spark.executor.memory=8g</code> heisst, der Pod braucht 8 GB.“ → <b>Falsch.</b> Dazu kommen Overhead, eventuell Off-Heap und <code>pyspark.memory</code>.</li>
+  <li>„OOMKilled ist ein Java-Heap-Problem.“ → <b>Falsch.</b> Der Kernel tötet den Container wegen des Limits. Ursache ist meist Speicher ausserhalb des Heaps.</li>
+  <li>„Storage kann Execution verdrängen.“ → <b>Falsch.</b> Nur umgekehrt.</li>
+  <li>„Spill ist ein Fehler.“ → <b>Falsch.</b> Spill verhindert OOM. Er macht den Job nur langsamer.</li>
+  <li>„maxResultSize=0 löst das Problem.“ → <b>Falsch.</b> Dann stirbt der Driver-Heap statt eines sauberen Abbruchs.</li>
+  <li>„Python-UDFs nutzen den Executor-Heap.“ → <b>Falsch.</b> Python-Worker sind eigene Prozesse im Overhead.</li>
+</ul>
+</div>
+
+<h2>11. Fragen</h2>
+<details><summary>Wie ist der Executor-Speicher aufgeteilt?</summary><p>Heap: 300 MB reserviert, 60 % des Rests Unified Memory (Execution und Storage), 40 % User Memory. Dazu kommt Overhead ausserhalb des Heaps.</p></details>
+<details><summary>Was ist das Unified Memory Model?</summary><p>Execution und Storage teilen sich einen Bereich und leihen sich gegenseitig Platz. Seit Spark 1.6.</p></details>
+<details><summary>Was ist Execution Memory?</summary><p>Speicher für Shuffle, Join, Sort und Aggregation während eines Tasks.</p></details>
+<details><summary>Was ist Storage Memory?</summary><p>Speicher für gecachte Daten und Broadcast-Variablen.</p></details>
+<details><summary>Wer darf wen verdrängen?</summary><p>Execution darf Storage bis zur Grenze <code>storageFraction</code> verdrängen. Storage darf Execution nie verdrängen.</p></details>
+<details><summary>Was macht spark.memory.fraction?</summary><p>Es legt den Anteil von (Heap − 300 MB) für Unified Memory fest, Standard 0,6.</p></details>
+<details><summary>Was ist memoryOverhead?</summary><p>Speicher ausserhalb des Heaps: JVM-Interna, Netty, Python-Worker, native Puffer. Standard 10 %, mindestens 384 MiB; PySpark auf Kubernetes 40 %.</p></details>
+<details><summary>Wie gross wird ein Executor-Pod?</summary><p>executor.memory + memoryOverhead + offHeap.size + pyspark.memory. Spark setzt Request und Limit gleich.</p></details>
+<details><summary>Was ist Spill?</summary><p>Ist Execution Memory voll, schreiben Sort und Aggregation Teile auf lokale Disk. Langsam, aber kein Absturz.</p></details>
+<details><summary>Was verursacht Driver-OOM?</summary><p>collect(), toPandas(), grosse Broadcasts, sehr viele Partitionen oder Dateien und grosse Pläne.</p></details>
+<details><summary>Was macht spark.driver.maxResultSize?</summary><p>Es begrenzt die Grösse aller Ergebnisse einer Aktion beim Driver, Standard 1 GB. Darüber bricht der Job sauber ab.</p></details>
+<details><summary>Was verursacht Executor-OOM?</summary><p>Skew, zu grosse Partitionen, collect_list, riesige Zeilen, zu grosse Broadcasts oder zu viele Tasks pro Executor.</p></details>
+<details><summary>Was heisst OOMKilled mit Exit Code 137?</summary><p>Der Linux-Kernel hat den Container getötet, weil er sein Memory Limit überschritten hat. Es gibt dann keinen Java-Fehler im Log.</p></details>
+<details><summary>Warum brauchen PySpark-Jobs mehr Overhead?</summary><p>Python-Worker sind eigene Prozesse ausserhalb des JVM-Heaps. Pandas UDFs und Arrow-Batches brauchen dort Speicher.</p></details>
+<details><summary>Was macht spark.executor.pyspark.memory?</summary><p>Es begrenzt den Python-Speicher pro Executor und wird zum Pod-Request addiert. Ohne Wert teilt sich Python den Overhead.</p></details>
+<details><summary>Was ist Off-Heap Memory in Spark?</summary><p>Tungsten-Speicher ausserhalb des Heaps, wenn <code>offHeap.enabled</code> an ist. Weniger GC, muss aber ins Container-Limit passen.</p></details>
+<details><summary>Wie viele Cores pro Executor?</summary><p>Oft 4–5. Mehr Cores heissen weniger Execution Memory pro Task und mehr GC-Druck.</p></details>
+<details><summary>Wie holen Sie grosse Ergebnisse sicher aus Spark?</summary><p>In Dateien oder eine Tabelle schreiben. Für kleine Teile limit() oder toLocalIterator().</p></details>
+<details><summary>Wie unterscheiden Sie Heap-OOM und Container-OOM?</summary><p>Heap-OOM: <code>OutOfMemoryError</code> im Executor-Log. Container-OOM: <code>OOMKilled</code> und Exit 137 in <code>kubectl describe pod</code>.</p></details>
+<details><summary>Was zeigt GC Time in der Spark UI?</summary><p>Wie viel Task-Zeit in Garbage Collection geht. Über ca. 10 % deutet auf Speicherdruck hin.</p></details>
+<details><summary>Szenario: Ein PySpark-Job auf AKS verliert immer wieder Executors, im Log steht kein OutOfMemoryError. Was prüfen Sie?</summary><p><code>kubectl describe pod</code> auf OOMKilled/137. Dann Python-Speicher: UDFs, Arrow-Batch-Grösse. Lösung: memoryOverhead oder pyspark.memory erhöhen, UDFs durch eingebaute Funktionen ersetzen.</p></details>
+<details><summary>Szenario: Der Job bricht mit "bigger than spark.driver.maxResultSize" ab. Ein Kollege will das Limit auf 0 setzen. Was sagen Sie?</summary><p>Dann stirbt der Driver-Heap später. Besser: kein collect() auf grosse Daten, sondern schreiben oder vorher aggregieren.</p></details>
+<details><summary>Szenario: Nur ein Executor stirbt mit OOM, immer in derselben Stage. Was vermuten Sie?</summary><p>Skew: eine Partition ist viel grösser. Stage-Metriken prüfen (Max vs Median Shuffle Read), dann Skew beheben statt Speicher erhöhen.</p></details>
+
+</body>
+</html>

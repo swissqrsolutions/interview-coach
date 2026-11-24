@@ -1,0 +1,233 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OLTP vs OLAP</title>
+<style>
+  body { font: 17px/1.55 -apple-system, system-ui, sans-serif; max-width: 760px; margin: 0 auto; padding: 16px; color: #1d1d1f; }
+  h1 { font-size: 28px; margin: 8px 0 4px; }
+  h2 { font-size: 21px; margin: 32px 0 8px; padding-top: 12px; border-top: 2px solid #e5e5ea; }
+  .kern { background: #eef6ff; border-left: 4px solid #0a66c2; padding: 10px 14px; border-radius: 6px; }
+  .senior { background: #f0faf0; border-left: 4px solid #2e7d32; padding: 10px 14px; border-radius: 6px; }
+  .trap { background: #fff4f2; border-left: 4px solid #c62828; padding: 10px 14px; border-radius: 6px; }
+  code { background: #f2f2f7; padding: 1px 5px; border-radius: 4px; font-size: 15px; }
+  pre { background: #1e1e1e; color: #e6e6e6; padding: 12px; border-radius: 8px; overflow-x: auto; font-size: 13.5px; line-height: 1.45; }
+  svg { width: 100%; height: auto; display: block; margin: 10px 0; }
+  ol li, ul li { margin: 4px 0; }
+  details { border: 1px solid #e5e5ea; border-radius: 8px; padding: 8px 12px; margin: 6px 0; }
+  summary { font-weight: 600; cursor: pointer; }
+  details p { margin: 6px 0 2px; }
+  .small { color: #6e6e73; font-size: 14px; }
+</style>
+</head>
+<body>
+
+<h1>OLTP vs OLAP</h1>
+<p class="small">Modelling · Tier 1 · Quellen: Kimball Group „Dimensional Modeling Techniques“ (Four-Step Design, Star Schemas and OLAP Cubes), PostgreSQL 17 Doku (Database Page Layout, EXPLAIN, Routine Vacuuming)</p>
+
+<div class="kern">
+<b>Kern:</b> <b>OLTP</b> (Online Transaction Processing) ist ein Workload mit vielen kleinen Schreib- und Lesezugriffen auf einzelne Zeilen. <b>OLAP</b> (Online Analytical Processing) ist ein Workload mit wenigen grossen Leseabfragen über Millionen Zeilen. Darum braucht OLTP einen <b>Row Store</b> mit <b>normalisiertem</b> Modell, OLAP einen <b>Column Store</b> mit <b>dimensionalem</b> Modell.
+</div>
+
+<h2>1. Wo sitzen OLTP und OLAP?</h2>
+<svg viewBox="0 0 720 300" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="a" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="10" y="30" width="130" height="54" rx="8" fill="#fff" stroke="#555"/><text x="75" y="54" text-anchor="middle">Anwendung</text><text x="75" y="72" text-anchor="middle" font-size="12">API, Worker</text>
+  <line x1="140" y1="57" x2="188" y2="57" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="190" y="20" width="160" height="74" rx="8" fill="#eee" stroke="#777"/><text x="270" y="44" text-anchor="middle" font-weight="700">OLTP-DB</text><text x="270" y="62" text-anchor="middle" font-size="12">Row Store · 3NF</text><text x="270" y="78" text-anchor="middle" font-size="12">PostgreSQL, SQL Server</text>
+  <line x1="350" y1="57" x2="398" y2="57" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="400" y="30" width="120" height="54" rx="8" fill="#fff" stroke="#555"/><text x="460" y="54" text-anchor="middle">ETL / ELT</text><text x="460" y="72" text-anchor="middle" font-size="12">Batch oder CDC</text>
+  <line x1="520" y1="57" x2="568" y2="57" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="570" y="20" width="140" height="74" rx="8" fill="#0a66c2" stroke="#0a66c2"/><text x="640" y="44" text-anchor="middle" fill="#fff" font-weight="700">OLAP</text><text x="640" y="62" text-anchor="middle" fill="#fff" font-size="12">Column Store</text><text x="640" y="78" text-anchor="middle" fill="#fff" font-size="12">Star Schema</text>
+  <line x1="640" y1="94" x2="640" y2="168" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="570" y="170" width="140" height="54" rx="8" fill="#fff" stroke="#555"/><text x="640" y="194" text-anchor="middle">BI / Reports</text><text x="640" y="212" text-anchor="middle" font-size="12">Dashboards, Ad hoc</text>
+  <rect x="190" y="170" width="160" height="54" rx="8" fill="#fff4f2" stroke="#c62828"/><text x="270" y="194" text-anchor="middle" fill="#c62828">Report direkt</text><text x="270" y="212" text-anchor="middle" fill="#c62828" font-size="12">auf OLTP = Konflikt</text>
+  <line x1="270" y1="168" x2="270" y2="96" stroke="#c62828" stroke-width="2" stroke-dasharray="6 4" marker-end="url(#a)"/>
+  <text x="75" y="130" text-anchor="middle" font-size="12">Tausende kleine</text><text x="75" y="146" text-anchor="middle" font-size="12">Transaktionen/s</text>
+  <text x="460" y="130" text-anchor="middle" font-size="12">Kopie der Daten,</text><text x="460" y="146" text-anchor="middle" font-size="12">umgebaut fürs Lesen</text>
+  <text x="360" y="270" text-anchor="middle" font-size="13">Links: Schreiben, Konsistenz, Millisekunden · Rechts: Lesen, Aggregieren, Sekunden</text>
+</svg>
+<ol>
+  <li><b>Anwendung:</b> schreibt Bestellungen, Trades, Buchungen. Beispiel: <code>INSERT</code> eines Trades.</li>
+  <li><b>OLTP-DB:</b> speichert den aktuellen Zustand. Sie garantiert <b>ACID</b> (Atomarität, Konsistenz, Isolation, Dauerhaftigkeit) pro Transaktion.</li>
+  <li><b>ETL/ELT:</b> kopiert die Daten weg. <b>CDC</b> (Change Data Capture) liest Änderungen aus dem Log, Batch liest periodisch.</li>
+  <li><b>OLAP-System:</b> Warehouse oder Lakehouse. Es hält die Historie und ist für grosse Scans gebaut.</li>
+  <li><b>BI:</b> Dashboards und Reports lesen nur das OLAP-System, nicht die OLTP-DB.</li>
+</ol>
+
+<h2>2. Die Reise einer Analyse-Abfrage (die Geschichte zum Merken)</h2>
+<svg viewBox="0 0 720 320" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="b" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <text x="180" y="22" text-anchor="middle" font-weight="700">Row Store (Heap-Seite)</text>
+  <rect x="20" y="36" width="320" height="30" fill="#dbe9fb" stroke="#0a66c2"/><text x="180" y="56" text-anchor="middle" font-size="12">id | datum | partner | volume | preis | xml</text>
+  <rect x="20" y="70" width="320" height="30" fill="#dbe9fb" stroke="#0a66c2"/><text x="180" y="90" text-anchor="middle" font-size="12">id | datum | partner | volume | preis | xml</text>
+  <rect x="20" y="104" width="320" height="30" fill="#dbe9fb" stroke="#0a66c2"/><text x="180" y="124" text-anchor="middle" font-size="12">id | datum | partner | volume | preis | xml</text>
+  <text x="180" y="156" text-anchor="middle" font-size="12" fill="#c62828">ganze Zeilen gelesen, auch xml</text>
+  <text x="540" y="22" text-anchor="middle" font-weight="700">Column Store (Row Group)</text>
+  <rect x="390" y="36" width="56" height="98" fill="#eee" stroke="#999"/><text x="418" y="90" text-anchor="middle" font-size="12">id</text>
+  <rect x="450" y="36" width="56" height="98" fill="#0a66c2" stroke="#0a66c2"/><text x="478" y="90" text-anchor="middle" font-size="12" fill="#fff">datum</text>
+  <rect x="510" y="36" width="56" height="98" fill="#eee" stroke="#999"/><text x="538" y="90" text-anchor="middle" font-size="12">partner</text>
+  <rect x="570" y="36" width="56" height="98" fill="#0a66c2" stroke="#0a66c2"/><text x="598" y="90" text-anchor="middle" font-size="12" fill="#fff">volume</text>
+  <rect x="630" y="36" width="70" height="98" fill="#eee" stroke="#999"/><text x="665" y="90" text-anchor="middle" font-size="12">xml</text>
+  <text x="545" y="156" text-anchor="middle" font-size="12" fill="#2e7d32">nur 2 Spalten gelesen, komprimiert</text>
+  <rect x="190" y="200" width="340" height="44" rx="8" fill="#fff" stroke="#555"/><text x="360" y="227" text-anchor="middle">SELECT month, sum(volume) … GROUP BY month</text>
+  <line x1="300" y1="198" x2="200" y2="166" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <line x1="420" y1="198" x2="520" y2="166" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <text x="360" y="280" text-anchor="middle" font-size="13">Gleiche Abfrage, gleiches Ergebnis, sehr verschiedene I/O-Menge</text>
+</svg>
+<ol>
+  <li><b>Die Frage kommt:</b> „Wie viel MWh pro Monat?“ Die Abfrage braucht nur <code>datum</code> und <code>volume</code>.</li>
+  <li><b>Im Row Store:</b> PostgreSQL speichert eine Tabelle als <b>Heap</b>, also Seiten von meist 8 kB mit ganzen Zeilen. Ein <b>Seq Scan</b> liest jede Seite komplett. Die breite <code>xml</code>-Spalte kommt mit, obwohl niemand sie braucht.</li>
+  <li><b>Im Column Store:</b> Jede Spalte liegt separat, z. B. in <b>Parquet</b>-Dateien (spaltenorientiertes Dateiformat). Die Engine liest nur die zwei benötigten Spalten: <b>Projection Pushdown</b>.</li>
+  <li><b>Kompression:</b> Eine Spalte hat gleichartige Werte. <b>Dictionary</b>- und <b>Run-Length-Encoding</b> machen sie sehr klein.</li>
+  <li><b>Überspringen:</b> Jede Row Group speichert <b>Min/Max-Statistiken</b> pro Spalte. Ein Filter <code>datum &gt;= '2026-01-01'</code> überspringt ganze Blöcke: <b>Predicate Pushdown</b>.</li>
+  <li><b>Rechnen:</b> Die Engine summiert ganze Vektoren von Werten auf einmal: <b>vektorisierte Ausführung</b>. Das Ergebnis sind 12 Zeilen statt 100 Millionen.</li>
+  <li><b>Kehrseite:</b> Ein <code>UPDATE</code> einer einzelnen Zeile ist im Column Store teuer. Darum schreibt man dort in Batches.</li>
+</ol>
+
+<h2>3. Beispiel: Row Store liest ganze Zeilen</h2>
+<p>Gleiche 100 000 Trades, einmal breit (mit 400 Byte Payload), einmal nur mit den zwei Spalten, die die Abfrage braucht. Das simuliert den Effekt eines Column Stores.</p>
+<pre>CREATE TABLE trade_wide (trade_id bigint PRIMARY KEY, trade_date date, participant text,
+  volume_mwh numeric, price_eur numeric, xml_payload text);
+INSERT INTO trade_wide SELECT g, date '2026-01-01' + (g % 300), 'P' || (g % 50),
+  (g % 97) + 1, 50 + (g % 40), repeat('x', 400) FROM generate_series(1, 100000) g;
+CREATE TABLE trade_narrow AS SELECT trade_date, volume_mwh FROM trade_wide;
+VACUUM ANALYZE trade_wide; VACUUM ANALYZE trade_narrow;
+
+SELECT relname, pg_size_pretty(pg_relation_size(oid)) AS size
+FROM pg_class WHERE relname IN ('trade_wide','trade_narrow');
+EXPLAIN (ANALYZE, BUFFERS, COSTS OFF, TIMING OFF, SUMMARY OFF) SELECT sum(volume_mwh) FROM trade_wide;
+EXPLAIN (ANALYZE, BUFFERS, COSTS OFF, TIMING OFF, SUMMARY OFF) SELECT sum(volume_mwh) FROM trade_narrow;</pre>
+<pre>   relname    |  size
+--------------+---------
+ trade_wide   | 46 MB
+ trade_narrow | 4608 kB
+(2 rows)
+
+                        QUERY PLAN
+-----------------------------------------------------------
+ Aggregate (actual rows=1 loops=1)
+   Buffers: shared hit=5883
+   ->  Seq Scan on trade_wide (actual rows=100000 loops=1)
+         Buffers: shared hit=5883
+ Planning:
+   Buffers: shared hit=26 read=4
+(6 rows)
+
+                         QUERY PLAN
+-------------------------------------------------------------
+ Aggregate (actual rows=1 loops=1)
+   Buffers: shared hit=576
+   ->  Seq Scan on trade_narrow (actual rows=100000 loops=1)
+         Buffers: shared hit=576
+ Planning:
+   Buffers: shared hit=5
+(6 rows)</pre>
+<p class="small">Echte Ausgabe, PostgreSQL 17.12. Demo-Tabellen danach gelöscht.</p>
+<ol>
+  <li>Beide Abfragen liefern dieselbe Summe. Die breite Tabelle braucht aber <b>5883 Buffers</b> (Seiten à 8 kB), die schmale nur <b>576</b>.</li>
+  <li>Das ist ca. <b>10× weniger I/O</b>, nur weil keine unnötigen Spalten mitgelesen werden.</li>
+  <li>Ein echter Column Store macht genau das automatisch, für jede Abfrage und jede Spaltenkombination. Dazu kommt Kompression.</li>
+  <li>Für OLTP ist der Row Store trotzdem richtig: Ein Trade wird als ganze Zeile geschrieben und als ganze Zeile gelesen, über einen Index in wenigen Seiten.</li>
+</ol>
+
+<h2>4. Details, die Interviewer fragen</h2>
+<ol>
+  <li><b>Workload-Merkmale OLTP:</b> kurze Transaktionen, Zugriff über Primärschlüssel oder Index, viele parallele Nutzer, aktueller Zustand. Beispiel: „Trade T1 speichern“.</li>
+  <li><b>Workload-Merkmale OLAP:</b> lange Leseabfragen, Scans über viele Zeilen, wenige Spalten, Aggregationen, Historie. Beispiel: „Volumen pro Monat und Land“.</li>
+  <li><b>Normalisiert (3NF):</b> Jeder Fakt steht genau einmal. Das verhindert <b>Update-Anomalien</b> (gleiche Information an zwei Stellen widersprüchlich). Preis: viele Joins beim Lesen.</li>
+  <li><b>Dimensional:</b> Das Modell trennt <b>Fakten</b> (Messwerte, z. B. MWh) von <b>Dimensionen</b> (Kontext, z. B. Datum, Partner). Dimensionen sind bewusst <b>denormalisiert</b>. Ziel: einfache, schnelle Abfragen.</li>
+  <li><b>Warum denormalisieren im OLAP erlaubt ist:</b> Die Daten werden per ETL geladen, nicht von Nutzern geändert. Die Pipeline garantiert die Konsistenz, nicht die Normalform.</li>
+  <li><b>Row Store:</b> speichert alle Spalten einer Zeile zusammen. Gut für Insert, Update und Lookup ganzer Zeilen. Beispiel: PostgreSQL-Heap, SQL Server Rowstore.</li>
+  <li><b>Column Store:</b> speichert jede Spalte zusammen. Gut für Scans weniger Spalten und Kompression. Beispiel: Parquet, ORC, Dremio, ClickHouse, SQL Server Columnstore Index.</li>
+  <li><b>Updates im Column Store:</b> Dateien sind meist unveränderlich. Änderungen laufen als <b>Copy-on-Write</b> (Datei neu schreiben) oder <b>Merge-on-Read</b> (Delete-Dateien, beim Lesen verrechnen). Beispiel: Apache Iceberg kann beides.</li>
+  <li><b>Lange Analysen auf PostgreSQL:</b> Eine lange Transaktion hält einen alten <b>Snapshot</b>. <code>VACUUM</code> darf tote Zeilen dann nicht entfernen. Die Tabellen wachsen (<b>Bloat</b>).</li>
+  <li><b>Read Replica als Zwischenlösung:</b> Reports laufen auf einer Kopie. Auf einem Hot Standby können lange Abfragen aber mit der Replikation kollidieren und abgebrochen werden.</li>
+  <li><b>HTAP</b> (Hybrid Transactional/Analytical Processing): ein System für beide Workloads, z. B. Row Store plus Spaltenkopie. Es reduziert Kopien, ist aber ein Kompromiss.</li>
+  <li><b>Datenfrische:</b> OLAP ist eine Kopie. Batch heisst Stunden alt, CDC heisst Sekunden bis Minuten. Die nötige Frische bestimmt die Architektur.</li>
+</ol>
+
+<h2>5. Vergleich</h2>
+<ul>
+  <li><b>Ziel:</b> OLTP = Geschäft abwickeln. OLAP = Geschäft verstehen.</li>
+  <li><b>Abfrage:</b> OLTP liest und schreibt wenige Zeilen per Key. OLAP scannt Millionen Zeilen, liest wenige Spalten.</li>
+  <li><b>Daten:</b> OLTP = aktueller Zustand. OLAP = Historie, oft mit Versionen (SCD2).</li>
+  <li><b>Speicher:</b> OLTP = Row Store, B-Tree-Indizes. OLAP = Column Store, Partitionen, Min/Max-Statistiken.</li>
+  <li><b>Modell:</b> OLTP = 3NF. OLAP = Star Schema (Kimball), Data Vault als Integrationsschicht oder One Big Table.</li>
+  <li><b>Schreiben:</b> OLTP = viele Einzel-Transaktionen. OLAP = Bulk-Loads, Append, MERGE in Batches.</li>
+  <li><b>Kennzahl:</b> OLTP = Latenz in ms und Transaktionen/s. OLAP = Scan-Durchsatz und Abfragezeit in Sekunden.</li>
+</ul>
+
+<h2>6. In der Produktion</h2>
+<ol>
+  <li><b>Reports bremsen die operative DB:</b> Grosse Scans verdrängen den Cache und belegen CPU. Fix: Analytik auf eine Kopie verlagern (Replica, Warehouse, Lakehouse).</li>
+  <li><b>Bloat durch lange Abfragen:</b> Eine stundenlange Report-Transaktion blockiert VACUUM. Fix: <code>statement_timeout</code> für Report-User, Reports woanders ausführen.</li>
+  <li><b>Kleine Dateien im Column Store:</b> Viele kleine Batches erzeugen tausende kleine Parquet-Dateien. Scans werden langsam. Fix: grössere Batches, regelmässige <b>Compaction</b>.</li>
+  <li><b>Einzel-Updates im Lakehouse:</b> Jeder Update schreibt Dateien neu oder erzeugt Delete-Dateien. Fix: Änderungen sammeln und als ein MERGE pro Batch schreiben.</li>
+  <li><b><code>SELECT *</code> auf Column Store:</b> liest alle Spalten und zerstört den Vorteil. Fix: nur benötigte Spalten abfragen, schmale Views für BI.</li>
+  <li><b>Zahlen weichen ab:</b> OLTP zeigt live, OLAP den Stand vom letzten Load. Fix: Ladezeitpunkt im Report anzeigen, Frische-SLA vereinbaren.</li>
+</ol>
+
+<h2>7. Diagnose: Werkzeuge und Abfragen</h2>
+<ul>
+  <li><code>EXPLAIN (ANALYZE, BUFFERS)</code>: wie viele Seiten eine Abfrage liest. Hohe Buffer-Zahl bei kleinem Ergebnis = Scan-Workload.</li>
+  <li><code>pg_stat_statements</code>: welche Abfragen am meisten Zeit und I/O verbrauchen.</li>
+  <li><code>SELECT pid, now() - xact_start, query FROM pg_stat_activity ORDER BY 2 DESC;</code>: lange Transaktionen finden.</li>
+  <li><code>pg_relation_size</code>, <code>pg_stat_user_tables.n_dead_tup</code>: Tabellengrösse und tote Zeilen (Bloat-Hinweis).</li>
+  <li>Iceberg-Metadatentabellen, z. B. <code>SELECT * FROM db.tbl.files</code> in Spark: Anzahl und Grösse der Dateien.</li>
+  <li>Spark UI und Dremio Query Profile: gelesene Bytes, übersprungene Dateien, Scan-Zeit.</li>
+</ul>
+
+<h2>8. Senior-Punkte</h2>
+<div class="senior">
+<ol>
+  <li><b>Workloads trennen</b> ist die wichtigste Entscheidung. Das Modell folgt dem Workload, nicht umgekehrt.</li>
+  <li><b>Nicht zu früh ein Warehouse bauen.</b> Bei wenigen GB reichen PostgreSQL, eine Replica und Materialized Views oft aus.</li>
+  <li><b>Frische ist eine Anforderung.</b> Erst fragen: „Wie alt dürfen die Zahlen sein?“ Dann Batch oder CDC wählen.</li>
+  <li><b>Column Stores kosten beim Schreiben.</b> Updates, Deletes und kleine Batches brauchen Compaction und Wartung.</li>
+  <li><b>Normalisierter Kern, dimensionale Marts:</b> Integration sauber halten, für Nutzer einfach denormalisiert ausliefern.</li>
+  <li><b>Analytische Daten sind reproduzierbar:</b> Rohdaten aufbewahren, dann lässt sich jede Schicht neu rechnen.</li>
+</ol>
+</div>
+
+<h2>9. Aus dem Projekt</h2>
+<p>„Bei ElCom MATCH lagen Daten und Statistiken in SQL Server; die Analytik belastete die operative DB. Wir haben sie in ein Iceberg-Lakehouse (Parquet, Spark schreibt, Dremio liest) verlagert, das alte System blieb für den operativen Teil.“ <span class="small">(Prüfen und durch dein echtes Beispiel ersetzen.)</span></p>
+
+<h2>10. Fallen</h2>
+<div class="trap">
+<ul>
+  <li>„Ein Column Store ist einfach schneller.“ → Nur für Scans weniger Spalten. Für Einzel-Inserts und Updates ist er langsamer.</li>
+  <li>„Denormalisierung ist immer schlecht.“ → Im OLTP ja, wegen Anomalien. Im OLAP ist sie gewollt, die Pipeline sichert die Konsistenz.</li>
+  <li>„OLAP heisst OLAP-Cube.“ → Nein. OLAP ist der Workload. Ein Cube ist nur eine mögliche Technik, heute meist Star Schema auf Column Store.</li>
+  <li>„Eine Read Replica löst alles.“ → Sie entlastet den Primary, bleibt aber ein Row Store mit 3NF-Modell. Grosse Scans bleiben langsam.</li>
+  <li>„Ein Index macht die Monatsauswertung schnell.“ → Kaum. Sie liest die meisten Zeilen; ein Index hilft bei selektiven Abfragen.</li>
+</ul>
+</div>
+
+<h2>11. Fragen</h2>
+<details><summary>Was ist der Unterschied zwischen OLTP und OLAP?</summary><p>OLTP sind viele kleine Transaktionen auf einzelnen Zeilen, z. B. Trades speichern. OLAP sind wenige grosse Leseabfragen mit Aggregation über viele Zeilen und Historie.</p></details>
+<details><summary>Was ist ein Row Store, was ein Column Store?</summary><p>Ein Row Store speichert alle Spalten einer Zeile zusammen. Ein Column Store speichert die Werte einer Spalte zusammen. Der erste passt zu Zeilenzugriffen, der zweite zu Scans weniger Spalten.</p></details>
+<details><summary>Warum ist ein Column Store für Analysen schneller?</summary><p>Er liest nur die benötigten Spalten, komprimiert sie stark und überspringt Blöcke per Min/Max-Statistik. Dazu kommt vektorisierte Ausführung.</p></details>
+<details><summary>Warum ist ein Column Store schlecht für OLTP?</summary><p>Eine Zeile ist auf viele Spalten-Dateien verteilt. Einzel-Insert oder Update muss viele Stellen ändern oder Dateien neu schreiben.</p></details>
+<details><summary>Was ist Projection Pushdown?</summary><p>Die Engine liest nur die Spalten, die die Abfrage braucht. Im Column Store spart das direkt I/O.</p></details>
+<details><summary>Was ist Predicate Pushdown?</summary><p>Filter werden bis zum Speicher geschoben. Mit Min/Max-Statistiken pro Block oder Partition werden ganze Blöcke übersprungen.</p></details>
+<details><summary>Warum normalisiert man OLTP-Datenbanken?</summary><p>Jede Information steht genau einmal. Das verhindert Update-Anomalien und hält Schreibvorgänge klein.</p></details>
+<details><summary>Warum denormalisiert man im Warehouse?</summary><p>Weniger Joins, einfachere SQL für Nutzer und BI-Tools. Die Daten ändern sich nur per ETL, darum entstehen keine Anomalien durch Nutzer.</p></details>
+<details><summary>Was ist ein dimensionales Modell?</summary><p>Ein Modell mit Faktentabellen (Messwerte auf festem Grain) und Dimensionstabellen (beschreibender Kontext). Das bekannteste ist das Star Schema nach Kimball.</p></details>
+<details><summary>Ist PostgreSQL ein Row Store?</summary><p>Ja. Tabellen sind Heaps aus Seiten mit ganzen Zeilen. Spaltenspeicher gibt es nur über Extensions oder externe Engines.</p></details>
+<details><summary>Warum schaden lange Report-Abfragen einer PostgreSQL-OLTP-DB?</summary><p>Sie belegen CPU und Cache. Und ihr alter Snapshot verhindert, dass VACUUM tote Zeilen entfernt, was Bloat erzeugt.</p></details>
+<details><summary>Reicht eine Read Replica für Reporting?</summary><p>Für moderate Reports oft ja. Bei grossen Scans und Historie nicht, und auf einem Hot Standby können lange Abfragen wegen Replikationskonflikten abbrechen.</p></details>
+<details><summary>Was ist CDC?</summary><p>Change Data Capture liest Änderungen aus dem Transaktionslog der Quelle. So bekommt das OLAP-System Änderungen in Sekunden, ohne die Quelle mit Abfragen zu belasten.</p></details>
+<details><summary>Was ist HTAP?</summary><p>Ein System für Transaktionen und Analysen zugleich, meist mit Row Store plus Spaltenkopie. Spart Pipelines, ist aber ein Kompromiss bei Last und Isolation.</p></details>
+<details><summary>Wie gehen Lakehouse-Formate mit Updates um?</summary><p>Copy-on-Write schreibt betroffene Dateien neu. Merge-on-Read schreibt Delete-Dateien und verrechnet beim Lesen. Iceberg unterstützt beide.</p></details>
+<details><summary>Was ist das Small-Files-Problem?</summary><p>Viele kleine Dateien erzeugen viel Metadaten- und Öffnungsaufwand bei Scans. Lösung: grössere Batches und regelmässige Compaction.</p></details>
+<details><summary>Warum ist SELECT * auf einem Column Store schlecht?</summary><p>Es liest alle Spalten und hebt den Vorteil des Spaltenspeichers auf. Nur benötigte Spalten abfragen.</p></details>
+<details><summary>Wann brauchen Sie kein separates Warehouse?</summary><p>Bei kleinen Datenmengen und einfachen Reports. Dann reichen Replica, Materialized Views oder ein Reporting-Schema.</p></details>
+<details><summary>Was bestimmt, ob Sie Batch oder Streaming laden?</summary><p>Die geforderte Datenfrische und wie die Daten ankommen. Minuten-Latenz und Dateilieferungen sprechen für Batch, das ist einfacher idempotent zu machen.</p></details>
+<details><summary>Szenario: Ein Fachbereich will ein Dashboard direkt auf der Produktions-DB. Was sagen Sie?</summary><p>Ich prüfe Datenmenge und Frische-Bedarf. Für kleine Abfragen eine Replica mit Timeout, sonst eine Kopie im Warehouse/Lakehouse mit dimensionalem Modell.</p></details>
+<details><summary>Szenario: Seit neue Monatsreports laufen, wächst die OLTP-Tabelle stark und wird langsam. Ursache?</summary><p>Wahrscheinlich lange Transaktionen, die VACUUM blockieren. Prüfen mit <code>pg_stat_activity</code> und <code>n_dead_tup</code>; Reports auslagern und <code>statement_timeout</code> setzen.</p></details>
+<details><summary>Szenario: Abfragen im Lakehouse werden jede Woche langsamer, obwohl die Datenmenge kaum wächst. Woran denken Sie?</summary><p>An kleine Dateien und viele Delete-Dateien aus häufigen Updates. Prüfen über die Iceberg-Metadatentabellen, dann Compaction und Snapshots aufräumen.</p></details>
+
+</body>
+</html>

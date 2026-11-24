@@ -1,0 +1,205 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Medallion-Architektur</title>
+<style>
+  body { font: 17px/1.55 -apple-system, system-ui, sans-serif; max-width: 760px; margin: 0 auto; padding: 16px; color: #1d1d1f; }
+  h1 { font-size: 28px; margin: 8px 0 4px; }
+  h2 { font-size: 21px; margin: 32px 0 8px; padding-top: 12px; border-top: 2px solid #e5e5ea; }
+  .kern { background: #eef6ff; border-left: 4px solid #0a66c2; padding: 10px 14px; border-radius: 6px; }
+  .senior { background: #f0faf0; border-left: 4px solid #2e7d32; padding: 10px 14px; border-radius: 6px; }
+  .trap { background: #fff4f2; border-left: 4px solid #c62828; padding: 10px 14px; border-radius: 6px; }
+  code { background: #f2f2f7; padding: 1px 5px; border-radius: 4px; font-size: 15px; }
+  pre { background: #1e1e1e; color: #e6e6e6; padding: 12px; border-radius: 8px; overflow-x: auto; font-size: 13.5px; line-height: 1.45; }
+  svg { width: 100%; height: auto; display: block; margin: 10px 0; }
+  ol li, ul li { margin: 4px 0; }
+  details { border: 1px solid #e5e5ea; border-radius: 8px; padding: 8px 12px; margin: 6px 0; }
+  summary { font-weight: 600; cursor: pointer; }
+  details p { margin: 6px 0 2px; }
+  .small { color: #6e6e73; font-size: 14px; }
+</style>
+</head>
+<body>
+
+<h1>Medallion-Architektur</h1>
+<p class="small">Lakehouse · Tier 1 · Quellen: Microsoft Learn „What is the medallion lakehouse architecture?“ (Azure Databricks), Microsoft Learn „Implement Medallion Lakehouse Architecture in Fabric“, Apache Iceberg Docs 1.12 (Spark Writes, Procedures)</p>
+
+<div class="kern">
+<b>Kern:</b> Die <b>Medallion-Architektur</b> ist ein Muster, das Daten in drei Schichten ordnet: <b>Bronze</b> (roh), <b>Silver</b> (validiert), <b>Gold</b> (fachlich aufbereitet). Jede Schicht hebt die Qualität eine Stufe. Bronze bewahrt die Rohdaten, damit man Silver und Gold jederzeit <b>neu berechnen</b> kann.
+</div>
+
+<h2>1. Wo sitzt die Medallion-Architektur?</h2>
+<svg viewBox="0 0 720 300" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="a" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="10" y="40" width="120" height="70" rx="8" fill="#fff" stroke="#555"/><text x="70" y="68" text-anchor="middle">Quellen</text><text x="70" y="88" text-anchor="middle" font-size="12">ZIP/XML · DB · Kafka</text>
+  <line x1="130" y1="75" x2="158" y2="75" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="160" y="30" width="160" height="90" rx="10" fill="#f3e2cf" stroke="#8d5a2b"/><text x="240" y="56" text-anchor="middle" font-weight="700">Bronze</text><text x="240" y="76" text-anchor="middle" font-size="12">roh, nur anhängen</text><text x="240" y="94" text-anchor="middle" font-size="12">+ Herkunft (Datei, Zeit)</text>
+  <line x1="320" y1="75" x2="358" y2="75" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="360" y="30" width="160" height="90" rx="10" fill="#e5e7eb" stroke="#6b7280"/><text x="440" y="56" text-anchor="middle" font-weight="700">Silver</text><text x="440" y="76" text-anchor="middle" font-size="12">typisiert, validiert</text><text x="440" y="94" text-anchor="middle" font-size="12">dedupliziert</text>
+  <line x1="520" y1="75" x2="558" y2="75" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="560" y="30" width="150" height="90" rx="10" fill="#fdf0c2" stroke="#b08900"/><text x="635" y="56" text-anchor="middle" font-weight="700">Gold</text><text x="635" y="76" text-anchor="middle" font-size="12">Aggregate, Modelle</text><text x="635" y="94" text-anchor="middle" font-size="12">pro Fachbereich</text>
+  <line x1="440" y1="120" x2="440" y2="168" stroke="#c62828" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="370" y="170" width="140" height="44" rx="8" fill="#fff4f2" stroke="#c62828"/><text x="440" y="197" text-anchor="middle" font-size="13">Quarantäne</text>
+  <line x1="635" y1="120" x2="635" y2="168" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="560" y="170" width="150" height="44" rx="8" fill="#dbe9fb" stroke="#0a66c2"/><text x="635" y="197" text-anchor="middle" font-size="13">BI · UI · ML</text>
+  <path d="M240,120 C240,270 440,270 440,216" fill="none" stroke="#2e7d32" stroke-width="2" stroke-dasharray="6 4" marker-end="url(#a)"/>
+  <text x="250" y="268" fill="#2e7d32" font-size="12">Reprocessing: Silver und Gold aus Bronze neu bauen</text>
+</svg>
+<ol>
+  <li><b>Bronze:</b> Rohdaten so nah am Original wie möglich. Nur anhängen, keine Bereinigung. Dazu Metadaten wie Dateiname und Empfangszeit. Beispiel: geparste XML-Records aus einem ZIP.</li>
+  <li><b>Silver:</b> validierte, typisierte, deduplizierte Daten. Mindestens eine <b>nicht aggregierte</b> Darstellung jedes Records. Beispiel: Tabellen für Contracts, Defaults, Inside Information.</li>
+  <li><b>Quarantäne:</b> ungültige Records landen in einer eigenen Tabelle, statt still zu verschwinden.</li>
+  <li><b>Gold:</b> fachliche Sicht für Nutzer: Aggregate, Kennzahlen, dimensionale Modelle. Beispiel: Statistik pro Tag.</li>
+  <li><b>Reprocessing:</b> Weil Bronze alles behält, kann man nach einem Bug-Fix Silver und Gold neu berechnen.</li>
+</ol>
+
+<h2>2. Die Reise eines Records (die Geschichte zum Merken)</h2>
+<svg viewBox="0 0 720 300" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="b" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="10" y="20" width="160" height="70" rx="10" fill="#eee" stroke="#777"/><text x="90" y="44" text-anchor="middle" font-weight="700">1. ZIP landet</text><text x="90" y="64" text-anchor="middle" font-size="12">entschlüsseln,</text><text x="90" y="80" text-anchor="middle" font-size="12">XML parsen</text>
+  <line x1="170" y1="55" x2="198" y2="55" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="200" y="20" width="150" height="70" rx="10" fill="#f3e2cf" stroke="#8d5a2b"/><text x="275" y="44" text-anchor="middle" font-weight="700">2. Bronze</text><text x="275" y="64" text-anchor="middle" font-size="12">"50,10" bleibt</text><text x="275" y="80" text-anchor="middle" font-size="12">String</text>
+  <line x1="350" y1="55" x2="378" y2="55" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="380" y="20" width="160" height="70" rx="10" fill="#e5e7eb" stroke="#6b7280"/><text x="460" y="44" text-anchor="middle" font-weight="700">3. Silver</text><text x="460" y="64" text-anchor="middle" font-size="12">cast, prüfen,</text><text x="460" y="80" text-anchor="middle" font-size="12">Duplikat raus</text>
+  <line x1="540" y1="55" x2="568" y2="55" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="570" y="20" width="140" height="70" rx="10" fill="#fdf0c2" stroke="#b08900"/><text x="640" y="44" text-anchor="middle" font-weight="700">4. Gold</text><text x="640" y="64" text-anchor="middle" font-size="12">Tag neu</text><text x="640" y="80" text-anchor="middle" font-size="12">berechnen</text>
+  <line x1="640" y1="90" x2="640" y2="148" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="520" y="150" width="190" height="60" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="615" y="174" text-anchor="middle" font-weight="700">5. Abfrage</text><text x="615" y="194" text-anchor="middle" font-size="12">Dremio → WebUI</text>
+  <rect x="200" y="150" width="280" height="60" rx="10" fill="#e8f5e9" stroke="#2e7d32"/><text x="340" y="174" text-anchor="middle" font-weight="700">6. Bug gefunden</text><text x="340" y="194" text-anchor="middle" font-size="12">Parser fixen, Silver+Gold neu bauen</text>
+  <line x1="275" y1="150" x2="275" y2="92" stroke="#2e7d32" stroke-width="2" marker-end="url(#b)"/>
+</svg>
+<ol>
+  <li><b>Ankunft:</b> Ein passwortgeschütztes ZIP landet im Object Storage. Spark entschlüsselt es und parst das XML.</li>
+  <li><b>Bronze:</b> Jeder Record wird so gespeichert, wie er kommt. Der Preis <code>"50,10"</code> bleibt ein String. Nichts geht verloren, auch keine kaputten Werte.</li>
+  <li><b>Silver:</b> Jetzt wird typisiert und geprüft. Ein Preis mit Komma muss korrekt gelesen werden. Ein leerer Preis geht in die Quarantäne. Doppelt gelieferte Records fallen über einen Schlüssel weg.</li>
+  <li><b>Gold:</b> Die Statistik für den betroffenen Tag wird <b>ganz neu berechnet</b> und ersetzt. Sie wird nicht hochgezählt.</li>
+  <li><b>Abfrage:</b> Die UI liest nur Gold (und für Details Silver), nie Bronze.</li>
+  <li><b>Bug:</b> Später zeigt sich ein Parser-Fehler. Man fixt den Code und baut Silver und Gold aus Bronze neu. Die Quelle muss nichts neu liefern.</li>
+</ol>
+
+<h2>3. Beispiel: Bronze → Silver → Gold und Reprocessing</h2>
+<pre># Python 3 + sqlite3: Bronze hat 5 rohe Zeilen (1 Duplikat, 1 Komma-Preis, 1 leerer Preis)
+def build(fix_comma, utc_day):
+    for f, p, v, t, r in bronze:                      # rohe Strings
+        p2 = p.replace(",", ".") if fix_comma else p
+        try: price = float(p2)
+        except ValueError: quarantine(t, p); continue # nicht still verwerfen
+        day = date_utc(r) if utc_day else r[:10]      # Tagesgrenze!
+        insert_or_ignore_silver(t, day, price, v)     # trade_id = Primärschlüssel
+    gold = "select day, count(*), sum(volume) from silver group by day"
+
+build(fix_comma=False, utc_day=False)   # Lauf 1: Bug
+build(fix_comma=True,  utc_day=True)    # Lauf 2: Fix, alles aus Bronze neu</pre>
+<pre>Lauf 1 (Parser-Bug: Komma, Tag aus lokalem String)
+   bronze: 5 Zeilen (roh, unveraendert)
+   silver: 2 Zeilen; quarantine: T3 price='50,10', T4 price=''
+   gold: ('2026-11-23', 1, 10.0)
+   gold: ('2026-11-24', 1, 5.0)
+Lauf 2 (Bug gefixt, silver+gold aus bronze neu gebaut, Tag in UTC)
+   bronze: 5 Zeilen (roh, unveraendert)
+   silver: 3 Zeilen; quarantine: T4 price=''
+   gold: ('2026-11-23', 2, 15.0)
+   gold: ('2026-11-24', 1, 20.0)</pre>
+<p class="small">Echte Ausgabe, Python 3.12.10 mit sqlite3 3.49.1 (Simulation, kein Spark/Iceberg). Code gekürzt; das volle Skript erzeugt genau diese Zeilen.</p>
+<ol>
+  <li><b>Duplikat:</b> T2 kam in zwei Dateien. Silver hat <code>trade_id</code> als Schlüssel, darum zählt T2 nur einmal.</li>
+  <li><b>Lauf 1:</b> Der Parser kennt kein Dezimalkomma. T3 landet in der Quarantäne, nicht im Nichts. Man sieht den Fehler.</li>
+  <li><b>Lauf 2:</b> Nach dem Fix wird T3 gültig. Silver und Gold entstehen neu aus Bronze. Die Quelle liefert nichts nach.</li>
+  <li><b>Tagesgrenze:</b> T2 hat <code>00:10+01:00</code>. In UTC gehört es zum 23.11. Die Gold-Zahlen pro Tag ändern sich. Welche Zeitzone gilt, ist eine fachliche Entscheidung.</li>
+  <li><b>Gold ersetzt:</b> Gold wird pro Lauf ganz neu gebaut. Darum ist der zweite Lauf sicher wiederholbar.</li>
+</ol>
+
+<h2>4. Details, die Interviewer fragen</h2>
+<ol>
+  <li><b>Muster, keine Pflicht:</b> Databricks nennt Medallion eine empfohlene Best Practice, aber keine Anforderung. Microsoft Fabric empfiehlt es als Design-Ansatz.</li>
+  <li><b>Bronze speichert robust:</b> Databricks empfiehlt, die meisten Felder als <code>string</code>, <code>VARIANT</code> oder <code>binary</code> zu speichern. So bricht eine unerwartete Schema-Änderung die Ingestion nicht.</li>
+  <li><b>Herkunft mitschreiben:</b> In Bronze kommen Metadaten-Spalten dazu, z. B. Dateiname, Nachrichten-ID, Empfangszeit. Damit kann man jede Zeile zurückverfolgen und gezielt neu laden.</li>
+  <li><b>Nicht direkt nach Silver schreiben:</b> Laut Databricks bringt Schreiben direkt aus der Ingestion Fehler durch Schema-Änderungen und kaputte Records. Silver liest aus Bronze.</li>
+  <li><b>Was in Silver passiert:</b> Schema Enforcement, Null-Handling, Deduplizierung, Type Casting, Joins, Behandlung von Late und Out-of-Order Data, Qualitätsregeln.</li>
+  <li><b>Was in Gold passiert:</b> Aggregate, Kennzahlen, dimensionale Modelle (Fakten und Dimensionen). Gold ist für Abfragen optimiert. Es kann mehrere Gold-Bereiche pro Fachbereich geben.</li>
+  <li><b>Reprocessing:</b> Bronze behält die ganze Historie. Nach einem Bug-Fix baut man betroffene Partitionen in Silver und Gold neu. Dafür müssen die Schritte <b>idempotent</b> sein: gleicher Input, gleicher Output.</li>
+  <li><b>Wie man neu baut:</b> Pro Partition oder Schlüssel überschreiben, nicht anhängen. Mit Iceberg: <code>MERGE INTO</code> oder dynamisches <code>INSERT OVERWRITE</code>. Die Iceberg-Doku empfiehlt <code>MERGE INTO</code>, weil es nur betroffene Dateien ersetzt.</li>
+  <li><b>Inkrementell statt alles:</b> Normal verarbeitet man nur neue Daten. Ein Voll-Rebuild ist die Ausnahme für Bug-Fixes und Logik-Änderungen.</li>
+  <li><b>Physische Trennung:</b> Oft ein Schema oder Namespace pro Schicht (<code>bronze.*</code>, <code>silver.*</code>, <code>gold.*</code>). Fabric empfiehlt einen eigenen Workspace pro Schicht für Governance.</li>
+  <li><b>Zugriff:</b> Bronze ist für Data Engineers und Audit. Analysten und BI nutzen Silver und Gold.</li>
+</ol>
+
+<h2>5. Vergleich</h2>
+<ul>
+  <li><b>Bronze vs Staging-Tabelle im Warehouse:</b> Staging wird oft nach dem Laden geleert. Bronze bleibt dauerhaft und ist die Quelle für Reprocessing.</li>
+  <li><b>Silver vs normalisiertes Core-Modell:</b> ähnliche Rolle. Silver ist validiert und detailliert, aber noch nicht fachlich aggregiert.</li>
+  <li><b>Gold vs Data Mart:</b> fast dasselbe. Gold ist die Sicht für einen Fachbereich.</li>
+  <li><b>Medallion vs Data Vault:</b> Data Vault ist eine Modellierungsmethode (Hubs, Links, Satellites). Medallion sagt nur, welche Qualitätsstufe wo liegt. Man kann beides kombinieren.</li>
+  <li><b>Medallion vs Data Mesh:</b> Data Mesh ist ein Organisationsmodell mit Domänen. Fabric schlägt vor, Medallion innerhalb jeder Domäne zu nutzen.</li>
+</ul>
+
+<h2>6. In der Produktion</h2>
+<ol>
+  <li><b>Bronze wächst ohne Ende:</b> Rohdaten kosten Speicher. Lösung: Aufbewahrungsregel nach Fachlichkeit und Recht, alte Partitionen in billigeren Speicher.</li>
+  <li><b>Duplikate in Gold nach Retry:</b> Ein Job hängt an, statt zu ersetzen. Lösung: Gold pro Tag neu berechnen und atomar überschreiben.</li>
+  <li><b>Stille Datenverluste:</b> Silver wirft ungültige Zeilen weg, niemand merkt es. Lösung: Quarantäne-Tabelle plus Metrik und Alarm.</li>
+  <li><b>Reprocessing zu teuer:</b> Ein Voll-Rebuild dauert Stunden. Lösung: gute Partitionierung, nur betroffene Partitionen neu bauen.</li>
+  <li><b>Zu viele Schichten:</b> Teams bauen „Silver 2“ und „Gold Raw“. Jede Kopie kostet Speicher, Latenz und Pflege. Lösung: Schichten nur, wenn sie einen klaren Vertrag haben.</li>
+  <li><b>Schema-Änderung der Quelle:</b> Ein neues Feld bricht die Ingestion. Lösung: Bronze tolerant (Strings, VARIANT), Silver mit expliziter Schema Evolution.</li>
+</ol>
+
+<h2>7. Diagnose: Werkzeuge und Abfragen</h2>
+<ul>
+  <li><b>Zählerabgleich pro Schicht:</b> <code>count(*)</code> pro Tag in Bronze, Silver, Quarantäne, Gold. Bronze = Silver + Quarantäne + Duplikate.</li>
+  <li><b>Duplikate finden:</b> <code>SELECT key, count(*) FROM silver.t GROUP BY key HAVING count(*) &gt; 1</code>.</li>
+  <li><b>Herkunft:</b> Über Metadaten-Spalten (Datei, <code>message_id</code>) einen Gold-Wert bis zum Rohrecord zurückverfolgen.</li>
+  <li><b>Vorher/Nachher bei Reprocessing:</b> Iceberg Time Travel: <code>SELECT ... VERSION AS OF &lt;snapshot&gt;</code> mit dem neuen Stand vergleichen.</li>
+  <li><b>Paritäts-Job:</b> Ergebnisse automatisch gegen eine Referenz (z. B. Altsystem) vergleichen, Tabelle für Tabelle.</li>
+</ul>
+
+<h2>8. Senior-Punkte</h2>
+<div class="senior">
+<ol>
+  <li><b>Medallion ist eine Konvention,</b> keine Technologie. Der Wert liegt in klaren Verträgen: Was garantiert jede Schicht?</li>
+  <li><b>Bronze ist die Versicherung.</b> Ohne Rohdaten gibt es kein billiges Reprocessing. Das war oft der Grund, überhaupt ein Lakehouse zu bauen.</li>
+  <li><b>Reprocessing braucht Idempotenz.</b> Jeder Schritt muss eine Partition ersetzen können, ohne zu verdoppeln.</li>
+  <li><b>Kritik ernst nehmen:</b> Drei Kopien kosten Speicher und Latenz. Die Namen sagen wenig über den echten Inhalt. Manche Teams brauchen nur zwei Schichten, andere mehr.</li>
+  <li><b>Gold folgt der Frage,</b> nicht der Quelle. Eine Gold-Tabelle pro Use Case, mit Ownership.</li>
+  <li><b>Fachliche Entscheidungen sichtbar machen:</b> Tagesgrenze, Zeitzone, Rundung. Sie ändern Gold-Zahlen, ohne dass Code „falsch“ ist.</li>
+</ol>
+</div>
+
+<h2>9. Aus dem Projekt</h2>
+<p>„Bei ElCom MATCH: Bronze sind die geparsten XML-Records, Silver die typisierten, validierten und deduplizierten Contract-, Default- und Inside-Information-Tabellen, Gold die Statistik pro Tag. Gold rechnet einen ganzen Tag neu und ersetzt ihn, statt hochzuzählen – so sind Retries sicher.“ <span class="small">(Prüfen und durch dein echtes Beispiel ersetzen.)</span></p>
+
+<h2>10. Fallen</h2>
+<div class="trap">
+<ul>
+  <li>„Medallion heisst immer genau drei Schichten.“ → <b>Falsch.</b> Es ist eine Richtlinie. Databricks sagt: empfohlen, aber keine Anforderung.</li>
+  <li>„In Bronze bereinigt man schon ein bisschen.“ → <b>Falsch.</b> Bronze bleibt roh. Sonst verliert man die Basis für Reprocessing.</li>
+  <li>„Ungültige Zeilen in Silver einfach filtern.“ → <b>Falsch.</b> Ohne Quarantäne verschwinden Daten still.</li>
+  <li>„Gold kann man inkrementell hochzählen.“ → <b>Gefährlich.</b> Ein Retry zählt doppelt. Besser: Zeitraum neu berechnen und ersetzen.</li>
+  <li>„Medallion ist ein Datenmodell.“ → <b>Falsch.</b> Es sagt nur, wo welche Qualität liegt. Das Modell (z. B. Star Schema) kommt in Gold dazu.</li>
+</ul>
+</div>
+
+<h2>11. Fragen</h2>
+<details><summary>Was ist die Medallion-Architektur?</summary><p>Ein Muster mit drei Schichten: Bronze roh, Silver validiert, Gold fachlich aufbereitet. Die Qualität steigt pro Schicht.</p></details>
+<details><summary>Was gehört in Bronze?</summary><p>Rohdaten wie geliefert, nur angehängt, mit Metadaten wie Datei und Empfangszeit. Keine Bereinigung, möglichst tolerante Typen.</p></details>
+<details><summary>Warum speichert man in Bronze Strings?</summary><p>Damit eine Schema-Änderung oder ein kaputter Wert die Ingestion nicht bricht. Databricks empfiehlt string, VARIANT oder binary.</p></details>
+<details><summary>Was gehört in Silver?</summary><p>Typisierte, validierte, deduplizierte Daten auf Record-Ebene. Dazu Joins, Null-Handling, Behandlung später Daten.</p></details>
+<details><summary>Was gehört in Gold?</summary><p>Aggregate, Kennzahlen und dimensionale Modelle für BI, UI und ML. Optimiert für Abfragen und pro Fachbereich.</p></details>
+<details><summary>Warum nicht direkt aus der Quelle nach Silver schreiben?</summary><p>Schema-Änderungen und kaputte Records lassen dann die Ingestion scheitern, und man verliert die Rohdaten. Bronze puffert das ab.</p></details>
+<details><summary>Was bedeutet Reprocessing?</summary><p>Silver und Gold nach einem Bug-Fix oder einer Logik-Änderung aus Bronze neu berechnen. Die Quelle muss nichts neu liefern.</p></details>
+<details><summary>Was braucht man, damit Reprocessing sicher ist?</summary><p>Idempotente Schritte: Partition oder Schlüssel ersetzen statt anhängen. Dazu deterministische Schlüssel und atomare Commits.</p></details>
+<details><summary>Wie ersetzt man eine Partition in Iceberg?</summary><p>Mit MERGE INTO oder dynamischem INSERT OVERWRITE. Die Iceberg-Doku empfiehlt MERGE, weil es nur betroffene Dateien ersetzt.</p></details>
+<details><summary>Was passiert mit ungültigen Records?</summary><p>Sie gehen in eine Quarantäne-Tabelle mit Grund. Eine Metrik zeigt, wie viele es sind.</p></details>
+<details><summary>Wo dedupliziert man?</summary><p>In Silver, über einen fachlichen oder deterministischen Schlüssel. Bronze behält Duplikate bewusst.</p></details>
+<details><summary>Ist Medallion Pflicht?</summary><p>Nein. Es ist eine empfohlene Konvention. Die Zahl der Schichten richtet sich nach den Verträgen, die man braucht.</p></details>
+<details><summary>Was ist die Kritik an Medallion?</summary><p>Drei Kopien kosten Speicher und Latenz. Die Namen sind unscharf und sagen nichts über Verträge. Es ersetzt keine Datenmodellierung.</p></details>
+<details><summary>Medallion und Data Mesh: Widerspruch?</summary><p>Nein. Data Mesh organisiert nach Domänen, Medallion ordnet Qualität. Man kann Medallion in jeder Domäne nutzen.</p></details>
+<details><summary>Wie lange behält man Bronze?</summary><p>So lange Reprocessing und Audit es verlangen, begrenzt durch Kosten und Recht. Eine bewusste Aufbewahrungsregel ist nötig.</p></details>
+<details><summary>Wer darf welche Schicht lesen?</summary><p>Bronze: Data Engineers und Audit. Silver: Engineers, Analysten, Data Scientists. Gold: Business, BI, Anwendungen.</p></details>
+<details><summary>Szenario: Nach einem Job-Retry sind die Tagessummen in Gold zu hoch. Was ist falsch?</summary><p>Gold zählt Inkremente hoch statt den Tag neu zu berechnen. Lösung: den ganzen Tag aus Silver neu rechnen und atomar ersetzen.</p></details>
+<details><summary>Szenario: Ein Parser-Bug hat drei Monate lang Werte falsch gelesen. Wie gehen Sie vor?</summary><p>Parser fixen und testen. Dann betroffene Partitionen in Silver und Gold aus Bronze neu bauen, idempotent und atomar. Vorher/Nachher mit Time Travel vergleichen.</p></details>
+<details><summary>Szenario: Die Fachseite sagt, Bronze ist doch nur Ballast. Wie antworten Sie?</summary><p>Bronze ist die Basis für Reprocessing und Audit. Ohne Bronze braucht jeder Fix eine Neulieferung der Quelle. Speicher dafür ist billig im Vergleich.</p></details>
+
+</body>
+</html>

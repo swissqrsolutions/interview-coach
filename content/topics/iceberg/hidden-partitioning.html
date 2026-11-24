@@ -1,0 +1,220 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Hidden Partitioning und Partition Evolution</title>
+<style>
+  body { font: 17px/1.55 -apple-system, system-ui, sans-serif; max-width: 760px; margin: 0 auto; padding: 16px; color: #1d1d1f; }
+  h1 { font-size: 28px; margin: 8px 0 4px; }
+  h2 { font-size: 21px; margin: 32px 0 8px; padding-top: 12px; border-top: 2px solid #e5e5ea; }
+  .kern { background: #eef6ff; border-left: 4px solid #0a66c2; padding: 10px 14px; border-radius: 6px; }
+  .senior { background: #f0faf0; border-left: 4px solid #2e7d32; padding: 10px 14px; border-radius: 6px; }
+  .trap { background: #fff4f2; border-left: 4px solid #c62828; padding: 10px 14px; border-radius: 6px; }
+  code { background: #f2f2f7; padding: 1px 5px; border-radius: 4px; font-size: 15px; }
+  pre { background: #1e1e1e; color: #e6e6e6; padding: 12px; border-radius: 8px; overflow-x: auto; font-size: 13.5px; line-height: 1.45; }
+  svg { width: 100%; height: auto; display: block; margin: 10px 0; }
+  ol li, ul li { margin: 4px 0; }
+  details { border: 1px solid #e5e5ea; border-radius: 8px; padding: 8px 12px; margin: 6px 0; }
+  summary { font-weight: 600; cursor: pointer; }
+  details p { margin: 6px 0 2px; }
+  .small { color: #6e6e73; font-size: 14px; }
+</style>
+</head>
+<body>
+
+<h1>Hidden Partitioning und Partition Evolution</h1>
+<p class="small">Iceberg · Tier 1 · Quellen: Apache Iceberg Table Spec (Partitioning, Partition Transforms, Bucket/Truncate Details, Partition Evolution, Scan Planning), Iceberg 1.x Docs (Partitioning, Evolution, Spark DDL: PARTITIONED BY, ADD/DROP/REPLACE PARTITION FIELD, Spark Queries: SQL functions)</p>
+
+<div class="kern">
+<b>Hidden Partitioning</b> ist Iceberg-Partitionierung über <b>Transforms</b> auf normalen Spalten, z. B. <code>days(received_date)</code>. Iceberg berechnet den Partitionswert selbst und speichert ihn nur in den Metadaten. Abfragen filtern auf die echte Spalte, und Iceberg leitet den Partitionsfilter ab. <b>Partition Evolution</b> ändert das Layout später, ohne alte Daten umzuschreiben.
+</div>
+
+<h2>1. Wo sitzt die Partitionierung?</h2>
+<svg viewBox="0 0 720 310" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="a" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="10" y="20" width="200" height="66" rx="8" fill="#fff" stroke="#555"/><text x="110" y="44" text-anchor="middle" font-weight="700">Zeile</text><text x="110" y="64" text-anchor="middle" font-size="12">received_date = 2026-11-02 08:15</text><text x="110" y="79" text-anchor="middle" font-size="12">schema_type = TRADE</text>
+  <line x1="210" y1="53" x2="258" y2="53" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="260" y="20" width="200" height="66" rx="8" fill="#0a66c2"/><text x="360" y="44" text-anchor="middle" fill="#fff" font-weight="700">Partition Spec</text><text x="360" y="64" text-anchor="middle" fill="#fff" font-size="12">day(received_date)</text><text x="360" y="79" text-anchor="middle" fill="#fff" font-size="12">identity(schema_type)</text>
+  <line x1="460" y1="53" x2="508" y2="53" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="510" y="20" width="200" height="66" rx="8" fill="#dbe9fb" stroke="#0a66c2"/><text x="610" y="44" text-anchor="middle" font-weight="700">Partition Tuple</text><text x="610" y="64" text-anchor="middle" font-size="12">(2026-11-02, TRADE)</text><text x="610" y="79" text-anchor="middle" font-size="12">nur im Manifest</text>
+  <line x1="610" y1="86" x2="610" y2="128" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="460" y="130" width="250" height="56" rx="8" fill="#eee" stroke="#777"/><text x="585" y="153" text-anchor="middle" font-weight="700">Datei + Manifest-Eintrag</text><text x="585" y="172" text-anchor="middle" font-size="12">alle Zeilen einer Datei: gleiche Partition</text>
+  <rect x="10" y="130" width="380" height="56" rx="8" fill="#e8f5e9" stroke="#2e7d32"/><text x="200" y="153" text-anchor="middle" font-weight="700">Abfrage</text><text x="200" y="172" text-anchor="middle" font-size="12">WHERE received_date &gt;= '2026-11-02 00:00'</text>
+  <line x1="200" y1="186" x2="200" y2="228" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="10" y="230" width="380" height="56" rx="8" fill="#dbe9fb" stroke="#0a66c2"/><text x="200" y="253" text-anchor="middle" font-weight="700">Iceberg leitet ab</text><text x="200" y="272" text-anchor="middle" font-size="12">received_date_day &gt;= 2026-11-02</text>
+  <line x1="390" y1="258" x2="585" y2="190" stroke="#555" stroke-width="2" marker-end="url(#a)"/><text x="520" y="250" text-anchor="middle" font-size="12">filtert Manifests + Dateien</text>
+</svg>
+<ol>
+  <li><b>Quellspalte:</b> Eine normale Spalte im Schema. Beispiel: <code>received_date</code> (TIMESTAMP).</li>
+  <li><b>Partition Spec:</b> Eine Liste von Feldern aus Quellspalte, <b>Transform</b>, Name und <b>Partition Field ID</b>. Beispiel: <code>day(received_date)</code> heisst <code>received_date_day</code>.</li>
+  <li><b>Partition Tuple:</b> Die berechneten Werte pro Datei. Sie stehen im Manifest, nicht als Spalte in den Daten.</li>
+  <li><b>Datei:</b> Alle Zeilen einer Datei haben dasselbe Partition Tuple. Der Writer trennt die Daten danach.</li>
+  <li><b>Abfrage:</b> Der User filtert die echte Spalte. Iceberg übersetzt den Filter in einen Partitionsfilter (<b>inclusive projection</b>) und überspringt Dateien.</li>
+</ol>
+
+<h2>2. Die Reise einer Partition Evolution (die Geschichte zum Merken)</h2>
+<svg viewBox="0 0 720 300" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="b" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="10" y="20" width="220" height="70" rx="10" fill="#eee" stroke="#777"/><text x="120" y="44" text-anchor="middle" font-weight="700">1. Spec 0</text><text x="120" y="64" text-anchor="middle" font-size="12">month(received_date)</text><text x="120" y="80" text-anchor="middle" font-size="12">Daten bis Juni</text>
+  <line x1="230" y1="55" x2="268" y2="55" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="270" y="20" width="200" height="70" rx="10" fill="#0a66c2"/><text x="370" y="44" text-anchor="middle" fill="#fff" font-weight="700">2. ALTER TABLE</text><text x="370" y="64" text-anchor="middle" fill="#fff" font-size="12">REPLACE … WITH day(…)</text><text x="370" y="80" text-anchor="middle" fill="#fff" font-size="12">nur Metadaten</text>
+  <line x1="470" y1="55" x2="508" y2="55" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="510" y="20" width="200" height="70" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="610" y="44" text-anchor="middle" font-weight="700">3. Spec 1</text><text x="610" y="64" text-anchor="middle" font-size="12">day(received_date)</text><text x="610" y="80" text-anchor="middle" font-size="12">neue Daten ab Juli</text>
+  <line x1="610" y1="90" x2="610" y2="138" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="250" y="140" width="460" height="70" rx="10" fill="#fff" stroke="#555"/><text x="480" y="164" text-anchor="middle" font-weight="700">4. Split Planning</text><text x="480" y="184" text-anchor="middle" font-size="12">Spec-0-Manifests: received_date_month-Filter</text><text x="480" y="200" text-anchor="middle" font-size="12">Spec-1-Manifests: received_date_day-Filter</text>
+  <line x1="250" y1="175" x2="198" y2="175" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="10" y="140" width="186" height="70" rx="10" fill="#e8f5e9" stroke="#2e7d32"/><text x="103" y="164" text-anchor="middle" font-weight="700">5. Ein Ergebnis</text><text x="103" y="184" text-anchor="middle" font-size="12">gleiche Abfrage,</text><text x="103" y="200" text-anchor="middle" font-size="12">kein Umschreiben</text>
+  <line x1="103" y1="210" x2="103" y2="248" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="10" y="250" width="420" height="40" rx="10" fill="#fff" stroke="#999" stroke-dasharray="5 4"/><text x="220" y="275" text-anchor="middle" font-size="12">6. optional: rewrite_data_files → alte Dateien in Spec 1</text>
+</svg>
+<ol>
+  <li><b>Start:</b> Die Tabelle ist nach Monat partitioniert. Am Anfang kommen wenige Daten. Monatsdateien haben eine gute Grösse.</li>
+  <li><b>Mehr Last:</b> Die Daten wachsen stark. Abfragen auf einen Tag lesen einen ganzen Monat. Das Team ändert die Spec mit <code>ALTER TABLE … REPLACE PARTITION FIELD</code>.</li>
+  <li><b>Neue Spec:</b> Iceberg schreibt eine neue <code>metadata.json</code> mit Spec 1 als <code>default-spec-id</code>. Keine Datendatei wird bewegt. Neue Writes nutzen Spec 1.</li>
+  <li><b>Split Planning:</b> Eine Abfrage plant jede Spec für sich. Für alte Manifests leitet Iceberg einen Monatsfilter ab, für neue einen Tagesfilter. Jedes Manifest kennt seine <code>partition_spec_id</code>.</li>
+  <li><b>Ein Ergebnis:</b> Der User schreibt dieselbe SQL wie vorher. Er muss die Specs nicht kennen.</li>
+  <li><b>Optional umschreiben:</b> Wer alte Daten auch tageweise will, lässt <code>rewrite_data_files</code> laufen. Compaction schreibt mit der aktuellen Spec.</li>
+</ol>
+
+<h2>3. Beispiel: Tabelle mit Transforms, Abfrage, Evolution</h2>
+<pre>-- Spark SQL, Iceberg 1.x mit SQL Extensions, Catalog "cat" (Beispieltabelle)
+CREATE TABLE cat.demo.reports (
+  message_id STRING, schema_type STRING, received_date TIMESTAMP, volume DECIMAL(18,4))
+USING iceberg
+PARTITIONED BY (days(received_date), schema_type);
+
+-- Abfrage: nur die echte Spalte, keine Partitionsspalte
+EXPLAIN SELECT count(*) FROM cat.demo.reports
+WHERE received_date &gt;= TIMESTAMP '2026-11-02 00:00:00'
+  AND received_date &lt;  TIMESTAMP '2026-11-03 00:00:00'
+  AND schema_type = 'TRADE';
+
+-- Evolution: zusätzlich nach message_id bucketen
+ALTER TABLE cat.demo.reports ADD PARTITION FIELD bucket(8, message_id) AS msg_bucket;
+
+SELECT spec_id, count(*) AS files FROM cat.demo.reports.files GROUP BY spec_id;</pre>
+<pre>== Physical Plan ==
+… BatchScan cat.demo.reports[received_date, schema_type]
+    (branch=null) [filters=received_date &gt;= 1762041600000000,
+     received_date &lt; 1762128000000000, schema_type = 'TRADE', …]
+
+spec_id  files
+0        412     -- alte Dateien: (received_date_day, schema_type)
+1        3       -- neue Dateien: (received_date_day, schema_type, msg_bucket)</pre>
+<p class="small">Erwartetes Ergebnis (laut Doku, nicht ausgeführt). Format des Plans hängt von der Spark-Version ab; Zahlen sind Beispielwerte.</p>
+<ol>
+  <li><code>days(received_date)</code> erzeugt die Partition <code>received_date_day</code>. In der Tabelle gibt es keine solche Spalte.</li>
+  <li>Der Filter auf <code>received_date</code> wird an Iceberg gegeben (Pushed Filters). Iceberg macht daraus den Tagesfilter.</li>
+  <li><code>ADD PARTITION FIELD</code> ist nur eine Metadaten-Änderung. Sie braucht die Iceberg <b>SQL Extensions</b> (<code>spark.sql.extensions = org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions</code>).</li>
+  <li><code>.files</code> zeigt: Alte Dateien bleiben in Spec 0, neue landen in Spec 1. Beide Layouts leben in derselben Tabelle.</li>
+</ol>
+
+<h2>4. Details, die Interviewer fragen</h2>
+<ol>
+  <li><b>Transforms:</b>
+    <ul>
+      <li><code>identity</code>: Wert unverändert. Beispiel: <code>schema_type</code>.</li>
+      <li><code>year</code>, <code>month</code>, <code>day</code>, <code>hour</code>: Zeit seit 1970 in Jahren, Monaten, Tagen, Stunden. <code>hour</code> nur für Timestamps.</li>
+      <li><code>bucket[N]</code>: Hash-Wert modulo N. Für hohe Kardinalität wie IDs.</li>
+      <li><code>truncate[W]</code>: Strings auf W Zeichen kürzen, Zahlen auf Vielfache von W abrunden. Beispiel: <code>truncate(3)</code> macht aus <code>iceberg</code> <code>ice</code>.</li>
+      <li><code>void</code>: Immer <code>null</code>. Damit entfernt man Felder in v1-Tabellen.</li>
+    </ul></li>
+  <li><b>Bucket-Hash:</b> 32-bit <b>Murmur3</b> (x86, Seed 0): <code>(murmur3(x) &amp; Integer.MAX_VALUE) % N</code>. Jede Engine muss gleich rechnen, darum ist der Hash in der Spec festgelegt.</li>
+  <li><b>Spark-Syntax:</b> <code>PARTITIONED BY</code> nimmt <code>year</code>, <code>month</code>, <code>day</code>, <code>hour</code>, <code>bucket(N, col)</code>, <code>truncate(L, col)</code>. Die alten Formen <code>years</code>, <code>months</code>, <code>days</code>, <code>hours</code> gehen auch.</li>
+  <li><b>Hive-Problem 1:</b> In Hive ist die Partition eine echte Spalte, z. B. <code>dt STRING</code>. Der Writer muss sie korrekt füllen. Ein falsches Format oder eine falsche Zeitzone ergibt stille Fehler.</li>
+  <li><b>Hive-Problem 2:</b> Der Reader muss <code>WHERE dt = …</code> zusätzlich schreiben. Filtert er nur <code>received_date</code>, liest er alles.</li>
+  <li><b>Hive-Problem 3:</b> Ein Layout-Wechsel braucht eine neue Tabelle und neue Abfragen.</li>
+  <li><b>Inclusive Projection:</b> Iceberg wählt alle Dateien, die passen <b>könnten</b>. Den Rest filtert es beim Lesen (Residual Filter).</li>
+  <li><b>Partition Evolution:</b> <code>ADD</code>, <code>DROP</code> und <code>REPLACE PARTITION FIELD</code>. Jede Änderung ist eine neue Spec mit neuer <code>spec-id</code>. Alte Daten bleiben, wie sie sind.</li>
+  <li><b>Partition Field IDs:</b> Sie beginnen bei 1000 und bleiben stabil. Gleichwertige Felder müssen ihre ID wiederverwenden. In v2 sind sie über alle Specs eindeutig.</li>
+  <li><b>v1-Regeln:</b> Felder nicht umsortieren, nicht löschen (stattdessen <code>void</code>), neue Felder nur ans Ende.</li>
+  <li><b>DROP PARTITION FIELD:</b> Die Quellspalte bleibt im Schema. Aber das Schema der Metadata Tables (z. B. <code>.files</code>) ändert sich.</li>
+  <li><b>Dynamic Overwrite ändert sich:</b> <code>INSERT OVERWRITE</code> im dynamischen Modus ersetzt nach der aktuellen Spec. Nach Wechsel von Tag auf Stunde ersetzt er Stunden, nicht mehr Tage. Besser explizit mit <code>DataFrameWriterV2.overwrite(condition)</code>.</li>
+  <li><b>Zeitzone:</b> Spark <code>TIMESTAMP</code> ist in Iceberg <code>timestamptz</code>, also UTC. <code>day()</code> schneidet nach UTC-Tag, nicht nach Schweizer Tag.</li>
+  <li><b>SQL-Funktionen:</b> <code>system.days(ts)</code>, <code>system.bucket(16, id)</code> zeigen den Transform-Wert in Abfragen. Sie funktionieren nur über einen Iceberg-Catalog.</li>
+  <li><b>Type Promotion:</b> Eine Partitions-Quellspalte darf nur so geändert werden, dass der Transform gleich bleibt. <code>int</code> → <code>long</code> geht beim Bucket, <code>int</code> → <code>string</code> nicht.</li>
+  <li><b>v3:</b> Die Spec erlaubt <b>Multi-Argument-Transforms</b> (mehrere Quellspalten). Engine-Support prüfen.</li>
+</ol>
+
+<h2>5. Vergleich</h2>
+<ul>
+  <li><b>Hive-Partitionen:</b> sichtbare Spalte, Ordner pro Wert, starres Layout, User muss Partitionsfilter kennen.</li>
+  <li><b>Iceberg Hidden Partitioning:</b> Transform auf echter Spalte, Wert nur in Metadaten, Filter wird abgeleitet, Layout änderbar.</li>
+  <li><b>Delta Lake:</b> Partitionen über Spalten, abgeleitete Werte über Generated Columns. Layout-Wechsel braucht Umschreiben. Alternative: Liquid Clustering.</li>
+  <li><b>Sortierung statt Partition:</b> Eine Sort Order (<code>WRITE ORDERED BY</code>) gibt enge Min/Max pro Datei. Gut für Spalten mit hoher Kardinalität, die man nicht partitionieren will.</li>
+  <li><b>SQL-Server-Partitionierung:</b> Partition Function und Scheme pro Tabelle, für OLTP und Wartung. Kein Engine-übergreifendes Format.</li>
+</ul>
+
+<h2>6. In der Produktion</h2>
+<ol>
+  <li><b>Zu feine Partitionen:</b> <code>hour()</code> plus <code>identity</code> auf vielen Werten ergibt Tausende winzige Dateien. Abfragen und Planung werden langsam. Lösung: gröber partitionieren, Compaction, Ziel ist Dateigrösse nahe <code>write.target-file-size-bytes</code> (Standard 512 MB).</li>
+  <li><b>Kein Pruning:</b> Die Abfrage filtert <code>to_date(received_date) = '2026-11-02'</code> oder einen String. Der Filter wird nicht zum Partitionsfilter. Lösung: Bereich direkt auf der Spalte schreiben, Plan mit <code>EXPLAIN</code> prüfen.</li>
+  <li><b>Tag nach UTC statt Ortszeit:</b> Ein Report „pro Tag“ zählt Daten um Mitternacht im falschen Tag. Lösung: Zeitzone bewusst definieren und in der Geschäftslogik umrechnen.</li>
+  <li><b>Viele offene Writer pro Task:</b> Unsortierte Daten mit vielen Partitionen erzeugen viele Dateien pro Task und viel Speicher. Lösung: <code>write.distribution-mode</code> passend setzen (z. B. <code>hash</code>), Daten vor dem Write nach Partition verteilen.</li>
+  <li><b>Overwrite nach Spec-Wechsel:</b> Ein Job mit dynamischem Overwrite ersetzt plötzlich andere Bereiche. Lösung: explizites Overwrite mit Bedingung.</li>
+  <li><b>Metadata-Queries brechen:</b> Nach <code>DROP PARTITION FIELD</code> erwartet ein Monitoring-Query noch die alte Spalte in <code>.partitions</code>. Lösung: Queries anpassen, Feld lieber ersetzen als löschen.</li>
+</ol>
+
+<h2>7. Diagnose: Werkzeuge und Befehle</h2>
+<ul>
+  <li><code>DESCRIBE TABLE EXTENDED t</code> / <code>SHOW CREATE TABLE t</code>: aktuelle Partition Spec.</li>
+  <li><code>SELECT * FROM t.partitions</code>: Zeilen, Dateien und Grösse pro Partition, inkl. <code>spec_id</code>.</li>
+  <li><code>SELECT spec_id, partition, count(*), avg(file_size_in_bytes) FROM t.files GROUP BY 1, 2</code>: Small Files pro Partition.</li>
+  <li><code>EXPLAIN</code> und Spark UI: Pushed Filters und Anzahl gelesener Dateien.</li>
+  <li><code>SELECT system.days(received_date), system.bucket(8, message_id) FROM t</code>: welchen Partitionswert eine Zeile bekommt.</li>
+  <li><code>metadata.json</code>: <code>partition-specs</code>, <code>default-spec-id</code>, <code>last-partition-id</code>.</li>
+</ul>
+
+<h2>8. Senior-Punkte</h2>
+<div class="senior">
+<ol>
+  <li><b>Nach Abfragen partitionieren, nicht nach Bauchgefühl.</b> Die häufigsten Filter entscheiden. Zeit plus eine kleine Kategorie ist oft genug.</li>
+  <li><b>Lieber zu grob als zu fein.</b> Zu feine Partitionen kosten mehr als zu grobe. Evolution erlaubt es, später feiner zu werden.</li>
+  <li><b>Partition und Sortierung zusammen denken.</b> Partition für grobe Filter, Sort Order für Min/Max innerhalb der Partition.</li>
+  <li><b>Evolution ist kein Umbau.</b> Alte Daten bleiben im alten Layout. Wer einheitliches Layout will, plant eine Compaction.</li>
+  <li><b>Hidden Partitioning schützt vor User-Fehlern.</b> Niemand muss eine Partitionsspalte kennen oder richtig füllen. Das macht die Tabelle für viele Engines und Teams sicher.</li>
+  <li><b>bucket für Joins und Upserts:</b> Gleich gebuckete Tabellen erlauben in Spark Storage-Partitioned Joins ohne Shuffle. Die Anzahl Buckets ist aber schwer zu ändern.</li>
+</ol>
+</div>
+
+<h2>9. Aus dem Projekt</h2>
+<p>„Bei MATCH sind die Silver-Tabellen nach <code>days(received_date)</code> und <code>schema_type</code> partitioniert; Abfragen filtern nur auf <code>received_date</code>, und Iceberg prunt die Tage selbst – das war einer der Gründe für Iceberg.“ <span class="small">(Prüfen und durch dein echtes Beispiel ersetzen. Eine echte Partition Evolution steht nicht in deinen Notizen – nur nennen, wenn du sie gemacht hast. Die Zeitzone von <code>received_date</code> war ein Parity-Bug; prüfen, ob das mit dem UTC-Tag des Transforms zusammenhing, bevor du es so erzählst.)</span></p>
+
+<h2>10. Fallen</h2>
+<div class="trap">
+<ul>
+  <li>„Bei Iceberg muss ich auf die Partitionsspalte filtern.“ → <b>Falsch.</b> Man filtert die echte Spalte. Iceberg leitet den Partitionsfilter ab.</li>
+  <li>„Partition Evolution schreibt die Daten um.“ → <b>Falsch.</b> Nur Metadaten ändern sich. Alte Dateien bleiben in der alten Spec.</li>
+  <li>„Die Ordnerstruktur bestimmt die Partition.“ → <b>Falsch.</b> Die Partition steht im Manifest. Ordnernamen sind nur Konvention.</li>
+  <li>„Mehr Partitionen machen Abfragen immer schneller.“ → <b>Falsch.</b> Zu viele Partitionen erzeugen Small Files und lange Planung.</li>
+  <li>„<code>days(ts)</code> teilt nach lokalem Tag.“ → <b>Falsch.</b> Bei <code>timestamptz</code> nach UTC-Tag.</li>
+  <li>„DROP PARTITION FIELD löscht die Spalte.“ → <b>Falsch.</b> Nur das Partitionsfeld. Die Spalte bleibt im Schema.</li>
+</ul>
+</div>
+
+<h2>11. Fragen</h2>
+<details><summary>Was ist Hidden Partitioning?</summary><p>Partitionierung über Transforms auf normalen Spalten. Der Partitionswert steht nur in den Metadaten, und Iceberg leitet Partitionsfilter aus normalen Filtern ab.</p></details>
+<details><summary>Welche Probleme von Hive löst es?</summary><p>Keine extra Spalte füllen, kein vergessener Partitionsfilter, keine falschen Formate. Und das Layout kann sich ändern, ohne Abfragen zu ändern.</p></details>
+<details><summary>Welche Transforms gibt es?</summary><p>identity, year, month, day, hour, bucket[N], truncate[W] und void.</p></details>
+<details><summary>Wann nutze ich bucket?</summary><p>Bei Spalten mit hoher Kardinalität wie IDs, wenn man gleichmässig verteilen oder Joins ohne Shuffle will.</p></details>
+<details><summary>Wie wird bucket berechnet?</summary><p>32-bit Murmur3-Hash, Vorzeichenbit entfernt, modulo N. Die Spec legt das fest, damit alle Engines gleich rechnen.</p></details>
+<details><summary>Was macht truncate?</summary><p>Strings auf L Zeichen kürzen, Zahlen auf Vielfache von W abrunden. Beispiel: truncate(10) macht aus 17 eine 10.</p></details>
+<details><summary>Was ist eine Partition Spec?</summary><p>Die Liste der Partitionsfelder: Quellspalte, Transform, Name, Partition Field ID. Eine Tabelle kann mehrere Specs haben, eine ist der Standard.</p></details>
+<details><summary>Wie ändert man die Partitionierung in Spark?</summary><p>ALTER TABLE … ADD, DROP oder REPLACE PARTITION FIELD. Dafür braucht es die Iceberg SQL Extensions.</p></details>
+<details><summary>Was passiert mit alten Daten bei Partition Evolution?</summary><p>Nichts. Sie bleiben in der alten Spec. Abfragen planen jede Spec getrennt (Split Planning).</p></details>
+<details><summary>Wie bringe ich alte Daten ins neue Layout?</summary><p>Mit rewrite_data_files. Die Compaction schreibt die Dateien mit der aktuellen Spec neu.</p></details>
+<details><summary>Was ist inclusive projection?</summary><p>Iceberg übersetzt einen Spaltenfilter in einen Partitionsfilter, der alle möglichen Treffer einschliesst. Der genaue Filter läuft danach beim Lesen.</p></details>
+<details><summary>Warum wird mein Filter nicht zum Partitionsfilter?</summary><p>Weil eine Funktion auf der Spalte steht, z. B. to_date(col) oder ein String-Vergleich. Besser einen Bereich direkt auf der Spalte schreiben.</p></details>
+<details><summary>Was ist der void-Transform?</summary><p>Er liefert immer null. In v1-Tabellen ersetzt man damit ein Feld, statt es zu löschen.</p></details>
+<details><summary>Warum sind Partition Field IDs wichtig?</summary><p>Sie sind die Feld-IDs der Partitionswerte in den Manifests. Bleiben sie stabil, lesen Metadaten aller Specs korrekt.</p></details>
+<details><summary>Wie ändert Partition Evolution dynamische Overwrites?</summary><p>Dynamic Overwrite ersetzt nach der aktuellen Spec. Nach einem Wechsel werden andere Bereiche ersetzt. Darum explizit mit Bedingung überschreiben.</p></details>
+<details><summary>Partitionieren oder sortieren?</summary><p>Partition für grobe, häufige Filter mit wenigen Werten. Sort Order für feine Filter auf vielen Werten innerhalb der Partition.</p></details>
+<details><summary>Welche Zeitzone nutzt day()?</summary><p>Bei timestamptz die UTC-Zeit. Für Spark TIMESTAMP ist das der Fall.</p></details>
+<details><summary>Darf ich den Typ einer Partitions-Quellspalte ändern?</summary><p>Nur wenn der Transform danach gleiche Werte liefert, z. B. int zu long beim Bucket. Sonst lehnt Iceberg die Änderung ab.</p></details>
+<details><summary>Szenario: Eine Tabelle ist nach hour(ts) und customer_id partitioniert, Abfragen sind langsam. Was tun Sie?</summary><p>In t.files die Dateigrössen prüfen; wahrscheinlich viele winzige Dateien. Spec auf day(ts) und bucket(N, customer_id) ändern und alte Daten mit rewrite_data_files verdichten.</p></details>
+<details><summary>Szenario: Das Volumen ist zehnmal gestiegen, Tagespartitionen sind riesig. Brauchen Sie eine neue Tabelle?</summary><p>Nein. ADD PARTITION FIELD, z. B. bucket auf eine ID, oder REPLACE von day auf hour. Neue Daten nutzen das neue Layout, Abfragen bleiben gleich.</p></details>
+<details><summary>Szenario: Ein Tagesreport zeigt Daten kurz nach Mitternacht am falschen Tag. Woran denken Sie?</summary><p>An die Zeitzone: day() und viele Spark-Funktionen rechnen in UTC oder der Session-Zeitzone. Lösung: Geschäftstag explizit mit Zeitzone berechnen und Tests an der Tagesgrenze.</p></details>
+
+</body>
+</html>
