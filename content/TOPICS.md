@@ -2,7 +2,7 @@
 
 Generated from content/syllabus.json. Priority 1 = asked in almost every interview. Mark: **Projekt** = shown in CV/Gmail · **— kein Projekt** = no project experience · **? prüfen** = unclear, you decide.
 
-404 topics · P1 239 · P2 125 · P3 40 · written 158
+404 topics · P1 239 · P2 125 · P3 40 · written 174
 
 ## Java 21 (core + advanced) (40)
 Sources: Java SE 21/25 docs (docs.oracle.com) · JVM Specification · OpenJDK source + JEPs (openjdk.org) · Oracle Java SE 21 Developer exam 1Z0-830 topics
@@ -30,7 +30,7 @@ Sources: Java SE 21/25 docs (docs.oracle.com) · JVM Specification · OpenJDK so
 | 1 | Stream API: lazy, intermediate vs terminal, Collectors, parallel Streams | Projekt |  |
 | 1 | Lambdas, Functional Interfaces, Method References | Projekt |  |
 | 1 | Records, Sealed Classes, Pattern Matching, Switch Expressions | Projekt |  |
-| 1 | Interface vs abstrakte Klasse, default und static Methods | Projekt |  |
+| 1 | Interface vs abstrakte Klasse | Projekt | ✓ |
 | 1 | OOP-Grundlagen | Projekt | ✓ |
 | 1 | Java 8 bis 21 (und 25): wichtigste Neuerungen | Projekt |  |
 | 1 | Thread Dumps lesen und analysieren | ? prüfen |  |
@@ -63,11 +63,11 @@ Sources: Spring Framework reference · Spring Boot 3 reference · Spring Securit
 | 1 | Propagation und Isolation | Projekt | ✓ |
 | 1 | Spring Boot Auto-Configuration | Projekt | ✓ |
 | 1 | Konfiguration und Profiles | Projekt | ✓ |
-| 1 | Spring MVC: DispatcherServlet, Request-Ablauf, Filter vs Interceptor | Projekt |  |
-| 1 | Fehlerbehandlung: @ControllerAdvice, ProblemDetail | Projekt |  |
+| 1 | Spring MVC Request-Ablauf | Projekt | ✓ |
+| 1 | Fehlerbehandlung und ProblemDetail | Projekt | ✓ |
 | 1 | Spring Data JPA | Projekt | ✓ |
-| 1 | Spring Security: Filter Chain, Authentication, Authorization | Projekt |  |
-| 1 | Spring Security mit OAuth2 Resource Server und JWT | Projekt |  |
+| 1 | Spring Security Architektur | Projekt | ✓ |
+| 1 | OAuth2 Resource Server mit JWT | Projekt | ✓ |
 | 1 | Spring Testing: @SpringBootTest, Slices, MockitoBean, Testcontainers | Projekt |  |
 | 1 | Spring Boot 3: Jakarta, Java 17+, Native Images, Observability | Projekt |  |
 | 2 | Bean Validation: @Valid, eigene Validatoren | Projekt |  |
@@ -87,7 +87,7 @@ Sources: RFC 9110 HTTP Semantics · RFC 9457 Problem Details · OpenAPI 3.1 spec
 | 1 | HTTP-Methoden | Projekt | ✓ |
 | 1 | HTTP-Statuscodes | Projekt | ✓ |
 | 1 | Ressourcen-Design | Projekt | ✓ |
-| 1 | Pagination, Filter, Sortierung | Projekt |  |
+| 1 | Pagination und Filter | Projekt | ✓ |
 | 1 | API-Versionierung | ? prüfen |  |
 | 1 | OpenAPI, Contract-First, Code-Generierung | Projekt |  |
 | 1 | API-Sicherheit: Auth, CORS, CSRF, Rate Limiting | Projekt |  |
@@ -265,9 +265,9 @@ Sources: Hibernate ORM 6 user guide · Jakarta Persistence 3 spec · Vlad Mihalc
 
 | P | Topic | Project | Written |
 |---|---|---|---|
-| 1 | Entity-Zustände: transient, managed, detached, removed | Projekt |  |
-| 1 | Persistence Context, First-Level Cache, Flush, Dirty Checking | ? prüfen |  |
-| 1 | Lazy vs Eager Loading, LazyInitializationException | Projekt |  |
+| 1 | Entity-Lebenszyklus | Projekt | ✓ |
+| 1 | Persistence Context | ? prüfen | ✓ |
+| 1 | Lazy vs Eager Loading | Projekt | ✓ |
 | 1 | N+1-Problem: erkennen und lösen | ? prüfen |  |
 | 1 | Optimistic vs Pessimistic Locking | ? prüfen |  |
 | 1 | Flyway und Liquibase | Projekt |  |
@@ -329,11 +329,11 @@ Sources: Designing Data-Intensive Applications (Kleppmann) · Fundamentals of Da
 | 1 | Medallion-Architektur | Projekt | ✓ |
 | 1 | ETL vs ELT | Projekt | ✓ |
 | 1 | Batch vs Streaming | Projekt | ✓ |
-| 1 | Idempotente und crash-sichere Pipelines | Projekt |  |
+| 1 | Idempotente Pipelines | Projekt | ✓ |
 | 1 | Late Data, Watermarks, Backfills | ? prüfen | ✓ |
 | 1 | Datenqualität und Data Contracts | ? prüfen | ✓ |
 | 1 | Dateiformate: Parquet, Avro, ORC, CSV | Projekt | ✓ |
-| 1 | Small-Files-Problem | Projekt |  |
+| 1 | Small-Files-Problem | Projekt | ✓ |
 | 2 | Change Data Capture | — kein Projekt |  |
 | 2 | Governance, Lineage, Datenschutz | ? prüfen |  |
 
@@ -342,7 +342,7 @@ Sources: Dremio docs · Apache Arrow docs · Project Nessie docs · MinIO docs �
 
 | P | Topic | Project | Written |
 |---|---|---|---|
-| 1 | Project Nessie: Git für Daten | Projekt |  |
+| 1 | Project Nessie: Git für Daten | Projekt | ✓ |
 | 1 | Parquet intern: Row Groups, Column Chunks, Encoding, Predicate Pushdown | Projekt |  |
 | 2 | Dremio: Architektur und Reflections | Projekt |  |
 | 2 | Apache Arrow und Arrow Flight SQL | Projekt |  |
@@ -485,8 +485,8 @@ Sources: OWASP Top 10 (2025) · RFC 6749/9700 OAuth 2 · OpenID Connect Core · 
 
 | P | Topic | Project | Written |
 |---|---|---|---|
-| 1 | Authentifizierung vs Autorisierung | Projekt |  |
-| 1 | OAuth 2 Flows: Authorization Code + PKCE, Client Credentials | ? prüfen |  |
+| 1 | Authentifizierung vs Autorisierung | Projekt | ✓ |
+| 1 | OAuth 2 Flows | ? prüfen | ✓ |
 | 1 | OpenID Connect | ? prüfen |  |
 | 1 | JWT: Aufbau, Signatur, Validierung, Risiken | Projekt |  |
 | 1 | OWASP Top 10 | ? prüfen |  |
@@ -556,8 +556,8 @@ Sources: Design Patterns (GoF) · Hexagonal Architecture (Alistair Cockburn) · 
 | 1 | Layered Architecture | ? prüfen | ✓ |
 | 1 | Hexagonale Architektur | ? prüfen | ✓ |
 | 1 | Onion und Clean Architecture | ? prüfen | ✓ |
-| 1 | DDD taktisch: Entity, Value Object, Aggregate, Repository | ? prüfen |  |
-| 1 | Anti-Patterns und Code Smells | ? prüfen |  |
+| 1 | DDD taktisch | ? prüfen | ✓ |
+| 1 | Anti-Patterns und Code Smells | ? prüfen | ✓ |
 | 2 | DDD strategisch: Bounded Context, Context Map | ? prüfen |  |
 
 ## Search (Elasticsearch, OpenSearch, vector search) (6)

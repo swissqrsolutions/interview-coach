@@ -1,0 +1,221 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Small-Files-Problem</title>
+<style>
+  body { font: 17px/1.55 -apple-system, system-ui, sans-serif; max-width: 760px; margin: 0 auto; padding: 16px; color: #1d1d1f; }
+  h1 { font-size: 28px; margin: 8px 0 4px; }
+  h2 { font-size: 21px; margin: 32px 0 8px; padding-top: 12px; border-top: 2px solid #e5e5ea; }
+  .kern { background: #eef6ff; border-left: 4px solid #0a66c2; padding: 10px 14px; border-radius: 6px; }
+  .senior { background: #f0faf0; border-left: 4px solid #2e7d32; padding: 10px 14px; border-radius: 6px; }
+  .trap { background: #fff4f2; border-left: 4px solid #c62828; padding: 10px 14px; border-radius: 6px; }
+  code { background: #f2f2f7; padding: 1px 5px; border-radius: 4px; font-size: 15px; }
+  pre { background: #1e1e1e; color: #e6e6e6; padding: 12px; border-radius: 8px; overflow-x: auto; font-size: 13.5px; line-height: 1.45; }
+  svg { width: 100%; height: auto; display: block; margin: 10px 0; }
+  ol li, ul li { margin: 4px 0; }
+  details { border: 1px solid #e5e5ea; border-radius: 8px; padding: 8px 12px; margin: 6px 0; }
+  summary { font-weight: 600; cursor: pointer; }
+  details p { margin: 6px 0 2px; }
+  .small { color: #6e6e73; font-size: 14px; }
+</style>
+</head>
+<body>
+
+<h1>Small-Files-Problem</h1>
+<p class="small">Lakehouse · Tier 1 · Quellen: Apache Iceberg Docs (Configuration, Spark Writes: Writing Distribution Modes, Controlling File Sizes; Spark Procedures: rewrite_data_files, expire_snapshots, remove_orphan_files), Spark SQL Performance Tuning</p>
+
+<div class="kern">
+<b>Kern:</b> Das <b>Small-Files-Problem</b> heisst: Eine Tabelle besteht aus sehr vielen kleinen Dateien statt aus wenigen grossen. Jede Datei kostet beim Planen, Öffnen und Lesen einen festen Betrag, egal wie klein sie ist. Die Lösung ist zweiteilig: beim Schreiben weniger und grössere Dateien erzeugen, und regelmässig mit <b>Compaction</b> zusammenfassen.
+</div>
+
+<h2>1. Wo entstehen die Kosten?</h2>
+<svg viewBox="0 0 720 300" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="a" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="10" y="20" width="150" height="56" rx="8" fill="#fff" stroke="#555"/><text x="85" y="44" text-anchor="middle" font-weight="700">Query</text><text x="85" y="63" text-anchor="middle" font-size="12">Dremio, Spark</text>
+  <line x1="160" y1="48" x2="208" y2="48" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="210" y="20" width="170" height="56" rx="8" fill="#dbe9fb" stroke="#0a66c2"/><text x="295" y="44" text-anchor="middle" font-weight="700">① Planung</text><text x="295" y="63" text-anchor="middle" font-size="12">Manifeste: 1 Eintrag/Datei</text>
+  <line x1="380" y1="48" x2="428" y2="48" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="430" y="20" width="140" height="56" rx="8" fill="#dbe9fb" stroke="#0a66c2"/><text x="500" y="44" text-anchor="middle" font-weight="700">② Tasks</text><text x="500" y="63" text-anchor="middle" font-size="12">Overhead pro Task</text>
+  <line x1="570" y1="48" x2="608" y2="48" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="610" y="20" width="100" height="56" rx="8" fill="#0a66c2"/><text x="660" y="44" text-anchor="middle" fill="#fff" font-weight="700">③ I/O</text><text x="660" y="63" text-anchor="middle" fill="#fff" font-size="12">GET + Footer</text>
+  <line x1="660" y1="76" x2="660" y2="128" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="200" y="130" width="510" height="150" rx="10" fill="#f7f7fa" stroke="#999" stroke-dasharray="5 4"/>
+  <text x="455" y="152" text-anchor="middle" font-weight="700">Object Store (MinIO): eine Partition</text>
+  <g fill="#fff4f2" stroke="#c62828">
+    <rect x="220" y="168" width="22" height="22"/><rect x="246" y="168" width="22" height="22"/><rect x="272" y="168" width="22" height="22"/><rect x="298" y="168" width="22" height="22"/><rect x="324" y="168" width="22" height="22"/><rect x="350" y="168" width="22" height="22"/><rect x="376" y="168" width="22" height="22"/><rect x="402" y="168" width="22" height="22"/>
+    <rect x="220" y="194" width="22" height="22"/><rect x="246" y="194" width="22" height="22"/><rect x="272" y="194" width="22" height="22"/><rect x="298" y="194" width="22" height="22"/><rect x="324" y="194" width="22" height="22"/><rect x="350" y="194" width="22" height="22"/><rect x="376" y="194" width="22" height="22"/><rect x="402" y="194" width="22" height="22"/>
+  </g>
+  <text x="320" y="240" text-anchor="middle" font-size="12">vorher: 1500 Dateien à 1–4 MB</text>
+  <line x1="440" y1="192" x2="488" y2="192" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="500" y="168" width="90" height="48" fill="#e8f5e9" stroke="#2e7d32"/><rect x="600" y="168" width="90" height="48" fill="#e8f5e9" stroke="#2e7d32"/>
+  <text x="595" y="240" text-anchor="middle" font-size="12">nachher: wenige à ~512 MB</text>
+  <text x="455" y="268" text-anchor="middle" font-size="12">gleiche Daten, weniger Overhead</text>
+</svg>
+<ol>
+  <li><b>Planung (①):</b> Iceberg führt jede Datendatei als Eintrag in einem <b>Manifest</b>. Mehr Dateien heisst mehr Manifest-Einträge und längere Planung.</li>
+  <li><b>Tasks (②):</b> Spark verteilt Dateien auf Tasks. Jeder Task hat einen festen Start-Overhead. Tausende Mini-Tasks verschwenden Zeit.</li>
+  <li><b>I/O (③):</b> Jede Datei braucht mindestens einen Request an den Object Store, dazu das Lesen des Parquet-Footers. Bei kleinen Dateien dominiert dieser Overhead.</li>
+  <li><b>Schlechte Kompression:</b> Kleine Parquet-Dateien haben kleine Row Groups. Statistiken und Dictionaries wirken weniger.</li>
+  <li><b>Metadaten wachsen:</b> Jeder Commit schreibt neue Metadaten und Manifeste. Viele kleine Commits machen auch die Metadaten gross.</li>
+</ol>
+
+<h2>2. Die Reise einer Tabelle: von tausend Dateien zurück zu zehn</h2>
+<svg viewBox="0 0 720 310" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="b" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="10" y="20" width="160" height="66" rx="10" fill="#fff4f2" stroke="#c62828"/><text x="90" y="46" text-anchor="middle" font-weight="700">1. Viele kleine</text><text x="90" y="66" text-anchor="middle" font-size="12">Commits pro Meldung</text>
+  <line x1="170" y1="53" x2="208" y2="53" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="210" y="20" width="160" height="66" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="290" y="46" text-anchor="middle" font-weight="700">2. Planen</text><text x="290" y="66" text-anchor="middle" font-size="12">Kandidaten, Gruppen</text>
+  <line x1="370" y1="53" x2="408" y2="53" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="410" y="20" width="140" height="66" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="480" y="46" text-anchor="middle" font-weight="700">3. Umschreiben</text><text x="480" y="66" text-anchor="middle" font-size="12">Spark-Job</text>
+  <line x1="550" y1="53" x2="588" y2="53" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="590" y="20" width="120" height="66" rx="10" fill="#0a66c2"/><text x="650" y="46" text-anchor="middle" fill="#fff" font-weight="700">4. Commit</text><text x="650" y="66" text-anchor="middle" fill="#fff" font-size="12">replace</text>
+  <line x1="650" y1="86" x2="650" y2="148" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="470" y="150" width="240" height="66" rx="10" fill="#fff" stroke="#555"/><text x="590" y="176" text-anchor="middle" font-weight="700">5. expire_snapshots</text><text x="590" y="196" text-anchor="middle" font-size="12">alte Dateien wirklich löschen</text>
+  <line x1="470" y1="183" x2="398" y2="183" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="160" y="150" width="236" height="66" rx="10" fill="#fff" stroke="#555"/><text x="278" y="176" text-anchor="middle" font-weight="700">6. remove_orphan_files</text><text x="278" y="196" text-anchor="middle" font-size="12">Reste abgebrochener Jobs</text>
+  <rect x="160" y="240" width="550" height="50" rx="10" fill="#e8f5e9" stroke="#2e7d32"/><text x="435" y="270" text-anchor="middle">Leser sehen während allem einen konsistenten Snapshot</text>
+</svg>
+<ol>
+  <li><b>Viele kleine Dateien:</b> Jede Meldung wird in einem eigenen Spark-Job geschrieben. Jeder Job ist ein Commit mit wenigen MB pro Partition.</li>
+  <li><b>Planen:</b> <code>rewrite_data_files</code> sucht pro Partition Dateien ausserhalb der Zielgrösse. Mit Standardwerten: unter 75 % oder über 180 % von 512 MB. Es bildet Gruppen.</li>
+  <li><b>Umschreiben:</b> Ein Spark-Job liest jede Gruppe und schreibt neue Dateien nahe 512 MB. Bei <code>strategy => 'sort'</code> sortiert er dabei auch.</li>
+  <li><b>Commit:</b> Iceberg tauscht alte gegen neue Dateien in einem atomaren <b>Replace-Snapshot</b>. Leser sehen vorher die alten, nachher die neuen Dateien. Die Daten bleiben gleich.</li>
+  <li><b>expire_snapshots:</b> Die alten Dateien gehören noch zu alten Snapshots (Time Travel). Erst nach dem Ablaufen der Snapshots löscht Iceberg sie physisch.</li>
+  <li><b>remove_orphan_files:</b> Abgebrochene Jobs hinterlassen Dateien, die in keinem Snapshot stehen. Dieses Verfahren findet und löscht sie.</li>
+</ol>
+
+<h2>3. Beispiel: Compaction planen</h2>
+<pre>CALL nessie.system.rewrite_data_files(
+  table   => 'silver.trades',
+  where   => 'received_date &gt;= "2026-11-01"',
+  options => map('target-file-size-bytes', '536870912',
+                 'partial-progress.enabled', 'true'));
+CALL nessie.system.expire_snapshots(table => 'silver.trades',
+                                    older_than => TIMESTAMP '2026-11-17 00:00:00');</pre>
+<p class="small">Erwartetes Ergebnis (laut Iceberg-Doku, nicht ausgeführt): eine Zeile mit <code>rewritten_data_files_count</code>, <code>added_data_files_count</code>, <code>rewritten_bytes_count</code>, <code>failed_data_files_count</code>, <code>removed_delete_files_count</code>.</p>
+<p>Spark läuft hier nicht. Eine Python-Simulation zeigt die Planungsregel von binpack mit den Standardwerten (Ziel 512 MB, min 75 %, max 180 %, <code>min-input-files</code> 5) und den Öffnungs-Overhead von Spark (<code>openCostInBytes</code> = 4 MB):</p>
+<pre>files in partition : 1502  total 5,343 MB
+outside 384..921 MB: 1501 files -> rewrite (min-input-files 5 reached)
+inside the range   : 1 file(s) -> untouched
+new files ~        : 10 x ~512 MB
+before:  1500 files to open, open cost   6000 MB-equivalent for 3,743 MB data
+after :     8 files to open, open cost     32 MB-equivalent for 3,743 MB data</pre>
+<p class="small">Echte Ausgabe, Python 3.12 (eigene, vereinfachte Simulation der Regeln, kein Iceberg).</p>
+<ol>
+  <li>Eine Tages-Partition hat 1500 Dateien à 1–4 MB, dazu eine Datei mit 600 MB und eine mit 1000 MB.</li>
+  <li>Die 600-MB-Datei liegt im Bereich 384–921 MB. Sie bleibt unberührt.</li>
+  <li>Die 1000-MB-Datei ist <b>zu gross</b> (über 180 %). Auch sie wird umgeschrieben und geteilt.</li>
+  <li>Spark rechnet pro Datei 4 MB „Öffnungskosten“ beim Verteilen auf Tasks. Bei 1500 Mini-Dateien ist dieser Overhead grösser als die Daten selbst.</li>
+  <li>Nach der Compaction ist der Overhead fast null. Das ist der Gewinn, nicht die Datenmenge.</li>
+</ol>
+
+<h2>4. Details, die Interviewer fragen</h2>
+<ol>
+  <li><b>Ursachen:</b>
+    <ul>
+      <li><b>Häufige kleine Commits:</b> Micro-Batches, Streaming, ein Job pro eingehender Datei.</li>
+      <li><b>Zu viele Partitionen:</b> zu feine Partitionierung (z. B. pro Stunde und Kunde). Jede Partition bekommt eigene Dateien.</li>
+      <li><b>Zu viele Writer-Tasks:</b> Jeder Spark-Task schreibt pro Partition mindestens eine Datei. 200 Tasks × 30 Partitionen = bis zu 6000 Dateien.</li>
+      <li><b>Merge-on-Read:</b> Jedes <code>DELETE</code> oder <code>UPDATE</code> schreibt kleine <b>Delete Files</b>.</li>
+      <li><b>Späte Daten:</b> Nachzügler schreiben kleine Dateien in alte Partitionen.</li>
+    </ul></li>
+  <li><b>Zielgrösse:</b> Iceberg schreibt Dateien bis <code>write.target-file-size-bytes</code>, Standard 512 MB. Der Writer rollt dann auf eine neue Datei.</li>
+  <li><b>Grenze durch den Task:</b> Laut Iceberg-Doku kann Spark keine Datei grösser als einen Task schreiben. Eine Datei überspannt auch keine Partitionsgrenze. Kleine Tasks geben also kleine Dateien, egal welche Zielgrösse.</li>
+  <li><b>Write Distribution Mode</b> (<code>write.distribution-mode</code>): legt fest, wie Spark Zeilen vor dem Schreiben verteilt.
+    <ul>
+      <li><b>none:</b> kein Shuffle. Jeder Task schreibt in jede Partition, die er sieht. Viele kleine Dateien.</li>
+      <li><b>hash:</b> Shuffle nach Partitionswert. Jede Partition landet bei wenigen Tasks. Laut Doku der neue Standard. Seit Iceberg 1.2.0 fordert Iceberg zusätzlich eine Sortierung vor dem Schreiben an.</li>
+      <li><b>range:</b> Shuffle mit Sampling für globale Sortierung. Teurer, Standard bei Tabellen mit Sort Order.</li>
+    </ul></li>
+  <li><b>AQE und Dateigrösse:</b> Mit Distribution Mode ungleich <code>none</code> bildet AQE Tasks nach <code>spark.sql.adaptive.advisoryPartitionSizeInBytes</code> (Standard 64 MB). Das ist Shuffle-Grösse, nicht Dateigrösse. Für grosse Dateien muss der Wert höher sein, weil Parquet stark komprimiert.</li>
+  <li><b>Fanout Writer:</b> Er schreibt ohne Sortierung in viele Partitionen gleichzeitig. Dafür bleiben alle Datei-Handles offen bis zum Ende des Tasks. Das kostet Speicher.</li>
+  <li><b><code>rewrite_data_files</code>-Optionen (Standard):</b> <code>target-file-size-bytes</code> 512 MB, <code>min-file-size-bytes</code> 75 %, <code>max-file-size-bytes</code> 180 %, <code>min-input-files</code> 5, <code>max-concurrent-file-group-rewrites</code> 5, <code>partial-progress.enabled</code> false.</li>
+  <li><b>Strategien:</b> <b>binpack</b> (Standard) fasst nur zusammen, ohne Sortierung, am billigsten. <b>sort</b> sortiert nach einer Sort Order. Mit <code>sort_order => 'zorder(c1,c2)'</code> oder <code>hilbert(...)</code> sortiert sort über mehrere Spalten für besseres Data Skipping.</li>
+  <li><b>Partial Progress:</b> Mit <code>partial-progress.enabled</code> committet Iceberg Gruppen einzeln (bis <code>partial-progress.max-commits</code>, Standard 10). Ein Fehler wirft dann nicht die ganze Arbeit weg.</li>
+  <li><b>Konflikte:</b> Compaction und Schreib-Jobs committen auf dieselbe Tabelle. Iceberg nutzt <b>optimistic concurrency</b>. Schreibt ein Job gleichzeitig in dieselben Dateien, scheitert ein Commit und muss wiederholt werden. Darum Compaction mit <code>where</code> auf ruhige Partitionen begrenzen.</li>
+  <li><b>Metadaten auch kompaktieren:</b> <code>rewrite_manifests</code> fasst Manifeste zusammen. <code>expire_snapshots</code> (Standard: älter als 5 Tage, mindestens 1 behalten) löscht alte Snapshots. <code>remove_orphan_files</code> (Standard: älter als 3 Tage) löscht Waisen.</li>
+</ol>
+
+<h2>5. Vergleich</h2>
+<ul>
+  <li><b>Vorbeugen beim Schreiben:</b> Batching, Distribution Mode hash, weniger Partitionen. Kein zusätzlicher Job, aber Schreiben dauert länger.</li>
+  <li><b>Compaction danach:</b> flexibel, kostet extra Rechenzeit und Commits. Pflicht bei Streaming und Merge-on-Read.</li>
+  <li><b>binpack vs sort:</b> binpack ist billig und behebt nur die Dateizahl. sort kostet mehr und verbessert zusätzlich das Skipping.</li>
+  <li><b><code>coalesce(n)</code> in Spark:</b> weniger Tasks ohne Shuffle. Einfach, aber kann einen Task überlasten.</li>
+  <li><b><code>repartition</code> / REBALANCE-Hint:</b> Shuffle für gleichmässige Tasks. Kostet einen Shuffle, gibt gleich grosse Dateien.</li>
+  <li><b>Delta Lake <code>OPTIMIZE</code>:</b> das Gegenstück zu <code>rewrite_data_files</code>. <code>VACUUM</code> entspricht etwa <code>expire_snapshots</code> plus Löschen der Dateien.</li>
+</ul>
+
+<h2>6. In der Produktion</h2>
+<ol>
+  <li><b>Abfragen werden Woche für Woche langsamer:</b> Die Dateizahl wächst mit jedem Commit. Lösung: geplante Compaction pro Partition, Dateizahl als Metrik.</li>
+  <li><b>Compaction spart keinen Speicher:</b> Die alten Dateien hängen noch an alten Snapshots. Lösung: danach <code>expire_snapshots</code>.</li>
+  <li><b>Compaction-Commit scheitert:</b> Ein Ingestion-Job schreibt gleichzeitig. Lösung: nur abgeschlossene Partitionen kompaktieren, Partial Progress, Zeitfenster.</li>
+  <li><b>Merge-on-Read wird langsam:</b> Viele Delete Files müssen beim Lesen angewendet werden. Lösung: Compaction, die Deletes einarbeitet (<code>delete-file-threshold</code>, <code>remove-dangling-deletes</code>).</li>
+  <li><b>Planung dauert lang, obwohl wenig Daten:</b> Zu viele Manifeste. Lösung: <code>rewrite_manifests</code>.</li>
+  <li><b>Object Store voll:</b> Abgebrochene Jobs hinterlassen Waisen. Lösung: <code>remove_orphan_files</code> regelmässig, mit genug Abstand zu laufenden Jobs.</li>
+</ol>
+
+<h2>7. Diagnose: Abfragen und Werkzeuge</h2>
+<ul>
+  <li><b>Dateien pro Partition:</b> <code>SELECT partition, file_count, record_count FROM db.t.partitions ORDER BY file_count DESC</code>.</li>
+  <li><b>Grössenverteilung:</b> <code>SELECT COUNT(*), AVG(file_size_in_bytes)/1024/1024 AS avg_mb FROM db.t.files</code>.</li>
+  <li><b>Commits zählen:</b> <code>SELECT COUNT(*) FROM db.t.snapshots WHERE committed_at &gt; current_date - 1</code>.</li>
+  <li><b>Delete Files:</b> <code>db.t.delete_files</code> bzw. <code>content</code> in <code>db.t.files</code> (0 = Daten, 1 = Position Deletes, 2 = Equality Deletes).</li>
+  <li><b>Spark UI:</b> „number of files read“ im Scan und viele sehr kurze Tasks sind typische Zeichen.</li>
+  <li><b>Object Store:</b> <code>mc du</code> und <code>mc ls --recursive</code> (MinIO Client) zeigen Menge und Grösse der Dateien.</li>
+</ul>
+
+<h2>8. Senior-Punkte</h2>
+<div class="senior">
+<ol>
+  <li><b>Vorbeugen ist billiger als Reparieren.</b> Erst Batching und Distribution Mode, dann Compaction als Ergänzung.</li>
+  <li><b>Partitionierung bestimmt die Dateizahl.</b> Zu feine Partitionen erzeugen immer kleine Dateien. Faustregel: Eine Partition sollte mehrere Zieldateien füllen.</li>
+  <li><b>Compaction ist Betrieb, kein Einmal-Job.</b> Sie braucht Zeitplan, Monitoring und Alarm.</li>
+  <li><b>Compaction und Ingestion konkurrieren.</b> Partitionen trennen (nur abgeschlossene Tage) oder Zeitfenster festlegen.</li>
+  <li><b>Wartung mit Nessie bewusst planen.</b> Die Iceberg-Doku warnt, dass Tabellenwartung mit Nessie komplizierter ist. Nessie GC sieht alle Branches, Iceberg-Prozeduren nur den aktuellen Stand.</li>
+  <li><b>Zielgrösse passend wählen.</b> 512 MB ist ein Standard für grosse Scans. Bei kleinen Tabellen oder vielen Punktabfragen können kleinere Dateien sinnvoll sein.</li>
+</ol>
+</div>
+
+<h2>9. Aus dem Projekt</h2>
+<p>„Bei MATCH entstehen kleine Dateien durch die bedarfsgesteuerte Ingestion: Der .NET-Worker startet Spark-Jobs, sobald Meldungen warten. Wir begegnen dem mit Batch-Claims, also mehreren Meldungen pro Job, und mit regelmässigem <code>rewrite_data_files</code> und <code>expire_snapshots</code>.“ <span class="small">(Prüfen und durch dein echtes Beispiel ersetzen. Genaue Zielgrösse und Zeitplan der Compaction in MATCH nachsehen.)</span></p>
+
+<h2>10. Fallen</h2>
+<div class="trap">
+<ul>
+  <li>„Compaction spart sofort Speicher.“ → <b>Falsch.</b> Erst <code>expire_snapshots</code> löscht die alten Dateien physisch.</li>
+  <li>„Eine grössere Zielgrösse löst das Problem.“ → <b>Falsch.</b> Ist der Task klein, bleibt die Datei klein. Die Verteilung beim Schreiben zählt.</li>
+  <li>„Compaction ändert die Daten.“ → <b>Falsch.</b> Gleiche Zeilen, nur anders auf Dateien verteilt. Ein Replace-Snapshot.</li>
+  <li>„Mehr Partitionen machen Abfragen immer schneller.“ → <b>Falsch.</b> Zu viele Partitionen erzeugen kleine Dateien.</li>
+  <li>„remove_orphan_files kann man jederzeit mit kleinem Alter laufen lassen.“ → <b>Gefährlich.</b> Laufende Jobs haben Dateien, die noch nicht committet sind. Darum der Standard von 3 Tagen.</li>
+</ul>
+</div>
+
+<h2>11. Fragen</h2>
+<details><summary>Warum sind kleine Dateien ein Problem?</summary><p>Jede Datei kostet fest: Manifest-Eintrag, Planung, Request, Footer, Task-Overhead. Bei kleinen Dateien ist der Overhead grösser als die Arbeit.</p></details>
+<details><summary>Wie entstehen kleine Dateien?</summary><p>Durch häufige kleine Commits, zu feine Partitionierung, zu viele Writer-Tasks, Merge-on-Read Deletes und späte Daten.</p></details>
+<details><summary>Was ist Compaction?</summary><p>Kleine Dateien werden gelesen und als wenige grosse Dateien neu geschrieben. In Iceberg mit rewrite_data_files, atomar als Replace-Snapshot.</p></details>
+<details><summary>Welche Zielgrösse nutzt Iceberg standardmässig?</summary><p>512 MB, über write.target-file-size-bytes. rewrite_data_files nutzt denselben Standard.</p></details>
+<details><summary>Welche Dateien schreibt rewrite_data_files mit binpack um?</summary><p>Dateien unter 75 % oder über 180 % der Zielgrösse. Eine Gruppe braucht standardmässig mindestens 5 Dateien.</p></details>
+<details><summary>binpack vs sort vs zorder?</summary><p>binpack fasst nur zusammen und ist billig. sort sortiert dabei nach einer Ordnung. zorder ist eine sort_order der sort-Strategie und sortiert über mehrere Spalten für besseres Data Skipping.</p></details>
+<details><summary>Warum spart Compaction nicht sofort Speicher?</summary><p>Die alten Dateien gehören noch zu alten Snapshots. Erst expire_snapshots löscht sie.</p></details>
+<details><summary>Was macht write.distribution-mode?</summary><p>Er legt fest, wie Spark Zeilen vor dem Schreiben verteilt: none, hash oder range. Hash bündelt jede Partition auf wenige Tasks und gibt weniger Dateien.</p></details>
+<details><summary>Warum kann Spark keine 512-MB-Datei schreiben, obwohl das Ziel 512 MB ist?</summary><p>Eine Datei ist nie grösser als der Task, der sie schreibt. Kleine Tasks geben kleine Dateien.</p></details>
+<details><summary>Was ist der Fanout Writer?</summary><p>Er schreibt ohne Sortierung in viele Partitionen gleichzeitig. Dafür bleiben alle Datei-Handles offen, das kostet Speicher.</p></details>
+<details><summary>Was macht partial-progress.enabled?</summary><p>Iceberg committet Gruppen einzeln. Ein Fehler in einer Gruppe wirft nicht die ganze Compaction weg.</p></details>
+<details><summary>Warum kann ein Compaction-Commit scheitern?</summary><p>Ein anderer Job hat gleichzeitig dieselben Dateien geändert. Iceberg nutzt optimistic concurrency, der Commit muss dann wiederholt werden.</p></details>
+<details><summary>Was macht rewrite_manifests?</summary><p>Es fasst Manifest-Dateien zusammen. Das beschleunigt die Planung bei vielen Commits.</p></details>
+<details><summary>Was macht remove_orphan_files und warum vorsichtig?</summary><p>Es löscht Dateien, die in keinem Snapshot stehen. Ein zu kleines Alter kann Dateien laufender Jobs löschen. Standard: älter als 3 Tage.</p></details>
+<details><summary>Wie hängen Merge-on-Read und kleine Dateien zusammen?</summary><p>Jeder Delete schreibt kleine Delete Files. Leser müssen sie anwenden. Compaction arbeitet sie in die Datendateien ein.</p></details>
+<details><summary>Wie messen Sie das Problem?</summary><p>Mit den Metadaten-Tabellen: files für Anzahl und Grösse, partitions für Dateien pro Partition, snapshots für die Commit-Rate.</p></details>
+<details><summary>Was ist das Gegenstück in Delta Lake?</summary><p>OPTIMIZE für Compaction und VACUUM zum Löschen alter Dateien.</p></details>
+<details><summary>Was kostet openCostInBytes in Spark?</summary><p>Spark rechnet pro Datei 4 MB Öffnungskosten beim Verteilen auf Tasks. So landen kleine Dateien gebündelt in einem Task.</p></details>
+<details><summary>Szenario: Eine Iceberg-Abfrage dauert jede Woche länger, die Datenmenge wächst kaum. Was prüfen Sie?</summary><p>Dateien pro Partition und Snapshots pro Tag in den Metadaten-Tabellen. Wahrscheinlich kleine Dateien und viele Manifeste. Lösung: rewrite_data_files, rewrite_manifests, expire_snapshots.</p></details>
+<details><summary>Szenario: Ein Streaming-Job schreibt jede Minute in eine Iceberg-Tabelle. Was planen Sie?</summary><p>Längeres Trigger-Intervall wo möglich, Distribution Mode hash, und eine geplante Compaction für abgeschlossene Partitionen. Dazu expire_snapshots.</p></details>
+<details><summary>Szenario: Nach der Compaction ist der MinIO-Speicher grösser als vorher. Warum?</summary><p>Alte und neue Dateien existieren gleichzeitig, weil alte Snapshots sie noch halten. Nach expire_snapshots wird der Platz frei.</p></details>
+
+</body>
+</html>

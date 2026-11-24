@@ -1,0 +1,224 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lazy vs Eager Loading</title>
+<style>
+  body { font: 17px/1.55 -apple-system, system-ui, sans-serif; max-width: 760px; margin: 0 auto; padding: 16px; color: #1d1d1f; }
+  h1 { font-size: 28px; margin: 8px 0 4px; }
+  h2 { font-size: 21px; margin: 32px 0 8px; padding-top: 12px; border-top: 2px solid #e5e5ea; }
+  .kern { background: #eef6ff; border-left: 4px solid #0a66c2; padding: 10px 14px; border-radius: 6px; }
+  .senior { background: #f0faf0; border-left: 4px solid #2e7d32; padding: 10px 14px; border-radius: 6px; }
+  .trap { background: #fff4f2; border-left: 4px solid #c62828; padding: 10px 14px; border-radius: 6px; }
+  code { background: #f2f2f7; padding: 1px 5px; border-radius: 4px; font-size: 15px; }
+  pre { background: #1e1e1e; color: #e6e6e6; padding: 12px; border-radius: 8px; overflow-x: auto; font-size: 13.5px; line-height: 1.45; }
+  svg { width: 100%; height: auto; display: block; margin: 10px 0; }
+  ol li, ul li { margin: 4px 0; }
+  details { border: 1px solid #e5e5ea; border-radius: 8px; padding: 8px 12px; margin: 6px 0; }
+  summary { font-weight: 600; cursor: pointer; }
+  details p { margin: 6px 0 2px; }
+  .small { color: #6e6e73; font-size: 14px; }
+</style>
+</head>
+<body>
+
+<h1>Lazy vs Eager Loading</h1>
+<p class="small">Hibernate · Tier 1 · Quellen: Jakarta Persistence 3.2 (API-Doku <code>OneToOne</code>, <code>OneToMany</code>, <code>EntityManager.find(EntityGraph, …)</code>), Introduction to Hibernate 7 (Kap. 5.6, 5.7, 8.4), Hibernate ORM 6.0 Migration Guide (DISTINCT), Hibernate-Quellcode <code>MultipleBagFetchException</code> und <code>TransactionSettings</code>, Spring Boot Reference (Open EntityManager in View) und Quellcode <code>JpaBaseConfiguration</code></p>
+
+<div class="kern">
+<b>Kern:</b> Lazy Loading heisst: Hibernate lädt eine Beziehung erst, wenn der Code sie benutzt. Eager Loading heisst: Hibernate lädt sie sofort mit. Lazy spart unnötige Daten, braucht aber eine offene Session beim ersten Zugriff. Die richtige Antwort ist fast immer: <b>alles LAZY mappen</b> und pro Use Case gezielt mit <b>JOIN FETCH</b>, <b>Entity Graph</b> oder <b>DTO-Projektion</b> laden.
+</div>
+
+<h2>1. Wo sitzt Lazy Loading?</h2>
+<svg viewBox="0 0 720 290" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="a" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="10" y="20" width="170" height="60" rx="8" fill="#fff" stroke="#555"/><text x="95" y="44" text-anchor="middle" font-weight="700">Book (geladen)</text><text x="95" y="64" text-anchor="middle" font-size="12">id=1, title="Buch 1"</text>
+  <line x1="180" y1="50" x2="258" y2="50" stroke="#555" stroke-width="2" marker-end="url(#a)"/><text x="219" y="40" text-anchor="middle" font-size="12">author</text>
+  <rect x="260" y="20" width="200" height="60" rx="8" fill="#dbe9fb" stroke="#0a66c2"/><text x="360" y="44" text-anchor="middle" font-weight="700">Proxy Author#1</text><text x="360" y="64" text-anchor="middle" font-size="12">nur ID, Unterklasse</text>
+  <line x1="180" y1="120" x2="258" y2="120" stroke="#555" stroke-width="2" marker-end="url(#a)"/><text x="219" y="110" text-anchor="middle" font-size="12">reviews</text>
+  <rect x="10" y="95" width="170" height="50" rx="8" fill="#fff" stroke="#555"/><text x="95" y="125" text-anchor="middle">Book.reviews</text>
+  <rect x="260" y="95" width="200" height="50" rx="8" fill="#dbe9fb" stroke="#0a66c2"/><text x="360" y="117" text-anchor="middle" font-weight="700">PersistentBag</text><text x="360" y="135" text-anchor="middle" font-size="12">leer, nicht initialisiert</text>
+  <rect x="520" y="20" width="190" height="125" rx="10" fill="#f7f7fa" stroke="#999" stroke-dasharray="5 4"/><text x="615" y="44" text-anchor="middle" font-weight="700">Session offen?</text>
+  <line x1="460" y1="50" x2="518" y2="70" stroke="#555" stroke-width="2" marker-end="url(#a)"/><line x1="460" y1="120" x2="518" y2="100" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="535" y="58" width="160" height="34" rx="6" fill="#0a66c2"/><text x="615" y="80" text-anchor="middle" fill="#fff" font-size="13">ja → SELECT</text>
+  <rect x="535" y="100" width="160" height="34" rx="6" fill="#c62828"/><text x="615" y="122" text-anchor="middle" fill="#fff" font-size="13">nein → Exception</text>
+  <rect x="10" y="190" width="700" height="80" rx="8" fill="#fff" stroke="#555"/>
+  <text x="20" y="214" font-weight="700">Defaults laut JPA</text>
+  <text x="20" y="238">@ManyToOne, @OneToOne → EAGER</text>
+  <text x="380" y="238">@OneToMany, @ManyToMany → LAZY</text>
+  <text x="20" y="260">@ElementCollection → LAZY</text>
+  <text x="380" y="260">@Basic (Spalten) → EAGER</text>
+</svg>
+<ol>
+  <li><b>Proxy:</b> Für eine lazy To-one-Beziehung setzt Hibernate eine generierte Unterklasse des Entity ein. Sie kennt nur die ID. Der erste Aufruf eines Getters (ausser <code>getId()</code>) löst ein SELECT aus.</li>
+  <li><b>Persistent Collection:</b> Für eine lazy Collection setzt Hibernate eine eigene <code>List</code>/<code>Set</code>-Klasse ein, z. B. <code>PersistentBag</code>. <code>size()</code> oder Iterieren lädt sie.</li>
+  <li><b>Session offen:</b> Dann lädt Hibernate nach. Session zu: <b>LazyInitializationException</b>.</li>
+  <li><b>Defaults:</b> To-one ist EAGER, To-many ist LAZY. Das ist eine bekannte Falle der JPA-Spezifikation.</li>
+</ol>
+
+<h2>2. Die Reise eines Lazy-Zugriffs (die Geschichte zum Merken)</h2>
+<svg viewBox="0 0 720 300" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="b" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker><marker id="r" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#c62828"/></marker></defs>
+  <rect x="10" y="30" width="150" height="64" rx="10" fill="#fff" stroke="#555"/><text x="85" y="56" text-anchor="middle" font-weight="700">1 Service</text><text x="85" y="76" text-anchor="middle" font-size="12">find(Author)</text>
+  <line x1="160" y1="62" x2="198" y2="62" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="200" y="30" width="150" height="64" rx="10" fill="#fff" stroke="#555"/><text x="275" y="56" text-anchor="middle" font-weight="700">2 Commit</text><text x="275" y="76" text-anchor="middle" font-size="12">Session zu</text>
+  <line x1="350" y1="62" x2="388" y2="62" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="390" y="30" width="150" height="64" rx="10" fill="#fff" stroke="#555"/><text x="465" y="56" text-anchor="middle" font-weight="700">3 Controller</text><text x="465" y="76" text-anchor="middle" font-size="12">JSON-Mapping</text>
+  <line x1="540" y1="62" x2="578" y2="62" stroke="#c62828" stroke-width="2" marker-end="url(#r)"/>
+  <rect x="580" y="30" width="130" height="64" rx="10" fill="#fff4f2" stroke="#c62828"/><text x="645" y="56" text-anchor="middle" font-weight="700">4 Exception</text><text x="645" y="76" text-anchor="middle" font-size="12">getBooks()</text>
+  <text x="360" y="140" text-anchor="middle" font-weight="700">Drei saubere Wege: Daten laden, solange die Session offen ist</text>
+  <rect x="10" y="160" width="220" height="110" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="120" y="186" text-anchor="middle" font-weight="700">JOIN FETCH</text><text x="120" y="208" text-anchor="middle" font-size="12">in der Query</text><text x="120" y="228" text-anchor="middle" font-size="12">join fetch a.books</text>
+  <rect x="250" y="160" width="220" height="110" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="360" y="186" text-anchor="middle" font-weight="700">Entity Graph</text><text x="360" y="208" text-anchor="middle" font-size="12">pro Aufruf</text><text x="360" y="228" text-anchor="middle" font-size="12">@EntityGraph("books")</text>
+  <rect x="490" y="160" width="220" height="110" rx="10" fill="#0a66c2" stroke="#0a66c2"/><text x="600" y="186" text-anchor="middle" fill="#fff" font-weight="700">DTO-Projektion</text><text x="600" y="208" text-anchor="middle" fill="#fff" font-size="12">nur nötige Spalten</text><text x="600" y="228" text-anchor="middle" fill="#fff" font-size="12">select new BookDto(...)</text>
+</svg>
+<ol>
+  <li><b>Laden:</b> Der Service lädt einen <code>Author</code>. <code>books</code> ist LAZY, also nur eine leere Hülle.</li>
+  <li><b>Commit:</b> <code>@Transactional</code> endet. Die Session schliesst. Der Author ist detached.</li>
+  <li><b>Controller:</b> Jackson ruft <code>getBooks()</code> auf, um JSON zu bauen.</li>
+  <li><b>Exception:</b> Die Hülle will nachladen, hat aber keine Session mehr: <code>LazyInitializationException</code>.</li>
+  <li><b>Lösung:</b> Die nötigen Daten <b>in</b> der Transaktion laden: per JOIN FETCH, Entity Graph oder direkt als DTO. Und Entities nicht als JSON nach aussen geben.</li>
+</ol>
+
+<h2>3. Beispiel: was JOIN FETCH in der Datenbank kostet</h2>
+<pre>// HQL
+select a from Author a left join fetch a.books where a.id = 1</pre>
+<p>Hibernate erzeugt ein SQL mit LEFT JOIN. So sieht das Ergebnis in PostgreSQL aus (100 Autoren, 1000 Bücher, 3000 Reviews):</p>
+<pre>select a.id as a_id, a.name, b.id as b_id, b.title
+from author a left join book b on b.author_id = a.id
+where a.id = 1 order by b.id limit 4;
+
+ a_id |  name   | b_id |  title
+------+---------+------+----------
+    1 | Autor 1 |    1 | Buch 1
+    1 | Autor 1 |  101 | Buch 101
+    1 | Autor 1 |  201 | Buch 201
+    1 | Autor 1 |  301 | Buch 301
+(4 rows)
+
+-- ein Autor mit seinen Büchern
+select count(*) as zeilen from author a left join book b on b.author_id=a.id where a.id=1;
+ zeilen
+--------
+     10
+
+-- dazu noch die Reviews der Bücher (zwei Collections)
+select count(*) as zeilen from author a left join book b on b.author_id=a.id
+  left join review r on r.book_id=b.id where a.id=1;
+ zeilen
+--------
+     30
+
+-- dasselbe für alle Autoren
+select count(*) as zeilen from author a left join book b on b.author_id=a.id
+  left join review r on r.book_id=b.id;
+ zeilen
+--------
+   3000</pre>
+<p class="small">Echte Ausgabe, PostgreSQL 17.12.</p>
+<ol>
+  <li>Ein JOIN wiederholt die Autor-Spalten in jeder Zeile. Für 1 Autor kommen 10 Zeilen.</li>
+  <li>Hibernate 6+ entfernt die doppelten Autor-Objekte selbst. <code>distinct</code> ist in HQL dafür nicht mehr nötig.</li>
+  <li>Mit einer zweiten Ebene (Reviews) wächst das Ergebnis: 1 × 10 × 3 = 30 Zeilen. Zwei <b>parallele</b> Collections (z. B. <code>books</code> und <code>awards</code>) ergeben ein <b>kartesisches Produkt</b>: Anzahl Bücher × Anzahl Awards.</li>
+  <li>Sind beide Collections <code>List</code> ohne Index (<b>Bags</b>), lehnt Hibernate das ab: <code>MultipleBagFetchException: cannot simultaneously fetch multiple bags</code>.</li>
+  <li>Regel: pro Query höchstens <b>eine</b> Collection fetchen. Weitere per <code>@BatchSize</code> oder in einer zweiten Query.</li>
+</ol>
+
+<h2>4. Details, die Interviewer fragen</h2>
+<ol>
+  <li><b>Warum To-one auf LAZY setzen?</b> EAGER ist der JPA-Default für <code>@ManyToOne</code> und <code>@OneToOne</code>. In Queries lädt Hibernate EAGER-Beziehungen oft mit <b>zusätzlichen SELECTs</b> nach, weil die Query sie nicht joint. Das erzeugt N+1. Die Hibernate-Doku empfiehlt: alle Beziehungen <code>fetch = LAZY</code>.</li>
+  <li><b>EAGER kann man nicht abschalten.</b> Eine Query kann LAZY zu EAGER machen (JOIN FETCH), aber nicht umgekehrt.</li>
+  <li><b>LAZY ist nur ein Hinweis.</b> Laut JPA darf der Provider trotzdem laden. Beispiel: Die inverse Seite eines <code>@OneToOne</code> (mit <code>mappedBy</code>) lädt Hibernate ohne Bytecode Enhancement immer, weil es nicht weiss, ob dort <code>null</code> steht.</li>
+  <li><b>Lazy Spalten:</b> <code>@Basic(fetch = LAZY)</code> für grosse Spalten (z. B. ein PostGIS-Polygon oder ein BLOB) wirkt nur mit <b>Bytecode Enhancement</b>.</li>
+  <li><b><code>getId()</code> auf einem Proxy</b> lädt nichts. Die ID ist im Proxy gespeichert.</li>
+  <li><b>Proxy und <code>instanceof</code>/<code>getClass()</code>:</b> Der Proxy ist eine Unterklasse. <code>getClass()</code> liefert die Proxy-Klasse. Darum in <code>equals()</code> nicht <code>getClass()</code> vergleichen. <code>Hibernate.unproxy(obj)</code> liefert das echte Objekt.</li>
+  <li><b>Entity Graph:</b> <code>@NamedEntityGraph</code> oder <code>em.createEntityGraph(...)</code> beschreibt, was mitkommt. Als Hint:
+    <ul>
+      <li><code>jakarta.persistence.fetchgraph</code>: Graph-Attribute EAGER, alle anderen LAZY.</li>
+      <li><code>jakarta.persistence.loadgraph</code>: Graph-Attribute EAGER, alle anderen nach ihrem Mapping.</li>
+    </ul>
+    Seit JPA 3.2 gibt es <code>em.find(entityGraph, id)</code>. In Spring Data: <code>@EntityGraph(attributePaths = "books")</code>.</li>
+  <li><b>DTO-Projektion:</b> <code>select new com.x.BookDto(b.id, b.title, a.name) from Book b join b.author a</code>. Keine Entities, kein Persistence Context, keine Lazy-Fallen, nur nötige Spalten. Ideal für Lese-Pfade und Listen.</li>
+  <li><b><code>Hibernate.initialize(a.getBooks())</code>:</b> lädt eine Collection explizit, solange die Session offen ist.</li>
+</ol>
+
+<h2>5. Vergleich</h2>
+<ul>
+  <li><b>FetchType.EAGER im Mapping:</b> immer geladen, überall. Kein Weg zurück pro Query. Fast nie richtig.</li>
+  <li><b>JOIN FETCH:</b> eine Query, ein SQL, pro Use Case. Gut für eine Collection oder To-one-Ketten. Schlecht für mehrere Collections und Pagination.</li>
+  <li><b>Entity Graph:</b> dasselbe wie JOIN FETCH, aber getrennt von der Query. Gut mit Spring-Data-Methoden wie <code>findById</code>.</li>
+  <li><b>@BatchSize / Subselect:</b> lazy, aber gebündelt: ein SELECT für viele Eltern. Gut für mehrere Collections.</li>
+  <li><b>DTO-Projektion:</b> kein Entity, nur Daten. Am schnellsten für Lesen. Nicht zum Ändern gedacht.</li>
+  <li><b>Open Session in View:</b> lässt Lazy Loading bis in die View zu. Bequem, aber versteckte Queries ausserhalb der Transaktion.</li>
+</ul>
+
+<h2>6. In der Produktion</h2>
+<ol>
+  <li><b>LazyInitializationException im Controller:</b> Entity wird nach dem Commit als JSON serialisiert. Fix: DTO im Service bauen, nötige Beziehungen per JOIN FETCH oder Entity Graph laden.</li>
+  <li><b>Open in View versteckt N+1:</b> In Spring Boot ist <code>spring.jpa.open-in-view</code> standardmässig an. Beim Start warnt Boot: „spring.jpa.open-in-view is enabled by default. Therefore, database queries may be performed during view rendering.“ Die Connection bleibt bis zum Ende des Requests belegt. Fix: <code>spring.jpa.open-in-view=false</code> und Daten im Service laden.</li>
+  <li><b><code>hibernate.enable_lazy_load_no_trans=true</code> als „Fix“:</b> Jeder Lazy-Zugriff öffnet eine eigene Session und Transaktion. Das erzeugt versteckte N+1 und inkonsistente Daten. Hibernate markiert die Einstellung als unsicher und rät davon ab.</li>
+  <li><b>EAGER-Kette lädt halbe Datenbank:</b> <code>Book → Author → Publisher → Country</code>, alles EAGER. Ein <code>findAll()</code> erzeugt dutzende SELECTs. Fix: alles LAZY, gezielt fetchen.</li>
+  <li><b>Speicher-Explosion bei JOIN FETCH:</b> Zwei Collections in einer Query, kartesisches Produkt. Fix: eine Collection per JOIN FETCH, die andere per <code>@BatchSize</code>.</li>
+  <li><b>Jackson und Proxies:</b> Serialisierung eines nicht geladenen Proxys wirft Fehler oder löst Lazy Loading aus. Fix: keine Entities als API-Modell.</li>
+</ol>
+
+<h2>7. Diagnose: Werkzeuge und Befehle</h2>
+<ul>
+  <li><code>logging.level.org.hibernate.SQL=DEBUG</code>: zeigt jedes Lazy-SELECT. Ein SELECT nach dem Ende der Service-Methode bedeutet Open in View.</li>
+  <li><code>Hibernate.isInitialized(a.getBooks())</code>: ist die Collection geladen?</li>
+  <li><code>PersistenceUnitUtil.isLoaded(entity, "books")</code>: die JPA-Variante.</li>
+  <li><code>hibernate.generate_statistics=true</code>: Anzahl Entity-Loads und Collection-Loads pro Session.</li>
+  <li>Beim Start im Log auf die Open-in-View-Warnung achten.</li>
+  <li>PostgreSQL: <code>EXPLAIN ANALYZE</code> auf das erzeugte JOIN-SQL. Grosse Zeilenzahl = kartesisches Produkt.</li>
+</ul>
+
+<h2>8. Senior-Punkte</h2>
+<div class="senior">
+<ol>
+  <li><b>Mapping: alles LAZY.</b> Fetch-Strategie gehört in die Query, nicht ins Mapping. So entscheidet jeder Use Case selbst.</li>
+  <li><b>Lesen und Schreiben trennen:</b> Listen und Reports als DTO-Projektion. Entities nur dort, wo man ändert.</li>
+  <li><b>Open in View aus.</b> Es koppelt die Connection-Dauer an die Request-Dauer und versteckt Queries. Bewusst laden ist besser.</li>
+  <li><b>Eine Collection pro Query.</b> Mehr Collections → Batch Fetching oder mehrere Queries. Das ist oft schneller als ein grosser JOIN.</li>
+  <li><b>Grosse Spalten getrennt halten:</b> Geometrien oder BLOBs in eigene Entities oder per Projektion ausschliessen, wenn kein Bytecode Enhancement aktiv ist.</li>
+  <li><b>Lazy Loading ist kein Bug, sondern ein Vertrag:</b> Wer ein Entity aus der Transaktion gibt, muss sagen, was geladen ist.</li>
+</ol>
+</div>
+
+<h2>9. Aus dem Projekt</h2>
+<p>„Bei NABODAT habe ich mit Hibernate auf PostgreSQL/PostGIS gearbeitet und Lazy-Loading-Data-Tables (PrimeFaces) gebaut, die nur die sichtbare Seite laden statt die ganze Tabelle.“ <span class="small">(Prüfen und durch dein echtes Beispiel ersetzen. Konkrete LazyInitializationException-Fälle stehen nicht im Profil.)</span></p>
+
+<h2>10. Fallen</h2>
+<div class="trap">
+<ul>
+  <li>„@ManyToOne ist standardmässig LAZY.“ → <b>Falsch.</b> Laut JPA ist es EAGER. Man muss <code>fetch = LAZY</code> selbst setzen.</li>
+  <li>„EAGER verhindert N+1.“ → Nein. Bei Queries lädt Hibernate EAGER-Beziehungen oft mit Extra-SELECTs. Das ist N+1.</li>
+  <li>„enable_lazy_load_no_trans löst LazyInitializationException.“ → Es versteckt sie und erzeugt viele Mini-Transaktionen.</li>
+  <li>„Mit JOIN FETCH lade ich einfach alle Collections auf einmal.“ → Kartesisches Produkt oder MultipleBagFetchException.</li>
+  <li>„Für JOIN FETCH brauche ich DISTINCT gegen Duplikate.“ → In Hibernate 6+ nicht mehr. Hibernate entfernt doppelte Eltern selbst.</li>
+</ul>
+</div>
+
+<h2>11. Fragen</h2>
+<details><summary>Was ist Lazy Loading?</summary><p>Hibernate lädt eine Beziehung erst beim ersten Zugriff. Bis dahin steht ein Proxy oder eine leere Collection-Hülle da.</p></details>
+<details><summary>Welche Fetch-Defaults hat JPA?</summary><p>@ManyToOne und @OneToOne: EAGER. @OneToMany, @ManyToMany und @ElementCollection: LAZY. Einfache Spalten: EAGER.</p></details>
+<details><summary>Was ist ein Hibernate-Proxy?</summary><p>Eine generierte Unterklasse des Entity, die nur die ID kennt. Ein Getter-Aufruf lädt die Daten nach.</p></details>
+<details><summary>Wann kommt eine LazyInitializationException?</summary><p>Wenn ein Proxy oder eine lazy Collection nachladen will, die Session aber schon geschlossen ist. Typisch: JSON-Mapping nach dem Commit.</p></details>
+<details><summary>Wie lösen Sie eine LazyInitializationException richtig?</summary><p>Daten in der Transaktion laden: JOIN FETCH, Entity Graph oder DTO-Projektion. Nicht mit EAGER oder enable_lazy_load_no_trans.</p></details>
+<details><summary>Warum sollte @ManyToOne LAZY sein?</summary><p>EAGER lädt die Beziehung immer, bei Queries oft mit Extra-SELECTs pro Zeile. Das ist N+1 und kann pro Query nicht abgeschaltet werden.</p></details>
+<details><summary>Was ist JOIN FETCH?</summary><p>Ein JOIN in HQL/JPQL, der die Beziehung im selben SQL lädt und befüllt. Die Beziehung ist danach initialisiert.</p></details>
+<details><summary>Was ist der Unterschied zwischen fetchgraph und loadgraph?</summary><p>fetchgraph: nur die Graph-Attribute eager, alles andere lazy. loadgraph: Graph-Attribute eager, alles andere nach Mapping.</p></details>
+<details><summary>Warum nicht zwei Collections per JOIN FETCH laden?</summary><p>Das ergibt ein kartesisches Produkt. Bei zwei Bags wirft Hibernate MultipleBagFetchException.</p></details>
+<details><summary>Was ist Open Session in View?</summary><p>Die Session bleibt bis zum Ende des Web-Requests offen. Lazy Loading geht dann auch in der View. In Spring Boot ist es per Default an, mit Warnung.</p></details>
+<details><summary>Warum schalten Sie Open in View aus?</summary><p>Es versteckt Queries ausserhalb der Transaktion, fördert N+1 und hält die Connection den ganzen Request lang.</p></details>
+<details><summary>Wann ist eine DTO-Projektion besser als ein Entity?</summary><p>Bei Lese-Pfaden wie Listen und Reports. Nur nötige Spalten, kein Persistence Context, keine Lazy-Probleme.</p></details>
+<details><summary>Lädt getId() auf einem Proxy die Daten?</summary><p>Nein. Die ID ist im Proxy gespeichert. Erst andere Getter lösen ein SELECT aus.</p></details>
+<details><summary>Warum ist die inverse Seite von @OneToOne oft nicht lazy?</summary><p>Hibernate weiss ohne Abfrage nicht, ob dort null oder ein Objekt steht. Ohne Bytecode Enhancement lädt es darum sofort.</p></details>
+<details><summary>Wie macht man eine grosse Spalte lazy?</summary><p>@Basic(fetch = LAZY) mit Bytecode Enhancement. Ohne Enhancement: eigene Entity oder DTO-Projektion ohne die Spalte.</p></details>
+<details><summary>Was ist an equals() mit getClass() bei Proxies falsch?</summary><p>Der Proxy ist eine Unterklasse. getClass() ist dann ungleich, und equals liefert false für dasselbe Entity.</p></details>
+<details><summary>Brauche ich in Hibernate 6 DISTINCT bei JOIN FETCH?</summary><p>Nein. Hibernate 6 filtert doppelte Eltern-Objekte selbst aus dem Ergebnis.</p></details>
+<details><summary>Szenario: Ein REST-Endpoint wirft „could not initialize proxy - no Session“. Was tun Sie?</summary><p>Die Antwort als DTO im Service bauen und die nötigen Beziehungen dort per JOIN FETCH oder Entity Graph laden. Nicht EAGER und nicht enable_lazy_load_no_trans.</p></details>
+<details><summary>Szenario: Eine Seite mit 50 Zeilen braucht 51 Queries, obwohl alles LAZY ist. Warum?</summary><p>Die View greift auf eine Beziehung pro Zeile zu, und Open in View lädt nach. Fix: Open in View aus, im Service per JOIN FETCH oder DTO laden.</p></details>
+<details><summary>Szenario: Eine Detail-Query mit JOIN FETCH auf Bücher und Awards braucht plötzlich Sekunden. Warum?</summary><p>Zwei Collections im selben JOIN ergeben ein kartesisches Produkt. Fix: nur eine per JOIN FETCH, die andere per @BatchSize oder zweiter Query.</p></details>
+
+</body>
+</html>

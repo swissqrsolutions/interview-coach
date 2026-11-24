@@ -1,0 +1,232 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Authentifizierung vs Autorisierung</title>
+<style>
+  body { font: 17px/1.55 -apple-system, system-ui, sans-serif; max-width: 760px; margin: 0 auto; padding: 16px; color: #1d1d1f; }
+  h1 { font-size: 28px; margin: 8px 0 4px; }
+  h2 { font-size: 21px; margin: 32px 0 8px; padding-top: 12px; border-top: 2px solid #e5e5ea; }
+  .kern { background: #eef6ff; border-left: 4px solid #0a66c2; padding: 10px 14px; border-radius: 6px; }
+  .senior { background: #f0faf0; border-left: 4px solid #2e7d32; padding: 10px 14px; border-radius: 6px; }
+  .trap { background: #fff4f2; border-left: 4px solid #c62828; padding: 10px 14px; border-radius: 6px; }
+  code { background: #f2f2f7; padding: 1px 5px; border-radius: 4px; font-size: 15px; }
+  pre { background: #1e1e1e; color: #e6e6e6; padding: 12px; border-radius: 8px; overflow-x: auto; font-size: 13.5px; line-height: 1.45; }
+  svg { width: 100%; height: auto; display: block; margin: 10px 0; }
+  ol li, ul li { margin: 4px 0; }
+  details { border: 1px solid #e5e5ea; border-radius: 8px; padding: 8px 12px; margin: 6px 0; }
+  summary { font-weight: 600; cursor: pointer; }
+  details p { margin: 6px 0 2px; }
+  .small { color: #6e6e73; font-size: 14px; }
+</style>
+</head>
+<body>
+
+<h1>Authentifizierung vs Autorisierung</h1>
+<p class="small">Security · Tier 1 · Quellen: OWASP Authentication, Session Management und Authorization Cheat Sheets, NIST SP 800-162 (ABAC), OWASP Top 10:2025 (A01, A07), Spring Security 7.2 Reference (Architecture, Authorization), RFC 6749</p>
+
+<div class="kern">
+<b>Kern:</b> <b>Authentifizierung</b> (AuthN) beantwortet „Wer bist du?“. <b>Autorisierung</b> (AuthZ) beantwortet „Was darfst du hier tun?“. AuthN kommt immer zuerst, AuthZ läuft bei <b>jedem</b> Request und für <b>jedes</b> Objekt neu.
+</div>
+
+<h2>1. Wo sitzen AuthN und AuthZ?</h2>
+<svg viewBox="0 0 720 300" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="a" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="10" y="110" width="110" height="56" rx="8" fill="#fff" stroke="#555"/><text x="65" y="135" text-anchor="middle">Browser</text><text x="65" y="153" text-anchor="middle" font-size="12">Cookie / Token</text>
+  <line x1="120" y1="138" x2="168" y2="138" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="170" y="20" width="160" height="56" rx="8" fill="#fff" stroke="#555"/><text x="250" y="44" text-anchor="middle" font-weight="700">Identity Provider</text><text x="250" y="62" text-anchor="middle" font-size="12">Keycloak · Entra ID</text>
+  <line x1="120" y1="122" x2="200" y2="78" stroke="#999" stroke-width="1.5" stroke-dasharray="5 4" marker-end="url(#a)"/><text x="132" y="92" font-size="12">Login</text>
+  <rect x="170" y="100" width="530" height="190" rx="12" fill="#f7f7fa" stroke="#999" stroke-dasharray="5 4"/><text x="435" y="120" text-anchor="middle" font-weight="700">Anwendung (Spring Boot)</text>
+  <rect x="190" y="135" width="150" height="60" rx="8" fill="#0a66c2"/><text x="265" y="160" text-anchor="middle" fill="#fff" font-weight="700">AuthN</text><text x="265" y="178" text-anchor="middle" fill="#fff" font-size="12">Wer? (Filter)</text>
+  <line x1="340" y1="165" x2="378" y2="165" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="380" y="135" width="150" height="60" rx="8" fill="#2e7d32"/><text x="455" y="160" text-anchor="middle" fill="#fff" font-weight="700">AuthZ grob</text><text x="455" y="178" text-anchor="middle" fill="#fff" font-size="12">URL / Rolle</text>
+  <line x1="530" y1="165" x2="568" y2="165" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="570" y="135" width="120" height="60" rx="8" fill="#2e7d32"/><text x="630" y="160" text-anchor="middle" fill="#fff" font-weight="700">AuthZ fein</text><text x="630" y="178" text-anchor="middle" fill="#fff" font-size="12">Objekt / Daten</text>
+  <rect x="380" y="220" width="310" height="50" rx="8" fill="#fff" stroke="#555"/><text x="535" y="250" text-anchor="middle">Service-Logik + Datenbank (WHERE tenant = ?)</text>
+  <line x1="630" y1="195" x2="630" y2="218" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+</svg>
+<ol>
+  <li><b>Identity Provider (IdP):</b> Der <b>IdP</b> prüft Passwort, MFA oder Zertifikat. Beispiel: Keycloak meldet einen LDAP-Benutzer an.</li>
+  <li><b>AuthN in der Anwendung:</b> Ein Filter liest <b>Session-Cookie</b> oder <b>Bearer Token</b> und baut einen <b>Principal</b>, also den angemeldeten Benutzer. Beispiel: <code>BearerTokenAuthenticationFilter</code> in Spring.</li>
+  <li><b>AuthZ grob:</b> Die Regel prüft URL und Rolle. Beispiel: <code>/admin/**</code> nur für <code>ROLE_ADMIN</code>.</li>
+  <li><b>AuthZ fein:</b> Die Regel prüft das konkrete Objekt. Beispiel: Rechnung 42 gehört dem Mandanten des Benutzers.</li>
+  <li><b>Daten:</b> Die Abfrage filtert zusätzlich nach Mandant. So schützt auch ein vergessener Check nicht alle Daten.</li>
+</ol>
+
+<h2>2. Die Reise eines Requests (die Geschichte zum Merken)</h2>
+<svg viewBox="0 0 720 320" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="b" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker><marker id="r" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#c62828"/></marker></defs>
+  <rect x="10" y="20" width="150" height="60" rx="10" fill="#eee" stroke="#777"/><text x="85" y="45" text-anchor="middle" font-weight="700">1. Request</text><text x="85" y="64" text-anchor="middle" font-size="12">GET /invoices/42</text>
+  <line x1="160" y1="50" x2="198" y2="50" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="200" y="20" width="150" height="60" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="275" y="45" text-anchor="middle" font-weight="700">2. Identität</text><text x="275" y="64" text-anchor="middle" font-size="12">Token prüfen</text>
+  <line x1="350" y1="50" x2="388" y2="50" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="390" y="20" width="150" height="60" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="465" y="45" text-anchor="middle" font-weight="700">3. Principal</text><text x="465" y="64" text-anchor="middle" font-size="12">sub + Rollen</text>
+  <line x1="540" y1="50" x2="578" y2="50" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="580" y="20" width="130" height="60" rx="10" fill="#e8f5e9" stroke="#2e7d32"/><text x="645" y="45" text-anchor="middle" font-weight="700">4. URL-Regel</text><text x="645" y="64" text-anchor="middle" font-size="12">Rolle?</text>
+  <line x1="645" y1="80" x2="645" y2="128" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="480" y="130" width="230" height="60" rx="10" fill="#e8f5e9" stroke="#2e7d32"/><text x="595" y="155" text-anchor="middle" font-weight="700">5. Objekt-Regel</text><text x="595" y="174" text-anchor="middle" font-size="12">gehört 42 zu meinem Mandanten?</text>
+  <line x1="480" y1="160" x2="372" y2="160" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="200" y="130" width="170" height="60" rx="10" fill="#0a66c2"/><text x="285" y="155" text-anchor="middle" fill="#fff" font-weight="700">6. 200 OK</text><text x="285" y="174" text-anchor="middle" fill="#fff" font-size="12">+ Audit-Log</text>
+  <line x1="275" y1="80" x2="120" y2="240" stroke="#c62828" stroke-width="2" stroke-dasharray="6 4" marker-end="url(#r)"/>
+  <rect x="10" y="242" width="220" height="52" rx="10" fill="#fff4f2" stroke="#c62828"/><text x="120" y="265" text-anchor="middle" fill="#c62828" font-weight="700">401 Unauthorized</text><text x="120" y="283" text-anchor="middle" fill="#c62828" font-size="12">wer du bist, ist unklar</text>
+  <line x1="595" y1="190" x2="420" y2="250" stroke="#c62828" stroke-width="2" stroke-dasharray="6 4" marker-end="url(#r)"/>
+  <rect x="300" y="242" width="240" height="52" rx="10" fill="#fff4f2" stroke="#c62828"/><text x="420" y="265" text-anchor="middle" fill="#c62828" font-weight="700">403 Forbidden (oder 404)</text><text x="420" y="283" text-anchor="middle" fill="#c62828" font-size="12">bekannt, aber nicht erlaubt</text>
+</svg>
+<ol>
+  <li><b>Request kommt an.</b> Anna ruft <code>GET /invoices/42</code> auf. Sie schickt ein Session-Cookie oder einen Bearer Token mit.</li>
+  <li><b>Identität prüfen.</b> Der Filter prüft Signatur, Ablauf und Aussteller des Tokens. Fehlt der Token oder ist er ungültig, endet die Reise mit <b>401 Unauthorized</b>.</li>
+  <li><b>Principal bauen.</b> Aus dem Token entstehen Benutzer-ID (<code>sub</code>) und Rechte (<b>Authorities</b>). Spring legt sie in den <b>SecurityContext</b>.</li>
+  <li><b>URL-Regel.</b> <code>/invoices/**</code> braucht die Rolle <code>ACCOUNTANT</code>. Fehlt sie: <b>403 Forbidden</b>.</li>
+  <li><b>Objekt-Regel.</b> Die Rolle reicht nicht. Rechnung 42 muss zu Annas Mandant gehören. Fehlt diese Prüfung, liest Anna fremde Rechnungen: <b>IDOR</b> (Insecure Direct Object Reference).</li>
+  <li><b>Antwort und Audit.</b> Erst jetzt kommt <b>200 OK</b>. Ein Audit-Log speichert wer, was, wann.</li>
+</ol>
+
+<h2>3. Beispiel: RBAC und ABAC im Vergleich</h2>
+<pre>ROLE_PERMS = {"viewer": {"doc:read"}, "editor": {"doc:read", "doc:write"}}
+
+def rbac(user, action, doc):          # nur Rolle -> Recht
+    return any(action in ROLE_PERMS.get(r, set()) for r in user.roles)
+
+def abac(user, action, doc):          # Rolle + Attribute
+    if not rbac(user, action, doc): return False
+    if user.tenant != doc.tenant: return False                       # Mandant
+    if doc.classification == "secret" and user.dept != doc.dept: return False
+    if action == "doc:write" and doc.owner != user.name: return False # Besitzer
+    return True
+
+anna = User("anna", {"editor"}, tenant="bern",    dept="finance")
+mia  = User("mia",  {"editor"}, tenant="zuerich", dept="finance")
+d1 = Doc(1, "bern", "finance", owner="anna", classification="internal")
+d2 = Doc(2, "bern", "hr",      owner="tom",  classification="secret")</pre>
+<pre>$ python -I authz_demo.py
+anna doc:write doc1  RBAC=erlaubt    ABAC=erlaubt
+mia  doc:read  doc1  RBAC=erlaubt    ABAC=verweigert
+anna doc:read  doc2  RBAC=erlaubt    ABAC=verweigert
+anna doc:write doc2  RBAC=erlaubt    ABAC=verweigert</pre>
+<p class="small">Echte Ausgabe, Python 3.12.</p>
+<ol>
+  <li>Anna ist <code>editor</code> und Besitzerin von doc1. Beide Modelle erlauben.</li>
+  <li>Mia ist auch <code>editor</code>, aber im Mandanten Zürich. <b>RBAC erlaubt trotzdem.</b> Das ist ein Datenleck zwischen Mandanten.</li>
+  <li>doc2 ist <code>secret</code> und gehört zu HR. Nur ABAC sieht die Abteilung.</li>
+  <li>Fazit: <b>RBAC</b> regelt „welche Funktion“. Die Frage „welches Objekt“ braucht Attribute, also <b>ABAC</b> oder Objekt-Checks im Code.</li>
+</ol>
+<p>Dasselbe in Spring Security 7:</p>
+<pre>@Configuration @EnableMethodSecurity
+class SecurityConfig {
+  @Bean SecurityFilterChain api(HttpSecurity http) throws Exception {
+    http.authorizeHttpRequests(a -&gt; a
+          .requestMatchers("/admin/**").hasRole("ADMIN")      // RBAC grob
+          .anyRequest().authenticated())                       // Default: anmelden
+        .oauth2ResourceServer(o -&gt; o.jwt(Customizer.withDefaults()));
+    return http.build();
+  }
+}
+
+@PreAuthorize("hasAuthority('SCOPE_invoices.read') and @invoiceGuard.sameTenant(#id, authentication)")
+public Invoice get(long id) { ... }                            // ABAC-artig pro Objekt</pre>
+
+<h2>4. Details, die Interviewer fragen</h2>
+<ol>
+  <li><b>401 vs 403:</b> <b>401</b> heisst „nicht authentifiziert“, der Name ist historisch falsch. <b>403</b> heisst „authentifiziert, aber nicht erlaubt“. Bei fremden Objekten ist <b>404</b> oft besser, weil es die Existenz versteckt.</li>
+  <li><b>Faktoren:</b> Ein <b>Faktor</b> ist Wissen (Passwort), Besitz (Handy, FIDO2-Key) oder Eigenschaft (Fingerabdruck). <b>MFA</b> kombiniert zwei verschiedene Arten. <b>Passkeys</b> (WebAuthn) sind phishing-resistent, weil sie an die Domain gebunden sind.</li>
+  <li><b>Passwörter speichern:</b> Passwörter speichert man als langsamen, gesalzenen <b>Hash</b>: Argon2id, scrypt oder bcrypt. Nie verschlüsselt, nie SHA-256 pur. In Spring: <code>PasswordEncoderFactories.createDelegatingPasswordEncoder()</code>.</li>
+  <li><b>Session (stateful):</b> Der Server speichert den Zustand. Der Browser hält nur eine zufällige <b>Session-ID</b> im Cookie. Logout und Sperren wirken sofort.</li>
+  <li><b>Token (stateless):</b> Ein <b>selbsttragender Token</b> (meist JWT) enthält die Claims und eine Signatur. Jeder Service prüft ihn ohne DB-Zugriff. Dafür ist Widerruf schwer: Der Token gilt bis <code>exp</code>.</li>
+  <li><b>Cookie-Flags:</b> <code>HttpOnly</code> verbietet JavaScript-Zugriff (gegen XSS-Diebstahl). <code>Secure</code> erlaubt nur HTTPS. <code>SameSite=Lax</code> oder <code>Strict</code> bremst CSRF.</li>
+  <li><b>Session Fixation:</b> Der Angreifer schiebt dem Opfer eine bekannte Session-ID unter. Schutz: neue Session-ID nach Login. Spring Security macht das standardmässig.</li>
+  <li><b>RBAC:</b> <b>Role-Based Access Control</b> gibt Rechte an Rollen, Rollen an Benutzer. Einfach zu prüfen und zu auditieren. Problem: <b>Rollen-Explosion</b> (<code>EDITOR_BERN_FINANCE</code>).</li>
+  <li><b>ABAC:</b> <b>Attribute-Based Access Control</b> entscheidet über Attribute von Benutzer, Objekt, Aktion und Umgebung (z. B. Uhrzeit). Sehr flexibel, aber schwerer zu testen und zu erklären.</li>
+  <li><b>ReBAC:</b> <b>Relationship-Based Access Control</b> entscheidet über Beziehungen („Anna ist Mitglied von Team X, Team X besitzt Ordner Y“). Beispiel: Google Zanzibar, OpenFGA.</li>
+  <li><b>Policy-Architektur:</b> <b>PEP</b> (Policy Enforcement Point) erzwingt, <b>PDP</b> (Policy Decision Point) entscheidet. Beispiel: Spring-Filter als PEP, OPA (Open Policy Agent) als PDP.</li>
+  <li><b>Least Privilege:</b> <b>Least Privilege</b> heisst: jedes Konto bekommt nur die Rechte, die es für seine Aufgabe braucht, und nur so lange wie nötig. Das gilt für Menschen, Services, DB-User und Pods.</li>
+  <li><b>Deny by default:</b> Was keine Regel erlaubt, ist verboten. In Spring: <code>anyRequest().authenticated()</code> oder <code>denyAll()</code> am Ende.</li>
+  <li><b>Scopes vs Rollen:</b> Ein OAuth-<b>Scope</b> begrenzt, was ein <b>Client</b> im Namen des Benutzers darf. Eine <b>Rolle</b> beschreibt, was der <b>Benutzer</b> darf. Die echte Berechtigung ist die Schnittmenge.</li>
+</ol>
+
+<h2>5. Vergleich</h2>
+<ul>
+  <li><b>Session-Cookie:</b> sofortiger Logout, kleine Cookies, CSRF-Schutz nötig. Skaliert mit Sticky Sessions oder einem zentralen Store (Redis, Spring Session).</li>
+  <li><b>JWT Bearer Token:</b> kein Server-Zustand, gut zwischen Microservices. Widerruf schwer, Token gross, Diebstahl gefährlich bis <code>exp</code>.</li>
+  <li><b>Opaque Token + Introspection:</b> zufälliger String, der Resource Server fragt den IdP (RFC 7662). Widerruf sofort, aber ein Netzwerk-Call pro Request (Cache hilft).</li>
+  <li><b>RBAC:</b> grob, einfach, gut für Funktionen („darf Rechnungen sehen“).</li>
+  <li><b>ABAC:</b> fein, dynamisch, gut für Daten („nur eigener Mandant, nur Bürozeit“).</li>
+  <li><b>ReBAC:</b> gut für Teilen und Hierarchien (Dokumente, Ordner, Teams).</li>
+  <li><b>ACL:</b> Liste pro Objekt, wer was darf. Präzise, aber viel Pflege.</li>
+</ul>
+
+<h2>6. In der Produktion</h2>
+<ol>
+  <li><b>IDOR:</b> Die API prüft nur die Rolle, nicht den Besitzer. Ein Benutzer ändert die ID in der URL und sieht fremde Daten. Lösung: Objekt-Check in jedem Use Case plus Mandanten-Filter in der Query. Broken Access Control ist <b>A01:2025</b> der OWASP Top 10.</li>
+  <li><b>Fehlende Regel = offen:</b> Ein neuer Endpoint ist ohne Regel öffentlich. Lösung: deny by default und ein Test, der alle Endpoints ohne Token aufruft.</li>
+  <li><b>Rollen aus Keycloak fehlen:</b> Keycloak legt Rollen in <code>realm_access.roles</code>. Spring mappt standardmässig nur <code>scope</code>/<code>scp</code> zu <code>SCOPE_*</code>. Lösung: eigener <code>JwtAuthenticationConverter</code>.</li>
+  <li><b>Rechte ändern sich, Token nicht:</b> Ein entzogener Admin hat noch 30 Minuten einen gültigen Token. Lösung: kurze Access-Token-Laufzeit (5–15 Minuten), kritische Aktionen online prüfen.</li>
+  <li><b>Admin-Konten für alles:</b> Service-Accounts mit Owner-Rechten. Ein Leck wird zum Totalschaden. Lösung: Least Privilege, getrennte Identitäten pro Service, Managed Identity.</li>
+  <li><b>Clientseitige Prüfung:</b> Angular versteckt nur den Button. Die API erlaubt den Call trotzdem. Lösung: Autorisierung immer im Backend.</li>
+</ol>
+
+<h2>7. Diagnose: Werkzeuge und Befehle</h2>
+<ul>
+  <li><code>logging.level.org.springframework.security=TRACE</code>: zeigt Filter-Kette und welche Regel abgelehnt hat.</li>
+  <li><b>Token ansehen:</b> Payload base64url-dekodieren (lokal, nie in fremde Webseiten kopieren). Prüfen: <code>sub</code>, <code>aud</code>, Rollen, <code>exp</code>.</li>
+  <li><code>curl -i -H "Authorization: Bearer $T" https://api/invoices/42</code>: 401 oder 403? Header <code>WWW-Authenticate</code> nennt den Grund (z. B. <code>invalid_token</code>).</li>
+  <li><b>Tests:</b> <code>@WithMockUser(roles="USER")</code> und <code>jwt().authorities(...)</code> aus <code>spring-security-test</code>. Für jeden Endpoint: ohne Token, falsche Rolle, fremder Mandant.</li>
+  <li><b>Keycloak Admin Console:</b> „Evaluate“ im Client-Scope zeigt, welche Claims ein Token bekommt.</li>
+  <li><b>Audit-Log:</b> Wer hat wann worauf zugegriffen? Viele 403 von einer Identität deuten auf Ausprobieren von IDs hin.</li>
+</ul>
+
+<h2>8. Senior-Punkte</h2>
+<div class="senior">
+<ol>
+  <li><b>AuthN zentralisieren, AuthZ nahe an den Daten.</b> Login gehört in den IdP. Die Objekt-Entscheidung gehört in den Service, der die Daten kennt.</li>
+  <li><b>RBAC für Funktionen, Attribute für Daten.</b> Reines ABAC überall ist schwer zu prüfen. Reines RBAC endet in Rollen-Explosion.</li>
+  <li><b>Defense in Depth:</b> Gateway prüft Token, Service prüft Objekt, DB filtert nach Mandant (z. B. eigene DB oder Row-Level Security).</li>
+  <li><b>Session oder Token ist eine Abwägung:</b> Browser-App mit eigenem Backend → Session-Cookie (BFF). Service-zu-Service → kurzlebiger Token.</li>
+  <li><b>Least Privilege ist ein Prozess:</b> Rechte regelmässig prüfen (Access Review), Just-in-Time-Admin statt Dauer-Admin.</li>
+  <li><b>Autorisierung testbar machen:</b> eine Matrix Rolle × Endpoint × Mandant als automatisierter Test.</li>
+</ol>
+</div>
+
+<h2>9. Aus dem Projekt</h2>
+<p>„Bei DigiSanté hat jeder Mandant im Person-Service eine eigene PostgreSQL-Datenbank. Die Isolation hängt so nicht nur an einem Code-Check. Bei CARIAD lief der Login über Keycloak mit LDAP.“ <span class="small">(Prüfen und durch dein echtes Beispiel ersetzen.)</span></p>
+
+<h2>10. Fallen</h2>
+<div class="trap">
+<ul>
+  <li>„401 heisst keine Berechtigung.“ → <b>Falsch.</b> 401 heisst nicht authentifiziert. Keine Berechtigung ist 403.</li>
+  <li>„Der Benutzer hat die Rolle, also darf er das Objekt sehen.“ → <b>Falsch.</b> Rolle ≠ Objekt. Ohne Besitzer- oder Mandanten-Check entsteht IDOR.</li>
+  <li>„JWT ist sicherer als Sessions.“ → <b>Falsch.</b> Anders, nicht sicherer. JWT tauscht sofortigen Widerruf gegen Skalierung.</li>
+  <li>„OAuth ist ein Login-Protokoll.“ → <b>Falsch.</b> OAuth 2 ist Autorisierung (delegierter Zugriff). Login macht OpenID Connect.</li>
+  <li>„Passwörter verschlüsseln wir mit AES.“ → <b>Falsch.</b> Passwörter werden gehasht (Argon2id, bcrypt), nicht verschlüsselt.</li>
+  <li>„Im Frontend ist der Button versteckt, also sicher.“ → <b>Falsch.</b> Jede Prüfung muss im Backend passieren.</li>
+</ul>
+</div>
+
+<h2>11. Fragen</h2>
+<details><summary>Was ist der Unterschied zwischen Authentifizierung und Autorisierung?</summary><p>Authentifizierung prüft, wer jemand ist. Autorisierung prüft, was diese Identität mit einem bestimmten Objekt tun darf. AuthN kommt zuerst, AuthZ bei jedem Zugriff.</p></details>
+<details><summary>Wann antwortet eine API mit 401, wann mit 403?</summary><p>401, wenn keine oder eine ungültige Identität vorliegt. 403, wenn die Identität bekannt ist, aber die Aktion nicht erlaubt ist.</p></details>
+<details><summary>Warum gibt man bei fremden Objekten manchmal 404 statt 403?</summary><p>404 verrät nicht, dass das Objekt existiert. So kann ein Angreifer IDs nicht ausprobieren.</p></details>
+<details><summary>Was ist MFA, und warum sind Passkeys besser als SMS-Codes?</summary><p>MFA kombiniert zwei verschiedene Faktor-Arten. Passkeys sind an die Domain gebunden und darum phishing-resistent. SMS-Codes kann man abfangen oder auf einer Fake-Seite abgreifen.</p></details>
+<details><summary>Wie speichert man Passwörter richtig?</summary><p>Mit einem langsamen, gesalzenen Hash wie Argon2id, scrypt oder bcrypt. In Spring mit dem DelegatingPasswordEncoder, der das Verfahren im Hash-Präfix mitführt.</p></details>
+<details><summary>Session vs Token: Was ist der Kernunterschied?</summary><p>Eine Session speichert den Zustand auf dem Server, der Browser hat nur eine ID. Ein Token trägt die Claims selbst und wird nur geprüft. Sessions kann man sofort beenden, Tokens gelten bis zum Ablauf.</p></details>
+<details><summary>Welche Cookie-Flags braucht ein Session-Cookie?</summary><p>HttpOnly gegen Diebstahl per XSS, Secure für nur HTTPS, SameSite=Lax oder Strict gegen CSRF. Dazu ein enger Path und kein Domain-Attribut, wenn nicht nötig.</p></details>
+<details><summary>Was ist Session Fixation?</summary><p>Der Angreifer setzt beim Opfer eine ihm bekannte Session-ID. Nach dem Login teilt er die Session. Schutz: nach Login eine neue Session-ID vergeben.</p></details>
+<details><summary>Was ist RBAC?</summary><p>Rechte hängen an Rollen, Benutzer bekommen Rollen. Einfach und gut auditierbar. Nachteil: Feine Regeln führen zu sehr vielen Rollen.</p></details>
+<details><summary>Was ist ABAC?</summary><p>Entscheidung über Attribute von Benutzer, Objekt, Aktion und Umgebung. Sehr flexibel, z. B. „nur eigener Mandant“. Nachteil: schwerer zu testen und zu erklären.</p></details>
+<details><summary>Wann wählen Sie RBAC, wann ABAC?</summary><p>RBAC für Funktionen und Menüs. ABAC oder Objekt-Checks für Datenzugriff mit Mandanten, Besitzern oder Klassifizierung. In der Praxis meist beides kombiniert.</p></details>
+<details><summary>Was ist ReBAC?</summary><p>Berechtigung über Beziehungen in einem Graphen, z. B. Mitglied, Besitzer, Ordner. Bekannt durch Google Zanzibar und OpenFGA. Gut für Teilen und Hierarchien.</p></details>
+<details><summary>Was ist Least Privilege?</summary><p>Jede Identität bekommt nur die Rechte, die sie für ihre Aufgabe braucht, und nur so lange wie nötig. Das begrenzt den Schaden bei einem Leck.</p></details>
+<details><summary>Was ist IDOR?</summary><p>Insecure Direct Object Reference: Die API nimmt eine ID aus dem Request und prüft nicht, ob sie dem Benutzer gehört. Lösung: Objekt-Check und Mandanten-Filter.</p></details>
+<details><summary>Was bedeutet deny by default?</summary><p>Alles ist verboten, was keine Regel ausdrücklich erlaubt. So ist ein neuer Endpoint ohne Regel nicht automatisch offen.</p></details>
+<details><summary>Scope vs Rolle?</summary><p>Ein Scope begrenzt, was ein Client im Namen des Benutzers darf. Eine Rolle beschreibt, was der Benutzer darf. Erlaubt ist nur die Schnittmenge.</p></details>
+<details><summary>Was sind PEP und PDP?</summary><p>Der Policy Enforcement Point erzwingt die Entscheidung, z. B. ein Filter. Der Policy Decision Point trifft sie, z. B. OPA. So kann man Regeln zentral pflegen.</p></details>
+<details><summary>Wie funktioniert @PreAuthorize?</summary><p>Mit @EnableMethodSecurity prüft Spring vor dem Methodenaufruf einen SpEL-Ausdruck. Er kann Authorities und eigene Beans für Objekt-Checks nutzen.</p></details>
+<details><summary>Was ist der Unterschied zwischen hasRole und hasAuthority in Spring?</summary><p>hasRole("ADMIN") prüft die Authority ROLE_ADMIN, also mit Präfix. hasAuthority prüft den String exakt, z. B. SCOPE_read.</p></details>
+<details><summary>Warum fehlen Keycloak-Rollen in Spring oft?</summary><p>Spring mappt standardmässig nur scope/scp zu SCOPE_*. Keycloak legt Rollen in realm_access.roles. Man braucht einen eigenen JwtAuthenticationConverter.</p></details>
+<details><summary>Wo sollte Autorisierung passieren?</summary><p>Immer im Backend, nahe an den Daten. Das Frontend darf nur Anzeige steuern. Zusätzlich filtert die Datenbank nach Mandant.</p></details>
+<details><summary>Szenario: Ein Kunde sieht nach Ändern der URL-ID die Rechnungen eines anderen Kunden. Was tun Sie?</summary><p>Sofort Objekt-Check einbauen und Query nach Mandant filtern. Audit-Logs auf weitere Zugriffe prüfen. Danach Tests für alle Endpoints mit fremden IDs ergänzen.</p></details>
+<details><summary>Szenario: Ein entlassener Admin hat nach Sperrung noch Zugriff auf die API. Warum?</summary><p>Sein Access Token ist noch gültig, weil JWTs bis exp gelten. Lösung: kurze Laufzeit, Refresh Token widerrufen, kritische Aktionen online prüfen oder Introspection nutzen.</p></details>
+<details><summary>Szenario: Das Team will für jeden Kunden und jede Abteilung eine eigene Rolle anlegen. Was raten Sie?</summary><p>Das führt zu Rollen-Explosion. Besser: wenige funktionale Rollen plus Attribute wie Mandant und Abteilung im Token und Objekt-Checks im Service.</p></details>
+
+</body>
+</html>

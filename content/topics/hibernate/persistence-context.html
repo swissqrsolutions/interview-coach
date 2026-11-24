@@ -1,0 +1,221 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Persistence Context</title>
+<style>
+  body { font: 17px/1.55 -apple-system, system-ui, sans-serif; max-width: 760px; margin: 0 auto; padding: 16px; color: #1d1d1f; }
+  h1 { font-size: 28px; margin: 8px 0 4px; }
+  h2 { font-size: 21px; margin: 32px 0 8px; padding-top: 12px; border-top: 2px solid #e5e5ea; }
+  .kern { background: #eef6ff; border-left: 4px solid #0a66c2; padding: 10px 14px; border-radius: 6px; }
+  .senior { background: #f0faf0; border-left: 4px solid #2e7d32; padding: 10px 14px; border-radius: 6px; }
+  .trap { background: #fff4f2; border-left: 4px solid #c62828; padding: 10px 14px; border-radius: 6px; }
+  code { background: #f2f2f7; padding: 1px 5px; border-radius: 4px; font-size: 15px; }
+  pre { background: #1e1e1e; color: #e6e6e6; padding: 12px; border-radius: 8px; overflow-x: auto; font-size: 13.5px; line-height: 1.45; }
+  svg { width: 100%; height: auto; display: block; margin: 10px 0; }
+  ol li, ul li { margin: 4px 0; }
+  details { border: 1px solid #e5e5ea; border-radius: 8px; padding: 8px 12px; margin: 6px 0; }
+  summary { font-weight: 600; cursor: pointer; }
+  details p { margin: 6px 0 2px; }
+  .small { color: #6e6e73; font-size: 14px; }
+</style>
+</head>
+<body>
+
+<h1>Persistence Context</h1>
+<p class="small">Hibernate · Tier 1 · Quellen: Introduction to Hibernate 7 (Kap. 1.5, 5.9, 6.3, 8.3, 8.15), Jakarta Persistence 3.2 (FlushModeType), Hibernate ORM 7.0 Migration Guide (QueryFlushMode), Hibernate Javadoc <code>BatchSettings</code></p>
+
+<div class="kern">
+<b>Kern:</b> Der Persistence Context ist die Objekt-Verwaltung einer Session: eine Map von Entity-ID auf genau ein Java-Objekt plus dessen geladenem Zustand. Er spart doppelte SELECTs (<b>First-Level Cache</b>), garantiert ein Objekt pro Zeile (<b>Identity Guarantee</b>) und findet Änderungen selbst (<b>Dirty Checking</b>). Beim <b>Flush</b> schreibt er die Änderungen als SQL in die Datenbank.
+</div>
+
+<h2>1. Wo sitzt der Persistence Context?</h2>
+<svg viewBox="0 0 720 300" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="a" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="10" y="30" width="140" height="50" rx="8" fill="#fff" stroke="#555"/><text x="80" y="52" text-anchor="middle">@Transactional</text><text x="80" y="70" text-anchor="middle" font-size="12">Service-Methode</text>
+  <line x1="150" y1="55" x2="198" y2="55" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="200" y="10" width="330" height="270" rx="12" fill="#f7f7fa" stroke="#999" stroke-dasharray="5 4"/><text x="365" y="30" text-anchor="middle" font-weight="700">Session (eine pro Transaktion)</text>
+  <rect x="220" y="44" width="290" height="80" rx="8" fill="#0a66c2" stroke="#0a66c2"/><text x="365" y="68" text-anchor="middle" fill="#fff" font-weight="700">Persistence Context</text><text x="365" y="88" text-anchor="middle" fill="#fff" font-size="12">(Account, 1) → Objekt</text><text x="365" y="106" text-anchor="middle" fill="#fff" font-size="12">Snapshot: {owner=Anna, balance=100}</text>
+  <rect x="220" y="138" width="290" height="50" rx="8" fill="#fff" stroke="#555"/><text x="365" y="160" text-anchor="middle">Dirty Checking</text><text x="365" y="178" text-anchor="middle" font-size="12">Objekt vs Snapshot beim Flush</text>
+  <rect x="220" y="202" width="290" height="62" rx="8" fill="#fff" stroke="#555"/><text x="365" y="226" text-anchor="middle">Action Queue</text><text x="365" y="246" text-anchor="middle" font-size="12">INSERT → UPDATE → DELETE</text>
+  <line x1="530" y1="233" x2="578" y2="233" stroke="#555" stroke-width="2" marker-end="url(#a)"/><text x="554" y="224" text-anchor="middle" font-size="12">flush</text>
+  <rect x="580" y="203" width="130" height="60" rx="8" fill="#fff" stroke="#555"/><text x="645" y="229" text-anchor="middle">PostgreSQL</text><text x="645" y="247" text-anchor="middle" font-size="12">JDBC-Connection</text>
+  <rect x="580" y="44" width="130" height="80" rx="8" fill="#eee" stroke="#777"/><text x="645" y="70" text-anchor="middle">Second-Level</text><text x="645" y="88" text-anchor="middle">Cache</text><text x="645" y="108" text-anchor="middle" font-size="12">optional, global</text>
+  <line x1="510" y1="84" x2="578" y2="84" stroke="#777" stroke-width="1.5" stroke-dasharray="5 4" marker-end="url(#a)"/>
+</svg>
+<ol>
+  <li><b>Service-Methode:</b> <code>@Transactional</code> öffnet die Transaktion. Spring bindet einen EntityManager daran.</li>
+  <li><b>Persistence Context:</b> jede Session hat ihren eigenen. Er lebt meist genau so lange wie die Transaktion.</li>
+  <li><b>Snapshot:</b> Kopie der geladenen Werte. Grundlage für das Dirty Checking.</li>
+  <li><b>Action Queue:</b> gesammelte SQL-Befehle. Sie gehen erst beim Flush raus.</li>
+  <li><b>Second-Level Cache:</b> optional und über alle Sessions geteilt. Er ist ein anderes Thema. Der Persistence Context ist der <b>First-Level Cache</b> und immer an.</li>
+</ol>
+
+<h2>2. Die Reise einer Änderung (die Geschichte zum Merken)</h2>
+<svg viewBox="0 0 720 280" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="b" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="10" y="30" width="130" height="64" rx="10" fill="#fff" stroke="#555"/><text x="75" y="56" text-anchor="middle" font-weight="700">1 find()</text><text x="75" y="76" text-anchor="middle" font-size="12">SELECT + Snapshot</text>
+  <line x1="140" y1="62" x2="178" y2="62" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="180" y="30" width="130" height="64" rx="10" fill="#fff" stroke="#555"/><text x="245" y="56" text-anchor="middle" font-weight="700">2 Setter</text><text x="245" y="76" text-anchor="middle" font-size="12">nur Java-Speicher</text>
+  <line x1="310" y1="62" x2="348" y2="62" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="350" y="30" width="160" height="64" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="430" y="56" text-anchor="middle" font-weight="700">3 Flush-Auslöser</text><text x="430" y="76" text-anchor="middle" font-size="12">Query · commit · flush()</text>
+  <line x1="510" y1="62" x2="548" y2="62" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="550" y="30" width="160" height="64" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="630" y="56" text-anchor="middle" font-weight="700">4 Dirty Checking</text><text x="630" y="76" text-anchor="middle" font-size="12">Objekt ≠ Snapshot?</text>
+  <line x1="630" y1="94" x2="630" y2="148" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="550" y="150" width="160" height="64" rx="10" fill="#0a66c2" stroke="#0a66c2"/><text x="630" y="176" text-anchor="middle" fill="#fff" font-weight="700">5 SQL senden</text><text x="630" y="196" text-anchor="middle" fill="#fff" font-size="12">sortiert, gebatcht</text>
+  <line x1="550" y1="182" x2="512" y2="182" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="350" y="150" width="160" height="64" rx="10" fill="#fff" stroke="#2e7d32"/><text x="430" y="176" text-anchor="middle" font-weight="700">6 COMMIT</text><text x="430" y="196" text-anchor="middle" font-size="12">erst jetzt sichtbar</text>
+  <line x1="350" y1="182" x2="312" y2="182" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="180" y="150" width="130" height="64" rx="10" fill="#eee" stroke="#777"/><text x="245" y="176" text-anchor="middle" font-weight="700">7 Ende</text><text x="245" y="196" text-anchor="middle" font-size="12">Context weg, detached</text>
+</svg>
+<ol>
+  <li><b>Laden:</b> <code>em.find(Account.class, 1L)</code> schickt ein SELECT. Hibernate legt das Objekt und einen Snapshot in den Context. Ein zweites <code>find</code> mit derselben ID schickt <b>kein</b> SQL.</li>
+  <li><b>Ändern:</b> <code>acc.setBalance(80)</code> ändert nur das Java-Objekt. Noch geht nichts zur Datenbank.</li>
+  <li><b>Flush-Auslöser:</b> Im Modus <b>AUTO</b> flusht Hibernate vor dem Commit und vor einer Query, deren Ergebnis die Änderung betreffen könnte. Oder der Code ruft <code>flush()</code>.</li>
+  <li><b>Dirty Checking:</b> Hibernate vergleicht jedes managed Objekt Feld für Feld mit seinem Snapshot. Nur geänderte Objekte bekommen ein UPDATE.</li>
+  <li><b>SQL senden:</b> Die Action Queue sortiert: zuerst INSERTs, dann UPDATEs, zuletzt DELETEs. Mit <code>hibernate.jdbc.batch_size</code> gehen gleiche Statements gebündelt raus.</li>
+  <li><b>Commit:</b> Erst jetzt sehen andere Transaktionen die Änderung. Flush ist nicht Commit.</li>
+  <li><b>Ende:</b> Die Session schliesst. Der Context ist weg, alle Objekte sind detached.</li>
+</ol>
+
+<h2>3. Beispiel: Identity Guarantee gegen eine laufende Datenbank</h2>
+<p>Zwei Transaktionen in PostgreSQL, Isolation <b>Read Committed</b> (Default). Transaktion A liest zweimal. Transaktion B ändert dazwischen.</p>
+<pre>-- Transaktion A                      -- Transaktion B
+begin;
+select id, balance from account where id=1;
+                                        update account set balance=80 where id=1;
+                                        -- autocommit
+select id, balance from account where id=1;
+commit;</pre>
+<pre>BEGIN
+ id | balance
+----+---------
+  1 |  100.00
+(1 row)
+
+UPDATE 1          &lt;- Transaktion B
+
+ id | balance
+----+---------
+  1 |   80.00
+(1 row)
+
+COMMIT</pre>
+<p class="small">Echte Ausgabe, PostgreSQL 17.12.</p>
+<p>Dieselbe Situation mit Hibernate in Transaktion A:</p>
+<pre>Account a1 = em.find(Account.class, 1L);           // SELECT, balance=100
+// ... Transaktion B setzt balance=80 und committet ...
+Account a2 = em.find(Account.class, 1L);           // kein SQL
+Account a3 = em.createQuery("from Account where id = 1", Account.class)
+               .getSingleResult();                  // SELECT läuft, Zeile sagt 80
+System.out.println(a1 == a2 &amp;&amp; a2 == a3);          // true
+System.out.println(a3.getBalance());                // 100.00
+em.refresh(a3);
+System.out.println(a3.getBalance());                // 80.00</pre>
+<p class="small">Erwartetes Ergebnis (laut Doku, nicht ausgeführt).</p>
+<ol>
+  <li>Die Datenbank liefert in Read Committed beim zweiten SELECT den neuen Wert 80.</li>
+  <li>Das zweite <code>find</code> trifft den First-Level Cache. Es gibt kein SQL.</li>
+  <li>Die Query geht zur Datenbank. Hibernate sieht aber: ID 1 ist schon im Context. Es gibt das <b>vorhandene</b> Objekt zurück und überschreibt es nicht.</li>
+  <li>Darum <code>a1 == a2 == a3</code>. Pro ID gibt es genau ein Objekt. Das ist die <b>Identity Guarantee</b>.</li>
+  <li>Effekt: innerhalb einer Session ein <b>Repeatable Read auf Anwendungsebene</b>, auch wenn die Datenbank nur Read Committed bietet. Frische Werte gibt es nur mit <code>refresh()</code>.</li>
+</ol>
+
+<h2>4. Details, die Interviewer fragen</h2>
+<ol>
+  <li><b>Flush-Modi (Hibernate):</b>
+    <ul>
+      <li><b>AUTO</b> (Default): vor dem Commit und vor Queries, deren Ergebnis betroffen sein könnte.</li>
+      <li><b>COMMIT</b>: nur vor dem Commit. Queries können veraltete Daten liefern.</li>
+      <li><b>ALWAYS</b>: vor jeder Query. Teuer.</li>
+      <li><b>MANUAL</b>: nie automatisch, nur per <code>flush()</code>.</li>
+    </ul>
+    JPA kennt nur <code>AUTO</code> und <code>COMMIT</code> (<code>FlushModeType</code>).</li>
+  <li><b>AUTO und HQL:</b> Hibernate flusht vor einer HQL-Query, wenn sie Tabellen mit offenen Änderungen berührt. Bei <b>Native SQL</b> kennt Hibernate die Tabellen nicht sicher. Vor kritischen Native Queries darum selbst <code>flush()</code> aufrufen.</li>
+  <li><b>Hibernate 7:</b> <code>setFlushMode()</code> auf Queries ist veraltet. Neu ist <code>setQueryFlushMode(QueryFlushMode)</code>.</li>
+  <li><b>Dirty Checking kostet:</b> Bei jedem Flush prüft Hibernate <b>alle</b> managed Objekte. 50 000 Objekte im Context machen jeden Flush langsam.</li>
+  <li><b>UPDATE schreibt alle Spalten:</b> Standard ist ein festes UPDATE mit allen Spalten. Das SQL ist immer gleich und gut cachebar. <code>@DynamicUpdate</code> schreibt nur geänderte Spalten.</li>
+  <li><b>Read-only:</b> <code>session.setDefaultReadOnly(true)</code> oder ein Read-only-Hint bei Queries. Dann behält Hibernate keinen Snapshot und prüft nicht. Spart Speicher und CPU. Spring: <code>@Transactional(readOnly = true)</code> setzt das für die Hibernate-Session.</li>
+  <li><b>Flush-Reihenfolge:</b> INSERTs vor UPDATEs vor DELETEs. Löscht man eine Zeile und fügt eine neue mit gleichem Unique-Wert ein, kommt das INSERT zuerst → Unique-Verletzung. Fix: zwischen beiden <code>flush()</code>.</li>
+  <li><b>clear() vs detach():</b> <code>clear()</code> leert den ganzen Context, <code>detach(obj)</code> nur ein Objekt. Nicht geflushte Änderungen gehen dabei verloren.</li>
+  <li><b>Lange Sessions:</b> Ein Context über viele Requests (<b>Extended Persistence Context</b>) wächst, hält alte Daten und blockiert eventuell eine Connection. Heute meist vermieden.</li>
+</ol>
+
+<h2>5. Vergleich</h2>
+<ul>
+  <li><b>First-Level Cache:</b> pro Session, immer an, nur so lange wie die Transaktion. Schützt vor doppelten SELECTs per ID.</li>
+  <li><b>Second-Level Cache:</b> pro SessionFactory, optional, über Transaktionen hinweg. Braucht eine Cache-Strategie und Invalidierung.</li>
+  <li><b>Query Cache:</b> speichert Query-Ergebnisse als ID-Listen. Optional, nur mit Second-Level Cache sinnvoll.</li>
+  <li><b>Session vs StatelessSession:</b> StatelessSession hat keinen Persistence Context, kein Dirty Checking, kein <code>flush()</code>. Jedes <code>update()</code> ist explizit.</li>
+  <li><b>flush vs commit:</b> flush schickt SQL in die offene Transaktion. commit macht es dauerhaft und sichtbar. Ein Rollback nach dem Flush macht alles rückgängig.</li>
+</ul>
+
+<h2>6. In der Produktion</h2>
+<ol>
+  <li><b>Batch-Job wird immer langsamer und läuft in OutOfMemoryError:</b> 1 Mio. Entities in einer Session. Fix: alle N Datensätze (z. B. 50, passend zu <code>batch_size</code>) <code>flush()</code> + <code>clear()</code>. Oder StatelessSession.</li>
+  <li><b>Query liefert alten Wert:</b> Die Identity Guarantee gibt das Objekt aus dem Context zurück. Fix: <code>refresh()</code> oder kurze Transaktionen.</li>
+  <li><b>Unique-Verletzung beim Ersetzen:</b> DELETE und INSERT mit gleichem Schlüssel in einer Transaktion. Flush-Reihenfolge macht INSERT zuerst. Fix: expliziter <code>flush()</code> nach dem remove.</li>
+  <li><b>Unerwartete UPDATEs:</b> Ein Getter normalisiert Daten, oder ein Converter liefert bei jedem Lesen ein neues, ungleiches Objekt. Dirty Checking sieht „geändert“. Fix: korrektes <code>equals</code> für Typen, keine Logik in Settern.</li>
+  <li><b>Native Query sieht Änderung nicht:</b> Im Modus COMMIT oder bei Native SQL. Fix: vorher <code>flush()</code>.</li>
+  <li><b>Lange Transaktion hält Locks und Connections:</b> Ein Context über einen externen HTTP-Aufruf hinweg. Fix: externe Aufrufe ausserhalb der Transaktion.</li>
+</ol>
+
+<h2>7. Diagnose: Werkzeuge und Befehle</h2>
+<ul>
+  <li><code>hibernate.generate_statistics=true</code>: zählt pro Session Statements, Entity-Loads und Flushes.</li>
+  <li><code>logging.level.org.hibernate.SQL=DEBUG</code> und <code>org.hibernate.orm.jdbc.bind=TRACE</code>: SQL und Parameter sehen, auch wann der Flush passiert.</li>
+  <li><code>session.getStatistics().getEntityCount()</code>: wie viele Objekte im Context liegen.</li>
+  <li><code>hibernate.log_slow_query=500</code>: Queries über 500 ms im Log (Default 0 = aus).</li>
+  <li>Heap-Dump (z. B. Eclipse MAT): viele <code>EntityEntry</code>-Objekte zeigen einen zu grossen Context.</li>
+  <li>PostgreSQL: <code>select pid, state, xact_start from pg_stat_activity where state = 'idle in transaction'</code> findet zu lange offene Transaktionen.</li>
+</ul>
+
+<h2>8. Senior-Punkte</h2>
+<div class="senior">
+<ol>
+  <li><b>Kurze Sessions, kurze Transaktionen.</b> Ein Context pro Request oder Use Case. Lange Sessions bringen Speicher, alte Daten und lange Locks.</li>
+  <li><b>Lesen ohne Snapshot:</b> Reine Lese-Pfade mit read-only oder DTO-Projektionen. Das spart viel Speicher und Flush-Zeit.</li>
+  <li><b>Der Context ist kein Cache für Performance-Tuning.</b> Er gilt nur in einer Transaktion. Wer über Requests cachen will, braucht Second-Level Cache oder einen echten Cache.</li>
+  <li><b>Bulk-Arbeit gehört nicht ins Dirty Checking.</b> Für Massen-Updates ein HQL- oder SQL-<code>UPDATE</code>. Achtung: das umgeht den Context, danach <code>clear()</code>.</li>
+  <li><b>Flush-Zeitpunkt kennen.</b> Ein Constraint-Fehler kommt oft erst beim Flush, weit weg vom auslösenden Code. Im Test darum gezielt <code>flush()</code> aufrufen.</li>
+</ol>
+</div>
+
+<h2>9. Aus dem Projekt</h2>
+<p>„Ich habe Hibernate bei NABODAT (Jakarta EE, Spring, PostgreSQL/PostGIS) eingesetzt; dort gilt dieselbe Regel: in der Transaktion laden, ändern, Hibernate schreibt beim Flush.“ <span class="small">(Prüfen und durch dein echtes Beispiel ersetzen. Konkrete Flush- oder Batch-Probleme stehen nicht im Profil.)</span></p>
+
+<h2>10. Fallen</h2>
+<div class="trap">
+<ul>
+  <li>„Flush heisst Commit.“ → <b>Falsch.</b> Flush schickt SQL in die offene Transaktion. Ein Rollback nimmt es zurück.</li>
+  <li>„Eine Query liefert immer den neuesten Stand.“ → Nicht für Objekte, die schon im Context sind. Hibernate gibt das vorhandene Objekt zurück.</li>
+  <li>„Der First-Level Cache spart Queries über Requests hinweg.“ → Nein. Er lebt nur so lange wie die Session.</li>
+  <li>„Dirty Checking ist gratis.“ → Es prüft alle managed Objekte bei jedem Flush. Bei grossen Contexts ist das teuer.</li>
+  <li>„FlushMode COMMIT ist immer schneller und sicher.“ → Queries in derselben Transaktion sehen dann die eigenen Änderungen nicht.</li>
+</ul>
+</div>
+
+<h2>11. Fragen</h2>
+<details><summary>Was ist der Persistence Context?</summary><p>Die Objekt-Verwaltung einer Session: eine Map von Entity-ID auf genau ein Objekt plus Snapshot. Er ist First-Level Cache, Identity Map und Änderungs-Tracker.</p></details>
+<details><summary>Was ist der First-Level Cache?</summary><p>Der Persistence Context selbst. Ein zweites find mit derselben ID in derselben Session schickt kein SQL.</p></details>
+<details><summary>Was ist die Identity Guarantee?</summary><p>Pro Entity-ID gibt es in einer Session genau ein Java-Objekt. find und Query liefern dieselbe Instanz, also ist == true.</p></details>
+<details><summary>Was ist Dirty Checking?</summary><p>Beim Flush vergleicht Hibernate jedes managed Objekt mit seinem Snapshot. Geänderte Objekte bekommen automatisch ein UPDATE.</p></details>
+<details><summary>Wann flusht Hibernate im Modus AUTO?</summary><p>Vor dem Commit und vor einer Query, deren Ergebnis durch offene Änderungen betroffen sein könnte. Und bei explizitem flush().</p></details>
+<details><summary>Welche Flush-Modi gibt es?</summary><p>Hibernate: AUTO, COMMIT, ALWAYS, MANUAL. JPA: AUTO und COMMIT.</p></details>
+<details><summary>Was ist der Unterschied zwischen flush und commit?</summary><p>flush schickt das SQL in die laufende Transaktion. commit macht es dauerhaft und für andere sichtbar.</p></details>
+<details><summary>In welcher Reihenfolge schreibt Hibernate beim Flush?</summary><p>Grob: INSERTs, dann UPDATEs, dann DELETEs. Das kann Unique-Constraints verletzen, wenn man löscht und neu einfügt.</p></details>
+<details><summary>Warum liefert eine Query manchmal einen alten Wert?</summary><p>Ist die ID schon im Context, gibt Hibernate das vorhandene Objekt zurück und überschreibt es nicht. Frisch wird es nur mit refresh().</p></details>
+<details><summary>Was bringt @DynamicUpdate?</summary><p>Das UPDATE enthält nur geänderte Spalten. Ohne sie schreibt Hibernate alle Spalten mit einem festen, cachebaren SQL.</p></details>
+<details><summary>Was bringt readOnly bei Transaktionen?</summary><p>Hibernate hält keine Snapshots und macht kein Dirty Checking. Das spart Speicher und Flush-Zeit bei reinen Lese-Pfaden.</p></details>
+<details><summary>Wie verarbeiten Sie eine Million Datensätze mit Hibernate?</summary><p>In Blöcken: alle N Datensätze flush() und clear(), mit passender jdbc.batch_size. Oder StatelessSession, oder ein SQL-Bulk-Update.</p></details>
+<details><summary>Was ist eine StatelessSession?</summary><p>Eine Session ohne Persistence Context. Kein Cache, kein Dirty Checking, kein flush(). Jede Operation ist direkt SQL.</p></details>
+<details><summary>Was ist ein Extended Persistence Context?</summary><p>Ein Context, der über mehrere Transaktionen oder Requests lebt. Er wächst, hält alte Daten und wird heute meist vermieden.</p></details>
+<details><summary>Was ist der Unterschied zwischen First- und Second-Level Cache?</summary><p>First-Level gilt pro Session und ist immer an. Second-Level gilt für die ganze SessionFactory und ist optional.</p></details>
+<details><summary>Was passiert mit dem Context bei einem HQL-Bulk-UPDATE?</summary><p>Das Bulk-UPDATE geht direkt zur Datenbank und umgeht den Context. Geladene Objekte sind danach veraltet, darum clear() oder refresh().</p></details>
+<details><summary>Szenario: Ein Import-Job wird nach 100 000 Datensätzen immer langsamer. Was tun Sie?</summary><p>Der Context wächst, jeder Flush prüft alle Objekte. Fix: Blöcke mit flush() und clear(), JDBC-Batching, oder StatelessSession.</p></details>
+<details><summary>Szenario: Ein Test speichert erfolgreich, aber in Produktion kommt eine Constraint-Verletzung erst beim Commit. Warum?</summary><p>Das SQL geht erst beim Flush raus, oft am Ende der Transaktion. Im Test fehlt der Flush. Fix: im Test flush() aufrufen, dann zeigt sich der Fehler sofort.</p></details>
+<details><summary>Szenario: Eine native Report-Query zeigt die gerade geänderte Bestellung noch mit altem Status. Warum?</summary><p>Die Änderung liegt noch im Context und ist nicht geflusht. Bei Native SQL flusht Hibernate nicht verlässlich. Fix: vor der Query flush() aufrufen.</p></details>
+
+</body>
+</html>

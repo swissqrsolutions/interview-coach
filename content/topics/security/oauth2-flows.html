@@ -1,0 +1,216 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OAuth 2 Flows</title>
+<style>
+  body { font: 17px/1.55 -apple-system, system-ui, sans-serif; max-width: 760px; margin: 0 auto; padding: 16px; color: #1d1d1f; }
+  h1 { font-size: 28px; margin: 8px 0 4px; }
+  h2 { font-size: 21px; margin: 32px 0 8px; padding-top: 12px; border-top: 2px solid #e5e5ea; }
+  .kern { background: #eef6ff; border-left: 4px solid #0a66c2; padding: 10px 14px; border-radius: 6px; }
+  .senior { background: #f0faf0; border-left: 4px solid #2e7d32; padding: 10px 14px; border-radius: 6px; }
+  .trap { background: #fff4f2; border-left: 4px solid #c62828; padding: 10px 14px; border-radius: 6px; }
+  code { background: #f2f2f7; padding: 1px 5px; border-radius: 4px; font-size: 15px; }
+  pre { background: #1e1e1e; color: #e6e6e6; padding: 12px; border-radius: 8px; overflow-x: auto; font-size: 13.5px; line-height: 1.45; }
+  svg { width: 100%; height: auto; display: block; margin: 10px 0; }
+  ol li, ul li { margin: 4px 0; }
+  details { border: 1px solid #e5e5ea; border-radius: 8px; padding: 8px 12px; margin: 6px 0; }
+  summary { font-weight: 600; cursor: pointer; }
+  details p { margin: 6px 0 2px; }
+  .small { color: #6e6e73; font-size: 14px; }
+</style>
+</head>
+<body>
+
+<h1>OAuth 2 Flows</h1>
+<p class="small">Security · Tier 1 · Quellen: RFC 6749 (OAuth 2.0), draft-ietf-oauth-v2-1-17 (OAuth 2.1, Okt. 2026, noch Internet-Draft), RFC 9700 (OAuth 2.0 Security BCP, Jan. 2025), RFC 7636 (PKCE), RFC 8628 (Device Grant), RFC 10017 (OAuth for Browser-Based Apps, Aug. 2026), RFC 9449 (DPoP), RFC 8705 (mTLS), RFC 7662 (Introspection)</p>
+
+<div class="kern">
+<b>Kern:</b> <b>OAuth 2</b> ist ein Framework für <b>delegierte Autorisierung</b>: Ein Client bekommt einen <b>Access Token</b>, statt das Passwort des Benutzers zu kennen. Der <b>Flow</b> (Grant) bestimmt, wie der Client zum Token kommt. Heute gilt: <b>Authorization Code + PKCE</b> für Benutzer, <b>Client Credentials</b> für Maschinen.
+</div>
+
+<h2>1. Wo sitzen die vier Rollen?</h2>
+<svg viewBox="0 0 720 290" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="a" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="10" y="20" width="170" height="60" rx="8" fill="#fff" stroke="#555"/><text x="95" y="45" text-anchor="middle" font-weight="700">Resource Owner</text><text x="95" y="64" text-anchor="middle" font-size="12">Benutzerin Anna</text>
+  <rect x="10" y="190" width="170" height="60" rx="8" fill="#dbe9fb" stroke="#0a66c2"/><text x="95" y="215" text-anchor="middle" font-weight="700">Client</text><text x="95" y="234" text-anchor="middle" font-size="12">Web-App, CLI, Job</text>
+  <rect x="520" y="20" width="190" height="60" rx="8" fill="#0a66c2"/><text x="615" y="45" text-anchor="middle" fill="#fff" font-weight="700">Authorization Server</text><text x="615" y="64" text-anchor="middle" fill="#fff" font-size="12">Keycloak, Entra ID</text>
+  <rect x="520" y="190" width="190" height="60" rx="8" fill="#e8f5e9" stroke="#2e7d32"/><text x="615" y="215" text-anchor="middle" font-weight="700">Resource Server</text><text x="615" y="234" text-anchor="middle" font-size="12">Spring-Boot-API</text>
+  <line x1="95" y1="80" x2="95" y2="188" stroke="#555" stroke-width="2" marker-end="url(#a)"/><text x="105" y="140" font-size="12">nutzt</text>
+  <line x1="180" y1="50" x2="518" y2="50" stroke="#555" stroke-width="2" marker-end="url(#a)"/><text x="350" y="42" text-anchor="middle" font-size="12">Login + Zustimmung (Consent)</text>
+  <line x1="180" y1="205" x2="518" y2="70" stroke="#555" stroke-width="2" marker-end="url(#a)"/><text x="330" y="118" text-anchor="middle" font-size="12">Code → Token tauschen</text>
+  <line x1="180" y1="230" x2="518" y2="230" stroke="#555" stroke-width="2" marker-end="url(#a)"/><text x="350" y="222" text-anchor="middle" font-size="12">Authorization: Bearer &lt;token&gt;</text>
+  <line x1="615" y1="188" x2="615" y2="82" stroke="#999" stroke-width="1.5" stroke-dasharray="5 4" marker-end="url(#a)"/><text x="625" y="140" font-size="12">JWKS / Introspection</text>
+</svg>
+<ol>
+  <li><b>Resource Owner:</b> besitzt die Daten und gibt Zugriff frei. Beispiel: Anna erlaubt einer App, ihre Berichte zu lesen.</li>
+  <li><b>Client:</b> die Anwendung, die im Namen von Anna oder für sich selbst zugreift. Beispiel: eine Angular-App mit Backend.</li>
+  <li><b>Authorization Server (AS):</b> meldet Anna an, holt die Zustimmung und stellt Tokens aus. Beispiel: Keycloak-Realm.</li>
+  <li><b>Resource Server (RS):</b> die API mit den Daten. Sie prüft jeden Access Token. Beispiel: Spring Boot mit <code>oauth2ResourceServer()</code>.</li>
+  <li><b>Client-Typen:</b> Ein <b>Confidential Client</b> kann ein Geheimnis sicher halten (Server). Ein <b>Public Client</b> kann es nicht (SPA, Mobile App, CLI).</li>
+</ol>
+
+<h2>2. Die Reise eines Logins mit Authorization Code + PKCE</h2>
+<svg viewBox="0 0 720 360" font-family="-apple-system, system-ui, sans-serif" font-size="13">
+  <defs><marker id="b" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="20" y="10" width="140" height="34" rx="6" fill="#dbe9fb" stroke="#0a66c2"/><text x="90" y="32" text-anchor="middle" font-weight="700">Client</text>
+  <rect x="290" y="10" width="140" height="34" rx="6" fill="#eee" stroke="#777"/><text x="360" y="32" text-anchor="middle" font-weight="700">Browser</text>
+  <rect x="560" y="10" width="150" height="34" rx="6" fill="#0a66c2"/><text x="635" y="32" text-anchor="middle" fill="#fff" font-weight="700">Auth Server</text>
+  <line x1="90" y1="44" x2="90" y2="350" stroke="#bbb"/><line x1="360" y1="44" x2="360" y2="350" stroke="#bbb"/><line x1="635" y1="44" x2="635" y2="350" stroke="#bbb"/>
+  <text x="96" y="70" font-size="12">1. verifier + challenge + state</text>
+  <line x1="90" y1="90" x2="358" y2="90" stroke="#555" stroke-width="2" marker-end="url(#b)"/><text x="224" y="84" text-anchor="middle" font-size="12">2. Redirect /authorize</text>
+  <line x1="360" y1="120" x2="633" y2="120" stroke="#555" stroke-width="2" marker-end="url(#b)"/><text x="497" y="114" text-anchor="middle" font-size="12">code_challenge, state</text>
+  <text x="497" y="150" text-anchor="middle" font-size="12">3. Login + MFA + Consent</text>
+  <line x1="635" y1="175" x2="362" y2="175" stroke="#555" stroke-width="2" marker-end="url(#b)"/><text x="497" y="169" text-anchor="middle" font-size="12">4. Redirect ?code=…&amp;state=…</text>
+  <line x1="360" y1="205" x2="92" y2="205" stroke="#555" stroke-width="2" marker-end="url(#b)"/><text x="224" y="199" text-anchor="middle" font-size="12">5. state prüfen</text>
+  <line x1="90" y1="250" x2="633" y2="250" stroke="#0a66c2" stroke-width="2.5" marker-end="url(#b)"/><text x="362" y="243" text-anchor="middle" font-size="12" fill="#0a66c2">6. POST /token: code + code_verifier (Back-Channel)</text>
+  <line x1="635" y1="295" x2="92" y2="295" stroke="#2e7d32" stroke-width="2.5" marker-end="url(#b)"/><text x="362" y="288" text-anchor="middle" font-size="12" fill="#2e7d32">7. access_token, refresh_token, id_token</text>
+  <text x="362" y="335" text-anchor="middle" font-size="12">8. API-Call mit Bearer Token</text>
+</svg>
+<ol>
+  <li><b>Vorbereitung.</b> Der Client erzeugt einen zufälligen <b>code_verifier</b> (43–128 Zeichen). Daraus rechnet er die <b>code_challenge</b> = BASE64URL(SHA256(verifier)). Dazu kommt ein zufälliger <b>state</b> gegen CSRF.</li>
+  <li><b>Redirect.</b> Der Browser geht zu <code>/authorize?response_type=code&amp;client_id=…&amp;redirect_uri=…&amp;scope=…&amp;state=…&amp;code_challenge=…&amp;code_challenge_method=S256</code>.</li>
+  <li><b>Login.</b> Anna meldet sich beim AS an, nicht beim Client. Der Client sieht ihr Passwort nie. Danach bestätigt sie die Scopes (<b>Consent</b>).</li>
+  <li><b>Code zurück.</b> Der AS leitet auf die <b>exakt registrierte</b> <code>redirect_uri</code> zurück. In der URL steht ein kurzlebiger, einmaliger <b>Authorization Code</b>.</li>
+  <li><b>state prüfen.</b> Der Client vergleicht <code>state</code> mit dem gespeicherten Wert. Anders: Abbruch.</li>
+  <li><b>Code tauschen.</b> Der Client schickt Code und <code>code_verifier</code> per POST an <code>/token</code>. Ein Confidential Client authentifiziert sich zusätzlich. Der AS hasht den Verifier und vergleicht mit der Challenge.</li>
+  <li><b>Tokens.</b> Der AS gibt <b>Access Token</b>, oft <b>Refresh Token</b> und mit Scope <code>openid</code> ein <b>ID Token</b> zurück.</li>
+  <li><b>API-Call.</b> Der Client ruft die API mit <code>Authorization: Bearer …</code> auf. Der Resource Server prüft den Token.</li>
+</ol>
+<p>Warum PKCE? Ein Angreifer kann den Code abfangen, z. B. über eine bösartige App mit gleichem URL-Schema. Ohne den Verifier ist der Code wertlos. Der Verifier verlässt den Client nur im Back-Channel.</p>
+
+<h2>3. Beispiel: PKCE selbst rechnen</h2>
+<pre>import base64, hashlib, secrets
+def b64u(b): return base64.urlsafe_b64encode(b).rstrip(b"=").decode()
+
+v = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk"        # RFC 7636, Anhang B
+print(b64u(hashlib.sha256(v.encode("ascii")).digest()))
+v2 = secrets.token_urlsafe(32)                         # 32 Zufallsbytes
+stored = b64u(hashlib.sha256(v2.encode()).digest())    # AS speichert nur die Challenge
+check = lambda ver: b64u(hashlib.sha256(ver.encode()).digest()) == stored</pre>
+<pre>$ python -I pkce_demo.py
+1) RFC 7636 verifier : dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk
+   S256 challenge    : E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM
+2) neuer verifier    : q9rT_mU0Q_R3oe1gYXGu6BWyyU1OOl8XhvNsEEC4IIQ (43 Zeichen)
+   challenge         : dy6y6Gl2FvuMe3zkQRqlvQZykw-DsPlFzSUa7Y7_kis
+   state             : Aup2XJU-2JjEhXvujrZ2Lg
+3) richtiger verifier: True
+   gestohlener code, geratener verifier: False</pre>
+<p class="small">Echte Ausgabe, Python 3.12.</p>
+<ol>
+  <li>Die Challenge für den RFC-Verifier ist genau der Wert aus RFC 7636. Die Rechnung stimmt also.</li>
+  <li>32 Zufallsbytes ergeben base64url 43 Zeichen, das Minimum der Spezifikation.</li>
+  <li>Der AS speichert nur die Challenge. Ein Angreifer mit gestohlenem Code, aber ohne Verifier, bekommt keinen Token.</li>
+</ol>
+<p>Client Credentials gegen Keycloak (Maschine ruft Maschine):</p>
+<pre>curl -s -X POST https://sso.example.ch/realms/demo/protocol/openid-connect/token \
+  -d grant_type=client_credentials -d client_id=report-job \
+  -d client_secret="$CLIENT_SECRET" -d scope=reports.write</pre>
+<pre>{"access_token":"eyJhbGciOiJSUzI1NiIs…","expires_in":300,"token_type":"Bearer","scope":"reports.write"}</pre>
+<p class="small">Erwartetes Ergebnis (laut Doku, nicht ausgeführt). Kein Refresh Token: Der Job holt einfach einen neuen Token.</p>
+
+<h2>4. Details, die Interviewer fragen</h2>
+<ol>
+  <li><b>Authorization Code + PKCE:</b> der Standard für alles mit Benutzer: Web-App, SPA, Mobile, Desktop. RFC 9700 verlangt PKCE für Public Clients und empfiehlt es für Confidential Clients. OAuth 2.1 macht PKCE zur Pflicht. Nur <code>S256</code> nutzen, nicht <code>plain</code>.</li>
+  <li><b>Client Credentials:</b> Der Client ist selbst der Resource Owner. Kein Benutzer, kein Browser, kein Refresh Token. Beispiel: Batch-Job ruft eine API.</li>
+  <li><b>Device Authorization Grant</b> (RFC 8628): für Geräte ohne gute Tastatur (TV, CLI). Das Gerät zeigt <code>user_code</code> und <code>verification_uri</code>. Der Benutzer meldet sich am Handy an. Das Gerät pollt <code>/token</code> mit <code>grant_type=urn:ietf:params:oauth:grant-type:device_code</code>.</li>
+  <li><b>Device-Polling:</b> Antwort <code>authorization_pending</code> heisst weiter warten. Ohne <code>interval</code> gilt 5 Sekunden. Bei <code>slow_down</code> muss das Intervall um 5 Sekunden wachsen.</li>
+  <li><b>Refresh Token:</b> holt einen neuen Access Token ohne neuen Login. Er geht nur an den AS, nie an die API. Für Public Clients verlangt RFC 9700: <b>sender-constrained</b> oder <b>Rotation</b>.</li>
+  <li><b>Refresh Token Rotation:</b> Jeder Refresh gibt einen neuen Refresh Token, der alte wird ungültig. Benutzt jemand einen alten Token erneut, widerruft der AS die ganze Kette. So fällt Diebstahl auf.</li>
+  <li><b>Implicit Grant entfernt:</b> Er lieferte den Access Token direkt in der URL (<code>#access_token=…</code>). Er landet in History, Logs und Referer. RFC 9700: SHOULD NOT. OAuth 2.1: nicht mehr spezifiziert.</li>
+  <li><b>Password Grant entfernt:</b> Der Client sammelt Benutzername und Passwort selbst. Das widerspricht der Idee von OAuth und verhindert MFA. RFC 9700: MUST NOT. OAuth 2.1: nicht mehr spezifiziert.</li>
+  <li><b>Exakte redirect_uri:</b> OAuth 2.1 verlangt exakten String-Vergleich. Wildcards erlauben Code-Diebstahl über offene Redirects. Ausnahme: Port bei Loopback-Adressen für native Apps.</li>
+  <li><b>state und nonce:</b> <code>state</code> schützt den Redirect gegen CSRF. <code>nonce</code> (OIDC) bindet das ID Token an den Request. PKCE schützt ebenfalls gegen CSRF, ersetzt aber nicht die Prüfung.</li>
+  <li><b>Client-Authentifizierung:</b> <code>client_secret_basic</code> (geteiltes Geheimnis), <b>private_key_jwt</b> (signiertes JWT, kein geteiltes Geheimnis), <b>mTLS</b> (RFC 8705). Stärker ist alles ohne geteiltes Geheimnis.</li>
+  <li><b>Sender-Constrained Tokens:</b> Ein gestohlener Bearer Token ist sofort nutzbar. <b>DPoP</b> (RFC 9449) und <b>mTLS</b> binden den Token an einen Schlüssel des Clients.</li>
+  <li><b>Audience:</b> RFC 9700 empfiehlt Access Tokens pro Resource Server (<code>aud</code>). Sonst kann eine API den Token an eine andere weiterreichen.</li>
+  <li><b>Token Exchange / On-Behalf-Of:</b> Service A tauscht den Benutzer-Token gegen einen Token für Service B (RFC 8693, in Entra „On-Behalf-Of“). So geht der Benutzerkontext weiter, mit passender Audience.</li>
+</ol>
+
+<h2>5. Vergleich</h2>
+<ul>
+  <li><b>Authorization Code + PKCE:</b> mit Benutzer, Browser-Redirect. Für Web, SPA (über BFF), Mobile, Desktop.</li>
+  <li><b>Client Credentials:</b> ohne Benutzer. Für Service-zu-Service, Jobs, Daemons.</li>
+  <li><b>Device Code:</b> mit Benutzer, ohne Browser auf dem Gerät. Für CLI, TV, IoT. Beispiel: <code>az login --use-device-code</code>.</li>
+  <li><b>Refresh Token:</b> kein eigener Login-Flow, sondern Verlängerung. Nur mit Rotation oder Bindung für Public Clients.</li>
+  <li><b>Implicit:</b> entfernt. Ersatz: Code + PKCE.</li>
+  <li><b>Password (ROPC):</b> entfernt. Ersatz: Code + PKCE, für Tests eigene Test-Clients.</li>
+  <li><b>OAuth 2.0 vs 2.1:</b> 2.1 fasst 2.0 und die Security-BCP zusammen: PKCE Pflicht, kein Implicit, kein Password, exakte Redirect-URIs, keine Tokens im Query-String. Stand Nov. 2026 ist 2.1 noch ein Internet-Draft.</li>
+</ul>
+
+<h2>6. In der Produktion</h2>
+<ol>
+  <li><b>Tokens im Browser-Speicher:</b> Eine SPA legt Access und Refresh Token in <code>localStorage</code>. Ein XSS liest beide. Lösung: <b>BFF</b> (Backend for Frontend). RFC 10017 nennt BFF die sicherste Architektur für Browser-Apps.</li>
+  <li><b>Wildcard-Redirect:</b> <code>https://*.example.ch/*</code> ist registriert. Eine übernommene Subdomain stiehlt Codes. Lösung: exakte URIs.</li>
+  <li><b>Refresh Token läuft nie ab:</b> Ein gestohlener Token gilt Monate. Lösung: Rotation, absolute Lebensdauer, Widerruf bei Logout.</li>
+  <li><b>Client Secret im Repo oder Frontend:</b> Ein SPA-Bundle enthält ein Secret. Jeder kann es lesen. Lösung: SPA ist Public Client ohne Secret, Secrets nur im Backend aus dem Vault.</li>
+  <li><b>Token-Endpoint überlastet:</b> Jeder Request holt einen neuen Client-Credentials-Token. Lösung: Token cachen bis kurz vor <code>expires_in</code>. Spring <code>OAuth2AuthorizedClientManager</code> macht das.</li>
+  <li><b>Uhrzeit-Drift:</b> Tokens sind „noch nicht gültig“ oder „abgelaufen“. Lösung: NTP und eine kleine Clock-Skew-Toleranz (Spring: 60 Sekunden).</li>
+</ol>
+
+<h2>7. Diagnose: Werkzeuge und Befehle</h2>
+<ul>
+  <li><b>Browser DevTools → Network:</b> <code>/authorize</code>-Redirect, <code>code</code> im Callback, POST <code>/token</code>. Fehler stehen als <code>error=…</code> in der URL.</li>
+  <li><b>Typische Fehlercodes:</b> <code>invalid_grant</code> (Code abgelaufen, schon benutzt, Verifier falsch), <code>invalid_client</code> (Secret falsch), <code>unauthorized_client</code> (Grant für Client nicht erlaubt), <code>invalid_scope</code>.</li>
+  <li><code>curl https://sso.example.ch/realms/demo/.well-known/openid-configuration</code>: Endpoints, <code>grant_types_supported</code>, <code>code_challenge_methods_supported</code>.</li>
+  <li><b>Keycloak:</b> Events („Login Events“) zeigen Fehler pro Client. Pro Client „Standard flow“, „Direct access grants“ (ROPC), „Service accounts“ (Client Credentials) einzeln aktivieren.</li>
+  <li><b>Spring:</b> <code>logging.level.org.springframework.security.oauth2=DEBUG</code>.</li>
+</ul>
+
+<h2>8. Senior-Punkte</h2>
+<div class="senior">
+<ol>
+  <li><b>Zwei Flows reichen fast immer:</b> Code + PKCE für Benutzer, Client Credentials für Maschinen. Device Code nur, wenn es keinen Browser gibt.</li>
+  <li><b>Browser-Apps: BFF als Standard.</b> Tokens bleiben im Backend, der Browser hat nur ein HttpOnly-Session-Cookie. Preis: ein zusätzlicher Server und CSRF-Schutz.</li>
+  <li><b>Kurze Access Tokens, kontrollierte Refresh Tokens.</b> 5–15 Minuten Access Token, Rotation und Widerruf für Refresh Tokens.</li>
+  <li><b>Kein geteiltes Geheimnis, wo möglich:</b> private_key_jwt, mTLS oder in Azure Workload Identity Federation statt Client Secret.</li>
+  <li><b>Eine Audience pro API.</b> Ein Token für alle Services ist bequem, aber ein gestohlener Token öffnet dann alles.</li>
+  <li><b>OAuth 2.1 heute schon anwenden.</b> Es ist noch ein Draft, aber RFC 9700 macht dieselben Regeln schon zur Best Practice.</li>
+</ol>
+</div>
+
+<h2>9. Aus dem Projekt</h2>
+<p>„Bei MATCH meldet sich die WebUI über Keycloak an, bei CARIAD lief der Login über Keycloak mit LDAP. Welche Grant-Typen dort konfiguriert waren, steht nicht in meinen Unterlagen.“ <span class="small">(Prüfen und durch dein echtes Beispiel ersetzen.)</span></p>
+
+<h2>10. Fallen</h2>
+<div class="trap">
+<ul>
+  <li>„PKCE ist nur für Mobile Apps.“ → <b>Falsch.</b> RFC 9700 verlangt es für alle Public Clients und empfiehlt es für alle. OAuth 2.1 macht es Pflicht.</li>
+  <li>„Implicit Flow ist richtig für SPAs.“ → <b>Falsch.</b> Er ist entfernt. SPAs nutzen Code + PKCE, besser über ein BFF.</li>
+  <li>„Mit dem Access Token weiss der Client, wer der Benutzer ist.“ → <b>Falsch.</b> Der Access Token ist für die API. Die Identität liefert das ID Token (OIDC).</li>
+  <li>„state ist optional, wir haben PKCE.“ → <b>Ungenau.</b> PKCE schützt den Code-Tausch. <code>state</code> bindet den Redirect an die Browser-Session und trägt App-Zustand.</li>
+  <li>„Client Credentials gibt einen Refresh Token.“ → <b>Falsch.</b> Er sollte keinen geben. Der Client holt einfach einen neuen Token.</li>
+  <li>„OAuth 2.1 ist ein fertiger RFC.“ → <b>Falsch.</b> Stand Nov. 2026 ist es draft-17. Die Regeln stehen aber schon in RFC 9700.</li>
+</ul>
+</div>
+
+<h2>11. Fragen</h2>
+<details><summary>Was ist OAuth 2?</summary><p>Ein Framework für delegierte Autorisierung. Ein Client bekommt einen Access Token mit begrenzten Rechten, statt das Passwort des Benutzers zu kennen.</p></details>
+<details><summary>Welche vier Rollen gibt es in OAuth 2?</summary><p>Resource Owner (Benutzer), Client (App), Authorization Server (stellt Tokens aus) und Resource Server (API, prüft Tokens).</p></details>
+<details><summary>Was ist der Unterschied zwischen Public und Confidential Client?</summary><p>Ein Confidential Client kann ein Geheimnis sicher halten, z. B. ein Server. Ein Public Client nicht, z. B. SPA, Mobile App oder CLI.</p></details>
+<details><summary>Wie läuft der Authorization Code Flow ab?</summary><p>Redirect zum AS, Login und Consent, Redirect mit Code zurück, Code per Back-Channel gegen Tokens tauschen, dann API mit Bearer Token aufrufen.</p></details>
+<details><summary>Was ist PKCE und wie funktioniert es?</summary><p>Proof Key for Code Exchange. Der Client sendet zuerst den SHA-256-Hash eines Zufallswerts und beim Token-Tausch den Wert selbst. Ein gestohlener Code ist ohne diesen Wert nutzlos.</p></details>
+<details><summary>Warum S256 und nicht plain?</summary><p>Bei plain steht der Verifier schon im Authorization Request. Wer den Request sieht, kennt ihn. S256 verrät nur den Hash.</p></details>
+<details><summary>Wofür ist der state-Parameter?</summary><p>Er bindet die Antwort an den eigenen Request und schützt gegen CSRF im Redirect. Er kann auch App-Zustand tragen, z. B. die Zielseite.</p></details>
+<details><summary>Wann nutzen Sie Client Credentials?</summary><p>Wenn kein Benutzer beteiligt ist: Service-zu-Service, Batch-Jobs, Daemons. Der Client authentifiziert sich selbst und bekommt keinen Refresh Token.</p></details>
+<details><summary>Wie funktioniert der Device Code Flow?</summary><p>Das Gerät holt device_code und user_code. Der Benutzer gibt den Code auf einem zweiten Gerät ein und meldet sich an. Das Gerät pollt so lange den Token-Endpoint.</p></details>
+<details><summary>Was bedeuten authorization_pending und slow_down?</summary><p>authorization_pending: Benutzer noch nicht fertig, weiter pollen. slow_down: weiter pollen, aber das Intervall um 5 Sekunden erhöhen.</p></details>
+<details><summary>Was ist ein Refresh Token?</summary><p>Ein langlebiger Token, mit dem der Client beim AS neue Access Tokens holt. Er geht nie an die API.</p></details>
+<details><summary>Was ist Refresh Token Rotation?</summary><p>Jeder Refresh gibt einen neuen Refresh Token, der alte wird ungültig. Wird ein alter erneut benutzt, widerruft der AS die Kette. So erkennt man Diebstahl.</p></details>
+<details><summary>Warum wurde der Implicit Grant entfernt?</summary><p>Der Access Token kam in der URL und landete in History, Logs und Referer. Es gab keine Bindung an den Client. Code + PKCE löst das.</p></details>
+<details><summary>Warum wurde der Password Grant entfernt?</summary><p>Der Client sieht das Passwort, MFA und SSO gehen nicht, und Phishing wird normal. RFC 9700 sagt MUST NOT.</p></details>
+<details><summary>Was ändert OAuth 2.1 gegenüber 2.0?</summary><p>PKCE Pflicht, Implicit und Password entfernt, exakte Redirect-URIs, keine Bearer Tokens im Query-String, Regeln für Refresh Tokens. Es ist noch ein Draft.</p></details>
+<details><summary>Was ist RFC 9700?</summary><p>Die OAuth 2.0 Security Best Current Practice vom Januar 2025. Sie fasst die Sicherheitsregeln zusammen, die OAuth 2.1 übernimmt.</p></details>
+<details><summary>Warum muss die redirect_uri exakt stimmen?</summary><p>Mit Wildcards oder Präfixen kann ein Angreifer den Code auf seine Seite umleiten, z. B. über einen offenen Redirect oder eine Subdomain.</p></details>
+<details><summary>Wie authentifiziert sich ein Confidential Client?</summary><p>Mit client_secret, besser mit private_key_jwt oder mTLS. Die beiden letzten brauchen kein geteiltes Geheimnis.</p></details>
+<details><summary>Was ist ein sender-constrained Token?</summary><p>Ein Token, der an einen Schlüssel des Clients gebunden ist, z. B. per DPoP oder mTLS. Ein gestohlener Token allein reicht dann nicht.</p></details>
+<details><summary>Was ist ein BFF?</summary><p>Backend for Frontend: ein Server macht OAuth für die SPA und hält die Tokens. Der Browser hat nur ein HttpOnly-Cookie. RFC 10017 nennt es die sicherste Variante.</p></details>
+<details><summary>Was ist Token Exchange oder On-Behalf-Of?</summary><p>Ein Service tauscht den eingehenden Benutzer-Token gegen einen Token für einen nachgelagerten Service. So bleibt der Benutzerkontext erhalten, mit passender Audience.</p></details>
+<details><summary>Opaque Token oder JWT als Access Token?</summary><p>JWT wird lokal geprüft, schnell, aber schwer widerrufbar. Ein Opaque Token braucht Introspection beim AS, kann aber sofort widerrufen werden.</p></details>
+<details><summary>Szenario: Eine SPA speichert Tokens im localStorage. Was raten Sie?</summary><p>Ein XSS kann alle Tokens stehlen. Ich empfehle ein BFF mit HttpOnly-Cookie. Mindestens: Tokens nur im Speicher, kurze Laufzeit, Refresh Token Rotation und eine strenge CSP.</p></details>
+<details><summary>Szenario: Ein nächtlicher Job ruft eine API mit dem Passwort eines echten Benutzers auf. Was ändern Sie?</summary><p>Eigenen Client mit Client Credentials anlegen, nur die nötigen Scopes vergeben. Secret aus dem Vault oder besser private_key_jwt bzw. Managed Identity. Das Benutzerkonto wird nicht mehr gebraucht.</p></details>
+<details><summary>Szenario: Benutzer melden zufällig „invalid_grant“ beim Login. Wo suchen Sie?</summary><p>Code abgelaufen oder doppelt eingelöst (z. B. Doppelklick oder Retry), Verifier passt nicht (z. B. mehrere Tabs überschreiben ihn), redirect_uri weicht ab, oder Uhrzeit-Drift. Keycloak-Events und Network-Tab zeigen den Grund.</p></details>
+
+</body>
+</html>

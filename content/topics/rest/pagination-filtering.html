@@ -1,0 +1,217 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pagination und Filter</title>
+<style>
+  body { font: 17px/1.55 -apple-system, system-ui, sans-serif; max-width: 760px; margin: 0 auto; padding: 16px; color: #1d1d1f; }
+  h1 { font-size: 28px; margin: 8px 0 4px; }
+  h2 { font-size: 21px; margin: 32px 0 8px; padding-top: 12px; border-top: 2px solid #e5e5ea; }
+  .kern { background: #eef6ff; border-left: 4px solid #0a66c2; padding: 10px 14px; border-radius: 6px; }
+  .senior { background: #f0faf0; border-left: 4px solid #2e7d32; padding: 10px 14px; border-radius: 6px; }
+  .trap { background: #fff4f2; border-left: 4px solid #c62828; padding: 10px 14px; border-radius: 6px; }
+  code { background: #f2f2f7; padding: 1px 5px; border-radius: 4px; font-size: 15px; }
+  pre { background: #1e1e1e; color: #e6e6e6; padding: 12px; border-radius: 8px; overflow-x: auto; font-size: 13.5px; line-height: 1.45; }
+  svg { width: 100%; height: auto; display: block; margin: 10px 0; }
+  ol li, ul li { margin: 4px 0; }
+  details { border: 1px solid #e5e5ea; border-radius: 8px; padding: 8px 12px; margin: 6px 0; }
+  summary { font-weight: 600; cursor: pointer; }
+  details p { margin: 6px 0 2px; }
+  .small { color: #6e6e73; font-size: 14px; }
+</style>
+</head>
+<body>
+
+<h1>Pagination, Filter, Sortierung</h1>
+<p class="small">REST · Tier 1 · Quellen: RFC 8288 (Web Linking, rel="next"), RFC 9110, Spring Data JPA Reference (Paging, Slice, Scrolling), PostgreSQL 17 Doku (Row Constructor Comparison, pg_class.reltuples), SQLite Doku (Row Values)</p>
+
+<div class="kern">
+<b>Kern:</b> <b>Pagination</b> ist das Aufteilen einer grossen Liste in kleine Seiten, damit weder Server noch Client alles auf einmal laden. Es gibt zwei Hauptarten: <b>Offset</b> („überspringe 1000, nimm 20“) und <b>Cursor/Keyset</b> („nimm 20 nach diesem Schlüssel“). Filter und Sortierung gehören dazu, denn jede Seite braucht eine <b>stabile, eindeutige Reihenfolge</b>.
+</div>
+
+<h2>1. Wo sitzt die Pagination?</h2>
+<svg viewBox="0 0 720 290" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="a" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="10" y="30" width="150" height="70" rx="8" fill="#fff" stroke="#555"/><text x="85" y="58" text-anchor="middle" font-weight="700">Client</text><text x="85" y="78" text-anchor="middle" font-size="12">?status=NEW&amp;limit=20</text>
+  <line x1="160" y1="65" x2="208" y2="65" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="210" y="30" width="160" height="70" rx="8" fill="#dbe9fb" stroke="#0a66c2"/><text x="290" y="58" text-anchor="middle" font-weight="700">Controller</text><text x="290" y="78" text-anchor="middle" font-size="12">prüft limit, sort, Filter</text>
+  <line x1="370" y1="65" x2="418" y2="65" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="420" y="30" width="140" height="70" rx="8" fill="#dbe9fb" stroke="#0a66c2"/><text x="490" y="58" text-anchor="middle" font-weight="700">Repository</text><text x="490" y="78" text-anchor="middle" font-size="12">SQL mit LIMIT</text>
+  <line x1="560" y1="65" x2="608" y2="65" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="610" y="30" width="100" height="70" rx="8" fill="#0a66c2"/><text x="660" y="58" text-anchor="middle" fill="#fff" font-weight="700">DB</text><text x="660" y="78" text-anchor="middle" fill="#fff" font-size="12">Index</text>
+  <rect x="10" y="140" width="700" height="130" rx="8" fill="#f7f7fa" stroke="#999"/>
+  <text x="360" y="162" text-anchor="middle" font-weight="700">Antwort</text>
+  <text x="30" y="190" font-size="13">Body: {"items": [ … 20 … ], "next": "eyJjIjoxNzAw…"}</text>
+  <text x="30" y="214" font-size="13">oder Header: Link: &lt;/orders?cursor=eyJj…&amp;limit=20&gt;; rel="next"</text>
+  <text x="30" y="238" font-size="13">optional: total (teuer!) oder hasMore (billig)</text>
+  <text x="30" y="260" font-size="12" fill="#6e6e73">Der Cursor ist opak: Der Client baut ihn nie selbst.</text>
+</svg>
+<ol>
+  <li><b>Client:</b> schickt Filter, Sortierung und Seitengrösse als Query-Parameter. Beispiel: <code>GET /orders?status=NEW&amp;sort=-createdAt&amp;limit=20</code>.</li>
+  <li><b>Controller:</b> prüft alles. <code>limit</code> bekommt ein Maximum. Nur erlaubte Felder dürfen in Filter und Sortierung.</li>
+  <li><b>Repository:</b> baut SQL mit <code>WHERE</code>, <code>ORDER BY</code> und <code>LIMIT</code>.</li>
+  <li><b>Datenbank:</b> braucht einen <b>Index</b>, der zu Filter und Sortierung passt. Sonst sortiert sie alle Zeilen.</li>
+  <li><b>Antwort:</b> die Seite plus ein Verweis auf die nächste Seite, im Body oder im <code>Link</code>-Header (RFC 8288).</li>
+</ol>
+
+<h2>2. Die Reise durch eine lange Liste (die Geschichte zum Merken)</h2>
+<svg viewBox="0 0 720 330" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="b" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker><marker id="r" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#c62828"/></marker></defs>
+  <text x="180" y="24" text-anchor="middle" font-weight="700" fill="#c62828">Offset</text>
+  <rect x="20" y="36" width="320" height="50" rx="8" fill="#fff4f2" stroke="#c62828"/><text x="180" y="58" text-anchor="middle" font-size="13">OFFSET 500000 LIMIT 20</text><text x="180" y="76" text-anchor="middle" font-size="12">liest 500 020 Zeilen, wirft 500 000 weg</text>
+  <line x1="180" y1="86" x2="180" y2="114" stroke="#c62828" stroke-width="2" marker-end="url(#r)"/>
+  <rect x="20" y="116" width="320" height="50" rx="8" fill="#fff4f2" stroke="#c62828"/><text x="180" y="138" text-anchor="middle" font-size="13">neue Zeile vorne eingefügt</text><text x="180" y="156" text-anchor="middle" font-size="12">alles rutscht: Duplikat auf Seite 2</text>
+  <text x="540" y="24" text-anchor="middle" font-weight="700" fill="#2e7d32">Keyset / Cursor</text>
+  <rect x="380" y="36" width="320" height="50" rx="8" fill="#e8f5e9" stroke="#2e7d32"/><text x="540" y="58" text-anchor="middle" font-size="13">WHERE (created_at, id) &lt; (c, i)</text><text x="540" y="76" text-anchor="middle" font-size="12">springt im Index direkt hin</text>
+  <line x1="540" y1="86" x2="540" y2="114" stroke="#2e7d32" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="380" y="116" width="320" height="50" rx="8" fill="#e8f5e9" stroke="#2e7d32"/><text x="540" y="138" text-anchor="middle" font-size="13">neue Zeile vorne eingefügt</text><text x="540" y="156" text-anchor="middle" font-size="12">egal: Seite 2 beginnt nach dem Cursor</text>
+  <rect x="20" y="200" width="680" height="110" rx="10" fill="#f7f7fa" stroke="#999"/>
+  <text x="360" y="224" text-anchor="middle" font-weight="700">Preis von Keyset</text>
+  <text x="40" y="250" font-size="13">kein Sprung zu „Seite 37“ · nur vor/zurück</text>
+  <text x="40" y="272" font-size="13">Sortierung muss eindeutig sein (Tie-Breaker id)</text>
+  <text x="40" y="294" font-size="13">Index muss genau zur Sortierung passen</text>
+</svg>
+<ol>
+  <li><b>Seite 1:</b> Der Client ruft <code>GET /orders?limit=20</code>. Beide Arten liefern die 20 neuesten Bestellungen.</li>
+  <li><b>Offset, tiefe Seite:</b> <code>?page=25000</code> wird zu <code>OFFSET 500000</code>. Die DB muss 500 000 Zeilen lesen und wegwerfen. Je tiefer, desto langsamer.</li>
+  <li><b>Keyset, tiefe Seite:</b> Der Cursor enthält die letzte Zeile der Vorseite, z. B. <code>created_at</code> und <code>id</code>. Die DB springt im Index direkt dorthin. Jede Seite ist gleich schnell.</li>
+  <li><b>Neue Daten:</b> Zwischen Seite 1 und 2 kommt eine neue Bestellung. Bei Offset rutscht alles um eins. Die letzte Zeile von Seite 1 erscheint auf Seite 2 nochmals.</li>
+  <li><b>Keyset bleibt stabil:</b> Seite 2 beginnt strikt nach dem Cursor. Keine Duplikate, keine Lücken.</li>
+  <li><b>Preis:</b> Keyset kann nicht zu „Seite 37“ springen. Für Infinite Scroll, Feeds und Exporte ist das egal.</li>
+</ol>
+
+<h2>3. Beispiel: Offset gegen Keyset mit 1 Mio. Zeilen</h2>
+<pre># paging_demo.py (gekürzt): sqlite3, Tabelle orders mit 1 000 000 Zeilen
+CREATE INDEX ix_created ON orders(created_at, id)
+
+OFFSET = "SELECT id, created_at FROM orders ORDER BY created_at DESC, id DESC LIMIT 20 OFFSET ?"
+KEYSET = ("SELECT id, created_at FROM orders WHERE (created_at, id) &lt; (?, ?) "
+          "ORDER BY created_at DESC, id DESC LIMIT 20")
+# Cursor = (created_at, id) der letzten Zeile der Vorseite</pre>
+<pre>1) Zeit pro Seite (Mittel aus 20 Läufen)
+   OFFSET       0:    0.01 ms
+   OFFSET   10000:    0.12 ms
+   OFFSET  500000:    5.33 ms
+   OFFSET  999980:   10.84 ms
+   KEYSET tief  :    0.02 ms  (gleiche Zeilen wie OFFSET 999980: True)
+2) Query-Plan
+   OFFSET: SCAN orders USING COVERING INDEX ix_created
+   KEYSET: SEARCH orders USING COVERING INDEX ix_created (created_at&lt;?)
+3) COUNT(*) kostet
+   COUNT(*) WHERE status='NEW': 66.61 ms
+4) Neue Zeile zwischen Seite 1 und 2
+   Seite 1 letzte id: 999981
+   OFFSET Seite 2 erste id: 999981  -> doppelt: True
+   KEYSET Seite 2 erste id: 999980  -> doppelt: False</pre>
+<p class="small">Echte Ausgabe, Python 3.12 mit sqlite3 (SQLite 3.49, In-Memory). Absolute Zeiten sind klein, weil alles im RAM liegt. Wichtig ist das Wachstum.</p>
+<ol>
+  <li>Offset wird linear langsamer: von 0,01 ms auf ca. 11 ms, rund 1000-mal. Keyset bleibt bei 0,02 ms, auch ganz hinten.</li>
+  <li>Beide liefern auf der letzten Seite die <b>gleichen Zeilen</b>. Keyset ist also korrekt.</li>
+  <li>Der Plan zeigt den Unterschied: Offset macht <b>SCAN</b> (Index von vorne durchlaufen). Keyset macht <b>SEARCH</b> (direkt springen).</li>
+  <li>Ein <code>COUNT(*)</code> mit Filter ohne passenden Index kostet mehr als 3000 Keyset-Seiten.</li>
+  <li>Nach einem Insert zeigt Offset die id 999981 doppelt. Keyset nicht.</li>
+</ol>
+
+<h2>4. Details, die Interviewer fragen</h2>
+<ol>
+  <li><b>Offset-Pagination:</b> <code>?page=3&amp;size=20</code> oder <code>?offset=40&amp;limit=20</code>. Einfach, erlaubt Sprünge. Aber tiefe Seiten sind langsam und Daten rutschen bei Änderungen.</li>
+  <li><b>Keyset-Pagination (Seek-Methode):</b> Filter auf die Sortier-Spalten der letzten Zeile. In PostgreSQL mit <b>Row-Value-Vergleich</b>: <code>WHERE (created_at, id) &lt; ($1, $2)</code>. Der Index muss <code>(created_at, id)</code> sein.</li>
+  <li><b>Cursor-Pagination:</b> Die API-Sicht auf Keyset. Der Server packt die Schlüssel in einen <b>opaken Cursor</b>, z. B. Base64-JSON. Der Client gibt ihn nur zurück.</li>
+  <li><b>Tie-Breaker:</b> Die Sortierung muss eindeutig sein. <code>ORDER BY created_at</code> allein reicht nicht, wenn zwei Zeilen dieselbe Zeit haben. Darum immer <code>id</code> anhängen.</li>
+  <li><b>Cursor-Inhalt:</b> Er enthält Sortierwerte, Richtung und oft die Filter. Ändert der Client die Filter, ist der alte Cursor ungültig (400). Ein signierter Cursor verhindert Manipulation.</li>
+  <li><b>Zurückblättern:</b> Sortierung umdrehen, <code>&gt;</code> statt <code>&lt;</code>, Ergebnis wieder umdrehen. Viele APIs bieten nur „vorwärts“.</li>
+  <li><b>NULL in Sortierspalten:</b> stört Keyset, weil Vergleiche mit NULL nicht wahr sind. Spring Data warnt davor. Lösung: <code>NOT NULL</code> oder <code>COALESCE</code>.</li>
+  <li><b>Total Count:</b> <code>COUNT(*)</code> braucht eine zweite Abfrage über alle Treffer. In PostgreSQL ist sie wegen <b>MVCC</b> (jede Transaktion sieht ihre eigene Version) nicht gratis. Alternativen: <code>hasMore</code>, geschätzte Zahl (<code>pg_class.reltuples</code> oder <code>EXPLAIN</code>), oder Count nur auf Wunsch (<code>?includeTotal=true</code>).</li>
+  <li><b><code>hasMore</code> billig:</b> <code>LIMIT 21</code> holen, 20 zeigen. Gibt es die 21. Zeile, gibt es eine nächste Seite. Spring Data macht das für <code>Slice</code> und <code>Window</code> so (<code>limit + 1</code>).</li>
+  <li><b>Spring Data:</b> <code>Page&lt;T&gt;</code> löst eine zusätzliche Count-Query aus. <code>Slice&lt;T&gt;</code> nicht. <code>Window&lt;T&gt;</code> mit <code>ScrollPosition</code> unterstützt Offset und Keyset.</li>
+  <li><b>Limits:</b> Immer ein Maximum für <code>limit</code> setzen. Sonst holt ein Client mit <code>?size=1000000</code> die ganze Tabelle (OWASP API4).</li>
+  <li><b>Sortierung:</b> Üblich: <code>?sort=-createdAt,id</code> (Minus = absteigend). Spring: <code>?sort=createdAt,desc</code>. Nur Felder aus einer <b>Allowlist</b>, die einen Index haben.</li>
+  <li><b>Filter einfach:</b> <code>?status=NEW&amp;customerId=7</code>. Mehrere Werte: <code>?status=NEW,PAID</code>. Bereiche: <code>?createdAfter=2026-01-01</code>.</li>
+  <li><b>Filter mit Operatoren:</b> LHS-Klammern <code>?price[gte]=10</code>, RSQL/FIQL <code>?filter=status==NEW;price=gt=10</code>, oder OData <code>$filter</code>. Mächtig, aber jeder freie Filter braucht Index-Planung.</li>
+  <li><b>Suche mit vielen Kriterien:</b> zu lange URLs → <code>POST /orders/search</code> mit Body. Sauberer: die neue Methode QUERY (RFC 10008).</li>
+  <li><b>Konsistenz:</b> Keine Pagination ist ein Snapshot. Für exakte Exporte: Snapshot-Tabelle, Export-Job oder Keyset über unveränderliche Daten.</li>
+</ol>
+
+<h2>5. Vergleich</h2>
+<ul>
+  <li><b>Offset/Page:</b> Sprung zu jeder Seite, „Seite 3 von 50“. Langsam bei tiefen Seiten, Duplikate und Lücken bei Änderungen. Gut für Admin-Tabellen mit wenig Daten.</li>
+  <li><b>Keyset/Cursor:</b> konstant schnell, stabil bei Änderungen. Kein Sprung zu Seite N, eindeutige Sortierung und passender Index nötig. Gut für Feeds, Infinite Scroll, Sync und Exporte.</li>
+  <li><b>Page (Spring):</b> Inhalt + Total. Zwei Queries.</li>
+  <li><b>Slice (Spring):</b> Inhalt + „gibt es mehr?“. Eine Query.</li>
+  <li><b>Link-Header vs Body-Felder:</b> Header hält den Body sauber und ist ein Standard (RFC 8288). Body-Felder sind für Frontends leichter zu lesen.</li>
+  <li><b>Exakter Count vs Schätzung:</b> Exakt kostet eine volle Abfrage. Schätzung ist schnell, aber ungenau. „Mehr als 10 000“ reicht oft.</li>
+</ul>
+
+<h2>6. In der Produktion</h2>
+<ol>
+  <li><b>Crawler blättert bis Seite 50 000:</b> DB-CPU steigt, alle Requests werden langsam. Lösung: Keyset oder ein Maximum für <code>page</code>.</li>
+  <li><b>Count-Query teurer als die Seite:</b> Jede Listenansicht zählt Millionen Zeilen. Lösung: <code>Slice</code> statt <code>Page</code>, Count nur auf Wunsch, Schätzung oder gecachter Wert.</li>
+  <li><b>Duplikate und fehlende Einträge in Exporten:</b> Offset plus parallele Inserts. Lösung: Keyset mit eindeutigem Schlüssel.</li>
+  <li><b>Sortierung ohne Index:</b> <code>?sort=lastName</code> zwingt die DB, alles zu sortieren. Lösung: Allowlist für Sortierfelder, je ein passender Index.</li>
+  <li><b>Unbegrenztes <code>limit</code>:</b> Ein Client holt 1 Mio. Zeilen in einer Antwort, der Pod läuft aus dem Speicher (OOM). Lösung: Maximum serverseitig erzwingen.</li>
+  <li><b>Instabile Sortierung:</b> Ohne Tie-Breaker liefert die DB gleiche Werte in zufälliger Reihenfolge. Einträge springen zwischen Seiten. Lösung: <code>id</code> als letztes Sortierfeld.</li>
+</ol>
+
+<h2>7. Diagnose: Werkzeuge und Befehle</h2>
+<ul>
+  <li><code>EXPLAIN (ANALYZE, BUFFERS) SELECT … OFFSET 500000 LIMIT 20</code> (PostgreSQL): zeigt, wie viele Zeilen gelesen und verworfen werden.</li>
+  <li><b>pg_stat_statements</b>: findet die teuersten Queries. Count- und Offset-Queries stehen oft oben.</li>
+  <li><b>Gateway-Logs:</b> Verteilung von <code>page</code>- und <code>size</code>-Werten. Sehr hohe Werte deuten auf Crawler oder Exporte.</li>
+  <li><b>Hibernate SQL-Log</b> (<code>spring.jpa.show-sql</code> oder Logger <code>org.hibernate.SQL</code>): zeigt die zusätzliche Count-Query eines <code>Page</code>.</li>
+  <li><b>APM/Tracing:</b> Latenz pro Endpoint nach Seitentiefe aufschlüsseln.</li>
+</ul>
+
+<h2>8. Senior-Punkte</h2>
+<div class="senior">
+<ol>
+  <li><b>Default Keyset, Offset nur bei Bedarf.</b> Wenn Nutzer wirklich zu „Seite 7“ springen müssen und die Daten klein sind, ist Offset okay.</li>
+  <li><b>Der Cursor ist opak.</b> So kann der Server später das Verfahren ändern, ohne Clients zu brechen.</li>
+  <li><b>Total Count ist ein Produkt-Entscheid.</b> Fragen: Braucht der Nutzer die exakte Zahl? Oft reicht „mehr als 1000“ oder „es gibt weitere“.</li>
+  <li><b>Filter und Sortierung sind Index-Design.</b> Jede erlaubte Kombination braucht einen Plan. Freie Filter ohne Index sind ein DoS-Risiko.</li>
+  <li><b>Grenzen sind Sicherheit:</b> maximales <code>limit</code>, maximale Filterzahl, Timeouts. Das gehört in den API-Vertrag.</li>
+  <li><b>Grosse Exporte sind kein Paging-Problem.</b> Dafür gibt es asynchrone Export-Jobs mit 202 und Download-Link.</li>
+</ol>
+</div>
+
+<h2>9. Aus dem Projekt</h2>
+<p>„Bei NABODAT habe ich lazy-loading Datentabellen eingebaut, damit nur die sichtbare Seite geladen wird. Bei MATCH lädt die WebUI Records und Charts über Dremio statt direkt aus MSSQL.“ <span class="small">(Prüfen und durch dein echtes Beispiel ersetzen.)</span></p>
+
+<h2>10. Fallen</h2>
+<div class="trap">
+<ul>
+  <li>„Mit Index ist OFFSET schnell.“ → <b>Falsch.</b> Der Index hilft beim Sortieren, aber die DB muss die übersprungenen Zeilen trotzdem durchlaufen.</li>
+  <li>„ORDER BY created_at reicht für Keyset.“ → <b>Falsch.</b> Ohne eindeutigen Tie-Breaker wie <code>id</code> gehen Zeilen verloren oder kommen doppelt.</li>
+  <li>„COUNT(*) ist in PostgreSQL billig.“ → <b>Falsch.</b> Wegen MVCC muss es sichtbare Zeilen prüfen. Bei grossen Tabellen kostet es spürbar.</li>
+  <li>„Cursor-Pagination liefert einen Snapshot.“ → <b>Falsch.</b> Sie ist stabil gegen Verschiebung, zeigt aber neue Zeilen, die nach dem Cursor liegen.</li>
+  <li>„Der Client kann den Cursor selbst bauen.“ → <b>Schlecht.</b> Der Cursor ist ein internes Format. Clients dürfen ihn nur zurückgeben.</li>
+  <li>„Spring Page ist kostenlos.“ → <b>Falsch.</b> Page löst eine zweite Count-Query aus. Slice nicht.</li>
+</ul>
+</div>
+
+<h2>11. Fragen</h2>
+<details><summary>Offset- oder Cursor-Pagination?</summary><p>Offset für kleine Daten und Sprünge zu Seite N. Cursor/Keyset für grosse oder sich ändernde Daten, Feeds und Exporte.</p></details>
+<details><summary>Warum wird OFFSET bei tiefen Seiten langsam?</summary><p>Die DB muss alle übersprungenen Zeilen lesen und verwerfen. Die Kosten wachsen linear mit dem Offset.</p></details>
+<details><summary>Wie funktioniert Keyset-Pagination?</summary><p>Die nächste Seite filtert auf die Sortierwerte der letzten Zeile: WHERE (created_at, id) &lt; (letzter Wert). Ein passender Index macht das zu einem direkten Sprung.</p></details>
+<details><summary>Warum braucht Keyset einen Tie-Breaker?</summary><p>Ohne eindeutige Sortierung sind Zeilen mit gleichem Wert nicht klar geordnet. Dann gehen Zeilen verloren oder kommen doppelt.</p></details>
+<details><summary>Was steht in einem Cursor?</summary><p>Die Sortierwerte der letzten Zeile, oft auch Richtung und Filter. Kodiert, zum Beispiel Base64, und für den Client opak.</p></details>
+<details><summary>Warum soll der Cursor opak sein?</summary><p>Der Server kann das Format ändern, ohne Clients zu brechen. Und Clients können keine ungültigen Positionen bauen.</p></details>
+<details><summary>Welche Probleme hat Offset bei Änderungen?</summary><p>Neue oder gelöschte Zeilen verschieben alles. Einträge erscheinen doppelt oder werden übersprungen.</p></details>
+<details><summary>Was ist der Nachteil von Keyset?</summary><p>Kein Sprung zu Seite N, keine Seitenzahl. Die Sortierung muss eindeutig sein und einen passenden Index haben.</p></details>
+<details><summary>Warum ist der Total Count teuer?</summary><p>Er braucht eine zweite Abfrage über alle Treffer. In PostgreSQL ist COUNT(*) wegen MVCC nicht aus Metadaten lesbar.</p></details>
+<details><summary>Was sind Alternativen zum Total Count?</summary><p>hasMore über LIMIT n+1, eine Schätzung, Count nur auf Wunsch oder ein gecachter Wert.</p></details>
+<details><summary>Page oder Slice in Spring Data?</summary><p>Page enthält Total und Seitenzahl, kostet eine Count-Query. Slice weiss nur, ob es weitergeht, und spart die Count-Query.</p></details>
+<details><summary>Was ist Window in Spring Data?</summary><p>Ein Ergebnis für Scrolling mit ScrollPosition, offset- oder keyset-basiert. Es weiss, ob es mehr Daten gibt.</p></details>
+<details><summary>Wo gibt man den Link zur nächsten Seite zurück?</summary><p>Im Body als next oder im Link-Header mit rel="next" nach RFC 8288.</p></details>
+<details><summary>Wie gestaltet man Sortier-Parameter?</summary><p>Zum Beispiel ?sort=-createdAt,id. Nur Felder aus einer Allowlist, die einen Index haben.</p></details>
+<details><summary>Welche Filter-Syntax würden Sie wählen?</summary><p>Einfache Felder als Query-Parameter für die häufigen Fälle. Operatoren wie price[gte] oder RSQL nur, wenn nötig, und dann mit Allowlist.</p></details>
+<details><summary>Was tun bei sehr komplexen Suchen?</summary><p>POST auf eine Such-Ressource mit Body, oder die neue QUERY-Methode. Oder eine Suchmaschine für Volltext.</p></details>
+<details><summary>Warum braucht limit ein Maximum?</summary><p>Ohne Grenze kann ein Client riesige Antworten anfordern. Das kostet Speicher und DB-Zeit und ist ein DoS-Risiko.</p></details>
+<details><summary>Wie macht man Zurückblättern mit Keyset?</summary><p>Sortierung und Vergleich umdrehen, LIMIT anwenden, Ergebnis wieder umdrehen.</p></details>
+<details><summary>Was passiert mit NULL-Werten bei Keyset?</summary><p>Vergleiche mit NULL sind nie wahr, Zeilen fallen heraus. Darum Sortierspalten NOT NULL oder mit COALESCE.</p></details>
+<details><summary>Szenario: Die Listen-API wird mit der Zeit langsamer, besonders hinten. Was prüfen Sie?</summary><p>EXPLAIN der Offset-Query und den Count. Lösung: Keyset mit passendem Index, Slice statt Page, Maximum für page.</p></details>
+<details><summary>Szenario: Ein Partner meldet Duplikate und fehlende Einträge beim nächtlichen Abgleich. Warum?</summary><p>Offset-Paging während paralleler Inserts. Lösung: Keyset auf einem unveränderlichen, eindeutigen Schlüssel, oder ein Export-Job mit Snapshot.</p></details>
+<details><summary>Szenario: Das Produkt will „Treffer: 1 234 567“ auf jeder Seite. Was antworten Sie?</summary><p>Ein exakter Count kostet bei jeder Seite eine volle Abfrage. Vorschlag: Schätzung oder „mehr als 10 000“, exakte Zahl nur auf Klick oder gecacht.</p></details>
+
+</body>
+</html>

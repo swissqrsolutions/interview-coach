@@ -1,0 +1,245 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OAuth2 Resource Server mit JWT</title>
+<style>
+  body { font: 17px/1.55 -apple-system, system-ui, sans-serif; max-width: 760px; margin: 0 auto; padding: 16px; color: #1d1d1f; }
+  h1 { font-size: 28px; margin: 8px 0 4px; }
+  h2 { font-size: 21px; margin: 32px 0 8px; padding-top: 12px; border-top: 2px solid #e5e5ea; }
+  .kern { background: #eef6ff; border-left: 4px solid #0a66c2; padding: 10px 14px; border-radius: 6px; }
+  .senior { background: #f0faf0; border-left: 4px solid #2e7d32; padding: 10px 14px; border-radius: 6px; }
+  .trap { background: #fff4f2; border-left: 4px solid #c62828; padding: 10px 14px; border-radius: 6px; }
+  code { background: #f2f2f7; padding: 1px 5px; border-radius: 4px; font-size: 15px; }
+  pre { background: #1e1e1e; color: #e6e6e6; padding: 12px; border-radius: 8px; overflow-x: auto; font-size: 13.5px; line-height: 1.45; }
+  svg { width: 100%; height: auto; display: block; margin: 10px 0; }
+  ol li, ul li { margin: 4px 0; }
+  details { border: 1px solid #e5e5ea; border-radius: 8px; padding: 8px 12px; margin: 6px 0; }
+  summary { font-weight: 600; cursor: pointer; }
+  details p { margin: 6px 0 2px; }
+  .small { color: #6e6e73; font-size: 14px; }
+</style>
+</head>
+<body>
+
+<h1>OAuth2 Resource Server mit JWT</h1>
+<p class="small">Spring · Tier 1 · Quellen: Spring Security Reference 7.x (OAuth 2.0 Resource Server JWT, What's New 7.0), Spring Boot Reference (Application Properties, 4.0 Migration Guide), Microsoft Learn (Access token claims reference), RFC 6750</p>
+
+<div class="kern">
+<b>Kern:</b> Ein <b>Resource Server</b> ist eine API, die Requests mit einem <b>Access Token</b> annimmt. Er löst das Problem, dass jeder Service Passwörter kennen müsste. Er prüft jedes <b>JWT</b> selbst: Signatur mit dem öffentlichen Schlüssel des Ausstellers, dann Ablaufzeit, Issuer und Audience. Danach macht er aus Scopes oder Rollen <b>Authorities</b> für Spring Security.
+</div>
+
+<h2>1. Wo sitzt der Resource Server?</h2>
+<svg viewBox="0 0 720 300" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="a" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="10" y="120" width="160" height="60" rx="8" fill="#fff" stroke="#555"/><text x="90" y="144" text-anchor="middle">Client</text><text x="90" y="164" text-anchor="middle" font-size="12">Angular-SPA / Service</text>
+  <rect x="270" y="10" width="200" height="60" rx="8" fill="#dbe9fb" stroke="#0a66c2"/><text x="370" y="34" text-anchor="middle" font-weight="700">Authorization Server</text><text x="370" y="54" text-anchor="middle" font-size="12">Entra ID · Keycloak</text>
+  <line x1="120" y1="120" x2="268" y2="50" stroke="#555" stroke-width="2" marker-end="url(#a)"/><text x="160" y="76" font-size="12">1. Login / Token holen</text>
+  <line x1="270" y1="64" x2="150" y2="118" stroke="#555" stroke-width="1.5" stroke-dasharray="5 4" marker-end="url(#a)"/><text x="210" y="112" font-size="12">2. JWT</text>
+  <line x1="170" y1="150" x2="448" y2="150" stroke="#555" stroke-width="2" marker-end="url(#a)"/><text x="310" y="142" text-anchor="middle" font-size="12">3. Authorization: Bearer &lt;JWT&gt;</text>
+  <rect x="450" y="110" width="260" height="80" rx="8" fill="#0a66c2" stroke="#0a66c2"/><text x="580" y="136" text-anchor="middle" fill="#fff" font-weight="700">Resource Server</text><text x="580" y="156" text-anchor="middle" fill="#fff" font-size="12">Spring Boot API</text><text x="580" y="174" text-anchor="middle" fill="#fff" font-size="12">prüft lokal, ohne Rückfrage</text>
+  <line x1="580" y1="110" x2="470" y2="66" stroke="#555" stroke-width="1.5" stroke-dasharray="5 4" marker-end="url(#a)"/><text x="600" y="82" font-size="12">4. JWKS holen (selten, Cache)</text>
+  <rect x="450" y="230" width="260" height="50" rx="8" fill="#e8f5e9" stroke="#2e7d32"/><text x="580" y="252" text-anchor="middle">SecurityContext</text><text x="580" y="270" text-anchor="middle" font-size="12">JwtAuthenticationToken + Authorities</text>
+  <line x1="580" y1="190" x2="580" y2="228" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+</svg>
+<ol>
+  <li><b>Client:</b> Holt beim <b>Authorization Server</b> ein Token. Eine SPA mit Login (Authorization Code mit PKCE), ein Service ohne Benutzer mit <b>Client Credentials</b>.</li>
+  <li><b>Authorization Server:</b> Stellt das JWT aus und signiert es mit seinem privaten Schlüssel. Beispiele: Microsoft Entra ID, Keycloak.</li>
+  <li><b>Resource Server:</b> Bekommt das Token im Header <code>Authorization: Bearer …</code>. Er prüft es lokal.</li>
+  <li><b>JWKS:</b> Die <b>JSON Web Key Set</b> ist die Liste der öffentlichen Schlüssel des Ausstellers. Der Resource Server lädt sie selten und speichert sie im Cache.</li>
+  <li><b>SecurityContext:</b> Nach der Prüfung liegt ein <code>JwtAuthenticationToken</code> mit Authorities darin.</li>
+</ol>
+
+<h2>2. Die Reise eines Bearer-Tokens (die Geschichte zum Merken)</h2>
+<svg viewBox="0 0 720 320" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="b" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="10" y="20" width="160" height="60" rx="10" fill="#eee" stroke="#777"/><text x="90" y="44" text-anchor="middle" font-weight="700">1. Token lesen</text><text x="90" y="64" text-anchor="middle" font-size="12">BearerToken-Filter</text>
+  <line x1="170" y1="50" x2="198" y2="50" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="200" y="20" width="160" height="60" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="280" y="44" text-anchor="middle" font-weight="700">2. Provider</text><text x="280" y="64" text-anchor="middle" font-size="12">JwtAuthenticationProvider</text>
+  <line x1="360" y1="50" x2="388" y2="50" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="390" y="20" width="320" height="60" rx="10" fill="#0a66c2" stroke="#0a66c2"/><text x="550" y="44" text-anchor="middle" fill="#fff" font-weight="700">3. JwtDecoder: Signatur</text><text x="550" y="64" text-anchor="middle" fill="#fff" font-size="12">kid im Header → Schlüssel aus JWKS → RS256 prüfen</text>
+  <line x1="550" y1="80" x2="550" y2="118" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="390" y="120" width="320" height="60" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="550" y="144" text-anchor="middle" font-weight="700">4. Validatoren</text><text x="550" y="164" text-anchor="middle" font-size="12">exp · nbf (60 s Toleranz) · iss · aud</text>
+  <line x1="390" y1="150" x2="338" y2="150" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="120" y="120" width="216" height="60" rx="10" fill="#e8f5e9" stroke="#2e7d32"/><text x="228" y="144" text-anchor="middle" font-weight="700">5. Authorities</text><text x="228" y="164" text-anchor="middle" font-size="12">scp → SCOPE_ · roles → ROLE_</text>
+  <line x1="228" y1="180" x2="228" y2="218" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="120" y="220" width="216" height="60" rx="10" fill="#fff" stroke="#555"/><text x="228" y="244" text-anchor="middle" font-weight="700">6. SecurityContext</text><text x="228" y="264" text-anchor="middle" font-size="12">JwtAuthenticationToken</text>
+  <line x1="336" y1="250" x2="418" y2="250" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="420" y="220" width="290" height="60" rx="10" fill="#fff" stroke="#555"/><text x="565" y="244" text-anchor="middle" font-weight="700">7. Autorisierung</text><text x="565" y="264" text-anchor="middle" font-size="12">hasAuthority('SCOPE_…') → 200 / 403</text>
+</svg>
+<ol>
+  <li><b>Token lesen:</b> Der <code>BearerTokenAuthenticationFilter</code> liest den Header <code>Authorization: Bearer eyJ…</code>. Er baut ein <code>BearerTokenAuthenticationToken</code>.</li>
+  <li><b>Provider wählen:</b> Der ProviderManager gibt es an den <code>JwtAuthenticationProvider</code>.</li>
+  <li><b>Signatur prüfen:</b> Der <b>JwtDecoder</b> (<code>NimbusJwtDecoder</code>) liest den <code>kid</code> im Header. Er nimmt den passenden öffentlichen Schlüssel aus der JWKS und prüft die Signatur. Standard-Algorithmus: nur <b>RS256</b>.</li>
+  <li><b>Claims prüfen:</b> <code>exp</code> und <code>nbf</code> mit 60 Sekunden Toleranz (<b>clock skew</b>), dazu <code>iss</code>. <code>aud</code> nur, wenn konfiguriert.</li>
+  <li><b>Authorities bauen:</b> Der <code>JwtAuthenticationConverter</code> macht aus dem Claim <code>scope</code> oder <code>scp</code> Authorities mit Präfix <code>SCOPE_</code>. Andere Claims wie <code>roles</code> muss man selbst mappen.</li>
+  <li><b>SecurityContext:</b> Ein <code>JwtAuthenticationToken</code> mit dem <code>Jwt</code> als Principal. <code>getName()</code> ist der <code>sub</code>-Claim.</li>
+  <li><b>Autorisierung:</b> Der AuthorizationFilter prüft die Regeln. Fehlt das Recht: <b>403</b> mit <code>error="insufficient_scope"</code>.</li>
+</ol>
+<p><b>Wichtig:</b> Mit <code>issuer-uri</code> holt Spring die Metadaten (<code>/.well-known/openid-configuration</code>) erst beim ersten Request mit JWT. Der Start hängt also nicht vom Authorization Server ab.</p>
+
+<h2>3. Beispiel: Resource Server für Microsoft Entra ID</h2>
+<pre># application.yml
+spring:
+  security:
+    oauth2:
+      resourceserver:
+        jwt:
+          issuer-uri: https://login.microsoftonline.com/&lt;tenant-id&gt;/v2.0
+          audiences: &lt;client-id-der-api&gt;      # v2-Token: aud = Client-ID der API</pre>
+<pre>@Configuration
+@EnableMethodSecurity
+class ApiSecurity {
+
+  @Bean
+  SecurityFilterChain api(HttpSecurity http) throws Exception {
+    http.authorizeHttpRequests(a -&gt; a
+            .requestMatchers("/actuator/health/**").permitAll()
+            .requestMatchers(HttpMethod.GET, "/api/reports/**").hasAuthority("SCOPE_reports.read")
+            .requestMatchers("/api/admin/**").hasRole("Admin")
+            .anyRequest().authenticated())
+        .oauth2ResourceServer(o -&gt; o.jwt(j -&gt; j.jwtAuthenticationConverter(converter())))
+        .sessionManagement(s -&gt; s.sessionCreationPolicy(SessionCreationPolicy.STATELESS));
+    return http.build();
+  }
+
+  JwtAuthenticationConverter converter() {
+    var scopes = new JwtGrantedAuthoritiesConverter();          // scp → SCOPE_
+    var roles  = new JwtGrantedAuthoritiesConverter();
+    roles.setAuthoritiesClaimName("roles");                    // App Roles von Entra
+    roles.setAuthorityPrefix("ROLE_");
+    var c = new JwtAuthenticationConverter();
+    c.setJwtGrantedAuthoritiesConverter(new DelegatingJwtGrantedAuthoritiesConverter(scopes, roles));
+    c.setPrincipalClaimName("oid");                            // stabile Benutzer-ID
+    return c;
+  }
+}</pre>
+<pre>$ curl -i localhost:8080/api/reports/1
+HTTP/1.1 401
+WWW-Authenticate: Bearer
+
+$ curl -i -H "Authorization: Bearer $TOKEN_ANDERE_AUDIENCE" localhost:8080/api/reports/1
+HTTP/1.1 401
+WWW-Authenticate: Bearer error="invalid_token", error_description="An error occurred while attempting to decode the Jwt: ...aud...", ...
+
+$ curl -i -H "Authorization: Bearer $TOKEN_OHNE_SCOPE" localhost:8080/api/reports/1
+HTTP/1.1 403
+WWW-Authenticate: Bearer error="insufficient_scope", error_description="The request requires higher privileges than provided by the access token.", ...
+
+$ curl -i -H "Authorization: Bearer $TOKEN_MIT_SCOPE" localhost:8080/api/reports/1
+HTTP/1.1 200</pre>
+<p class="small">Erwartetes Ergebnis (laut Doku, nicht ausgeführt). Spring Security 7, Header gekürzt. Der genaue Text von <code>error_description</code> hängt von der Version ab.</p>
+<ol>
+  <li>Ohne Token: <b>401</b> und nur <code>WWW-Authenticate: Bearer</code> (RFC 6750).</li>
+  <li>Token für eine andere API: Signatur ist gültig, aber <code>aud</code> passt nicht. <b>401</b> mit <code>invalid_token</code>.</li>
+  <li>Gültiges Token ohne Scope <code>reports.read</code>: angemeldet, aber nicht erlaubt. <b>403</b> mit <code>insufficient_scope</code>.</li>
+  <li>Mit Scope: <b>200</b>. Die Authorities sind z. B. <code>SCOPE_reports.read</code> und <code>ROLE_Admin</code>.</li>
+</ol>
+
+<h2>4. Details, die Interviewer fragen</h2>
+<ol>
+  <li><b>issuer-uri:</b> Muss genau dem <code>iss</code>-Claim entsprechen. Spring liest daraus die Metadaten, findet die <code>jwks_uri</code> und prüft danach jeden <code>iss</code>.</li>
+  <li><b>jwk-set-uri:</b> Direkte Adresse der Schlüssel. Dann fragt Spring keine Metadaten ab. Man setzt <code>issuer-uri</code> trotzdem, damit <code>iss</code> geprüft wird.</li>
+  <li><b>public-key-location:</b> Ein fester öffentlicher Schlüssel als Datei. Kein Netzwerk, aber keine automatische Schlüsselrotation.</li>
+  <li><b>Audience:</b> Der <code>aud</code>-Claim sagt, für welche API das Token ist. Spring prüft ihn nur, wenn <code>audiences</code> gesetzt ist oder ein eigener <code>JwtClaimValidator</code> existiert.</li>
+  <li><b>Algorithmen:</b> <code>NimbusJwtDecoder</code> vertraut standardmässig nur RS256. Andere mit <code>jws-algorithms</code>. Ein Token mit <code>alg: none</code> wird nie akzeptiert.</li>
+  <li><b>Schlüsselrotation:</b> Neue Schlüssel holt Spring automatisch über die JWKS. Die JWKS wird standardmässig 5 Minuten im Speicher gecacht.</li>
+  <li><b>Clock skew:</b> Standard 60 Sekunden für <code>exp</code> und <code>nbf</code>. Einstellbar über <code>JwtTimestampValidator</code>.</li>
+  <li><b>Scopes vs Rollen:</b> Ein <b>Scope</b> ist ein Recht, das der Client im Namen des Users bekommt (delegiert). Eine <b>Rolle</b> ist ein Recht des Users oder der App selbst. Spring mappt Scopes mit <code>SCOPE_</code>, Rollen muss man mappen.</li>
+  <li><b>Boot-Properties fürs Mapping:</b> <code>authorities-claim-name</code>, <code>authority-prefix</code>, <code>principal-claim-name</code> unter <code>spring.security.oauth2.resourceserver.jwt</code>. Sie ersetzen aber nur eine Quelle. Für Scopes <b>und</b> Rollen braucht man einen <code>DelegatingJwtGrantedAuthoritiesConverter</code>.</li>
+  <li><b>Entra ID Claims:</b> <code>scp</code> ist ein String mit Leerzeichen, nur in Benutzer-Tokens. <code>roles</code> ist ein Array mit App Roles. Bei Client Credentials gibt es nur <code>roles</code>. <code>oid</code> ist die stabile ID des Benutzers im Tenant.</li>
+  <li><b>Entra v1 vs v2:</b> v2-Tokens haben einen Issuer mit <code>/v2.0</code> am Ende, und <code>aud</code> ist die Client-ID der API. Welche Version kommt, entscheidet die App-Registrierung der API.</li>
+  <li><b>Entra Gruppen:</b> Ab 200 Gruppen kommt im JWT kein <code>groups</code>-Claim mehr, sondern ein Overage-Hinweis. Darum lieber App Roles als Gruppen.</li>
+  <li><b>Client vs Resource Server:</b> <b>Client</b> (<code>oauth2Client</code>, <code>oauth2Login</code>) holt Tokens und ruft APIs auf. <b>Resource Server</b> (<code>oauth2ResourceServer</code>) nimmt Tokens an und prüft sie. Ein Service kann beides sein.</li>
+  <li><b>Starter in Boot 4:</b> <code>spring-boot-starter-security-oauth2-resource-server</code> und <code>…-oauth2-client</code>. Die alten Namen ohne <code>security-</code> sind ersetzt.</li>
+  <li><b>JWT vs Opaque Token:</b> JWT prüft man lokal, Widerruf wirkt erst bei Ablauf. Opaque Tokens prüft man per <b>Introspection</b> beim Aussteller: sofort widerrufbar, aber ein Netzwerkaufruf pro Request.</li>
+  <li><b>Mehrere Aussteller:</b> <code>JwtIssuerAuthenticationManagerResolver</code> wählt den Decoder nach dem <code>iss</code>-Claim. Nützlich für mehrere Tenants.</li>
+</ol>
+
+<h2>5. Vergleich</h2>
+<ul>
+  <li><b>Resource Server:</b> prüft Tokens, stateless, keine Login-Seite. Für APIs.</li>
+  <li><b>OAuth2 Client mit Login (<code>oauth2Login</code>):</b> Browser-Login über OIDC, Session im Server. Für serverseitige Web-Apps und das <b>BFF-Muster</b> (Backend for Frontend hält die Tokens, der Browser nur ein Cookie).</li>
+  <li><b>OAuth2 Client ohne User:</b> Client Credentials, um eine andere API aufzurufen. Spring Security 7 unterstützt OAuth2 auch für HTTP Service Clients.</li>
+  <li><b>Authorization Server:</b> stellt Tokens aus. Seit Spring Security 7 ist Spring Authorization Server Teil von Spring Security. Meist nimmt man aber Entra ID oder Keycloak.</li>
+  <li><b>JWT lokal vs Introspection:</b> lokal schnell und unabhängig, Introspection aktuell, aber abhängig vom Aussteller.</li>
+</ul>
+
+<h2>6. In der Produktion</h2>
+<ol>
+  <li><b>Alle Requests 401 nach Umstellung auf Entra v2:</b> Der <code>iss</code> im Token passt nicht zur <code>issuer-uri</code>, z. B. v1-Token gegen v2-Issuer. Lösung: Token in einem Decoder ansehen, Token-Version der App-Registrierung prüfen.</li>
+  <li><b>Token einer fremden API wird akzeptiert:</b> <code>aud</code> wurde nicht geprüft. Lösung: <code>audiences</code> setzen.</li>
+  <li><b>Rollen wirken nicht:</b> <code>hasRole("Admin")</code> schlägt fehl, weil nur <code>SCOPE_</code>-Authorities existieren. Lösung: <code>roles</code>-Claim mit <code>ROLE_</code> mappen.</li>
+  <li><b>Sporadische 401 mit exp-Fehler:</b> Uhren laufen auseinander. Lösung: NTP im Cluster, Toleranz nicht übertreiben.</li>
+  <li><b>Erster Request langsam oder Fehler:</b> Metadaten und JWKS werden beim ersten Token geholt. Ein Proxy oder fehlendes CA-Zertifikat blockiert das. Lösung: Netzwerkweg zu <code>login.microsoftonline.com</code> testen, CA-Bundle ins Image, oder <code>jwk-set-uri</code> setzen.</li>
+  <li><b>Riesige Header:</b> Tokens mit vielen Gruppen werden zu gross für Proxy-Limits. Lösung: App Roles statt Gruppen.</li>
+  <li><b>Token geleakt:</b> JWT bleibt bis <code>exp</code> gültig. Lösung: kurze Laufzeit, Refresh Tokens nur im BFF, nie Tokens loggen.</li>
+</ol>
+
+<h2>7. Diagnose: Werkzeuge und Befehle</h2>
+<ul>
+  <li><code>logging.level.org.springframework.security=TRACE</code>: zeigt, welcher Validator ablehnt.</li>
+  <li><b>Header <code>WWW-Authenticate</code></b> lesen: <code>invalid_token</code> (Token falsch) vs <code>insufficient_scope</code> (Recht fehlt).</li>
+  <li><b>Token dekodieren</b> (nur lokal, nie Produktions-Tokens in fremde Webseiten): <code>iss</code>, <code>aud</code>, <code>exp</code>, <code>scp</code>, <code>roles</code>, <code>ver</code> prüfen.</li>
+  <li><code>curl https://login.microsoftonline.com/&lt;tenant&gt;/v2.0/.well-known/openid-configuration</code>: Issuer und <code>jwks_uri</code> sehen.</li>
+  <li><b>Tests:</b> <code>spring-security-test</code> mit <code>.with(jwt().authorities(new SimpleGrantedAuthority("SCOPE_reports.read")))</code> in MockMvc. Kein echter Aussteller nötig.</li>
+  <li><b>Endpoint zum Debuggen</b> (nur lokal): <code>@AuthenticationPrincipal Jwt jwt</code> und die Authorities ausgeben.</li>
+</ul>
+
+<h2>8. Senior-Punkte</h2>
+<div class="senior">
+<ol>
+  <li><b>Immer Issuer, Audience und Ablauf prüfen.</b> Eine gültige Signatur allein heisst nur: „irgendwer beim Aussteller hat es bekommen“.</li>
+  <li><b>Rechte als App Roles oder Scopes modellieren,</b> nicht als Gruppen-IDs. Das ist lesbar, klein und unabhängig vom Tenant.</li>
+  <li><b>Stateless lohnt sich bei Skalierung:</b> keine Session, kein Sticky Load Balancing. Der Preis: Widerruf erst mit Ablauf.</li>
+  <li><b>Browser-Apps:</b> Tokens im Browser sind angreifbar. Das BFF-Muster hält Tokens im Backend.</li>
+  <li><b>Autorisierung im Code ist Fachlogik.</b> Das Token sagt „wer“ und „grob was“. Feine Regeln („eigene Datensätze“) gehören in Method Security.</li>
+  <li><b>Lokale Prüfung macht unabhängig.</b> Nach dem JWKS-Cache braucht die API den Aussteller nicht pro Request.</li>
+</ol>
+</div>
+
+<h2>9. Aus dem Projekt</h2>
+<p>„Bei BAG DigiSanté prüft der Upload-Service das JWT (RS256) gegen den öffentlichen Schlüssel aus Azure Key Vault, bevor das erste Byte gespeichert wird.“ <span class="small">(Prüfen und durch dein echtes Beispiel ersetzen. Ob dort Spring Security genutzt wurde, steht nicht im Profil. Mit Entra ID als Aussteller einer Spring-API hast du laut Profil keine direkte Erfahrung: ehrlich sagen und auf Keycloak bei CARIAD und MATCH verweisen.)</span></p>
+
+<h2>10. Fallen</h2>
+<div class="trap">
+<ul>
+  <li>„Der Resource Server fragt bei jedem Request den Aussteller.“ → <b>Falsch.</b> Er prüft lokal mit dem gecachten öffentlichen Schlüssel.</li>
+  <li>„Spring prüft die Audience automatisch.“ → <b>Falsch.</b> Nur mit <code>audiences</code> oder eigenem Validator.</li>
+  <li>„Rollen aus dem Token werden automatisch zu ROLE_.“ → <b>Falsch.</b> Standard ist nur <code>scope</code>/<code>scp</code> mit Präfix <code>SCOPE_</code>.</li>
+  <li>„Ein JWT ist verschlüsselt.“ → <b>Falsch.</b> Ein signiertes JWT ist nur Base64. Jeder kann es lesen, keiner kann es ändern.</li>
+  <li>„Mit issuer-uri startet die App nicht, wenn Entra ID nicht erreichbar ist.“ → <b>Falsch.</b> Die Abfrage passiert beim ersten Token, nicht beim Start.</li>
+  <li>„Ein JWT kann man sofort widerrufen.“ → <b>Falsch.</b> Es gilt bis <code>exp</code>. Dafür kurze Laufzeiten oder Introspection.</li>
+</ul>
+</div>
+
+<h2>11. Fragen</h2>
+<details><summary>Was ist ein Resource Server?</summary><p>Eine API, die Requests mit einem Access Token annimmt und das Token prüft. In Spring aktiviert man das mit <code>oauth2ResourceServer(o -&gt; o.jwt(...))</code>.</p></details>
+<details><summary>Was braucht ein minimaler Resource Server in Spring Boot?</summary><p>Den Starter für den Resource Server und die Property <code>spring.security.oauth2.resourceserver.jwt.issuer-uri</code>. Boot baut dann JwtDecoder und Filterkette.</p></details>
+<details><summary>Was prüft Spring an einem JWT standardmässig?</summary><p>Die Signatur mit dem Schlüssel aus der JWKS, dazu exp, nbf und iss. Die Audience nur, wenn konfiguriert.</p></details>
+<details><summary>Woher kennt der Resource Server den öffentlichen Schlüssel?</summary><p>Aus der JWKS des Ausstellers. Die Adresse kommt aus den OpenID-Metadaten oder direkt aus <code>jwk-set-uri</code>.</p></details>
+<details><summary>Was ist der kid im JWT-Header?</summary><p>Die ID des Schlüssels, mit dem signiert wurde. Damit findet der Decoder den passenden Schlüssel in der JWKS, auch bei Rotation.</p></details>
+<details><summary>issuer-uri vs jwk-set-uri?</summary><p>issuer-uri findet die Schlüssel über Metadaten und prüft iss. jwk-set-uri nennt die Schlüssel direkt; issuer-uri setzt man zusätzlich für die iss-Prüfung.</p></details>
+<details><summary>Wann holt Spring die Metadaten?</summary><p>Beim ersten Request mit JWT, nicht beim Start. So hängt der Start nicht vom Aussteller ab.</p></details>
+<details><summary>Wie werden Scopes zu Authorities?</summary><p>Der JwtGrantedAuthoritiesConverter liest <code>scope</code> oder <code>scp</code> und setzt den Präfix <code>SCOPE_</code> vor jeden Wert.</p></details>
+<details><summary>Wie mappen Sie Rollen aus dem Token?</summary><p>Mit einem zweiten Converter für den Claim <code>roles</code> und Präfix <code>ROLE_</code>, kombiniert über DelegatingJwtGrantedAuthoritiesConverter.</p></details>
+<details><summary>Warum muss man die Audience prüfen?</summary><p>Sonst akzeptiert die API Tokens, die für eine andere API ausgestellt wurden. Die Signatur ist trotzdem gültig.</p></details>
+<details><summary>Was ist clock skew?</summary><p>Eine Toleranz für Uhrzeitunterschiede bei exp und nbf. Spring nutzt standardmässig 60 Sekunden.</p></details>
+<details><summary>401 oder 403 bei einem Token ohne passenden Scope?</summary><p>403 mit <code>error="insufficient_scope"</code>. Das Token ist gültig, aber das Recht fehlt. Ein ungültiges Token gibt 401.</p></details>
+<details><summary>OAuth2 Client vs Resource Server?</summary><p>Der Client holt Tokens und ruft APIs auf. Der Resource Server nimmt Tokens an und prüft sie. Ein Service kann beides sein.</p></details>
+<details><summary>Was ist das BFF-Muster?</summary><p>Ein Backend for Frontend hält die Tokens und macht den Login. Der Browser bekommt nur ein Session-Cookie. Tokens sind so nicht im JavaScript.</p></details>
+<details><summary>JWT vs Opaque Token?</summary><p>JWT prüft man lokal, schnell, aber ohne sofortigen Widerruf. Opaque Tokens prüft man per Introspection beim Aussteller, aktuell, aber mit Netzwerkaufruf.</p></details>
+<details><summary>Welche Claims sind bei Entra ID wichtig?</summary><p><code>iss</code> (Tenant und Version), <code>aud</code> (Client-ID der API), <code>scp</code> für delegierte Scopes, <code>roles</code> für App Roles, <code>oid</code> und <code>tid</code> für Benutzer und Tenant.</p></details>
+<details><summary>Warum hat ein Client-Credentials-Token von Entra kein scp?</summary><p>Es gibt keinen Benutzer, also keine delegierten Scopes. Die Rechte der App stehen im <code>roles</code>-Claim.</p></details>
+<details><summary>Warum App Roles statt Gruppen?</summary><p>Gruppen sind GUIDs und ab 200 Gruppen fehlt der Claim im JWT. App Roles sind lesbar und klein.</p></details>
+<details><summary>Welcher Algorithmus wird standardmässig akzeptiert?</summary><p>Nur RS256. Andere Algorithmen muss man mit <code>jws-algorithms</code> oder am Decoder freigeben.</p></details>
+<details><summary>Wie gehen Sie mit mehreren Tenants oder Ausstellern um?</summary><p>Mit <code>JwtIssuerAuthenticationManagerResolver</code>. Er wählt pro Request den Decoder nach dem <code>iss</code>-Claim und lehnt unbekannte Aussteller ab.</p></details>
+<details><summary>Wie testen Sie eine JWT-geschützte API ohne echten Aussteller?</summary><p>Mit spring-security-test: <code>.with(jwt().authorities(...))</code> in MockMvc. Der Decoder wird dabei umgangen.</p></details>
+<details><summary>Ist ein JWT verschlüsselt?</summary><p>Ein normales signiertes JWT nicht. Es ist Base64 und lesbar. Darum keine Geheimnisse in Claims.</p></details>
+<details><summary>Szenario: Nach dem Wechsel zu Entra ID gibt die API für alle Tokens 401. Wie gehen Sie vor?</summary><p>TRACE-Log und WWW-Authenticate lesen. Dann iss und aud im Token mit issuer-uri und audiences vergleichen, oft v1 gegen v2. Zuletzt den Netzwerkweg zur JWKS prüfen.</p></details>
+<details><summary>Szenario: Ein Benutzer mit der Rolle Admin bekommt 403 auf /admin. Warum?</summary><p>Der roles-Claim wird nicht gemappt; es gibt nur SCOPE_-Authorities. Lösung: roles mit ROLE_ mappen oder hasAuthority mit dem echten Namen prüfen.</p></details>
+<details><summary>Szenario: Ein gestohlenes Token muss sofort ungültig werden. Was sagen Sie?</summary><p>Ein JWT gilt bis exp, lokal kann man es nicht widerrufen. Kurzfristig: Schlüssel rotieren oder eine Sperrliste. Langfristig: kurze Laufzeiten, BFF oder Introspection.</p></details>
+
+</body>
+</html>
