@@ -107,7 +107,8 @@
   }
   function planFor(job, left) {
     if (left <= 1) return { name: 'Full mock: intro, 1 project, 3 tech questions. Then rest.' };
-    const rs = planDays(job); return rs[(left - 2) % rs.length];
+    const rs = planDays(job), i = Math.max(0, daysBetween(job.saved || today(), addDays(job.date, -left)));
+    return rs[i % rs.length];
   }
   function planView() {
     const job = activeJob();
@@ -203,7 +204,7 @@
     $('#an').onclick = () => {
       const text = $('#jt').value.trim(); if (!text) return toast('Paste the job ad first.');
       const a = analyse(text), all = jobs(), id = ed ? ed.id : 'j' + Date.now();
-      const j = { id, name: $('#jn').value.trim() || 'Job ' + (all.length + 1), date: $('#jd').value, text, ...a };
+      const j = { id, name: $('#jn').value.trim() || 'Job ' + (all.length + 1), date: $('#jd').value, text, saved: ed && ed.saved || today(), ...a };
       const i = all.findIndex(x => x.id === id); if (i >= 0) all[i] = j; else all.unshift(j);
       store.set('jobs', all.slice(0, 8)); store.set('activeJob', id); toast('Saved. Today now follows this job.'); jobView();
     };
