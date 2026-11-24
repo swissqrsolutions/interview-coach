@@ -35,18 +35,20 @@ Wir sind live gegangen, parallel zum alten System, mit einem Feature-Switch.
 2. **Ergebnis ersetzen statt addieren:** Ein Statistik-Job rechnet einen ganzen Tag neu und überschreibt ihn. Läuft der Job zweimal, ist das Ergebnis gleich. Das ist idempotent.
 3. **Jobs nur bei Arbeit starten:** Ein .NET-Worker startet Spark nur, wenn neue Meldungen da sind. Er übernimmt eine Meldung atomar, mit SQL. So nehmen zwei Worker nie dieselbe Meldung.
 
-**Ein schweres Problem:** Hängende Jobs nach einem Absturz. Lösung: Stale-Job-Recovery. Ein Job, der zu lange "in Arbeit" ist, wird wieder freigegeben.
+**Ein schweres Problem:** Die Ergebnisse waren am Anfang nicht gleich. Ursachen: .NET und Spark lesen Zahlen, Datumswerte und leere Felder anders. Dazu kam die Zeitzone von received_date. Ich habe fünf Extractor-Bugs gefunden und behoben. Dann habe ich einen automatischen Parity-Job gebaut.
 
 **Was ich heute anders machen würde:** *(Beispiel, durch Ihre echte Antwort ersetzen.)* Früher Daten-Qualitätsregeln einbauen, zum Beispiel mit Great Expectations. Und früher Monitoring für die Spark-Jobs.
 
 **Plattform:** AKS mit Terraform. Cilium für Network Policies, Kyverno für Regeln, Karpenter skaliert Nodes für Spark-Spitzen. Secrets aus Vault und Azure Key Vault, nie im Repo.
 
 ## Follow-ups
-- Warum Iceberg und nicht Delta Lake? → Iceberg ist offen und funktioniert mit vielen Engines: Spark, Dremio, Trino. Wir wollten keinen Vendor Lock-in. *(Prüfen: war das Ihr echter Grund?)*
+- Warum Iceberg und nicht Delta Lake? → Iceberg ist herstellerneutral. Spark schreibt, Dremio liest. Dazu kommen Hidden Partitioning und Schema Evolution. Delta Lake ist stark auf Spark und Databricks ausgerichtet.
 - Warum Nessie? → Nessie ist ein Katalog mit Git-ähnlichen Branches für Tabellen. Er läuft selbst gehostet auf Kubernetes.
 - Wie haben Sie die 100 % Parität bewiesen? → Gleiche Eingabe in beide Systeme, dann die Ergebnisse Zeile für Zeile verglichen, als automatischer Test.
 - Was passiert, wenn ein Job zweimal läuft? → Nichts Schlimmes: Er überschreibt das Ergebnis für den Tag. Es wird nicht doppelt gezählt.
-- Wie partitionieren Sie? → Nach Datum. Die meisten Abfragen filtern nach Datum, so liest Iceberg nur die nötigen Dateien.
+- Wie partitionieren Sie? → Nach days(received_date) und schema_type. Die Abfragen filtern fast immer nach Zeit und Meldungstyp. So liest Iceberg nur die nötigen Dateien.
+- Wie verhindern Sie Duplikate? → Zuerst ein atomarer Claim mit UPDATE … OUTPUT. Dann DELETE für die message_id und APPEND, in einer Iceberg-Transaktion.
+- Warum Batch und nicht Streaming? → Die Firmen schicken Dateien zu Fristen. Minuten reichen. Batch ist viel einfacher idempotent zu machen.
 - Was war Ihr Anteil, was das Team? → Sagen Sie klar „ich“ für Ihre Teile und „wir“ für das Team.
 
 ## Don't say

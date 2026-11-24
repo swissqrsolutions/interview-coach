@@ -26,7 +26,7 @@ Das hat ein automatischer Test geprüft, nicht die KI.
 **STAR-Geschichte:**
 - **Situation:** Bei MATCH mussten sieben Statistik-Rechner von .NET nach PySpark.
 - **Aufgabe:** Gleiche Ergebnisse, sonst kein Go-Live.
-- **Aktion:** Ich habe die KI für den ersten Entwurf genutzt. Dann habe ich einen Vergleichstest gebaut: gleiche Eingabe, beide Systeme, Ergebnis Zeile für Zeile. Der Test hat Unterschiede gefunden. Ich habe jeden Unterschied selbst analysiert und korrigiert. *(Hier Ihr echtes Beispiel einsetzen: welcher Unterschied, welche Ursache.)*
+- **Aktion:** Ich habe die KI für den ersten Entwurf genutzt. Dann habe ich einen Vergleichstest gebaut: gleiche Eingabe, beide Systeme, Ergebnis Zeile für Zeile. Der Test hat Unterschiede gefunden. .NET und Spark lesen Zahlen, Datumswerte und leere Felder anders. Ich habe fünf Extractor-Bugs selbst gefunden und behoben. *(Prüfen: Welchen Teil hat die KI geschrieben?)*
 - **Resultat:** 100 % Parität, dann Go-Live.
 - **Lektion:** KI macht mich schneller. Aber die Verantwortung bleibt bei mir. Ein guter Test ist wichtiger als ein guter Prompt.
 

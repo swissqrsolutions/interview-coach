@@ -78,16 +78,16 @@
       plan = left < 0 ? '' : `<section class="card plan"><div class="label">Interview: ${esc(job.name)}</div>
         <p class="big">${left === 0 ? 'Today. Read your intro once, then stop studying.' : left + ' day' + (left > 1 ? 's' : '') + ' left'}</p>
         ${left > 0 ? `<p>Today's focus: <b>${esc(planFor(job, left).name)}</b></p>` : ''}
-        <a href="#/plan" class="small">See the day-by-day plan →</a></section>`;
+        <a href="#plan" class="small">See the day-by-day plan →</a></section>`;
     }
     app.innerHTML = `<h1>Today</h1>
-      ${!job ? `<div class="card hint"><b>No job yet.</b> Paste a job ad in <a href="#/job">Job</a>. Then the app picks the right rounds and technologies.</div>` : ''}
+      ${!job ? `<div class="card hint"><b>No job yet.</b> Paste a job ad in <a href="#job">Job</a>. Then the app picks the right rounds and technologies.</div>` : ''}
       ${plan}
       ${!baseDone ? `<section class="card"><div class="label">Week 1: baseline (do this once)</div>
         <p>Do 3 tasks cold, without looking anything up. Then you know where you really are.</p>
-        ${[['design', 'System design: image upload + search', '#/c/design-image-search'], ['sql', 'SQL: top 3 per group, by hand', '#/page/practice'], ['coding', 'Coding: 1 easy problem, AI off', '#/page/practice']].map(([k, t, h]) => `<label class="check"><input type="checkbox" data-base="${k}" ${base[k] ? 'checked' : ''}> <a href="${h}">${t}</a></label>`).join('')}</section>` : ''}
+        ${[['design', 'System design: image upload + search', '#c-design-image-search'], ['sql', 'SQL: top 3 per group, by hand', '#page-practice'], ['coding', 'Coding: 1 easy problem, AI off', '#page-practice']].map(([k, t, h]) => `<label class="check"><input type="checkbox" data-base="${k}" ${base[k] ? 'checked' : ''}> <a href="${h}">${t}</a></label>`).join('')}</section>` : ''}
       <h2>Practise aloud (${q.length})</h2>
-      ${q.length ? `<a class="btn block" href="#/c/${q[0].id}?q=1">Start</a><div class="card"><ul class="list">${q.map(rowCard).join('')}</ul></div>` : '<div class="card">Nothing due. Well done. Open the Library for more.</div>'}
+      ${q.length ? `<a class="btn block" href="#q-${q[0].id}">Start</a><div class="card"><ul class="list">${q.map(rowCard).join('')}</ul></div>` : '<div class="card">Nothing due. Well done. Open the Library for more.</div>'}
       <h2>Outside the app this week</h2>
       <div class="card">${OUTSIDE.map(([k, t]) => `<label class="check"><input type="checkbox" data-wk="${k}" ${wk[k] ? 'checked' : ''}> ${t}</label>`).join('')}
         <p class="small">The app cannot do these for you. They are the real training.</p></div>`;
@@ -97,7 +97,7 @@
   function rowCard(c) {
     const s = cardState(c.id), ls = lastScore(c.id);
     const tag = isReady(c.id) ? '<span class="st ok">ready</span>' : s ? `<span class="st ${ls >= 7 ? 'ok' : ls >= 5 ? 'mid' : 'bad'}">${ls}/8</span>` : '<span class="st new">new</span>';
-    return `<li><a href="#/c/${c.id}"><span class="rnum">${round(c.round).n}</span><span>${esc(c.q)}</span>${tag}</a></li>`;
+    return `<li><a href="#c-${c.id}"><span class="rnum">${round(c.round).n}</span><span>${esc(c.q)}</span>${tag}</a></li>`;
   }
 
   // ---------- PLAN (interview date → one focus per day) ----------
@@ -112,14 +112,14 @@
   }
   function planView() {
     const job = activeJob();
-    if (!job || !job.date) { app.innerHTML = `<h1>Plan</h1><div class="card">Add a job with an interview date in <a href="#/job">Job</a>.</div>`; return; }
+    if (!job || !job.date) { app.innerHTML = `<h1>Plan</h1><div class="card">Add a job with an interview date in <a href="#job">Job</a>.</div>`; return; }
     const left = daysBetween(today(), job.date), rows = [];
     for (let d = left; d >= 0; d--) {
       const day = addDays(job.date, -d);
       const f = d === 0 ? { name: 'Interview day. Read your intro once. No new topics.' } : planFor(job, d);
-      rows.push(`<tr${d === left ? ' class="now"' : ''}><td>${day.slice(5)}</td><td>${d === 0 ? '🎯' : d}</td><td>${f.id ? `<a href="#/r/${f.id}">${esc(f.name)}</a>` : esc(f.name)}</td></tr>`);
+      rows.push(`<tr${d === left ? ' class="now"' : ''}><td>${day.slice(5)}</td><td>${d === 0 ? '🎯' : d}</td><td>${f.id ? `<a href="#r-${f.id}">${esc(f.name)}</a>` : esc(f.name)}</td></tr>`);
     }
-    app.innerHTML = `<a href="#/" class="small">← Today</a><h1>Plan: ${esc(job.name)}</h1>
+    app.innerHTML = `<a href="#today" class="small">← Today</a><h1>Plan: ${esc(job.name)}</h1>
       <p class="sub">Every day: due cards in Today + the focus round below. Last 2 days: no new topics.</p>
       <table class="bt"><tr><th>Date</th><th>Days left</th><th>Focus</th></tr>${rows.join('')}</table>`;
   }
@@ -130,9 +130,9 @@
     const c = card(id); if (!c) return todayView();
     clearInterval(tick);
     const r = round(c.round), s = cardState(id);
-    const techs = c.tech.map(t => `<a class="chip" href="#/t/${t}">${esc(techOf(t).name)}</a>`).join(' ');
-    app.innerHTML = `<a href="${fromQueue ? '#/' : '#/r/' + r.id}" class="small">← ${fromQueue ? 'Today' : esc(r.name)}</a>
-      <p class="sub"><a href="#/r/${r.id}">Round ${r.n}: ${esc(r.name)}</a> ${PROOF[c.proof] || ''} ${s ? `· box ${s.box}` : ''}</p>
+    const techs = c.tech.map(t => `<a class="chip" href="#t-${t}">${esc(techOf(t).name)}</a>`).join(' ');
+    app.innerHTML = `<a href="${fromQueue ? '#today' : '#r-' + r.id}" class="small">← ${fromQueue ? 'Today' : esc(r.name)}</a>
+      <p class="sub"><a href="#r-${r.id}">Round ${r.n}: ${esc(r.name)}</a> ${PROOF[c.proof] || ''} ${s ? `· box ${s.box}` : ''}</p>
       <section class="card ask"><div class="label">Question</div><p class="q">${esc(c.q)}</p>
         ${c.en ? `<details class="en"><summary>English</summary><p>${esc(c.en)}</p></details>` : ''}
         ${c.project ? `<p class="small">Use your project: <b>${esc(c.project)}</b></p>` : ''}</section>
@@ -171,8 +171,8 @@
       clearInterval(tick);
       const s2 = saveGrade(id, total(), g.tag);
       toast(total() >= 7 ? `Good. Back in ${GAP[s2.box]} days.` : total() >= 5 ? 'Almost. Back in a few days.' : 'Back tomorrow. That is normal.');
-      if (fromQueue) { const n = queue().find(x => x.id !== id); location.hash = n ? `#/c/${n.id}?q=1` : '#/'; }
-      else location.hash = '#/r/' + r.id;
+      if (fromQueue) { const n = queue().find(x => x.id !== id); location.hash = n ? `#q-${n.id}` : '#today'; }
+      else location.hash = '#r-' + r.id;
     };
   }
 
@@ -219,9 +219,9 @@
     return `<section class="card job ${active ? 'active' : ''}"><div class="label">${active ? 'Active job' : 'Job'}${j.date ? ' · interview ' + j.date : ''}</div>
       <h3>${esc(j.name)}</h3>
       ${j.lang ? `<p class="warn">German level asked: <b>${esc(j.lang.toUpperCase())}</b>. Practise these answers in German.</p>` : ''}
-      <p><b>Your strengths here</b> (lead with these):<br>${proven.map(t => `<a class="chip ok" href="#/t/${t.id}">${esc(t.name)} · ${cnt(t)}</a>`).join(' ') || '–'}</p>
-      <p><b>Gaps</b> (no project, study the concept + one honest sentence):<br>${gaps.map(t => `<a class="chip gap" href="#/t/${t.id}">${esc(t.name)} · ${cnt(t)}</a>`).join(' ') || 'none found'}</p>
-      <p><b>Likely rounds:</b><br>${j.rounds.map(id => `<a class="chip" href="#/r/${id}">${round(id).n} ${esc(round(id).name)}</a>`).join(' ')}</p>
+      <p><b>Your strengths here</b> (lead with these):<br>${proven.map(t => `<a class="chip ok" href="#t-${t.id}">${esc(t.name)} · ${cnt(t)}</a>`).join(' ') || '–'}</p>
+      <p><b>Gaps</b> (no project, study the concept + one honest sentence):<br>${gaps.map(t => `<a class="chip gap" href="#t-${t.id}">${esc(t.name)} · ${cnt(t)}</a>`).join(' ') || 'none found'}</p>
+      <p><b>Likely rounds:</b><br>${j.rounds.map(id => `<a class="chip" href="#r-${id}">${round(id).n} ${esc(round(id).name)}</a>`).join(' ')}</p>
       <p class="small">Keyword matching is rough. Read the ad yourself too.</p>
       <div class="row">${active ? '' : `<button class="btn" data-act="${j.id}">Make active</button>`}<button class="btn ghost" data-edit="${j.id}">Edit</button><button class="btn ghost" data-del="${j.id}">Remove</button></div></section>`;
   }
@@ -230,14 +230,14 @@
   function libView() {
     const groups = {}; for (const t of D.tech) (groups[t.group] ||= []).push(t);
     app.innerHTML = `<h1>Library</h1>
-      <div class="row wrap">${D.pages.map(p => `<a class="btn ghost" href="#/page/${p.id}">${esc(p.title)}</a>`).join('')}<a class="btn ghost" href="#/evidence">My evidence (tenders)</a></div>
-      <h2>Rounds, in order</h2><div class="card"><ul class="list">${D.rounds.map(r => { const cs = D.cards.filter(c => c.round === r.id); return `<li><a href="#/r/${r.id}"><span class="rnum">${r.n}</span><span>${esc(r.name)}<br><span class="small">${esc(r.en)}</span></span><span class="st">${cs.filter(c => isReady(c.id)).length}/${cs.length}</span></a></li>`; }).join('')}</ul></div>
-      <h2>Technologies</h2>${Object.entries(groups).map(([g, ts]) => `<h3>${esc(g)}</h3><div class="chips">${ts.map(t => `<a class="chip ${t.proof === 'study' ? 'gap' : 'ok'}" href="#/t/${t.id}">${esc(t.name)} · ${D.cards.filter(c => c.tech.includes(t.id)).length}</a>`).join(' ')}</div>`).join('')}`;
+      <div class="row wrap">${D.pages.map(p => `<a class="btn ghost" href="#page-${p.id}">${esc(p.title)}</a>`).join('')}<a class="btn ghost" href="#evidence">My evidence (tenders)</a></div>
+      <h2>Rounds, in order</h2><div class="card"><ul class="list">${D.rounds.map(r => { const cs = D.cards.filter(c => c.round === r.id); return `<li><a href="#r-${r.id}"><span class="rnum">${r.n}</span><span>${esc(r.name)}<br><span class="small">${esc(r.en)}</span></span><span class="st">${cs.filter(c => isReady(c.id)).length}/${cs.length}</span></a></li>`; }).join('')}</ul></div>
+      <h2>Technologies</h2>${Object.entries(groups).map(([g, ts]) => `<h3>${esc(g)}</h3><div class="chips">${ts.map(t => `<a class="chip ${t.proof === 'study' ? 'gap' : 'ok'}" href="#t-${t.id}">${esc(t.name)} · ${D.cards.filter(c => c.tech.includes(t.id)).length}</a>`).join(' ')}</div>`).join('')}`;
   }
   function roundView(id) {
     const r = round(id); if (!r) return libView();
     const cs = D.cards.filter(c => c.round === id);
-    app.innerHTML = `<a href="#/lib" class="small">← Library</a><h1>${r.n}. ${esc(r.name)}</h1><p class="sub">${esc(r.en)} · ${esc(r.time)} · ${esc(r.who)}</p>
+    app.innerHTML = `<a href="#lib" class="small">← Library</a><h1>${r.n}. ${esc(r.name)}</h1><p class="sub">${esc(r.en)} · ${esc(r.time)} · ${esc(r.who)}</p>
       <section class="card"><div class="label">What they check</div><p>${esc(r.tests)}</p></section>
       <section class="card frame"><div class="label">Your structure (learn this once)</div><p class="big">${esc(r.frame)}</p></section>
       <section class="card"><div class="label">Typical questions</div><ul>${r.questions.map(q => `<li>${esc(q)}</li>`).join('')}</ul></section>
@@ -247,14 +247,14 @@
   function techView(id) {
     const t = techOf(id); if (!t) return libView();
     const cs = D.cards.filter(c => c.tech.includes(id));
-    app.innerHTML = `<a href="#/lib" class="small">← Library</a><h1>${esc(t.name)}</h1>
+    app.innerHTML = `<a href="#lib" class="small">← Library</a><h1>${esc(t.name)}</h1>
       <p class="sub">${PROOF[t.proof]} ${t.project ? '· ' + esc(t.project) : ''}</p>
       ${t.proof === 'study' ? `<div class="card hint">No project with this yet. In the interview say it honestly: <i>„Produktiv habe ich das noch nicht eingesetzt. Das Prinzip kenne ich. Bei uns war es ähnlich mit …“</i></div>` : ''}
       <h2>Cards (${cs.length})</h2>${cs.length ? `<div class="card"><ul class="list">${cs.map(rowCard).join('')}</ul></div>` : '<div class="card small">No cards yet.</div>'}`;
   }
   function pageView(id) {
     const p = D.pages.find(x => x.id === id); if (!p) return libView();
-    app.innerHTML = `<a href="#/lib" class="small">← Library</a><h1>${esc(p.title)}</h1><div class="card prose">${p.html}</div>`;
+    app.innerHTML = `<a href="#lib" class="small">← Library</a><h1>${esc(p.title)}</h1><div class="card prose">${p.html}</div>`;
   }
 
   // ---------- EVIDENCE (tender sheets; stays on this phone) ----------
@@ -262,7 +262,7 @@
     const ev = store.get('evidence', []);
     const months = e => e.from && e.to ? Math.max(0, (+e.to.slice(0, 4) - +e.from.slice(0, 4)) * 12 + (+e.to.slice(5, 7) - +e.from.slice(5, 7)) + 1) : 0;
     const byTech = {}; for (const e of ev) for (const t of e.techs) byTech[t] = (byTech[t] || 0) + months(e);
-    app.innerHTML = `<a href="#/lib" class="small">← Library</a><h1>My evidence</h1>
+    app.innerHTML = `<a href="#lib" class="small">← Library</a><h1>My evidence</h1>
       <p class="sub">For tender sheets: every year you claim needs a project row. This stays on this phone only.</p>
       <div class="card"><label>Project<br><input id="ep" placeholder="e.g. BIT NABODAT"></label><label>Client<br><input id="ec" placeholder="e.g. BIT"></label>
         <div class="row"><label>From<br><input id="ef" type="month"></label><label>To<br><input id="et" type="month"></label></div>
@@ -289,26 +289,30 @@
     app.innerHTML = `<h1>Progress</h1>
       <div class="card stats"><div><b>${ready}</b><br>ready</div><div><b>${Object.keys(s).length}</b><br>started</div><div><b>${D.cards.length}</b><br>cards</div></div>
       <p class="small">Ready = 7/8 or more on two different days.</p>
-      <h2>By round</h2><table class="bt"><tr><th>Round</th><th>Ready</th><th>Started</th></tr>${D.rounds.map(r => { const cs = D.cards.filter(c => c.round === r.id); return `<tr><td><a href="#/r/${r.id}">${r.n}. ${esc(r.name)}</a></td><td>${cs.filter(c => isReady(c.id)).length}/${cs.length}</td><td>${cs.filter(c => s[c.id]).length}</td></tr>`; }).join('')}</table>
+      <h2>By round</h2><table class="bt"><tr><th>Round</th><th>Ready</th><th>Started</th></tr>${D.rounds.map(r => { const cs = D.cards.filter(c => c.round === r.id); return `<tr><td><a href="#r-${r.id}">${r.n}. ${esc(r.name)}</a></td><td>${cs.filter(c => isReady(c.id)).length}/${cs.length}</td><td>${cs.filter(c => s[c.id]).length}</td></tr>`; }).join('')}</table>
       ${Object.keys(tags).length ? `<h2>What goes wrong most</h2><div class="card">${Object.entries(tags).sort((a, b) => b[1] - a[1]).map(([k, n]) => `<p><b>${k}</b> × ${n}<br><span class="small">${TIP[k] || ''}</span></p>`).join('')}</div>` : ''}
       ${weak.length ? `<h2>Weak cards</h2><div class="card"><ul class="list">${weak.map(rowCard).join('')}</ul></div>` : ''}
-      <h2>Backup</h2><div class="row"><button class="btn ghost" id="exp">Export progress</button><label class="btn ghost">Import<input type="file" id="imp" accept=".json" hidden></label></div>
-      <p class="small">Your progress lives only in this browser. Export it before you change phone.</p>`;
-    $('#exp').onclick = () => {
-      const out = {}; for (let i = 0; i < localStorage.length; i++) { const k = localStorage.key(i); if (k.startsWith('ic:')) out[k] = localStorage.getItem(k); }
-      const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([JSON.stringify(out)], { type: 'application/json' })); a.download = `interview-coach-${today()}.json`; a.click();
-    };
-    $('#imp').onchange = async e => {
-      try { const o = JSON.parse(await e.target.files[0].text()); for (const [k, v] of Object.entries(o)) if (k.startsWith('ic:')) localStorage.setItem(k, v); toast('Imported.'); progressView(); }
-      catch { toast('That file did not work.'); }
+      <h2>Backup</h2>
+      <p class="small">Your progress lives only in this browser. Copy the backup text before you change phone, and paste it on the new one.</p>
+      <div class="row"><button class="btn ghost" id="exp">Show backup text</button></div>
+      <textarea id="bk" rows="5" placeholder="Paste a backup here to import it"></textarea>
+      <div class="row"><button class="btn ghost" id="cpy">Copy</button><button class="btn ghost" id="imp">Import pasted backup</button></div>`;
+    const dump = () => { const out = {}; try { for (let i = 0; i < localStorage.length; i++) { const k = localStorage.key(i); if (k.startsWith('ic:')) out[k] = localStorage.getItem(k); } } catch {} return JSON.stringify(out); };
+    $('#exp').onclick = () => { $('#bk').value = dump(); $('#bk').select(); };
+    $('#cpy').onclick = async () => { if (!$('#bk').value) $('#bk').value = dump(); try { await navigator.clipboard.writeText($('#bk').value); toast('Copied.'); } catch { $('#bk').select(); toast('Select all and copy by hand.'); } };
+    $('#imp').onclick = () => {
+      try { const o = JSON.parse($('#bk').value); let n = 0; for (const [k, v] of Object.entries(o)) if (k.startsWith('ic:')) { localStorage.setItem(k, v); n++; } toast(n ? 'Imported.' : 'Nothing to import.'); progressView(); }
+      catch { toast('That text is not a backup. Copy the whole text again.'); }
     };
   }
 
   // ---------- router ----------
   function render() {
-    const [h, qs] = location.hash.replace(/^#\/?/, '').split('?'); const p = h.split('/');
+    // plain hash names (claude.ai pages only keep "#name"): #today #job #lib #progress #plan #evidence, #c-<card> #q-<card> #r-<round> #t-<tech> #page-<page>
+    const h = decodeURIComponent(location.hash.slice(1)), m = h.match(/^(c|q|r|t|page)-(.+)$/);
+    const p = m ? [m[1], m[2]] : [h === 'today' ? '' : h];
     scrollTo(0, 0); clearInterval(tick);
-    if (p[0] === 'c') drill(p[1], /q=1/.test(qs || ''));
+    if (p[0] === 'c' || p[0] === 'q') drill(p[1], p[0] === 'q');
     else if (p[0] === 'job') jobView();
     else if (p[0] === 'lib') libView();
     else if (p[0] === 'r') roundView(p[1]);
@@ -318,7 +322,7 @@
     else if (p[0] === 'progress') progressView();
     else if (p[0] === 'plan') planView();
     else todayView();
-    const tab = { '': 'today', plan: 'today', c: 'today', job: 'job', lib: 'lib', r: 'lib', t: 'lib', page: 'lib', evidence: 'lib', progress: 'progress' }[p[0]] || 'today';
+    const tab = { '': 'today', plan: 'today', c: 'today', q: 'today', job: 'job', lib: 'lib', r: 'lib', t: 'lib', page: 'lib', evidence: 'lib', progress: 'progress' }[p[0]] || 'today';
     $$('.tabs a').forEach(a => a.classList.toggle('on', a.dataset.tab === tab));
   }
   addEventListener('hashchange', render);
