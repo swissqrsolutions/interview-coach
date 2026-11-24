@@ -1,0 +1,210 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Iceberg vs Delta Lake vs Hudi</title>
+<style>
+  body { font: 17px/1.55 -apple-system, system-ui, sans-serif; max-width: 760px; margin: 0 auto; padding: 16px; color: #1d1d1f; }
+  h1 { font-size: 28px; margin: 8px 0 4px; }
+  h2 { font-size: 21px; margin: 32px 0 8px; padding-top: 12px; border-top: 2px solid #e5e5ea; }
+  .kern { background: #eef6ff; border-left: 4px solid #0a66c2; padding: 10px 14px; border-radius: 6px; }
+  .senior { background: #f0faf0; border-left: 4px solid #2e7d32; padding: 10px 14px; border-radius: 6px; }
+  .trap { background: #fff4f2; border-left: 4px solid #c62828; padding: 10px 14px; border-radius: 6px; }
+  code { background: #f2f2f7; padding: 1px 5px; border-radius: 4px; font-size: 15px; }
+  pre { background: #1e1e1e; color: #e6e6e6; padding: 12px; border-radius: 8px; overflow-x: auto; font-size: 13.5px; line-height: 1.45; }
+  svg { width: 100%; height: auto; display: block; margin: 10px 0; }
+  ol li, ul li { margin: 4px 0; }
+  details { border: 1px solid #e5e5ea; border-radius: 8px; padding: 8px 12px; margin: 6px 0; }
+  summary { font-weight: 600; cursor: pointer; }
+  details p { margin: 6px 0 2px; }
+  .small { color: #6e6e73; font-size: 14px; }
+</style>
+</head>
+<body>
+
+<h1>Iceberg vs Delta Lake vs Hudi</h1>
+<p class="small">Iceberg · Tier 1 · Quellen: Apache Iceberg Table Spec v2/v3 und Docs 1.x, Delta Lake Docs und Delta Transaction Log Protocol (<code>PROTOCOL.md</code>, Deletion Vectors, UniForm, Liquid Clustering), Apache Hudi Docs 1.x (Timeline, Table Types, Indexing, Concurrency Control, Table Services), Apache XTable Docs</p>
+
+<div class="kern">
+<b>Kern:</b> <b>Apache Iceberg</b>, <b>Delta Lake</b> und <b>Apache Hudi</b> sind offene <b>Table Formats</b>: Sie machen aus Parquet-Dateien im Object Store eine Tabelle mit ACID-Commits, Schema-Evolution und Time Travel. Iceberg setzt auf eine Engine-neutrale Spec mit Katalog, Delta auf ein Transaktions-Log nahe an Spark und Databricks, Hudi auf Upserts mit Record Keys und Indizes. Die Wahl hängt vor allem an Engines, Schreibmuster und Plattform.
+</div>
+
+<h2>1. Wo sitzen die drei Formate?</h2>
+<svg viewBox="0 0 720 320" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="a" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="10" y="14" width="700" height="44" rx="8" fill="#fff" stroke="#555"/><text x="360" y="41" text-anchor="middle">Engines: Spark · Flink · Trino · Dremio · Snowflake · DuckDB …</text>
+  <line x1="130" y1="58" x2="130" y2="98" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <line x1="360" y1="58" x2="360" y2="98" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <line x1="590" y1="58" x2="590" y2="98" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="10" y="100" width="230" height="110" rx="10" fill="#0a66c2"/><text x="125" y="126" text-anchor="middle" fill="#fff" font-weight="700">Iceberg</text><text x="125" y="150" text-anchor="middle" fill="#fff" font-size="12">Katalog-Zeiger</text><text x="125" y="168" text-anchor="middle" fill="#fff" font-size="12">metadata.json → Manifests</text><text x="125" y="186" text-anchor="middle" fill="#fff" font-size="12">Baum aus Metadaten</text>
+  <rect x="250" y="100" width="220" height="110" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="360" y="126" text-anchor="middle" font-weight="700">Delta Lake</text><text x="360" y="150" text-anchor="middle" font-size="12">_delta_log/</text><text x="360" y="168" text-anchor="middle" font-size="12">JSON-Commits + Checkpoints</text><text x="360" y="186" text-anchor="middle" font-size="12">lineares Log</text>
+  <rect x="480" y="100" width="230" height="110" rx="10" fill="#e8f5e9" stroke="#2e7d32"/><text x="595" y="126" text-anchor="middle" font-weight="700">Hudi</text><text x="595" y="150" text-anchor="middle" font-size="12">.hoodie/ Timeline</text><text x="595" y="168" text-anchor="middle" font-size="12">Record Keys + Index</text><text x="595" y="186" text-anchor="middle" font-size="12">Base + Log Files</text>
+  <line x1="125" y1="210" x2="125" y2="250" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <line x1="360" y1="210" x2="360" y2="250" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <line x1="595" y1="210" x2="595" y2="250" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="10" y="252" width="700" height="56" rx="8" fill="#f7f7fa" stroke="#999" stroke-dasharray="5 4"/><text x="360" y="276" text-anchor="middle">Parquet-Datendateien im Object Store (S3, ADLS, MinIO)</text><text x="360" y="296" text-anchor="middle" font-size="12">gleiche Daten, unterschiedliche Metadaten</text>
+</svg>
+<ol>
+  <li><b>Engines:</b> lesen und schreiben über einen Connector für das jeweilige Format.</li>
+  <li><b>Iceberg:</b> ein Katalog zeigt auf <code>metadata.json</code>. Darunter liegen Manifest List und Manifests mit Datei-Statistiken. Beispiel: MATCH mit Nessie.</li>
+  <li><b>Delta Lake:</b> ein Ordner <code>_delta_log</code> mit nummerierten JSON-Commits. Alle 10 Commits (Standard) fasst ein Parquet-<b>Checkpoint</b> den Stand zusammen.</li>
+  <li><b>Hudi:</b> ein Ordner <code>.hoodie</code> mit der <b>Timeline</b>, also allen Aktionen mit Zeitstempel. Jede Zeile hat einen <b>Record Key</b>, den ein Index auf Dateien abbildet.</li>
+  <li><b>Daten:</b> In allen drei Fällen meist Parquet. Darum kann man Metadaten übersetzen, ohne Daten zu kopieren.</li>
+</ol>
+
+<h2>2. Die Reise eines Upserts in drei Formaten (die Geschichte zum Merken)</h2>
+<svg viewBox="0 0 720 300" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="b" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="260" y="10" width="200" height="44" rx="10" fill="#eee" stroke="#777"/><text x="360" y="37" text-anchor="middle" font-weight="700">MERGE: 1000 Zeilen</text>
+  <line x1="300" y1="54" x2="130" y2="88" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <line x1="360" y1="54" x2="360" y2="88" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <line x1="420" y1="54" x2="590" y2="88" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="10" y="90" width="230" height="80" rx="10" fill="#fff" stroke="#0a66c2"/><text x="125" y="114" text-anchor="middle" font-weight="700">Iceberg</text><text x="125" y="134" text-anchor="middle" font-size="12">Stats → Dateien finden</text><text x="125" y="152" text-anchor="middle" font-size="12">DV + neue Datei</text>
+  <rect x="250" y="90" width="220" height="80" rx="10" fill="#fff" stroke="#0a66c2"/><text x="360" y="114" text-anchor="middle" font-weight="700">Delta</text><text x="360" y="134" text-anchor="middle" font-size="12">Stats → Dateien finden</text><text x="360" y="152" text-anchor="middle" font-size="12">DV + neue Datei</text>
+  <rect x="480" y="90" width="230" height="80" rx="10" fill="#fff" stroke="#2e7d32"/><text x="595" y="114" text-anchor="middle" font-weight="700">Hudi (MOR)</text><text x="595" y="134" text-anchor="middle" font-size="12">Index: Key → File Group</text><text x="595" y="152" text-anchor="middle" font-size="12">an Log File anhängen</text>
+  <line x1="125" y1="170" x2="125" y2="208" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <line x1="360" y1="170" x2="360" y2="208" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <line x1="595" y1="170" x2="595" y2="208" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="10" y="210" width="230" height="70" rx="10" fill="#0a66c2"/><text x="125" y="236" text-anchor="middle" fill="#fff">CAS im Katalog</text><text x="125" y="256" text-anchor="middle" fill="#fff" font-size="12">neue metadata.json</text>
+  <rect x="250" y="210" width="220" height="70" rx="10" fill="#0a66c2"/><text x="360" y="236" text-anchor="middle" fill="#fff">put-if-absent</text><text x="360" y="256" text-anchor="middle" fill="#fff" font-size="12">00…043.json</text>
+  <rect x="480" y="210" width="230" height="70" rx="10" fill="#2e7d32"/><text x="595" y="236" text-anchor="middle" fill="#fff">Instant completed</text><text x="595" y="256" text-anchor="middle" fill="#fff" font-size="12">später Compaction</text>
+</svg>
+<ol>
+  <li><b>Start:</b> Ein Spark-Job will 1000 geänderte Zeilen in eine Tabelle mergen.</li>
+  <li><b>Iceberg:</b> Spark findet die betroffenen Dateien über Partitionen und Min/Max-Statistiken der Manifests. Es schreibt Deletion Vectors (v3) und neue Dateien. Der Katalog tauscht den Zeiger atomar.</li>
+  <li><b>Delta:</b> Spark findet die Dateien über die Statistiken im Log. Mit aktivierten <b>Deletion Vectors</b> schreibt es Bitmaps statt ganze Dateien. Der Commit ist die Datei <code>00000000000000000043.json</code>. Sie darf nur einmal entstehen (<b>put-if-absent</b>). Wer zweiter ist, verliert und versucht es neu.</li>
+  <li><b>Hudi:</b> Der <b>Index</b> sagt für jeden Record Key, in welcher <b>File Group</b> er liegt. Bei einer Merge-on-Read-Tabelle hängt Hudi die Änderungen an ein <b>Log File</b> dieser Gruppe an. Der Commit ist ein abgeschlossenes <b>Instant</b> auf der Timeline.</li>
+  <li><b>Danach:</b> Alle drei brauchen Aufräumen. Iceberg mit <code>rewrite_data_files</code>, Delta mit <code>OPTIMIZE</code> und <code>VACUUM</code>, Hudi mit Compaction, Clustering und Cleaning als eingebaute <b>Table Services</b>.</li>
+</ol>
+
+<h2>3. Beispiel: dieselbe Tabelle in drei Formaten anlegen</h2>
+<pre>-- Iceberg (Spark SQL, Katalog "lake")
+CREATE TABLE lake.silver.trades (message_id BIGINT, trade_id STRING,
+  received_date TIMESTAMP, schema_type STRING, price DECIMAL(18,6))
+USING iceberg
+PARTITIONED BY (days(received_date), schema_type)
+TBLPROPERTIES ('format-version'='3', 'write.merge.mode'='merge-on-read');
+
+-- Delta Lake
+CREATE TABLE silver.trades_delta (...) USING delta
+CLUSTER BY (received_date, schema_type)
+TBLPROPERTIES ('delta.enableDeletionVectors'='true');
+
+-- Hudi
+CREATE TABLE silver.trades_hudi (...) USING hudi
+PARTITIONED BY (schema_type)
+TBLPROPERTIES (type='mor', primaryKey='trade_id', preCombineField='received_date');</pre>
+<pre>trades/                        trades_delta/                     trades_hudi/
+  metadata/                      _delta_log/                       .hoodie/
+    00000-....metadata.json        00000000000000000000.json         timeline/ ... .commit
+    snap-...-1-....avro            00000000000000000001.json         metadata/  (Index, Stats)
+    ....-m0.avro                   00000000000000000010.checkpoint.parquet  hoodie.properties
+  data/                            _last_checkpoint                schema_type=ORDER/
+    received_date_day=.../       part-00000-....parquet              ...-0_0-...parquet  (Base)
+      schema_type=.../           deletion_vector_....bin            .....log.1_0-...    (Log)
+        00000-....parquet</pre>
+<p class="small">Erwartetes Ergebnis (laut Doku, nicht ausgeführt). Verzeichnisstruktur laut Iceberg Spec, Delta Protocol und Hudi Docs, gekürzt. Namen und Nummern sind Beispielwerte; die Hudi-Timeline-Struktur hängt von der Version ab.</p>
+<ol>
+  <li><b>Iceberg</b> hat <b>Hidden Partitioning</b>: <code>days(received_date)</code> ist eine Transformation. Abfragen filtern auf <code>received_date</code>, nicht auf eine extra Spalte.</li>
+  <li><b>Delta</b> empfiehlt heute <b>Liquid Clustering</b> (<code>CLUSTER BY</code>) statt fester Partitionen. Deletion Vectors schaltet man pro Tabelle ein.</li>
+  <li><b>Hudi</b> braucht einen <code>primaryKey</code> (Record Key) und ein <code>preCombineField</code>. Kommt ein Key zweimal, gewinnt der grössere Wert. Das ist Upsert-Logik im Format selbst.</li>
+  <li>In allen drei Ordnern liegen Parquet-Dateien. Nur die Metadaten unterscheiden sich.</li>
+</ol>
+
+<h2>4. Details, die Interviewer fragen</h2>
+<ol>
+  <li><b>Commit-Mechanik:</b> Iceberg tauscht einen Zeiger im Katalog (CAS). Delta schreibt die nächste nummerierte Log-Datei mit put-if-absent. Hudi schliesst ein Instant auf der Timeline ab und nutzt bei mehreren Writern einen <b>Lock Provider</b> (z. B. ZooKeeper, DynamoDB, Hive Metastore).</li>
+  <li><b>Metadaten-Skalierung:</b> Iceberg plant mit einem Baum aus Manifests und Partition-Statistiken. Delta muss Log und Checkpoint lesen, um den Stand zu bauen. Hudi hat eine eigene <b>Metadata Table</b> mit Dateiliste, Statistiken und Indizes.</li>
+  <li><b>Partitionierung:</b> Iceberg hat Hidden Partitioning und <b>Partition Evolution</b> ohne Rewrite. Delta setzt auf Liquid Clustering. Hudi nutzt klassische Partitionspfade plus Clustering.</li>
+  <li><b>Row-Level-Änderungen:</b> Iceberg: CoW oder MoR mit Delete Files, in v3 Deletion Vectors. Delta: CoW oder Deletion Vectors. Hudi: Tabellentyp <b>COPY_ON_WRITE</b> oder <b>MERGE_ON_READ</b> mit Base Files und Log Files.</li>
+  <li><b>Deletion Vectors gemeinsam:</b> Iceberg v3 nutzt dasselbe Roaring-Bitmap-Format wie Delta. Das erleichtert Übersetzung und gemeinsame Leser.</li>
+  <li><b>Indizes:</b> Hudi hat echte Indizes (Bloom, Bucket, Record Level Index, ab 1.x Secondary Index). Iceberg und Delta setzen auf Datei-Statistiken und Data Skipping.</li>
+  <li><b>Inkrementelles Lesen:</b> Hudi hat <b>Incremental Queries</b> ab einem Instant. Delta hat <b>Change Data Feed</b>. Iceberg liest Änderungen zwischen Snapshots, Spark bietet dafür <code>create_changelog_view</code>; v3 bringt <b>Row Lineage</b>.</li>
+  <li><b>Katalog:</b> Iceberg braucht einen Katalog und hat dafür die offene REST-Spec. Delta funktioniert auch nur über den Pfad, meist mit Unity Catalog oder HMS. Hudi synchronisiert in HMS oder Glue.</li>
+  <li><b>Engines:</b> Iceberg hat die breiteste Unterstützung: Spark, Flink, Trino, Dremio, Snowflake, BigQuery, Athena, DuckDB, PyIceberg. Delta ist am stärksten mit Spark und Databricks, dazu delta-rs und Trino. Hudi ist stark mit Spark und Flink.</li>
+  <li><b>UniForm:</b> Delta Lake <b>Universal Format</b>. Eine Delta-Tabelle schreibt zusätzlich Iceberg-Metadaten (oder Hudi). Iceberg-Engines können sie lesen. Schreiben bleibt Delta, und es gibt Einschränkungen bei Features.</li>
+  <li><b>Apache XTable:</b> übersetzt Metadaten zwischen Iceberg, Delta und Hudi, ohne Daten zu kopieren. Ein Format bleibt die Quelle, die anderen sind lesende Abbilder.</li>
+  <li><b>Spec und Governance:</b> Iceberg ist ein Apache-Projekt mit einer formalen, versionierten Spec (v1, v2, v3). Delta ist ein Linux-Foundation-Projekt mit einem Protokoll und <b>Table Features</b>. Hudi ist ein Apache-Projekt.</li>
+</ol>
+
+<h2>5. Vergleich</h2>
+<ul>
+  <li><b>Iceberg:</b> stärkste Engine-Neutralität, offene REST-Katalog-Spec, Hidden Partitioning und Partition Evolution. Schwäche: braucht einen Katalog und eigene Wartung.</li>
+  <li><b>Delta Lake:</b> sehr reif mit Spark und Databricks, einfaches Log, Liquid Clustering, Change Data Feed. Schwäche: ausserhalb von Spark und Databricks schmalere Unterstützung.</li>
+  <li><b>Hudi:</b> stark bei Upserts, CDC und inkrementellen Pipelines dank Record Keys, Indizes und eingebauten Table Services. Schwäche: mehr Konfiguration, kleinere Engine-Auswahl.</li>
+  <li><b>UniForm / XTable:</b> ein Format schreiben, mehrere lesen. Gut für den Übergang, aber kein Ersatz für eine klare Wahl.</li>
+</ul>
+
+<h2>6. In der Produktion</h2>
+<ol>
+  <li><b>Eine Engine kann das Format nicht schreiben:</b> Das Team wählt Delta, aber Dremio oder Trino soll später schreiben. Lösung: Engine-Matrix für Lesen <b>und</b> Schreiben vor der Wahl prüfen.</li>
+  <li><b>Feature-Versionen passen nicht:</b> Eine Tabelle nutzt neue Features (Iceberg v3, Delta Table Features wie Deletion Vectors). Ein älterer Reader bricht ab. Lösung: Features erst einschalten, wenn alle Leser sie können.</li>
+  <li><b>UniForm-Metadaten hinken nach:</b> Die Iceberg-Metadaten entstehen asynchron nach dem Delta-Commit. Iceberg-Leser sehen kurz einen älteren Stand. Lösung: das als Lese-Abbild behandeln und Latenz prüfen.</li>
+  <li><b>Hudi-Index falsch gewählt:</b> Ein globaler Bloom-Index wird bei vielen Partitionen langsam. Lösung: Record Level Index oder Bucket Index je nach Key-Verteilung.</li>
+  <li><b>Small Files in allen Formaten:</b> Kein Format löst das von selbst. Lösung: Iceberg <code>rewrite_data_files</code>, Delta <code>OPTIMIZE</code>, Hudi Clustering; dazu grössere Batches.</li>
+  <li><b>Zwei Writer in zwei Formaten:</b> Jemand schreibt per XTable-Abbild direkt in die Iceberg-Seite. Die Quelle weiss davon nichts. Lösung: genau ein Format ist die Wahrheit, die anderen nur lesen.</li>
+</ol>
+
+<h2>7. Diagnose: Werkzeuge und Befehle</h2>
+<ul>
+  <li><b>Iceberg:</b> Metadatentabellen <code>t.snapshots</code>, <code>t.files</code>, <code>t.partitions</code>, <code>t.delete_files</code>; <code>SHOW TBLPROPERTIES</code> für <code>format-version</code>.</li>
+  <li><b>Delta:</b> <code>DESCRIBE HISTORY t</code> (Commits), <code>DESCRIBE DETAIL t</code> (Dateien, Grösse, Protokoll-Version, Features).</li>
+  <li><b>Hudi:</b> <code>hudi-cli</code> mit <code>commits show</code> und <code>compactions show all</code>; Spark-Prozeduren wie <code>CALL show_commits(table =&gt; 't')</code>.</li>
+  <li><b>XTable / UniForm:</b> Zeitstempel des letzten übersetzten Commits mit der Quelle vergleichen.</li>
+  <li><b>Object Store:</b> Ordner <code>metadata/</code>, <code>_delta_log/</code> oder <code>.hoodie/</code> ansehen, um Format und Zustand schnell zu erkennen.</li>
+</ul>
+
+<h2>8. Senior-Punkte</h2>
+<div class="senior">
+<ol>
+  <li><b>Die Frage ist „Welche Engines?“,</b> nicht „Welches Format ist besser?“. Mehrere Engines und Anbieterneutralität → Iceberg. Fast nur Databricks → Delta. Viele Upserts und CDC mit Spark/Flink → Hudi prüfen.</li>
+  <li><b>Der Katalog ist die zweite Entscheidung.</b> Iceberg mit REST-Katalog hält Engine und Katalog austauschbar. Das ist oft der eigentliche Wert.</li>
+  <li><b>Die Formate nähern sich an.</b> Deletion Vectors, Variant und Clustering gibt es inzwischen überall. Unterschiede liegen mehr in Ökosystem und Katalog als in Features.</li>
+  <li><b>Interoperabilität ist ein Übergang.</b> UniForm und XTable helfen beim Lesen. Schreiben sollte genau ein Format.</li>
+  <li><b>Wartung gibt es überall.</b> Kein Format ist „wartungsfrei“. Managed Plattformen verstecken sie nur.</li>
+  <li><b>Lock-in ist mehrstufig:</b> Format, Katalog, Compute. Ein offenes Format nützt wenig, wenn der Katalog proprietär ist.</li>
+</ol>
+</div>
+
+<h2>9. Aus dem Projekt</h2>
+<p>„Für MATCH habe ich Iceberg gewählt, weil es anbieterneutral ist und mehrere Engines erlaubt (Spark schreibt, Dremio liest), dazu Hidden Partitioning, Schema-Evolution und einen flexiblen Katalog (Nessie); Delta ist stärker auf Spark und Databricks ausgerichtet.“ <span class="small">(Prüfen und durch dein echtes Beispiel ersetzen. Mit Hudi hast du keine Produktionserfahrung; sag das ehrlich und verweise auf den Merge-on-Read-Re-Import bei MATCH als nächstes echtes Upsert-Beispiel.)</span></p>
+
+<h2>10. Fallen</h2>
+<div class="trap">
+<ul>
+  <li>„Delta Lake funktioniert nur auf Databricks.“ → <b>Falsch.</b> Delta ist Open Source mit Spark, delta-rs, Trino und anderen. Die beste Unterstützung ist aber Databricks.</li>
+  <li>„Hudi ist nur Copy-on-Write.“ → <b>Falsch.</b> Hudi hat die Tabellentypen COPY_ON_WRITE und MERGE_ON_READ.</li>
+  <li>„Iceberg hat keine Deletion Vectors.“ → <b>Falsch.</b> Seit Format v3, kompatibel mit dem Delta-Format.</li>
+  <li>„Mit UniForm kann man aus Iceberg-Engines in Delta-Tabellen schreiben.“ → <b>Falsch.</b> UniForm macht Delta-Tabellen für Iceberg lesbar. Geschrieben wird über Delta.</li>
+  <li>„Das Format bestimmt allein den Lock-in.“ → <b>Falsch.</b> Katalog und Compute binden genauso.</li>
+  <li>„XTable kopiert die Daten.“ → <b>Falsch.</b> Es übersetzt nur Metadaten. Die Parquet-Dateien bleiben gleich.</li>
+</ul>
+</div>
+
+<h2>11. Fragen</h2>
+<details><summary>Was haben Iceberg, Delta und Hudi gemeinsam?</summary><p>Alle drei machen aus Parquet-Dateien im Object Store eine Tabelle mit ACID-Commits, Schema-Evolution und Time Travel. Sie unterscheiden sich in Metadaten und Commit-Mechanik.</p></details>
+<details><summary>Wie committet Iceberg?</summary><p>Mit einem atomaren Compare-and-Swap im Katalog. Der Zeiger springt von der alten auf die neue <code>metadata.json</code>.</p></details>
+<details><summary>Wie committet Delta Lake?</summary><p>Es schreibt die nächste nummerierte JSON-Datei in <code>_delta_log</code>. Nur ein Writer darf diese Nummer anlegen (put-if-absent).</p></details>
+<details><summary>Was ist ein Delta-Checkpoint?</summary><p>Eine Parquet-Datei mit dem ganzen Tabellenstand nach einem Commit, standardmässig alle 10 Commits. Leser müssen dann nicht alle JSON-Dateien lesen.</p></details>
+<details><summary>Was ist die Hudi-Timeline?</summary><p>Die geordnete Liste aller Aktionen auf der Tabelle in <code>.hoodie</code>, z. B. Commits, Delta-Commits, Compactions und Cleans. Jede Aktion ist ein Instant mit Zustand.</p></details>
+<details><summary>Was ist der Unterschied zwischen Hudi COW und MOR?</summary><p>COW schreibt bei Änderungen die Base Files neu. MOR hängt Änderungen an Log Files an und merged sie beim Lesen oder bei der Compaction.</p></details>
+<details><summary>Wofür braucht Hudi einen Record Key?</summary><p>Für Upserts und Deletes. Der Index bildet jeden Key auf eine File Group ab, damit Hudi weiss, wo die alte Zeile liegt.</p></details>
+<details><summary>Was ist Hidden Partitioning in Iceberg?</summary><p>Die Partition ist eine Transformation einer Spalte, z. B. <code>days(received_date)</code>. Abfragen filtern auf die echte Spalte, und Iceberg findet die Partitionen selbst.</p></details>
+<details><summary>Was ist Partition Evolution?</summary><p>Iceberg kann die Partitionierung ändern, ohne alte Daten neu zu schreiben. Alte Dateien behalten die alte Spec, neue nutzen die neue.</p></details>
+<details><summary>Was ist Liquid Clustering in Delta?</summary><p>Eine flexible Datenanordnung nach Cluster-Spalten statt fester Partitionen. Die Cluster-Spalten lassen sich später ändern.</p></details>
+<details><summary>Was ist Delta UniForm?</summary><p>Eine Delta-Tabelle schreibt zusätzlich Iceberg- oder Hudi-Metadaten. Andere Engines lesen sie dann im eigenen Format, geschrieben wird über Delta.</p></details>
+<details><summary>Was ist Apache XTable?</summary><p>Ein Werkzeug, das Metadaten zwischen Iceberg, Delta und Hudi übersetzt. Die Daten bleiben, wo sie sind.</p></details>
+<details><summary>Welches Format hat die breiteste Engine-Unterstützung?</summary><p>Iceberg: Spark, Flink, Trino, Dremio, Snowflake, BigQuery, Athena, DuckDB und mehr. Dazu die offene REST-Katalog-Spec.</p></details>
+<details><summary>Wie liest man Änderungen inkrementell?</summary><p>Hudi: Incremental Queries ab einem Instant. Delta: Change Data Feed. Iceberg: Snapshots vergleichen oder in Spark <code>create_changelog_view</code>.</p></details>
+<details><summary>Wann wählen Sie Delta Lake?</summary><p>Wenn die Plattform fast nur Databricks oder Spark nutzt. Dann sind Integration und Features am besten.</p></details>
+<details><summary>Wann wählen Sie Hudi?</summary><p>Bei vielen Upserts und CDC-Strömen mit Spark oder Flink, wo Record Keys, Indizes und eingebaute Table Services helfen.</p></details>
+<details><summary>Wann wählen Sie Iceberg?</summary><p>Wenn mehrere Engines lesen und schreiben sollen und man anbieterneutral bleiben will. Auch bei Bedarf an Partition Evolution und offenem Katalog.</p></details>
+<details><summary>Welche Rolle spielt der Katalog beim Vergleich?</summary><p>Er entscheidet über Lock-in mit. Iceberg mit REST-Katalog bleibt austauschbar. Ein proprietärer Katalog bindet trotz offenem Format.</p></details>
+<details><summary>Warum hat MATCH Iceberg gewählt und nicht Delta?</summary><p>Anbieterneutral, mehrere Engines (Spark schreibt, Dremio liest), Hidden Partitioning, Schema-Evolution und Nessie als Katalog. Delta ist stärker auf Spark und Databricks ausgerichtet.</p></details>
+<details><summary>Szenario: Das Unternehmen nutzt Databricks, ein anderes Team will mit Trino und Snowflake lesen. Was schlagen Sie vor?</summary><p>Delta als Quelle behalten und UniForm oder XTable für Iceberg-Leser nutzen. Prüfen, welche Delta-Features UniForm einschränkt und wie gross die Verzögerung ist.</p></details>
+<details><summary>Szenario: Eine CDC-Pipeline schreibt jede Minute Upserts, und Leser werden langsam. Was prüfen Sie?</summary><p>Anzahl der Delete Files oder Log Files pro Datei und ob Compaction läuft. Bei Iceberg <code>delete_files</code> und Compaction, bei Hudi Compaction-Plan und Index.</p></details>
+<details><summary>Szenario: Ein Interviewer fragt, ob Iceberg „besser“ als Delta ist. Wie antworten Sie?</summary><p>Es hängt von Engines, Katalog und Schreibmuster ab. Für MATCH mit Spark und Dremio passte Iceberg. In einer reinen Databricks-Welt wäre Delta oft einfacher.</p></details>
+
+</body>
+</html>

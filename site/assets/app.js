@@ -252,14 +252,17 @@
     const t = techOf(id); if (!t) return libView();
     const cs = D.cards.filter(c => c.tech.includes(id));
     const ts = (D.topics || []).filter(x => x.tech === id);
-    app.innerHTML = `<a href="#home" class="small">← Topics</a><h1>${esc(t.name)}</h1>
-      <p class="sub">${PROOF[t.proof]} ${t.project ? '· ' + esc(t.project) : ''}</p>
-      ${t.proof === 'study' ? `<div class="card hint">No project with this yet. In the interview say it honestly: <i>„Produktiv habe ich das noch nicht eingesetzt. Das Prinzip kenne ich. Bei uns war es ähnlich mit …“</i></div>` : ''}
-      ${ts.length ? `<h2>Learn: all topics (${ts.filter(x => x.done).length}/${ts.length} written)</h2><div class="card"><ul class="list">${ts.map(x => x.done
-        ? `<li><a href="#k-${x.tech}--${x.id}"><span class="rnum">${x.tier}</span><span>${esc(x.title)} ${PMARK[x.proof] || ""}</span><span class="st">${x.nq || (x.qs || []).length} Q</span></a></li>`
-        : `<li><a class="off"><span class="rnum">${x.tier}</span><span>${esc(x.title)} ${PMARK[x.proof] || ""}</span><span class="st new">coming</span></a></li>`).join('')}</ul>
-        <p class="small">The number in the circle is the priority: 1 = asked in almost every interview. <b>kein Projekt</b> = no project experience; <b>prüfen</b> = unclear, you decide.</p>${(D.techSources || {})[id] ? `<p class="small">List based on: ${D.techSources[id].map(esc).join(" · ")}</p>` : ""}</div>` : ''}
-      <h2>Practice cards (${cs.length})</h2>${cs.length ? `<div class="card"><ul class="list">${cs.map(rowCard).join('')}</ul></div>` : '<div class="card small">No cards yet.</div>'}`;
+    const dn = ts.filter(x => x.done).length;
+    app.innerHTML = `<a href="#home" class="back">← Themen</a>
+      <p class="kicker">${esc(t.group || '')}</p><h1>${esc(t.name)}</h1>
+      <p class="meta">${PROOF[t.proof] || ''} ${t.project ? '<span>' + esc(t.project) + '</span>' : ''}</p>
+      ${ts.length ? `<div class="progress-line">${bar(dn, ts.length)}<span>${dn}/${ts.length}</span></div>` : ''}
+      ${t.proof === 'study' ? `<div class="honest">No project with this yet. In the interview say it honestly: <i>„Produktiv habe ich das noch nicht eingesetzt. Das Prinzip kenne ich. Bei uns war es ähnlich mit …“</i></div>` : ''}
+      ${ts.length ? `<div class="sec-h"><h2>Learn: all topics</h2><span class="cnt">${dn}/${ts.length} written</span></div><ul class="tlist">${ts.map(x => x.done
+        ? `<li><a href="#k-${x.tech}--${x.id}"><span class="pr p${x.tier}">P${x.tier}</span><span class="tt">${esc(x.title)}${PMARK[x.proof] || ""}</span><span class="q">${x.nq || (x.qs || []).length} Q</span></a></li>`
+        : `<li><a class="off"><span class="pr p${x.tier}">P${x.tier}</span><span class="tt">${esc(x.title)}${PMARK[x.proof] || ""}</span><span class="q">coming</span></a></li>`).join('')}</ul>
+        <p class="legend"><span class="pr p1">P1</span> asked in almost every interview · <span class="pr p2">P2</span> often · <span class="pr p3">P3</span> sometimes. <b>kein Projekt</b> = no project experience; <b>prüfen</b> = unclear, you decide.</p>${(D.techSources || {})[id] ? `<p class="sources">List based on: ${D.techSources[id].map(esc).join(" · ")}</p>` : ""}` : ''}
+      <div class="sec-h"><h2>Practice cards</h2><span class="cnt">${cs.length}</span></div>${cs.length ? `<ul class="list">${cs.map(rowCard).join('')}</ul>` : '<p class="small">No cards yet.</p>'}`;
   }
   // a deep topic: read everything, then test yourself (tap a question to see the answer)
   function topicView(key) {
@@ -267,8 +270,10 @@
     if (!x || !x.done) return techView(tech);
     const list = D.topics.filter(y => y.tech === tech && y.done), i = list.indexOf(x);
     if (x.html) {
-      app.innerHTML = `<a href="#t-${tech}" class="small">← ${esc(techOf(tech).name)}</a><h1>${esc(x.title)}</h1><article class="topic">${x.html}</article>
-        <div class="pager">${i > 0 ? `<a class="btn ghost" href="#k-${tech}--${list[i - 1].id}">← ${esc(list[i - 1].title)}</a>` : ""}${i < list.length - 1 ? `<a class="btn" href="#k-${tech}--${list[i + 1].id}">${esc(list[i + 1].title)} →</a>` : ""}</div>`;
+      app.innerHTML = `<a href="#t-${tech}" class="back">← ${esc(techOf(tech).name)}</a>
+        <header class="topic-head"><div class="crumbs"><span class="pr p${x.tier}">P${x.tier}</span><span>Thema ${i + 1} / ${list.length}</span>${x.nq ? `<span>${x.nq} Fragen</span>` : ''}</div><h1>${esc(x.title)}</h1></header>
+        <article class="topic">${x.html}</article>
+        <nav class="pager">${i > 0 ? `<a class="prev" href="#k-${tech}--${list[i - 1].id}"><span>← Zurück</span>${esc(list[i - 1].title)}</a>` : ""}${i < list.length - 1 ? `<a class="next" href="#k-${tech}--${list[i + 1].id}"><span>Weiter →</span>${esc(list[i + 1].title)}</a>` : ""}</nav>`;
       return;
     }
     const qa = (arr, cls) => arr.map(q => `<details class="qa ${cls}"><summary>${q.q}</summary><div class="ans">${q.a}</div></details>`).join('');
@@ -335,6 +340,8 @@
   }
 
   // ---------- HOME: technologies in study order → topics → topic page ----------
+  const pct = (a, b) => b ? Math.round(a / b * 100) : 0;
+  const bar = (a, b, cls = '') => `<span class="bar ${cls}" aria-hidden="true"><i style="width:${pct(a, b)}%"></i></span>`;
   const ORDER = ["postgres","search","sysdesign","networking","microservices","kafka","k8s","signals","angular","azure","spark","iceberg","dremio","lakehouse","modelling","spring","hibernate","java","rest"];
   function topicsHome() {
     const all = (D.topics || []), ids = [...new Set(all.map(t => t.tech))].filter(id => techOf(id) && !techOf(id).hidden);
@@ -342,12 +349,23 @@
     const done = all.filter(t => t.done).length;
     const CATS = ['Datenbanken', 'System Design', 'Backend', 'Frontend', 'Cloud', 'Platform & DevOps', 'Data Engineering', 'Architektur & Qualität', 'Coding', 'Tools', 'Arbeitsweise'];
     const cats = CATS.concat([...new Set(ids.map(id => techOf(id).group))].filter(g => !CATS.includes(g)));
-    const row = id => { const ts = all.filter(t => t.tech === id), d = ts.filter(t => t.done).length; return `<li><a href="#t-${id}"><span>${esc(techOf(id).name)}</span><span class="st ${d ? "ok" : "new"}">${d}/${ts.length}</span></a></li>`; };
-    app.innerHTML = `<h1>Topics</h1><p class="sub">${done} of ${all.length} topics written. Tap a technology.</p>` + cats.map(g => {
-      const list = ids.filter(id => techOf(id).group === g); if (!list.length) return '';
+    const row = id => {
+      const ts = all.filter(t => t.tech === id), d = ts.filter(t => t.done).length;
+      return `<li><a href="#t-${id}" class="${d ? (d === ts.length ? 'full' : '') : 'zero'}"><span class="nm">${esc(techOf(id).name)}</span>${bar(d, ts.length, 'mini')}<span class="cnt">${d}/${ts.length}</span></a></li>`;
+    };
+    const p1 = all.filter(t => t.tier === 1), started = ids.filter(id => all.some(t => t.tech === id && t.done)).length;
+    const used = cats.filter(g => ids.some(id => techOf(id).group === g));
+    app.innerHTML = `<header class="mast"><div class="label"><span>Themen</span><span>${ids.length} Technologien</span></div>
+        <h1><span class="num">${done}</span><span class="of">/ ${all.length} geschrieben</span></h1>
+        <p class="lede">Ein Thema ganz lesen, dann mit den Fragen am Ende testen.</p>
+        ${bar(done, all.length)}
+        <dl class="strip"><div><dt>P1 fertig</dt><dd>${p1.filter(t => t.done).length}<small>/${p1.length}</small></dd></div>
+          <div><dt>Begonnen</dt><dd>${started}<small>/${ids.length}</small></dd></div>
+          <div><dt>Gesamt</dt><dd>${pct(done, all.length)}<small>%</small></dd></div></dl></header>` + used.map((g, n) => {
+      const list = ids.filter(id => techOf(id).group === g);
       const tot = all.filter(t => list.includes(t.tech)), d0 = tot.filter(t => t.done).length;
-      return `<h2>${esc(g)} <span class="st">${d0}/${tot.length}</span></h2><div class="card"><ul class="list">${list.map(row).join('')}</ul></div>`;
-    }).join('');
+      return `<section class="cat"><div class="cat-h"><span class="idx">${String(n + 1).padStart(2, '0')}</span><h2>${esc(g)}</h2><span class="cnt">${d0}/${tot.length}</span></div>${bar(d0, tot.length)}<ul class="tech-rows">${list.map(row).join('')}</ul></section>`;
+    }).join('') + `<p class="foot">Zahlen: geschriebene Themen / geplante Themen. P1 = kommt in fast jedem Interview.</p>`;
   }
 
   // ---------- router ----------

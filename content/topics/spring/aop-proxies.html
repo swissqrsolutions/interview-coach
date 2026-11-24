@@ -1,0 +1,220 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AOP und Proxies</title>
+<style>
+  body { font: 17px/1.55 -apple-system, system-ui, sans-serif; max-width: 760px; margin: 0 auto; padding: 16px; color: #1d1d1f; }
+  h1 { font-size: 28px; margin: 8px 0 4px; }
+  h2 { font-size: 21px; margin: 32px 0 8px; padding-top: 12px; border-top: 2px solid #e5e5ea; }
+  .kern { background: #eef6ff; border-left: 4px solid #0a66c2; padding: 10px 14px; border-radius: 6px; }
+  .senior { background: #f0faf0; border-left: 4px solid #2e7d32; padding: 10px 14px; border-radius: 6px; }
+  .trap { background: #fff4f2; border-left: 4px solid #c62828; padding: 10px 14px; border-radius: 6px; }
+  code { background: #f2f2f7; padding: 1px 5px; border-radius: 4px; font-size: 15px; }
+  pre { background: #1e1e1e; color: #e6e6e6; padding: 12px; border-radius: 8px; overflow-x: auto; font-size: 13.5px; line-height: 1.45; }
+  svg { width: 100%; height: auto; display: block; margin: 10px 0; }
+  ol li, ul li { margin: 4px 0; }
+  details { border: 1px solid #e5e5ea; border-radius: 8px; padding: 8px 12px; margin: 6px 0; }
+  summary { font-weight: 600; cursor: pointer; }
+  details p { margin: 6px 0 2px; }
+  .small { color: #6e6e73; font-size: 14px; }
+</style>
+</head>
+<body>
+
+<h1>AOP und Proxies</h1>
+<p class="small">Spring · Tier 1 · Quellen: Spring Framework Reference 7.x (Core: „Aspect Oriented Programming with Spring“, „Proxying Mechanisms“, „Declaring Advice“ inkl. „Advice Ordering“, „Container Extension Points“), Spring Framework 7.0 Release Notes (<code>@Proxyable</code>), Spring Boot 4.x Application Properties (<code>spring.aop.*</code>), Java SE 17 API <code>java.lang.reflect.Proxy</code></p>
+
+<div class="kern">
+<b>Kern:</b> <b>AOP</b> (Aspect-Oriented Programming) ist eine Technik, um <b>Querschnittsthemen</b> wie Transaktionen, Security oder Logging an einer Stelle zu schreiben. Spring AOP setzt das mit einem <b>Proxy</b> um: ein Stellvertreter-Objekt vor der echten Bean, das zusätzlichen Code vor und nach dem Aufruf ausführt. Der Proxy ist entweder ein <b>JDK Dynamic Proxy</b> (über Interfaces) oder ein <b>CGLIB-Proxy</b> (über eine Unterklasse).
+</div>
+
+<h2>1. Wo sitzt der Proxy?</h2>
+<svg viewBox="0 0 720 300" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="a" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="10" y="40" width="150" height="60" rx="8" fill="#fff" stroke="#555"/><text x="85" y="66" text-anchor="middle" font-weight="700">Controller</text><text x="85" y="85" text-anchor="middle" font-size="12">hält Referenz</text>
+  <line x1="160" y1="70" x2="208" y2="70" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="210" y="20" width="300" height="190" rx="12" fill="#f7f7fa" stroke="#0a66c2" stroke-width="2"/><text x="360" y="42" text-anchor="middle" font-weight="700">Proxy (JDK oder CGLIB)</text>
+  <rect x="230" y="56" width="260" height="40" rx="8" fill="#dbe9fb" stroke="#0a66c2"/><text x="360" y="81" text-anchor="middle">Interceptor 1: Security</text>
+  <rect x="230" y="104" width="260" height="40" rx="8" fill="#dbe9fb" stroke="#0a66c2"/><text x="360" y="129" text-anchor="middle">Interceptor 2: Transaction</text>
+  <rect x="230" y="152" width="260" height="40" rx="8" fill="#dbe9fb" stroke="#0a66c2"/><text x="360" y="177" text-anchor="middle">Interceptor 3: eigener Aspekt</text>
+  <line x1="510" y1="115" x2="548" y2="115" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="550" y="80" width="160" height="70" rx="8" fill="#e8f5e9" stroke="#2e7d32"/><text x="630" y="108" text-anchor="middle" font-weight="700">Target</text><text x="630" y="128" text-anchor="middle" font-size="12">echte OrderService</text>
+  <rect x="210" y="236" width="300" height="50" rx="8" fill="#fff" stroke="#555"/><text x="360" y="258" text-anchor="middle" font-weight="700">Auto-Proxy-Creator</text><text x="360" y="276" text-anchor="middle" font-size="12">BeanPostProcessor, baut den Proxy</text>
+  <line x1="360" y1="236" x2="360" y2="212" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+</svg>
+<ol>
+  <li><b>Aufrufer:</b> Der Controller hält eine Referenz auf <code>OrderService</code>. In Wahrheit ist es der Proxy.</li>
+  <li><b>Proxy:</b> Er hat dieselben Methoden wie die Bean. Er führt eine <b>Kette von Interceptors</b> aus, also Code vor und nach dem Aufruf.</li>
+  <li><b>Interceptors:</b> Jeder <b>Advice</b> (Security, Transaktion, eigener Aspekt) ist ein Glied der Kette. Die Reihenfolge kommt aus <code>@Order</code>.</li>
+  <li><b>Target:</b> Das echte Objekt mit der Business-Logik. Es weiss nichts vom Proxy.</li>
+  <li><b>Auto-Proxy-Creator:</b> Ein <code>BeanPostProcessor</code>. Er prüft nach der Initialisierung jeder Bean, ob ein Pointcut passt. Wenn ja, ersetzt er die Bean durch den Proxy.</li>
+</ol>
+
+<h2>2. Die Reise eines Methodenaufrufs (die Geschichte zum Merken)</h2>
+<svg viewBox="0 0 720 340" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="b" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker><marker id="r" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#c62828"/></marker></defs>
+  <rect x="10" y="20" width="160" height="60" rx="10" fill="#eee" stroke="#777"/><text x="90" y="45" text-anchor="middle" font-weight="700">1. Aufruf</text><text x="90" y="65" text-anchor="middle" font-size="12">service.placeOrder()</text>
+  <line x1="170" y1="50" x2="208" y2="50" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="210" y="20" width="160" height="60" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="290" y="45" text-anchor="middle" font-weight="700">2. Proxy</text><text x="290" y="65" text-anchor="middle" font-size="12">Kette für Methode</text>
+  <line x1="370" y1="50" x2="408" y2="50" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="410" y="20" width="300" height="60" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="560" y="45" text-anchor="middle" font-weight="700">3. Advice „on the way in“</text><text x="560" y="65" text-anchor="middle" font-size="12">höchste Priorität zuerst · proceed()</text>
+  <line x1="560" y1="80" x2="560" y2="128" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="410" y="130" width="300" height="60" rx="10" fill="#e8f5e9" stroke="#2e7d32"/><text x="560" y="155" text-anchor="middle" font-weight="700">4. Target-Methode</text><text x="560" y="175" text-anchor="middle" font-size="12">placeOrder() läuft</text>
+  <line x1="410" y1="160" x2="352" y2="160" stroke="#c62828" stroke-width="2" marker-end="url(#r)"/>
+  <rect x="10" y="130" width="340" height="60" rx="10" fill="#fff4f2" stroke="#c62828"/><text x="180" y="155" text-anchor="middle" font-weight="700">5. this.audit()</text><text x="180" y="175" text-anchor="middle" font-size="12">direkt im Target: KEIN Advice</text>
+  <line x1="560" y1="190" x2="560" y2="238" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="410" y="240" width="300" height="60" rx="10" fill="#0a66c2"/><text x="560" y="265" text-anchor="middle" fill="#fff" font-weight="700">6. Advice „on the way out“</text><text x="560" y="285" text-anchor="middle" fill="#fff" font-size="12">umgekehrte Reihenfolge</text>
+  <line x1="410" y1="270" x2="172" y2="270" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="10" y="240" width="160" height="60" rx="10" fill="#eee" stroke="#777"/><text x="90" y="265" text-anchor="middle" font-weight="700">7. Ergebnis</text><text x="90" y="285" text-anchor="middle" font-size="12">oder Exception</text>
+</svg>
+<ol>
+  <li><b>Aufruf:</b> Der Controller ruft <code>service.placeOrder()</code> auf. <code>service</code> zeigt auf den Proxy.</li>
+  <li><b>Proxy:</b> Er holt die Interceptor-Kette für genau diese Methode. Passt kein Pointcut, ruft er das Target direkt auf.</li>
+  <li><b>Hinweg:</b> Der Advice mit der höchsten Priorität läuft zuerst, z. B. Security. Jeder ruft <code>proceed()</code> für das nächste Glied auf.</li>
+  <li><b>Target:</b> Am Ende der Kette läuft die echte Methode.</li>
+  <li><b>Self-Invocation:</b> Ruft <code>placeOrder()</code> intern <code>this.audit()</code> auf, ist <code>this</code> das Target, nicht der Proxy. Der Advice von <code>audit()</code> läuft <b>nicht</b>.</li>
+  <li><b>Rückweg:</b> Die Advices laufen in umgekehrter Reihenfolge. Der Advice mit der höchsten Priorität läuft zuletzt.</li>
+  <li><b>Ergebnis:</b> Der Proxy gibt Rückgabewert oder Exception an den Controller weiter.</li>
+</ol>
+
+<h2>3. Beispiel: JDK Dynamic Proxy und Self-Invocation in reinem Java</h2>
+<pre>interface OrderService { void placeOrder(); void audit(); }
+
+class OrderServiceImpl implements OrderService {
+  public void placeOrder() { System.out.println("  target: placeOrder()"); this.audit(); }
+  public void audit()      { System.out.println("  target: audit()"); }
+}
+
+OrderService target = new OrderServiceImpl();
+InvocationHandler h = (proxy, m, a) -&gt; {            // das ist der "Advice"
+  System.out.println("  advice: before " + m.getName());
+  try { return m.invoke(target, a); }
+  finally { System.out.println("  advice: after  " + m.getName()); }
+};
+OrderService proxy = (OrderService) Proxy.newProxyInstance(
+    OrderService.class.getClassLoader(), new Class&lt;?&gt;[] { OrderService.class }, h);
+
+// 1) Klasse prüfen  2) proxy.audit()  3) proxy.placeOrder()  4) Cast auf Klasse</pre>
+<pre>1) Proxy-Klasse
+  class      = $Proxy0
+  superclass = java.lang.reflect.Proxy
+  instanceof OrderService     = true
+  instanceof OrderServiceImpl = false
+2) Aufruf von aussen: proxy.audit()
+  advice: before audit
+  target: audit()
+  advice: after  audit
+3) Aufruf von aussen: proxy.placeOrder()
+  advice: before placeOrder
+  target: placeOrder()
+  target: audit()
+  advice: after  placeOrder
+4) Cast auf die Klasse
+  ClassCastException</pre>
+<p class="small">Echte Ausgabe, Java 17.0.3.1 (ohne Spring). Spring nutzt für JDK-Proxies genau diesen Mechanismus, mit einem eigenen <code>InvocationHandler</code>.</p>
+<ol>
+  <li>Der JDK-Proxy ist eine neue Klasse <code>$Proxy0</code>. Sie erbt von <code>java.lang.reflect.Proxy</code> und implementiert nur das Interface.</li>
+  <li>Darum ist der Proxy <b>kein</b> <code>OrderServiceImpl</code>. Wer die Klasse statt des Interfaces injiziert, bekommt in Spring einen Fehler (<code>BeanNotOfRequiredTypeException</code>).</li>
+  <li>Bei Aufruf 2 läuft der Advice um <code>audit()</code>.</li>
+  <li>Bei Aufruf 3 läuft der Advice nur um <code>placeOrder()</code>. Das innere <code>this.audit()</code> geht am Proxy vorbei. Das ist das <b>Self-Invocation-Problem</b>. Mit <code>@Transactional</code> auf <code>audit()</code> gäbe es hier keine eigene Transaktion.</li>
+</ol>
+
+<h2>4. Details, die Interviewer fragen</h2>
+<ol>
+  <li><b>Begriffe:</b> <b>Aspect</b>: Modul für ein Querschnittsthema. <b>Join Point</b>: Stelle im Ablauf, in Spring AOP immer ein Methodenaufruf. <b>Pointcut</b>: Ausdruck, der Join Points auswählt. <b>Advice</b>: Code, der dort läuft. <b>Weaving</b>: Verbinden von Aspekt und Code.</li>
+  <li><b>Advice-Typen:</b> <code>@Before</code>, <code>@AfterReturning</code> (nur bei Erfolg), <code>@AfterThrowing</code> (nur bei Exception), <code>@After</code> (immer, wie <code>finally</code>), <code>@Around</code> (umschliesst den Aufruf, muss <code>proceed()</code> aufrufen).</li>
+  <li><b>Pointcut-Ausdrücke:</b> <code>execution(* ch.demo..*Service.*(..))</code> für Methoden-Signaturen. <code>@annotation(Audited)</code> für Annotationen. <code>within(ch.demo.web..*)</code> für Pakete. <code>bean(*Service)</code> ist nur in Spring AOP verfügbar.</li>
+  <li><b>JDK Dynamic Proxy:</b> eingebaut ins JDK. Nur Interface-Methoden. Der Proxy ist keine Instanz der Klasse. Core Spring nutzt ihn, wenn die Bean mindestens ein Interface hat.</li>
+  <li><b>CGLIB-Proxy:</b> eine zur Laufzeit erzeugte <b>Unterklasse</b>. CGLIB ist in <code>spring-core</code> eingebettet. Klassenname enthält <code>$$SpringCGLIB$$</code>.</li>
+  <li><b>Grenzen von CGLIB:</b> <code>final</code>-Klassen gehen nicht. <code>final</code>- und <code>private</code>-Methoden bekommen keinen Advice. Der Konstruktor läuft dank <b>Objenesis</b> nicht doppelt.</li>
+  <li><b>Spring Boot Standard:</b> <code>spring.aop.proxy-target-class=true</code>. Boot nutzt also CGLIB, auch wenn die Bean Interfaces hat. Core Spring ohne Boot bevorzugt JDK-Proxies.</li>
+  <li><b>@Proxyable (seit 7.0):</b> setzt den Proxy-Typ pro Bean, z. B. <code>@Proxyable(INTERFACES)</code>. Seit 7.0 folgen auch <code>@EnableAsync</code> und ähnliche der globalen Einstellung.</li>
+  <li><b>Self-Invocation:</b> Ein Aufruf über <code>this</code> geht nicht durch den Proxy. Lösungen in dieser Reihenfolge: Code in eine andere Bean verschieben, Self-Injection (über <code>@Lazy</code> oder <code>ObjectProvider</code>), <code>AopContext.currentProxy()</code> mit <code>exposeProxy = true</code> (stark abgeraten), AspectJ-Weaving.</li>
+  <li><b>Reihenfolge zwischen Aspekten:</b> Niedriger <code>@Order</code>-Wert = höhere Priorität. Höchste Priorität läuft auf dem Hinweg zuerst, auf dem Rückweg zuletzt. Ohne <code>@Order</code> ist die Reihenfolge undefiniert.</li>
+  <li><b>Reihenfolge in einem Aspekt:</b> <code>@Around</code>, <code>@Before</code>, <code>@After</code>, <code>@AfterReturning</code>, <code>@AfterThrowing</code>. <code>@After</code> läuft aber effektiv nach <code>@AfterReturning</code>/<code>@AfterThrowing</code> (finally-Semantik). Zwei gleiche Advice-Typen im selben Aspekt: undefiniert.</li>
+  <li><b>Spring AOP vs AspectJ:</b> Spring AOP: Proxies zur Laufzeit, nur Methoden von Beans. AspectJ: Weaving im Bytecode (Compile-Time oder Load-Time), auch Felder, Konstruktoren, private Methoden und Self-Invocation.</li>
+  <li><b>Wo Spring selbst AOP nutzt:</b> <code>@Transactional</code>, <code>@Async</code>, <code>@Cacheable</code>, <code>@PreAuthorize</code>, <code>@Retryable</code>, <code>@Validated</code>, Scoped Proxies.</li>
+  <li><b>Kotlin:</b> Klassen sind standardmässig <code>final</code>. Das Compiler-Plugin <code>kotlin-spring</code> (all-open) öffnet Spring-Komponenten für CGLIB.</li>
+</ol>
+
+<h2>5. Vergleich</h2>
+<ul>
+  <li><b>JDK Dynamic Proxy:</b> nur Interfaces, keine Bibliothek nötig, Cast auf die Klasse scheitert.</li>
+  <li><b>CGLIB:</b> Unterklasse, auch ohne Interface, Standard in Spring Boot. Nicht für <code>final</code> und <code>private</code>.</li>
+  <li><b>Spring AOP:</b> einfach, Laufzeit-Proxies, nur Methoden von Spring-Beans, Self-Invocation-Problem.</li>
+  <li><b>AspectJ (CTW/LTW):</b> mächtig, kein Self-Invocation-Problem, aber eigener Compiler oder Java-Agent.</li>
+  <li><b>@Around vs @Before/@After:</b> <code>@Around</code> kann Argumente, Rückgabe und Exception ändern oder den Aufruf auslassen. Die anderen sind einfacher und sicherer.</li>
+  <li><b>Aspekt vs Filter/Interceptor:</b> Filter und HandlerInterceptor wirken nur auf HTTP-Requests. Ein Aspekt wirkt auf jede Bean-Methode.</li>
+</ul>
+
+<h2>6. In der Produktion</h2>
+<ol>
+  <li><b>@Transactional, @Async oder @Cacheable wirkt nicht:</b> meist Self-Invocation, <code>private</code>/<code>final</code>-Methode oder ein Objekt ohne Spring (<code>new</code>). Lösung: Aufruf über eine andere Bean.</li>
+  <li><b>BeanNotOfRequiredTypeException:</b> JDK-Proxy, aber ein Injection Point mit der Klasse statt dem Interface. Lösung: gegen das Interface programmieren oder CGLIB nutzen.</li>
+  <li><b>Falsche Reihenfolge von Retry und Transaktion:</b> Retry läuft innerhalb der Transaktion, und jede Wiederholung nutzt dieselbe kaputte Transaktion. Lösung: Retry mit höherer Priorität (kleinerer <code>@Order</code>), also aussen.</li>
+  <li><b>Exception verschluckt:</b> Ein <code>@Around</code>-Advice fängt Exceptions und gibt <code>null</code> zurück. Die Transaktion committed, der Aufrufer sieht keinen Fehler. Lösung: Exceptions weiterwerfen.</li>
+  <li><b>Langsamer Start:</b> Ein zu breiter Pointcut (z. B. <code>execution(* *(..))</code>) proxied viele Beans. Lösung: Pointcut auf Paket oder Annotation eingrenzen.</li>
+</ol>
+
+<h2>7. Diagnose: Werkzeuge und Befehle</h2>
+<ul>
+  <li><code>bean.getClass().getName()</code>: <code>$$SpringCGLIB$$</code> = CGLIB, <code>$Proxy</code> = JDK-Proxy.</li>
+  <li><code>AopUtils.isAopProxy(bean)</code>, <code>isCglibProxy</code>, <code>isJdkDynamicProxy</code>, <code>AopProxyUtils.ultimateTargetClass(bean)</code>.</li>
+  <li><b>Stacktrace lesen:</b> <code>CglibAopProxy$DynamicAdvisedInterceptor</code>, <code>ReflectiveMethodInvocation.proceed</code>, <code>TransactionInterceptor</code> zeigen die Kette. Fehlen sie, lief der Aufruf am Proxy vorbei.</li>
+  <li><code>logging.level.org.springframework.aop=DEBUG</code>: zeigt, welche Beans Proxies bekommen.</li>
+  <li><b>Log-Meldung</b> „not eligible for auto-proxying“: Die Bean entstand zu früh und hat keinen Proxy.</li>
+</ul>
+
+<h2>8. Senior-Punkte</h2>
+<div class="senior">
+<ol>
+  <li><b>Proxies erklären fast alle „Annotation wirkt nicht“-Bugs.</b> Die erste Frage ist immer: Geht der Aufruf durch den Proxy?</li>
+  <li><b>Eigene Aspekte sparsam einsetzen.</b> Sie sind unsichtbar im Code. Logging, Metriken und Tracing gibt es fertig (Micrometer, OpenTelemetry).</li>
+  <li><b>Reihenfolge ist eine Design-Entscheidung:</b> Security aussen, dann Retry, dann Transaktion, dann Business-Logik.</li>
+  <li><b>Self-Invocation durch Design lösen:</b> eine zweite Bean ist klarer als <code>AopContext</code> oder Self-Injection.</li>
+  <li><b>AspectJ-Weaving nur mit gutem Grund.</b> Es löst Proxy-Grenzen, macht aber Build und Betrieb komplexer.</li>
+</ol>
+</div>
+
+<h2>9. Aus dem Projekt</h2>
+<p>„Bei DAZiT und CARIAD habe ich mit Spring Boot gearbeitet; Features wie <code>@Transactional</code> laufen dort über AOP-Proxies, eigene Aspekte sind in meinem Profil nicht belegt.“ <span class="small">(Prüfen und durch dein echtes Beispiel ersetzen.)</span></p>
+
+<h2>10. Fallen</h2>
+<div class="trap">
+<ul>
+  <li>„Spring nutzt immer JDK-Proxies, wenn es ein Interface gibt.“ → <b>Falsch</b> in Spring Boot. Dort ist CGLIB Standard (<code>spring.aop.proxy-target-class=true</code>).</li>
+  <li>„Mit CGLIB funktioniert auch Self-Invocation.“ → <b>Falsch.</b> Auch bei CGLIB ruft <code>this</code> das Target auf, nicht den Proxy.</li>
+  <li>„Aspekte wirken auf private Methoden.“ → <b>Falsch.</b> Nicht mit Spring AOP, nur mit AspectJ-Weaving.</li>
+  <li>„Ein höherer @Order-Wert heisst höhere Priorität.“ → <b>Falsch.</b> Der niedrigere Wert hat höhere Priorität.</li>
+  <li>„Spring AOP wirkt auf jedes Objekt.“ → <b>Falsch.</b> Nur auf Spring-Beans, nicht auf Objekte mit <code>new</code>.</li>
+</ul>
+</div>
+
+<h2>11. Fragen</h2>
+<details><summary>Was ist AOP?</summary><p>Eine Technik, um Querschnittsthemen wie Transaktionen, Security oder Logging an einer Stelle zu schreiben. Spring setzt sie mit Proxies um.</p></details>
+<details><summary>Erklären Sie Aspect, Join Point, Pointcut und Advice.</summary><p>Aspect ist das Modul. Join Point ist eine Stelle im Ablauf, in Spring ein Methodenaufruf. Pointcut wählt Join Points aus. Advice ist der Code, der dort läuft.</p></details>
+<details><summary>Welche Advice-Typen gibt es?</summary><p>@Before, @AfterReturning, @AfterThrowing, @After (wie finally) und @Around (umschliesst den Aufruf).</p></details>
+<details><summary>Was muss ein @Around-Advice tun?</summary><p>Er muss joinPoint.proceed() aufrufen und das Ergebnis zurückgeben. Sonst läuft die Methode nicht.</p></details>
+<details><summary>Wie funktioniert ein JDK Dynamic Proxy?</summary><p>Das JDK erzeugt zur Laufzeit eine Klasse, die die Interfaces implementiert. Jeder Aufruf geht an einen InvocationHandler, der Advice ausführt und die echte Methode ruft.</p></details>
+<details><summary>Wie funktioniert ein CGLIB-Proxy?</summary><p>CGLIB erzeugt zur Laufzeit eine Unterklasse und überschreibt die Methoden. Darum gehen final-Klassen und final- oder private-Methoden nicht.</p></details>
+<details><summary>Wann nutzt Spring JDK-Proxy, wann CGLIB?</summary><p>Core Spring: JDK-Proxy, wenn die Bean ein Interface hat, sonst CGLIB. Spring Boot: standardmässig immer CGLIB.</p></details>
+<details><summary>Warum nutzt Spring Boot standardmässig CGLIB?</summary><p>So funktioniert auch die Injection über die Klasse statt das Interface. Das vermeidet BeanNotOfRequiredTypeException.</p></details>
+<details><summary>Läuft der Konstruktor bei CGLIB zweimal?</summary><p>Nein. Spring erzeugt die Proxy-Instanz mit Objenesis, ohne den Konstruktor aufzurufen.</p></details>
+<details><summary>Was ist das Self-Invocation-Problem?</summary><p>Ein Aufruf über this geht direkt ans Target, nicht durch den Proxy. Der Advice der aufgerufenen Methode läuft nicht.</p></details>
+<details><summary>Wie lösen Sie Self-Invocation?</summary><p>Am besten die Methode in eine andere Bean verschieben. Sonst Self-Injection, AopContext.currentProxy() mit exposeProxy oder AspectJ-Weaving.</p></details>
+<details><summary>Wer erzeugt die Proxies?</summary><p>Ein Auto-Proxy-Creator, ein BeanPostProcessor. Er ersetzt die Bean nach der Initialisierung durch einen Proxy, wenn ein Pointcut passt.</p></details>
+<details><summary>Wie steuern Sie die Reihenfolge von Aspekten?</summary><p>Mit @Order oder Ordered. Niedriger Wert = höhere Priorität: auf dem Hinweg zuerst, auf dem Rückweg zuletzt.</p></details>
+<details><summary>In welcher Reihenfolge laufen Advices im selben Aspekt?</summary><p>@Around, @Before, @After, @AfterReturning, @AfterThrowing. @After läuft wegen finally-Semantik effektiv nach @AfterReturning und @AfterThrowing.</p></details>
+<details><summary>Spring AOP vs AspectJ?</summary><p>Spring AOP nutzt Laufzeit-Proxies und nur Methoden von Beans. AspectJ webt in den Bytecode und kann mehr, z. B. private Methoden und Self-Invocation.</p></details>
+<details><summary>Welche Spring-Features nutzen AOP?</summary><p>@Transactional, @Async, @Cacheable, @PreAuthorize, @Validated, @Retryable und Scoped Proxies.</p></details>
+<details><summary>Was ist @Proxyable?</summary><p>Neu in Spring 7.0. Es legt den Proxy-Typ pro Bean fest, z. B. nur Interfaces oder Unterklasse, gegen den globalen Standard.</p></details>
+<details><summary>Wie erkennen Sie, ob eine Bean ein Proxy ist?</summary><p>AopUtils.isAopProxy(bean) oder der Klassenname: $$SpringCGLIB$$ für CGLIB, $Proxy für JDK.</p></details>
+<details><summary>Warum braucht Kotlin das kotlin-spring-Plugin?</summary><p>Kotlin-Klassen sind standardmässig final. CGLIB kann sie nicht ableiten. Das Plugin macht Spring-Komponenten open.</p></details>
+<details><summary>Szenario: @Cacheable auf einer Methode wirkt nicht, die Methode läuft jedes Mal. Was prüfen Sie?</summary><p>Ob der Aufruf aus derselben Klasse kommt (Self-Invocation), ob die Methode private oder final ist, und ob Caching aktiviert ist. Lösung: Aufruf über eine andere Bean.</p></details>
+<details><summary>Szenario: Nach dem Setzen von spring.aop.proxy-target-class=false startet die App mit BeanNotOfRequiredTypeException. Warum?</summary><p>Jetzt nutzt Spring JDK-Proxies für Beans mit Interface. Ein Injection Point verlangt die Klasse. Lösung: gegen das Interface injizieren oder proxyTargetClass=true.</p></details>
+<details><summary>Szenario: Ein Retry-Aspekt wiederholt einen DB-Fehler, aber jede Wiederholung scheitert sofort. Warum?</summary><p>Retry läuft innerhalb derselben Transaktion. Sie ist nach dem Fehler schon rollback-only oder in der DB abgebrochen. Lösung: Retry mit kleinerem @Order nach aussen, damit jede Wiederholung eine neue Transaktion startet.</p></details>
+
+</body>
+</html>

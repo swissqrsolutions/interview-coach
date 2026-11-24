@@ -1,0 +1,221 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Schema Evolution</title>
+<style>
+  body { font: 17px/1.55 -apple-system, system-ui, sans-serif; max-width: 760px; margin: 0 auto; padding: 16px; color: #1d1d1f; }
+  h1 { font-size: 28px; margin: 8px 0 4px; }
+  h2 { font-size: 21px; margin: 32px 0 8px; padding-top: 12px; border-top: 2px solid #e5e5ea; }
+  .kern { background: #eef6ff; border-left: 4px solid #0a66c2; padding: 10px 14px; border-radius: 6px; }
+  .senior { background: #f0faf0; border-left: 4px solid #2e7d32; padding: 10px 14px; border-radius: 6px; }
+  .trap { background: #fff4f2; border-left: 4px solid #c62828; padding: 10px 14px; border-radius: 6px; }
+  code { background: #f2f2f7; padding: 1px 5px; border-radius: 4px; font-size: 15px; }
+  pre { background: #1e1e1e; color: #e6e6e6; padding: 12px; border-radius: 8px; overflow-x: auto; font-size: 13.5px; line-height: 1.45; }
+  svg { width: 100%; height: auto; display: block; margin: 10px 0; }
+  ol li, ul li { margin: 4px 0; }
+  details { border: 1px solid #e5e5ea; border-radius: 8px; padding: 8px 12px; margin: 6px 0; }
+  summary { font-weight: 600; cursor: pointer; }
+  details p { margin: 6px 0 2px; }
+  .small { color: #6e6e73; font-size: 14px; }
+</style>
+</head>
+<body>
+
+<h1>Schema Evolution</h1>
+<p class="small">Iceberg · Tier 1 · Quellen: Apache Iceberg Table Spec (Schemas and Data Types, Default values, Schema Evolution, Column Projection, Identifier Field IDs, Commit Conflict Resolution), Iceberg 1.x Docs (Evolution, Spark DDL: ALTER TABLE, Spark Writes: Schema Merge, Configuration)</p>
+
+<div class="kern">
+<b>Schema Evolution</b> ist das Ändern des Tabellenschemas ohne Umschreiben der Daten: Spalten hinzufügen, löschen, umbenennen, umsortieren oder Typen erweitern. Iceberg erkennt jede Spalte an einer festen <b>Field ID</b>, nicht an Name oder Position. Darum ist jede Änderung eine reine <b>Metadaten-Änderung</b> und liefert nie falsche Werte aus alten Dateien.
+</div>
+
+<h2>1. Wo sitzt das Schema?</h2>
+<svg viewBox="0 0 720 300" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="a" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="10" y="10" width="700" height="96" rx="10" fill="#f7f7fa" stroke="#999" stroke-dasharray="5 4"/><text x="360" y="30" text-anchor="middle" font-weight="700">metadata.json</text>
+  <rect x="30" y="42" width="200" height="52" rx="8" fill="#eee" stroke="#777"/><text x="130" y="63" text-anchor="middle" font-weight="700">schema-id 0</text><text x="130" y="82" text-anchor="middle" font-size="12">1 id · 2 name · 3 amount int</text>
+  <rect x="260" y="42" width="220" height="52" rx="8" fill="#0a66c2"/><text x="370" y="63" text-anchor="middle" fill="#fff" font-weight="700">schema-id 1 (current)</text><text x="370" y="82" text-anchor="middle" fill="#fff" font-size="12">1 id · 2 party · 3 amount long · 4 ccy</text>
+  <rect x="510" y="42" width="180" height="52" rx="8" fill="#fff" stroke="#555"/><text x="600" y="63" text-anchor="middle" font-weight="700">last-column-id 4</text><text x="600" y="82" text-anchor="middle" font-size="12">nächste ID: 5</text>
+  <line x1="130" y1="106" x2="130" y2="148" stroke="#555" stroke-width="2" marker-end="url(#a)"/><line x1="370" y1="106" x2="370" y2="148" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="30" y="150" width="200" height="60" rx="8" fill="#fff" stroke="#555"/><text x="130" y="172" text-anchor="middle" font-weight="700">alte Parquet-Datei</text><text x="130" y="192" text-anchor="middle" font-size="12">field_id 1, 2, 3 (int)</text>
+  <rect x="260" y="150" width="220" height="60" rx="8" fill="#fff" stroke="#555"/><text x="370" y="172" text-anchor="middle" font-weight="700">neue Parquet-Datei</text><text x="370" y="192" text-anchor="middle" font-size="12">field_id 1, 2, 3 (long), 4</text>
+  <line x1="130" y1="210" x2="250" y2="248" stroke="#555" stroke-width="2" marker-end="url(#a)"/><line x1="370" y1="210" x2="370" y2="248" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="160" y="250" width="400" height="44" rx="8" fill="#e8f5e9" stroke="#2e7d32"/><text x="360" y="270" text-anchor="middle" font-weight="700">Reader: Projektion nach Field ID</text><text x="360" y="287" text-anchor="middle" font-size="12">fehlende ID → initial-default oder null</text>
+</svg>
+<ol>
+  <li><b>schemas:</b> <code>metadata.json</code> hält alle Schema-Versionen mit <code>schema-id</code>. <code>current-schema-id</code> zeigt auf die aktuelle.</li>
+  <li><b>Field ID:</b> Jede Spalte, auch jedes Feld in Structs, Listen und Maps, hat eine eindeutige ID. Beispiel: <code>2</code> bleibt <code>2</code>, auch nach Umbenennung von <code>name</code> zu <code>party</code>.</li>
+  <li><b>last-column-id:</b> Die höchste je vergebene ID. Neue Spalten bekommen immer eine neue ID. IDs werden nie wiederverwendet.</li>
+  <li><b>Datendatei:</b> Parquet speichert die Field ID je Spalte (<code>field_id</code>). Eine Datei wird nie wegen eines Schema-Wechsels umgeschrieben.</li>
+  <li><b>Reader:</b> Liest mit dem aktuellen Schema und sucht Spalten in der Datei nach ID. Fehlt eine ID, liefert er den Default oder <code>null</code>.</li>
+</ol>
+
+<h2>2. Die Reise einer Spalte (die Geschichte zum Merken)</h2>
+<svg viewBox="0 0 720 300" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="b" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker><marker id="r" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#c62828"/></marker></defs>
+  <rect x="10" y="20" width="160" height="66" rx="10" fill="#eee" stroke="#777"/><text x="90" y="44" text-anchor="middle" font-weight="700">1. Anlegen</text><text x="90" y="64" text-anchor="middle" font-size="12">note → ID 5</text>
+  <line x1="170" y1="53" x2="198" y2="53" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="200" y="20" width="160" height="66" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="280" y="44" text-anchor="middle" font-weight="700">2. Umbenennen</text><text x="280" y="64" text-anchor="middle" font-size="12">comment, ID 5</text>
+  <line x1="360" y1="53" x2="388" y2="53" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="390" y="20" width="160" height="66" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="470" y="44" text-anchor="middle" font-weight="700">3. Löschen</text><text x="470" y="64" text-anchor="middle" font-size="12">ID 5 nicht im Schema</text>
+  <line x1="550" y1="53" x2="578" y2="53" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="580" y="20" width="130" height="66" rx="10" fill="#0a66c2"/><text x="645" y="44" text-anchor="middle" fill="#fff" font-weight="700">4. Neu: note</text><text x="645" y="64" text-anchor="middle" fill="#fff" font-size="12">neue ID 6</text>
+  <line x1="645" y1="86" x2="645" y2="138" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="420" y="140" width="290" height="70" rx="10" fill="#e8f5e9" stroke="#2e7d32"/><text x="565" y="164" text-anchor="middle" font-weight="700">5. Iceberg liest alte Datei</text><text x="565" y="184" text-anchor="middle" font-size="12">sucht ID 6 → fehlt → null</text><text x="565" y="200" text-anchor="middle" font-size="12">alte Werte von ID 5 bleiben unsichtbar</text>
+  <rect x="10" y="140" width="380" height="70" rx="10" fill="#fff4f2" stroke="#c62828"/><text x="200" y="164" text-anchor="middle" font-weight="700">Hive (nach Name) liest alte Datei</text><text x="200" y="184" text-anchor="middle" font-size="12">findet Spalte "note" → alte Werte kommen zurück</text><text x="200" y="200" text-anchor="middle" font-size="12">(gelöschte Daten „auferstehen“)</text>
+  <line x1="420" y1="175" x2="392" y2="175" stroke="#c62828" stroke-width="2" stroke-dasharray="6 4" marker-end="url(#r)"/>
+  <rect x="10" y="236" width="700" height="50" rx="10" fill="#fff" stroke="#999" stroke-dasharray="5 4"/><text x="360" y="258" text-anchor="middle" font-size="13">Hive nach Position: Spalte 3 löschen → alle Spalten dahinter rutschen eine Stelle nach links</text><text x="360" y="276" text-anchor="middle" font-size="12" fill="#c62828">→ falsche Werte in falschen Spalten</text>
+</svg>
+<ol>
+  <li><b>Anlegen:</b> Ein Team fügt die Spalte <code>note</code> hinzu. Iceberg vergibt ID 5. Neue Dateien schreiben Werte unter ID 5.</li>
+  <li><b>Umbenennen:</b> <code>note</code> heisst jetzt <code>comment</code>. Nur der Name im Schema ändert sich. Alte Dateien liefern weiter ihre Werte, weil die ID gleich bleibt.</li>
+  <li><b>Löschen:</b> <code>comment</code> wird gelöscht. ID 5 steht nicht mehr im aktuellen Schema. Die Werte liegen noch in alten Dateien, aber niemand liest sie.</li>
+  <li><b>Neu mit altem Namen:</b> Später fügt jemand wieder <code>note</code> hinzu. Iceberg vergibt ID 6, nicht 5.</li>
+  <li><b>Lesen:</b> Iceberg sucht in alten Dateien ID 6 und findet sie nicht. Ergebnis: <code>null</code>. Das ist richtig. Ein Format nach Name würde die alten Werte von <code>note</code> wieder anzeigen.</li>
+  <li><b>Position:</b> Ein Format nach Position verschiebt beim Löschen alle Spalten dahinter. Iceberg hat dieses Problem nicht, weil die Reihenfolge nur Anzeige ist.</li>
+</ol>
+
+<h2>3. Beispiel: alle Änderungen in Spark SQL</h2>
+<pre>-- Spark SQL, Iceberg 1.x mit SQL Extensions, Catalog "cat" (Beispieltabelle)
+CREATE TABLE cat.demo.trades (id BIGINT, name STRING, amount INT, price FLOAT)
+USING iceberg;
+INSERT INTO cat.demo.trades VALUES (1, 'A', 100, 1.5);
+
+ALTER TABLE cat.demo.trades ADD COLUMN currency STRING AFTER amount;   -- add + Position
+ALTER TABLE cat.demo.trades RENAME COLUMN name TO counterparty;        -- rename
+ALTER TABLE cat.demo.trades ALTER COLUMN amount TYPE BIGINT;           -- int → long
+ALTER TABLE cat.demo.trades ALTER COLUMN price TYPE DOUBLE;            -- float → double
+ALTER TABLE cat.demo.trades ALTER COLUMN price FIRST;                  -- reorder
+ALTER TABLE cat.demo.trades DROP COLUMN currency;                      -- drop
+ALTER TABLE cat.demo.trades ADD COLUMN currency STRING;                -- gleicher Name, neue ID
+
+SELECT * FROM cat.demo.trades;
+
+ALTER TABLE cat.demo.trades ALTER COLUMN counterparty TYPE INT;        -- nicht erlaubt</pre>
+<pre>price  id  counterparty  amount  currency
+1.5    1   A             100     NULL
+
+-- letzte Zeile:
+AnalysisException / IllegalArgumentException: Cannot change column type: counterparty: string -&gt; int
+
+-- metadata.json danach (gekürzt):
+"current-schema-id" : 7,
+"last-column-id" : 6,
+"schemas" : [ … , { "schema-id" : 7, "fields" : [
+   { "id" : 4, "name" : "price",        "type" : "double" },
+   { "id" : 1, "name" : "id",           "type" : "long"   },
+   { "id" : 2, "name" : "counterparty", "type" : "string" },
+   { "id" : 3, "name" : "amount",       "type" : "long"   },
+   { "id" : 6, "name" : "currency",     "type" : "string" } ] } ]</pre>
+<p class="small">Erwartetes Ergebnis (laut Doku, nicht ausgeführt). Genauer Fehlertext hängt von Spark- und Iceberg-Version ab; Schema-IDs sind Beispielwerte.</p>
+<ol>
+  <li>Kein Befehl schreibt eine Datendatei. Jeder erzeugt nur eine neue <code>metadata.json</code> mit neuer <code>schema-id</code>.</li>
+  <li>Die alte Zeile wird mit dem neuen Schema gelesen: <code>amount</code> als <code>long</code>, <code>price</code> als <code>double</code>, <code>counterparty</code> mit dem alten Wert.</li>
+  <li>Die gelöschte Spalte hatte ID 5. Die neue <code>currency</code> hat ID 6. Darum ist sie für alte Zeilen <code>NULL</code>.</li>
+  <li><code>string → int</code> ist keine erlaubte Promotion. Iceberg lehnt die Änderung ab, statt Daten kaputt zu machen.</li>
+  <li><code>AFTER</code> und <code>FIRST</code> brauchen die Iceberg SQL Extensions.</li>
+</ol>
+
+<h2>4. Details, die Interviewer fragen</h2>
+<ol>
+  <li><b>Fünf Operationen:</b> <b>Add</b> (neue Spalte, auch in Structs), <b>Drop</b>, <b>Rename</b>, <b>Update</b> (Typ erweitern), <b>Reorder</b>. Alle sind Metadaten-Änderungen.</li>
+  <li><b>Erlaubte Type Promotions (v1/v2):</b> <code>int → long</code>, <code>float → double</code>, <code>decimal(P,S) → decimal(P',S)</code> mit <code>P' &gt; P</code>. Nur die Präzision wächst, die Scale nie.</li>
+  <li><b>Zusätzlich in v3:</b> <code>date → timestamp</code> oder <code>timestamp_ns</code> (nicht zu <code>timestamptz</code>), und der Typ <code>unknown</code> zu jedem Typ.</li>
+  <li><b>Nicht erlaubt:</b> Verkleinern (<code>long → int</code>), Typwechsel (<code>string → int</code>), Felder in ein neues Struct verschieben, Primitive zu Struct machen.</li>
+  <li><b>Garantien der Doku:</b> Neue Spalten lesen nie Werte anderer Spalten. Drop ändert keine anderen Spalten. Update ändert keine anderen Spalten. Reorder ändert keine Werte.</li>
+  <li><b>Pflichtspalten:</b> Spark fügt neue Spalten als <code>optional</code> hinzu. Eine <code>required</code>-Spalte braucht in v3 <code>initial-default</code> und <code>write-default</code> ungleich <code>null</code>. <code>DROP NOT NULL</code> ist erlaubt, der Weg zurück nicht.</li>
+  <li><b>Default-Werte (v3):</b> <code>initial-default</code> gilt für alle Zeilen, die vor dem Hinzufügen geschrieben wurden. <code>write-default</code> gilt für neue Zeilen ohne Wert. Kein Umschreiben nötig.</li>
+  <li><b>Column Projection:</b> Fehlt eine ID in einer Datei, gilt diese Reihenfolge: Identity-Partitionswert aus dem Manifest, dann Name Mapping, dann <code>initial-default</code>, sonst <code>null</code>.</li>
+  <li><b>Name Mapping:</b> Migrierte Hive-Dateien haben keine Field IDs. <code>schema.name-mapping.default</code> ordnet Namen zu IDs zu. So funktioniert eine Migration ohne Umschreiben.</li>
+  <li><b>Verschachtelte Typen:</b> Felder in Structs, Elemente in Listen und Werte in Maps haben eigene IDs. Map-Keys dürfen keine Struct-Felder hinzufügen oder entfernen, die Gleichheit ändern.</li>
+  <li><b>Statistiken:</b> Min/Max stehen in Manifests nach Field ID. Bei Promotion werden alte Grenzen nicht umgeschrieben. Der Reader erkennt den alten Typ an der Byte-Länge (4 Bytes = <code>int</code>, 8 = <code>long</code>).</li>
+  <li><b>Partitionsspalten:</b> Eine Promotion ist verboten, wenn der Partition Transform danach andere Werte liefert.</li>
+  <li><b>Kein Snapshot:</b> Eine Schema-Änderung erzeugt eine neue <code>metadata.json</code>, aber keinen Snapshot.</li>
+  <li><b>Konflikte:</b> Ein Schema-Commit prüft, dass sich das Schema seit dem Laden nicht geändert hat. Sonst scheitert er.</li>
+  <li><b>Schema beim Schreiben anpassen:</b> Mit <code>write.spark.accept-any-schema = true</code> und der Option <code>mergeSchema = true</code> fügt Spark neue Spalten automatisch hinzu.</li>
+  <li><b>Identifier Fields:</b> <code>ALTER TABLE … SET IDENTIFIER FIELDS id</code> markiert Schlüsselspalten, z. B. für Upserts in Flink. Iceberg erzwingt sie nicht als Primary Key.</li>
+</ol>
+
+<h2>5. Vergleich</h2>
+<ul>
+  <li><b>Iceberg:</b> nach Field ID. Rename, Drop, Reorder und Widen sind sicher und billig.</li>
+  <li><b>Hive mit Parquet (nach Name):</b> Rename verliert alte Werte. Drop und Re-Add mit gleichem Namen holt alte Werte zurück.</li>
+  <li><b>Hive mit CSV oder ORC nach Position:</b> Drop in der Mitte verschiebt Werte. Nur Hinzufügen am Ende ist sicher.</li>
+  <li><b>Delta Lake:</b> Ohne <b>Column Mapping</b> nach Name. Rename und Drop brauchen <code>delta.columnMapping.mode = name</code>. Typ-Erweiterung über das Feature Type Widening.</li>
+  <li><b>Avro:</b> Schema Resolution nach Name mit Aliases und Defaults. Gut für Nachrichten, aber pro Datei, ohne Tabellen-Katalog.</li>
+  <li><b>SQL Server:</b> <code>ALTER TABLE</code> ändert die Tabelle direkt. Manche Änderungen schreiben alle Zeilen um und sperren lange.</li>
+</ul>
+
+<h2>6. In der Produktion</h2>
+<ol>
+  <li><b>Downstream bricht nach Rename:</b> Iceberg ist korrekt, aber Views, BI-Reports und Jobs nutzen den alten Namen. Lösung: Rename wie eine API-Änderung behandeln, zuerst Consumer anpassen.</li>
+  <li><b>Typ passt nicht mehr:</b> Ein Feld kam als <code>string</code> und soll <code>decimal</code> werden. Das ist keine Promotion. Lösung: neue Spalte hinzufügen, per Job füllen, Consumer umstellen, alte Spalte löschen.</li>
+  <li><b>Ungewollte Spalten:</b> <code>mergeSchema</code> nimmt jeden Tippfehler aus der Quelle als neue Spalte. Lösung: Schema im Job explizit prüfen, Merge nur bewusst erlauben.</li>
+  <li><b>Gecachtes Schema:</b> Eine Engine liest noch mit alten Metadaten und kennt die neue Spalte nicht. Lösung: Metadaten-Refresh der Engine oder Tabelle neu laden.</li>
+  <li><b>Gelöschte Daten liegen noch da:</b> Drop entfernt Werte nicht aus Dateien. Für Datenschutz reicht das nicht. Lösung: Dateien umschreiben (Compaction), dann Snapshots ablaufen lassen.</li>
+  <li><b>Migrierte Tabelle liest null:</b> Nach Hive-Migration fehlen Field IDs in alten Dateien. Lösung: <code>schema.name-mapping.default</code> setzen (die Migrations-Prozeduren tun das).</li>
+</ol>
+
+<h2>7. Diagnose: Werkzeuge und Befehle</h2>
+<ul>
+  <li><code>DESCRIBE TABLE t</code> / <code>SHOW CREATE TABLE t</code>: aktuelles Schema.</li>
+  <li><code>metadata.json</code>: <code>schemas</code>, <code>current-schema-id</code>, <code>last-column-id</code>, Field IDs pro Spalte.</li>
+  <li><code>SELECT * FROM t.metadata_log_entries</code>: <code>latest_schema_id</code> pro Metadaten-Version, also wann sich das Schema änderte.</li>
+  <li><code>SELECT * FROM t.snapshots</code>: Spalte <code>schema_id</code> zeigt, mit welchem Schema ein Snapshot geschrieben wurde.</li>
+  <li><code>parquet-tools schema</code> / <code>parquet meta</code>: <code>field_id</code> in einer Datendatei prüfen.</li>
+  <li><code>SHOW TBLPROPERTIES t</code>: <code>schema.name-mapping.default</code>, <code>write.spark.accept-any-schema</code>.</li>
+</ul>
+
+<h2>8. Senior-Punkte</h2>
+<div class="senior">
+<ol>
+  <li><b>IDs statt Namen sind der Kern.</b> Wer das erklärt, erklärt auch, warum Hive falsche Werte liefern kann.</li>
+  <li><b>Billig für die Tabelle heisst nicht billig für Consumer.</b> Schema-Änderungen brauchen Kommunikation, Versionierung und Tests mit Downstream.</li>
+  <li><b>Nur erweitern, nie verengen.</b> Wer einen Typ wirklich ändern muss, plant Add, Backfill, Switch, Drop.</li>
+  <li><b>Automatische Schema-Merges sind riskant.</b> Für eine regulierte Plattform ist ein expliziter Vertrag (Schema im Code, Review) besser.</li>
+  <li><b>Drop ist kein Löschen.</b> Die Werte bleiben in alten Dateien und Snapshots. Das ist wichtig für Datenschutz.</li>
+  <li><b>Format-Version zählt.</b> Defaults und neue Promotions gibt es erst in v3. Alle Engines müssen v3 können.</li>
+</ol>
+</div>
+
+<h2>9. Aus dem Projekt</h2>
+<p>„Bei MATCH war Schema Evolution einer meiner Gründe für Iceberg: Die XML-Reports können neue Felder bekommen, und wir können Spalten hinzufügen, ohne 250M+ Zeilen umzuschreiben.“ <span class="small">(Prüfen und durch dein echtes Beispiel ersetzen. Eine konkrete Schema-Änderung im Betrieb steht nicht in deinen Notizen; die Aussage über neue XML-Felder ist eine Begründung, kein belegtes Ereignis – nur so erzählen, wenn es stimmt.)</span></p>
+
+<h2>10. Fallen</h2>
+<div class="trap">
+<ul>
+  <li>„Eine Spalte umbenennen heisst Daten umschreiben.“ → <b>Falsch.</b> Nur der Name im Schema ändert sich. Die Field ID bleibt.</li>
+  <li>„Drop und Re-Add mit gleichem Namen bringt die alten Werte zurück.“ → <b>Falsch</b> bei Iceberg. Die neue Spalte hat eine neue ID und ist für alte Zeilen <code>null</code>.</li>
+  <li>„Iceberg kann jeden Typ ändern.“ → <b>Falsch.</b> Nur Erweiterungen: <code>int → long</code>, <code>float → double</code>, Decimal-Präzision, in v3 <code>date → timestamp</code>.</li>
+  <li>„DROP COLUMN löscht die Daten.“ → <b>Falsch.</b> Die Werte bleiben in den Dateien, nur unsichtbar.</li>
+  <li>„Schema Evolution erzeugt einen Snapshot.“ → <b>Falsch.</b> Nur eine neue metadata.json mit neuer schema-id.</li>
+  <li>„Ich kann jederzeit eine Pflichtspalte hinzufügen.“ → <b>Falsch.</b> Ohne Default-Werte (v3) geht nur eine optionale Spalte.</li>
+</ul>
+</div>
+
+<h2>11. Fragen</h2>
+<details><summary>Was ist Schema Evolution in Iceberg?</summary><p>Spalten hinzufügen, löschen, umbenennen, umsortieren oder erweitern, ohne Daten umzuschreiben. Jede Änderung ist eine neue Schema-Version in metadata.json.</p></details>
+<details><summary>Warum ist das in Iceberg sicher?</summary><p>Jede Spalte hat eine feste Field ID. Reader suchen Spalten in Dateien nach ID, nicht nach Name oder Position.</p></details>
+<details><summary>Welche Type Promotions sind erlaubt?</summary><p>int zu long, float zu double, decimal mit grösserer Präzision. In v3 zusätzlich date zu timestamp oder timestamp_ns und unknown zu jedem Typ.</p></details>
+<details><summary>Was passiert bei Drop und Re-Add mit gleichem Namen?</summary><p>Die neue Spalte bekommt eine neue ID. Alte Zeilen zeigen null, nicht die alten Werte.</p></details>
+<details><summary>Warum ist Lesen nach Name gefährlich?</summary><p>Ein gelöschter und wieder angelegter Name holt alte Werte zurück. Ein Rename verliert die alten Werte.</p></details>
+<details><summary>Warum ist Lesen nach Position gefährlich?</summary><p>Löscht man eine Spalte in der Mitte, rutschen alle folgenden Spalten. Werte landen in falschen Spalten.</p></details>
+<details><summary>Was ist last-column-id?</summary><p>Die höchste je vergebene Field ID. Neue Spalten bekommen immer eine höhere ID. IDs werden nie wiederverwendet.</p></details>
+<details><summary>Kann ich eine Pflichtspalte hinzufügen?</summary><p>In v3 mit initial-default und write-default ungleich null. Sonst nur optionale Spalten.</p></details>
+<details><summary>Was sind initial-default und write-default?</summary><p>initial-default gilt für Zeilen von vor dem Hinzufügen. write-default gilt für neue Zeilen ohne Wert. Beides ohne Umschreiben, ab v3.</p></details>
+<details><summary>Wie ändert man die Spaltenreihenfolge?</summary><p>ALTER TABLE … ALTER COLUMN col FIRST oder AFTER other. Nur Metadaten, mit Iceberg SQL Extensions.</p></details>
+<details><summary>Wie ändere ich string zu int?</summary><p>Gar nicht direkt. Neue Spalte anlegen, per Job füllen, Consumer umstellen, alte Spalte löschen.</p></details>
+<details><summary>Was ist ein Name Mapping?</summary><p>Die Property schema.name-mapping.default ordnet Spaltennamen Field IDs zu. Sie hilft bei Dateien ohne IDs, z. B. nach einer Hive-Migration.</p></details>
+<details><summary>Erzeugt eine Schema-Änderung einen Snapshot?</summary><p>Nein. Nur eine neue metadata.json mit neuer schema-id.</p></details>
+<details><summary>Welches Schema nutzt Time Travel?</summary><p>Mit Snapshot-ID oder Zeitstempel das Schema des Snapshots. Mit einem Branch das aktuelle Tabellenschema.</p></details>
+<details><summary>Wie funktionieren Min/Max-Statistiken nach int zu long?</summary><p>Alte Grenzen bleiben 4 Bytes. Der Reader erkennt an der Länge, dass sie als int geschrieben wurden.</p></details>
+<details><summary>Kann Spark das Schema beim Schreiben automatisch erweitern?</summary><p>Ja, mit write.spark.accept-any-schema = true und der Option mergeSchema = true. Das sollte man bewusst und kontrolliert einsetzen.</p></details>
+<details><summary>Iceberg vs Delta Lake bei Schema Evolution?</summary><p>Iceberg nutzt immer IDs. Delta braucht Column Mapping im Modus name für sicheres Rename und Drop.</p></details>
+<details><summary>Was sind Identifier Fields?</summary><p>Markierte Schlüsselspalten, z. B. für Upserts in Flink. Iceberg prüft sie nicht als Primary Key.</p></details>
+<details><summary>Szenario: Nach einem Rename zeigt ein BI-Dashboard leere Werte. Ist Iceberg schuld?</summary><p>Nein, Iceberg liest die Daten korrekt. Das Dashboard oder eine View nutzt den alten Namen oder ein gecachtes Schema. Lösung: Consumer anpassen, Metadaten-Refresh, Renames vorher ankündigen.</p></details>
+<details><summary>Szenario: Eine neue XML-Version liefert ein zusätzliches Feld. Wie gehen Sie vor?</summary><p>ALTER TABLE ADD COLUMN als optionale Spalte, Parser anpassen, Tests für alte und neue Version. Alte Zeilen haben null; ein Backfill ist nur nötig, wenn die Quelle den Wert hat.</p></details>
+<details><summary>Szenario: Eine Spalte mit Personendaten muss weg. Reicht DROP COLUMN?</summary><p>Nein. Die Werte liegen noch in Dateien und alten Snapshots. Nach dem Drop Dateien per Compaction umschreiben und Snapshots ablaufen lassen.</p></details>
+
+</body>
+</html>

@@ -2,7 +2,7 @@
 
 Generated from content/syllabus.json. Priority 1 = asked in almost every interview. Mark: **Projekt** = shown in CV/Gmail · **— kein Projekt** = no project experience · **? prüfen** = unclear, you decide.
 
-404 topics · P1 239 · P2 125 · P3 40 · written 142
+404 topics · P1 239 · P2 125 · P3 40 · written 158
 
 ## Java 21 (core + advanced) (40)
 Sources: Java SE 21/25 docs (docs.oracle.com) · JVM Specification · OpenJDK source + JEPs (openjdk.org) · Oracle Java SE 21 Developer exam 1Z0-830 topics
@@ -31,7 +31,7 @@ Sources: Java SE 21/25 docs (docs.oracle.com) · JVM Specification · OpenJDK so
 | 1 | Lambdas, Functional Interfaces, Method References | Projekt |  |
 | 1 | Records, Sealed Classes, Pattern Matching, Switch Expressions | Projekt |  |
 | 1 | Interface vs abstrakte Klasse, default und static Methods | Projekt |  |
-| 1 | OOP: Kapselung, Vererbung, Polymorphismus, Overloading vs Overriding | Projekt |  |
+| 1 | OOP-Grundlagen | Projekt | ✓ |
 | 1 | Java 8 bis 21 (und 25): wichtigste Neuerungen | Projekt |  |
 | 1 | Thread Dumps lesen und analysieren | ? prüfen |  |
 | 1 | Profiling: JFR, async-profiler, Heap-Analyse | ? prüfen |  |
@@ -58,14 +58,14 @@ Sources: Spring Framework reference · Spring Boot 3 reference · Spring Securit
 | 1 | IoC und Dependency Injection | Projekt | ✓ |
 | 1 | Bean-Lebenszyklus | Projekt | ✓ |
 | 1 | Bean Scopes | Projekt | ✓ |
-| 1 | AOP und Proxies: JDK Proxy vs CGLIB, Self-Invocation | ? prüfen |  |
-| 1 | @Transactional: wie es intern funktioniert, Fallen | Projekt |  |
+| 1 | AOP und Proxies | ? prüfen | ✓ |
+| 1 | @Transactional intern | Projekt | ✓ |
 | 1 | Propagation und Isolation | Projekt | ✓ |
-| 1 | Spring Boot Auto-Configuration und Starters | Projekt |  |
-| 1 | Konfiguration: Properties, @ConfigurationProperties, Profiles | Projekt |  |
+| 1 | Spring Boot Auto-Configuration | Projekt | ✓ |
+| 1 | Konfiguration und Profiles | Projekt | ✓ |
 | 1 | Spring MVC: DispatcherServlet, Request-Ablauf, Filter vs Interceptor | Projekt |  |
 | 1 | Fehlerbehandlung: @ControllerAdvice, ProblemDetail | Projekt |  |
-| 1 | Spring Data JPA: Repositories, Queries, Pagination, Projections | Projekt |  |
+| 1 | Spring Data JPA | Projekt | ✓ |
 | 1 | Spring Security: Filter Chain, Authentication, Authorization | Projekt |  |
 | 1 | Spring Security mit OAuth2 Resource Server und JWT | Projekt |  |
 | 1 | Spring Testing: @SpringBootTest, Slices, MockitoBean, Testcontainers | Projekt |  |
@@ -85,8 +85,8 @@ Sources: RFC 9110 HTTP Semantics · RFC 9457 Problem Details · OpenAPI 3.1 spec
 | P | Topic | Project | Written |
 |---|---|---|---|
 | 1 | HTTP-Methoden | Projekt | ✓ |
-| 1 | HTTP-Statuscodes richtig wählen | Projekt |  |
-| 1 | Ressourcen-Design, URLs, Richardson Maturity Model | Projekt |  |
+| 1 | HTTP-Statuscodes | Projekt | ✓ |
+| 1 | Ressourcen-Design | Projekt | ✓ |
 | 1 | Pagination, Filter, Sortierung | Projekt |  |
 | 1 | API-Versionierung | ? prüfen |  |
 | 1 | OpenAPI, Contract-First, Code-Generierung | Projekt |  |
@@ -312,11 +312,11 @@ Sources: Apache Iceberg spec and docs (iceberg.apache.org)
 | 1 | Metadaten: metadata.json, Manifest List, Manifests | ? prüfen | ✓ |
 | 1 | Snapshots und Time Travel | ? prüfen | ✓ |
 | 1 | Hidden Partitioning und Partition Evolution | Projekt | ✓ |
-| 1 | Schema Evolution | ? prüfen |  |
+| 1 | Schema Evolution | ? prüfen | ✓ |
 | 1 | Merge-on-Read vs Copy-on-Write, Delete Files | Projekt | ✓ |
 | 1 | Wartung: Compaction, expire_snapshots, Orphan Files | Projekt | ✓ |
 | 1 | Kataloge: Nessie, REST, Hive, Glue | Projekt | ✓ |
-| 1 | Iceberg vs Delta Lake vs Hudi | Projekt |  |
+| 1 | Iceberg vs Delta Lake vs Hudi | Projekt | ✓ |
 | 2 | Gleichzeitige Writes und optimistisches Commit | ? prüfen |  |
 | 2 | Branches und Tags | ? prüfen |  |
 
@@ -328,11 +328,11 @@ Sources: Designing Data-Intensive Applications (Kleppmann) · Fundamentals of Da
 | 1 | Data Lake vs Warehouse vs Lakehouse | Projekt | ✓ |
 | 1 | Medallion-Architektur | Projekt | ✓ |
 | 1 | ETL vs ELT | Projekt | ✓ |
-| 1 | Batch vs Streaming, Lambda und Kappa | Projekt |  |
+| 1 | Batch vs Streaming | Projekt | ✓ |
 | 1 | Idempotente und crash-sichere Pipelines | Projekt |  |
 | 1 | Late Data, Watermarks, Backfills | ? prüfen | ✓ |
-| 1 | Datenqualität und Data Contracts | ? prüfen |  |
-| 1 | Dateiformate: Parquet, Avro, ORC, CSV | Projekt |  |
+| 1 | Datenqualität und Data Contracts | ? prüfen | ✓ |
+| 1 | Dateiformate: Parquet, Avro, ORC, CSV | Projekt | ✓ |
 | 1 | Small-Files-Problem | Projekt |  |
 | 2 | Change Data Capture | — kein Projekt |  |
 | 2 | Governance, Lineage, Datenschutz | ? prüfen |  |
@@ -356,7 +356,7 @@ Sources: Kimball Group dimensional modeling techniques · Data Vault 2.0 (Linste
 | 1 | OLTP vs OLAP | ? prüfen | ✓ |
 | 1 | Star vs Snowflake Schema | — kein Projekt | ✓ |
 | 1 | Fakten und Dimensionen | — kein Projekt | ✓ |
-| 1 | Slowly Changing Dimensions (Typ 1, 2, 3) | — kein Projekt |  |
+| 1 | Slowly Changing Dimensions | — kein Projekt | ✓ |
 | 2 | Data Vault 2.0: Hub, Link, Satellite | — kein Projekt |  |
 | 2 | Kimball vs Inmon vs One Big Table | — kein Projekt |  |
 
@@ -552,10 +552,10 @@ Sources: Design Patterns (GoF) · Hexagonal Architecture (Alistair Cockburn) · 
 | 1 | SOLID | ? prüfen | ✓ |
 | 1 | Erzeugungsmuster | ? prüfen | ✓ |
 | 1 | Strukturmuster | ? prüfen | ✓ |
-| 1 | Verhaltensmuster: Strategy, Observer, Template Method, Command | ? prüfen |  |
+| 1 | Verhaltensmuster | ? prüfen | ✓ |
 | 1 | Layered Architecture | ? prüfen | ✓ |
 | 1 | Hexagonale Architektur | ? prüfen | ✓ |
-| 1 | Onion und Clean Architecture | ? prüfen |  |
+| 1 | Onion und Clean Architecture | ? prüfen | ✓ |
 | 1 | DDD taktisch: Entity, Value Object, Aggregate, Repository | ? prüfen |  |
 | 1 | Anti-Patterns und Code Smells | ? prüfen |  |
 | 2 | DDD strategisch: Bounded Context, Context Map | ? prüfen |  |
