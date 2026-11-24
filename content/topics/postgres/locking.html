@@ -1,0 +1,275 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Locks, Row Locks, Deadlocks, SELECT FOR UPDATE, SKIP LOCKED</title>
+<style>
+  body { font: 17px/1.55 -apple-system, system-ui, sans-serif; max-width: 760px; margin: 0 auto; padding: 16px; color: #1d1d1f; }
+  h1 { font-size: 28px; margin: 8px 0 4px; }
+  h2 { font-size: 21px; margin: 32px 0 8px; padding-top: 12px; border-top: 2px solid #e5e5ea; }
+  .kern { background: #eef6ff; border-left: 4px solid #0a66c2; padding: 10px 14px; border-radius: 6px; }
+  .senior { background: #f0faf0; border-left: 4px solid #2e7d32; padding: 10px 14px; border-radius: 6px; }
+  .trap { background: #fff4f2; border-left: 4px solid #c62828; padding: 10px 14px; border-radius: 6px; }
+  code { background: #f2f2f7; padding: 1px 5px; border-radius: 4px; font-size: 15px; }
+  pre { background: #1e1e1e; color: #e6e6e6; padding: 12px; border-radius: 8px; overflow-x: auto; font-size: 13.5px; line-height: 1.45; }
+  svg { width: 100%; height: auto; display: block; margin: 10px 0; }
+  ol li, ul li { margin: 4px 0; }
+  details { border: 1px solid #e5e5ea; border-radius: 8px; padding: 8px 12px; margin: 6px 0; }
+  summary { font-weight: 600; cursor: pointer; }
+  details p { margin: 6px 0 2px; }
+  .small { color: #6e6e73; font-size: 14px; }
+</style>
+</head>
+<body>
+
+<h1>Locks, Row Locks, Deadlocks, SELECT FOR UPDATE, SKIP LOCKED</h1>
+<p class="small">PostgreSQL · Tier 1 · Quellen: PostgreSQL 17 Doku: „Explicit Locking“ (Table-Level Locks, Row-Level Locks, Page-Level Locks, Deadlocks, Advisory Locks), SQL-Befehle <code>SELECT</code> (The Locking Clause), <code>LOCK</code>, <code>UPDATE</code> (RETURNING), „Client Connection Defaults“ (<code>lock_timeout</code>, <code>statement_timeout</code>), „Lock Management“ (<code>deadlock_timeout</code>), Views <code>pg_locks</code>, <code>pg_stat_activity</code>, Funktionen <code>pg_blocking_pids</code>, Advisory Lock Functions</p>
+
+<div class="kern">
+<b>Kern:</b> Ein <b>Lock</b> ist eine Sperre, die gleichzeitige Zugriffe auf dasselbe Objekt ordnet. PostgreSQL hat <b>Table Locks</b> in 8 Stufen, <b>Row Locks</b> in 4 Stufen und frei nutzbare <b>Advisory Locks</b>. Mit <code>SELECT … FOR UPDATE SKIP LOCKED</code> baut man eine sichere <b>Job-Queue</b>, in der mehrere Worker nie denselben Job bekommen.
+</div>
+
+<h2>1. Wo sitzen die Locks?</h2>
+<svg viewBox="0 0 720 320" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="a" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="10" y="20" width="180" height="60" rx="8" fill="#fff" stroke="#555"/><text x="100" y="44" text-anchor="middle" font-weight="700">Backend A</text><text x="100" y="64" text-anchor="middle" font-size="12">xid 801</text>
+  <rect x="10" y="220" width="180" height="60" rx="8" fill="#fff" stroke="#555"/><text x="100" y="244" text-anchor="middle" font-weight="700">Backend B</text><text x="100" y="264" text-anchor="middle" font-size="12">wartet</text>
+  <rect x="250" y="10" width="220" height="130" rx="12" fill="#f7f7fa" stroke="#999" stroke-dasharray="5 4"/><text x="360" y="30" text-anchor="middle" font-weight="700">Shared Memory: Lock Table</text>
+  <rect x="265" y="42" width="190" height="40" rx="6" fill="#dbe9fb" stroke="#0a66c2"/><text x="360" y="67" text-anchor="middle" font-size="13">Table Locks (relation)</text>
+  <rect x="265" y="90" width="190" height="40" rx="6" fill="#dbe9fb" stroke="#0a66c2"/><text x="360" y="115" text-anchor="middle" font-size="13">transactionid · advisory</text>
+  <rect x="250" y="180" width="220" height="100" rx="12" fill="#f7f7fa" stroke="#555"/><text x="360" y="200" text-anchor="middle" font-weight="700">Heap-Seite</text>
+  <rect x="265" y="212" width="190" height="56" rx="6" fill="#fff4f2" stroke="#c62828"/><text x="360" y="234" text-anchor="middle" font-size="13">Tuple: xmax = 801</text><text x="360" y="254" text-anchor="middle" font-size="12">= Row Lock auf der Disk</text>
+  <line x1="190" y1="45" x2="263" y2="62" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <line x1="150" y1="80" x2="300" y2="210" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <line x1="190" y1="250" x2="263" y2="240" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <line x1="150" y1="220" x2="300" y2="132" stroke="#c62828" stroke-width="2" stroke-dasharray="5 4" marker-end="url(#a)"/><text x="235" y="160" font-size="11" fill="#c62828">wartet auf xid 801</text>
+  <rect x="520" y="20" width="190" height="70" rx="8" fill="#e8f5e9" stroke="#2e7d32"/><text x="615" y="44" text-anchor="middle" font-weight="700">Deadlock Detector</text><text x="615" y="64" text-anchor="middle" font-size="12">nach deadlock_timeout</text><text x="615" y="80" text-anchor="middle" font-size="12">(1 s) Zyklus suchen</text>
+  <rect x="520" y="130" width="190" height="60" rx="8" fill="#fff" stroke="#555"/><text x="615" y="154" text-anchor="middle" font-weight="700">pg_locks</text><text x="615" y="174" text-anchor="middle" font-size="12">Sicht auf die Lock Table</text>
+  <line x1="518" y1="55" x2="472" y2="70" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <line x1="518" y1="160" x2="472" y2="110" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+</svg>
+<ol>
+  <li><b>Lock Table:</b> ein Bereich im Shared Memory. Hier stehen Table Locks, Advisory Locks und Locks auf Transaktions-IDs. Grösse: <code>max_locks_per_transaction</code> (64) × Verbindungen.</li>
+  <li><b>Table Lock:</b> Jeder Befehl nimmt automatisch einen. <code>SELECT</code> nimmt den schwächsten, <code>DROP TABLE</code> den stärksten.</li>
+  <li><b>Row Lock:</b> steht <b>nicht</b> im Speicher, sondern im Tuple selbst: <code>xmax</code> plus Lock-Bits. Darum kann man Millionen Zeilen sperren, ohne Speicher zu füllen.</li>
+  <li><b>Warten auf eine Zeile:</b> B sieht <code>xmax = 801</code> und wartet auf den <b>transactionid</b>-Lock von 801. Er ist frei, sobald 801 endet.</li>
+  <li><b>Deadlock Detector:</b> Wartet ein Backend länger als <code>deadlock_timeout</code> (1 s), sucht er einen Zyklus. Findet er einen, bricht er eine Transaktion ab.</li>
+  <li><b>pg_locks:</b> die View auf die Lock Table. Row Locks sieht man dort nur indirekt.</li>
+</ol>
+
+<h2>2. Die Reise eines Job-Claims mit SKIP LOCKED (die Geschichte zum Merken)</h2>
+<svg viewBox="0 0 720 330" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="b" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="10" y="20" width="150" height="56" rx="10" fill="#eee" stroke="#777"/><text x="85" y="44" text-anchor="middle" font-weight="700">Worker 1</text><text x="85" y="63" text-anchor="middle" font-size="12">claim 3 Jobs</text>
+  <rect x="10" y="230" width="150" height="56" rx="10" fill="#eee" stroke="#777"/><text x="85" y="254" text-anchor="middle" font-weight="700">Worker 2</text><text x="85" y="273" text-anchor="middle" font-size="12">gleichzeitig</text>
+  <rect x="230" y="60" width="260" height="190" rx="12" fill="#f7f7fa" stroke="#999"/><text x="360" y="82" text-anchor="middle" font-weight="700">Tabelle message (pending)</text>
+  <rect x="250" y="94" width="220" height="24" rx="4" fill="#0a66c2"/><text x="360" y="111" text-anchor="middle" fill="#fff" font-size="12">id 1 · gesperrt von W1</text>
+  <rect x="250" y="122" width="220" height="24" rx="4" fill="#0a66c2"/><text x="360" y="139" text-anchor="middle" fill="#fff" font-size="12">id 2 · gesperrt von W1</text>
+  <rect x="250" y="150" width="220" height="24" rx="4" fill="#0a66c2"/><text x="360" y="167" text-anchor="middle" fill="#fff" font-size="12">id 3 · gesperrt von W1</text>
+  <rect x="250" y="178" width="220" height="24" rx="4" fill="#2e7d32"/><text x="360" y="195" text-anchor="middle" fill="#fff" font-size="12">id 4 · gesperrt von W2</text>
+  <rect x="250" y="206" width="220" height="24" rx="4" fill="#2e7d32"/><text x="360" y="223" text-anchor="middle" fill="#fff" font-size="12">id 5, 6 · gesperrt von W2</text>
+  <line x1="160" y1="48" x2="248" y2="120" stroke="#0a66c2" stroke-width="2" marker-end="url(#b)"/>
+  <line x1="160" y1="250" x2="248" y2="190" stroke="#2e7d32" stroke-width="2" marker-end="url(#b)"/>
+  <path d="M160,240 C200,160 210,130 248,110" fill="none" stroke="#c62828" stroke-width="1.5" stroke-dasharray="5 4"/><text x="170" y="170" font-size="11" fill="#c62828">1–3 überspringen</text>
+  <rect x="540" y="60" width="170" height="70" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="625" y="84" text-anchor="middle" font-weight="700">UPDATE</text><text x="625" y="104" text-anchor="middle" font-size="12">status = processing</text><text x="625" y="120" text-anchor="middle" font-size="12">RETURNING id</text>
+  <rect x="540" y="170" width="170" height="70" rx="10" fill="#e8f5e9" stroke="#2e7d32"/><text x="625" y="194" text-anchor="middle" font-weight="700">COMMIT</text><text x="625" y="214" text-anchor="middle" font-size="12">Locks frei, Status</text><text x="625" y="230" text-anchor="middle" font-size="12">schützt jetzt</text>
+  <line x1="490" y1="120" x2="538" y2="95" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <line x1="625" y1="130" x2="625" y2="168" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+</svg>
+<ol>
+  <li><b>Worker 1 sucht Arbeit:</b> Er liest die ältesten Zeilen mit <code>status = 'pending'</code>, <code>LIMIT 3</code>, <code>FOR UPDATE SKIP LOCKED</code>.</li>
+  <li><b>Row Locks:</b> PostgreSQL sperrt die Zeilen 1, 2, 3 für Worker 1. Es schreibt dazu seine xid in <code>xmax</code>.</li>
+  <li><b>Worker 2 kommt gleichzeitig:</b> Ohne SKIP LOCKED würde er auf Zeile 1 <b>warten</b>. Mit SKIP LOCKED <b>überspringt</b> er gesperrte Zeilen und nimmt 4, 5, 6.</li>
+  <li><b>Status setzen:</b> Im selben Befehl setzt <code>UPDATE … RETURNING</code> den Status auf <code>processing</code> und gibt die IDs zurück.</li>
+  <li><b>COMMIT:</b> Die Row Locks sind frei. Ab jetzt schützt der Status: Kein anderer Worker sieht diese Zeilen mehr als <code>pending</code>.</li>
+  <li><b>Arbeit ausserhalb der Transaktion:</b> Der Worker verarbeitet die Jobs und setzt danach <code>completed</code> oder <code>failed</code>. Stirbt er, setzt ein <b>Stale-Job-Recovery</b> alte <code>processing</code>-Zeilen nach einem Timeout zurück.</li>
+</ol>
+
+<h2>3. Beispiel: Queue-Claim, NOWAIT und Deadlock</h2>
+<pre>CREATE TABLE message (id bigint PRIMARY KEY, status text NOT NULL, claimed_at timestamptz);
+CREATE INDEX message_pending ON message (id) WHERE status = 'pending';
+INSERT INTO message SELECT g, 'pending' FROM generate_series(1, 6) g;
+
+-- A) Zwei Worker gleichzeitig (je in eigener Session, Transaktion noch offen)
+BEGIN;
+WITH next AS MATERIALIZED (
+  SELECT id FROM message
+  WHERE status = 'pending'
+  ORDER BY id LIMIT 3
+  FOR UPDATE SKIP LOCKED)
+UPDATE message m SET status = 'processing', claimed_at = now()
+FROM next WHERE m.id = next.id
+RETURNING m.id;
+
+-- B) Worker 3 will Zeile 1 sofort oder gar nicht
+SELECT * FROM message WHERE id = 1 FOR UPDATE NOWAIT;
+
+-- C) Deadlock: A sperrt 1 dann 2, B sperrt 2 dann 1
+A: BEGIN; UPDATE message SET claimed_at = now() WHERE id = 1;
+B: BEGIN; UPDATE message SET claimed_at = now() WHERE id = 2;
+A: UPDATE message SET claimed_at = now() WHERE id = 2;   -- wartet
+B: UPDATE message SET claimed_at = now() WHERE id = 1;   -- Zyklus</pre>
+<pre>-- A) Worker 1        -- A) Worker 2
+ id                    id
+----                  ----
+  1                     4
+  2                     5
+  3                     6
+(3 rows)              (3 rows)
+
+-- B)
+ERROR:  could not obtain lock on row in relation "message"
+
+-- C) nach ca. 1 s in einer der Sessions:
+ERROR:  deadlock detected
+DETAIL:  Process 4711 waits for ShareLock on transaction 802; blocked by process 4712.
+Process 4712 waits for ShareLock on transaction 801; blocked by process 4711.
+HINT:  See server log for query details.
+CONTEXT:  while updating tuple (0,2) in relation "message"</pre>
+<p class="small">Erwartetes Ergebnis (laut Doku, nicht ausgeführt), PostgreSQL 17. PIDs, xids und Tuple-Adressen sind Beispiele.</p>
+<ol>
+  <li>Worker 1 bekommt 1–3, Worker 2 bekommt 4–6. <b>Kein Job doppelt, kein Warten.</b></li>
+  <li><code>AS MATERIALIZED</code> zwingt PostgreSQL, die Auswahl genau einmal auszuführen. Der <b>Partial Index</b> auf <code>pending</code> hält die Suche schnell.</li>
+  <li><code>NOWAIT</code> wartet nicht, sondern wirft sofort SQLSTATE <code>55P03</code> (<code>lock_not_available</code>).</li>
+  <li>Beim Deadlock wartet jeder auf die xid des anderen („ShareLock on transaction“). Nach <code>deadlock_timeout</code> bricht PostgreSQL eine Seite ab: SQLSTATE <code>40P01</code>. Die andere läuft weiter.</li>
+  <li>Die Lösung für C: Zeilen immer in <b>gleicher Reihenfolge</b> sperren, z. B. <code>ORDER BY id … FOR UPDATE</code>.</li>
+</ol>
+
+<h2>4. Details, die Interviewer fragen</h2>
+<ol>
+  <li><b>Die 8 Table Lock Modes</b> (schwach → stark):
+    <ul>
+      <li><b>ACCESS SHARE:</b> <code>SELECT</code>. Konflikt nur mit ACCESS EXCLUSIVE.</li>
+      <li><b>ROW SHARE:</b> <code>SELECT … FOR UPDATE/SHARE</code>.</li>
+      <li><b>ROW EXCLUSIVE:</b> <code>INSERT</code>, <code>UPDATE</code>, <code>DELETE</code>, <code>MERGE</code>.</li>
+      <li><b>SHARE UPDATE EXCLUSIVE:</b> <code>VACUUM</code>, <code>ANALYZE</code>, <code>CREATE INDEX CONCURRENTLY</code>, manche <code>ALTER TABLE</code>.</li>
+      <li><b>SHARE:</b> <code>CREATE INDEX</code> (ohne CONCURRENTLY). Blockiert Schreiben.</li>
+      <li><b>SHARE ROW EXCLUSIVE:</b> <code>CREATE TRIGGER</code>, manche <code>ALTER TABLE</code>.</li>
+      <li><b>EXCLUSIVE:</b> <code>REFRESH MATERIALIZED VIEW CONCURRENTLY</code>. Nur Lesen erlaubt.</li>
+      <li><b>ACCESS EXCLUSIVE:</b> <code>DROP</code>, <code>TRUNCATE</code>, die meisten <code>ALTER TABLE</code>, <code>VACUUM FULL</code>, <code>CLUSTER</code>. Blockiert sogar <code>SELECT</code>.</li>
+    </ul></li>
+  <li><b>Die 4 Row Lock Modes</b> (stark → schwach):
+    <ul>
+      <li><b>FOR UPDATE:</b> volle Sperre. Nehmen auch <code>DELETE</code> und ein UPDATE auf Key-Spalten.</li>
+      <li><b>FOR NO KEY UPDATE:</b> schwächer. Nimmt ein normales <code>UPDATE</code>, das keine Key-Spalte ändert. Erlaubt FOR KEY SHARE.</li>
+      <li><b>FOR SHARE:</b> mehrere Leser dürfen sperren. Blockiert jedes Ändern.</li>
+      <li><b>FOR KEY SHARE:</b> nimmt ein Foreign-Key-Check auf die Elternzeile. Blockiert nur Löschen und Key-Änderung.</li>
+    </ul></li>
+  <li><b>Warum NO KEY UPDATE und KEY SHARE?</b> Ein Insert in eine Kindtabelle sperrt die Elternzeile mit FOR KEY SHARE. Ein normales Update der Elternzeile nimmt nur NO KEY UPDATE. Beide passen zusammen, es gibt kein Warten.</li>
+  <li><b>Locks halten bis Transaktionsende.</b> Es gibt kein vorzeitiges Freigeben von Row Locks oder Table Locks. Ausnahme: Advisory Locks auf Session-Ebene.</li>
+  <li><b>Lock Queue:</b> Wartende Locks stellen sich in eine Schlange. Ein wartendes <code>ALTER TABLE</code> (ACCESS EXCLUSIVE) blockiert alle <b>späteren</b> <code>SELECT</code>s, auch wenn sie mit den aktuellen Lock-Haltern kompatibel wären.</li>
+  <li><b>lock_timeout:</b> bricht ab, wenn ein Lock länger als die Zeit wartet. Standard 0 = unendlich. Für Migrationen: <code>SET lock_timeout = '3s'</code> und bei Fehler wiederholen.</li>
+  <li><b>statement_timeout:</b> begrenzt die ganze Laufzeit eines Befehls, inklusive Warten.</li>
+  <li><b>NOWAIT:</b> wirft sofort einen Fehler, wenn die Zeile gesperrt ist. Gut, wenn der Nutzer sofort eine Meldung bekommen soll.</li>
+  <li><b>SKIP LOCKED:</b> überspringt gesperrte Zeilen still. Das Ergebnis ist bewusst <b>inkonsistent</b>. Nur für Queues geeignet, nicht für Reports.</li>
+  <li><b>Deadlock:</b> Zwei Transaktionen warten im Kreis aufeinander. PostgreSQL prüft nach <code>deadlock_timeout</code> (1 s), bricht eine ab (40P01) und loggt beide Queries.</li>
+  <li><b>Deadlock vermeiden:</b> immer gleiche Sperr-Reihenfolge, kurze Transaktionen, Batch-Updates sortiert nach Key. Fremdschlüssel und Trigger können versteckte Reihenfolgen erzeugen.</li>
+  <li><b>Advisory Locks:</b> Locks auf eine frei gewählte Zahl. <code>pg_advisory_lock(42)</code> (Session), <code>pg_advisory_xact_lock(42)</code> (bis Transaktionsende), <code>pg_try_advisory_lock(42)</code> (ohne Warten). Für „nur ein Cron-Job läuft“ oder Migrationen. Flyway nutzt sie auf PostgreSQL.</li>
+  <li><b>Advisory Locks und PgBouncer:</b> Im <b>Transaction Pooling</b> wechselt die Verbindung pro Transaktion. Session-Advisory-Locks landen dann auf der falschen Verbindung. Dort nur <code>pg_advisory_xact_lock</code> nutzen.</li>
+  <li><b>UPDATE … RETURNING:</b> gibt die geänderten Zeilen zurück. Das ist das PostgreSQL-Gegenstück zu SQL Server <code>UPDATE … OUTPUT INSERTED.*</code>. Dort entspricht <code>WITH (UPDLOCK, READPAST)</code> etwa SKIP LOCKED.</li>
+  <li><b>Lock Escalation:</b> PostgreSQL eskaliert Row Locks <b>nie</b> zu Table Locks. Row Locks liegen auf der Disk. SQL Server eskaliert ab ca. 5000 Locks.</li>
+</ol>
+
+<h2>5. Vergleich</h2>
+<ul>
+  <li><b>Warten (Standard) vs NOWAIT vs SKIP LOCKED:</b> Warten = korrekt, aber blockierend. NOWAIT = sofort Fehler. SKIP LOCKED = andere Zeile nehmen.</li>
+  <li><b>FOR UPDATE vs FOR NO KEY UPDATE:</b> Wer die Zeile nur ändern will, ohne Key, nimmt NO KEY UPDATE. Das blockiert Foreign-Key-Checks nicht.</li>
+  <li><b>Pessimistisch (FOR UPDATE) vs optimistisch (Versionsspalte):</b> Pessimistisch bei häufigem Konflikt. Optimistisch bei seltenem Konflikt und langen Nutzer-Interaktionen.</li>
+  <li><b>Row Lock vs Advisory Lock:</b> Row Lock schützt Daten. Advisory Lock schützt eine Idee, z. B. „Import für Kunde 42“, ohne Zeile.</li>
+  <li><b>PostgreSQL-Queue vs Message Broker:</b> Queue in der DB: transaktional mit den Daten, einfach. Kafka oder RabbitMQ: mehr Durchsatz, Fan-out, Replay. Bei moderatem Volumen reicht die Tabelle.</li>
+  <li><b>Lock halten vs Status-Spalte:</b> Lock über die ganze Verarbeitung: Absturz gibt ihn automatisch frei, aber lange Transaktion. Status-Spalte: kurze Transaktionen, braucht Stale-Job-Recovery.</li>
+</ul>
+
+<h2>6. In der Produktion</h2>
+<ol>
+  <li><b>Migration legt die App lahm:</b> <code>ALTER TABLE ADD COLUMN</code> wartet hinter einem langen Report. Alle neuen Queries stauen sich dahinter. Lösung: <code>SET lock_timeout = '3s'</code> in jeder Migration, mit Retry.</li>
+  <li><b>CREATE INDEX blockiert Schreiben:</b> Er nimmt SHARE. Inserts warten minutenlang. Lösung: <code>CREATE INDEX CONCURRENTLY</code> (nicht in einer Transaktion, kann mit INVALID-Index enden).</li>
+  <li><b>Deadlocks bei Batch-Updates:</b> Zwei Jobs ändern dieselben Zeilen in anderer Reihenfolge. Lösung: Zeilen sortiert sperren (<code>ORDER BY id FOR UPDATE</code>), Retry bei 40P01.</li>
+  <li><b>Worker verarbeiten denselben Job doppelt:</b> <code>SELECT</code> und danach <code>UPDATE</code> in zwei Schritten ohne Lock. Lösung: ein atomarer Claim mit <code>FOR UPDATE SKIP LOCKED</code> und <code>RETURNING</code>.</li>
+  <li><b>Jobs hängen in „processing“:</b> Ein Worker ist abgestürzt. Lösung: Stale-Job-Recovery: <code>UPDATE … SET status = 'pending' WHERE status = 'processing' AND claimed_at &lt; now() - interval '30 minutes'</code>. Die Verarbeitung muss idempotent sein.</li>
+  <li><b>Hot Row:</b> Alle Requests ändern dieselbe Zeile, z. B. einen globalen Zähler. Alle warten seriell. Lösung: Zähler aufteilen oder Änderungen sammeln.</li>
+  <li><b>„out of shared memory“, HINT max_locks_per_transaction:</b> Eine Transaktion berührt tausende Partitionen oder Tabellen. Lösung: Parameter erhöhen (Neustart nötig) oder Abfrage einschränken.</li>
+</ol>
+
+<h2>7. Diagnose: Werkzeuge und Abfragen</h2>
+<pre>-- Wer blockiert wen?
+SELECT pid, pg_blocking_pids(pid) AS blockiert_von,
+       wait_event_type, wait_event, state,
+       now() - xact_start AS tx_dauer, left(query, 60) AS query
+FROM pg_stat_activity
+WHERE cardinality(pg_blocking_pids(pid)) &gt; 0;
+
+-- Locks auf einer Tabelle
+SELECT l.pid, l.mode, l.granted, a.state, left(a.query, 60)
+FROM pg_locks l JOIN pg_stat_activity a USING (pid)
+WHERE l.relation = 'message'::regclass;
+
+-- Notfall
+SELECT pg_cancel_backend(4711);      -- Query abbrechen
+SELECT pg_terminate_backend(4711);   -- Verbindung beenden</pre>
+<ul>
+  <li><code>pg_stat_activity</code>: <code>wait_event_type = 'Lock'</code> mit <code>wait_event</code> <code>relation</code>, <code>transactionid</code>, <code>tuple</code> oder <code>advisory</code>.</li>
+  <li><code>pg_blocking_pids(pid)</code>: die direkten Blocker. Der Anfang der Kette ist oft „idle in transaction“.</li>
+  <li><code>pg_locks</code>: <code>granted = false</code> zeigt wartende Locks.</li>
+  <li><code>log_lock_waits = on</code>: loggt jedes Warten länger als <code>deadlock_timeout</code>. Sehr nützlich.</li>
+  <li><code>pg_stat_database.deadlocks</code>: Zähler für Deadlocks. Details im Server-Log.</li>
+  <li><code>pgrowlocks</code> (Extension): zeigt Row Locks einer Tabelle.</li>
+</ul>
+
+<h2>8. Senior-Punkte</h2>
+<div class="senior">
+<ol>
+  <li><b>Jede Migration mit lock_timeout.</b> Der gefährlichste Lock ist der, der wartet, nicht der, der hält.</li>
+  <li><b>Sperr-Reihenfolge ist Architektur.</b> Wer Zeilen immer nach Key sortiert sperrt, hat kaum Deadlocks. Deadlocks brauchen trotzdem Retry.</li>
+  <li><b>Atomarer Claim statt Lesen-dann-Schreiben.</b> Ein Befehl mit <code>FOR UPDATE SKIP LOCKED</code> und <code>RETURNING</code> ist die Standard-Queue in PostgreSQL.</li>
+  <li><b>Kurze Transaktionen, Status statt Lock.</b> Den Job nicht in der Transaktion verarbeiten. Claim committen, dann arbeiten, dann Status setzen.</li>
+  <li><b>At-least-once ist die Realität.</b> Stale-Job-Recovery kann einen Job zweimal starten. Die Verarbeitung muss idempotent sein.</li>
+  <li><b>Die Datenbank als Queue hat Grenzen.</b> Bis einige tausend Jobs pro Sekunde gut. Darüber Bloat und Lock-Druck, dann ein Broker.</li>
+</ol>
+</div>
+
+<h2>9. Aus dem Projekt</h2>
+<p>„Bei MATCH claimt der Spark-Job Nachrichten atomar mit <code>UPDATE … OUTPUT INSERTED.*</code> auf SQL Server (Pending → Processing), und ein Stale-Job-Recovery setzt hängende Processing-Nachrichten nach einem Timeout zurück. In PostgreSQL schreibe ich das als <code>UPDATE … RETURNING</code> mit <code>FOR UPDATE SKIP LOCKED</code>.“ <span class="small">(Prüfen und durch dein echtes Beispiel ersetzen. Nicht behaupten, dass MATCH PostgreSQL oder READPAST nutzt, wenn das nicht stimmt.)</span></p>
+
+<h2>10. Fallen</h2>
+<div class="trap">
+<ul>
+  <li>„SELECT nimmt keinen Lock.“ → <b>Falsch.</b> Er nimmt ACCESS SHARE. Darum blockiert ein wartendes ALTER TABLE und blockiert den SELECT.</li>
+  <li>„ADD COLUMN ist harmlos, es dauert nur Millisekunden.“ → <b>Falsch.</b> Es braucht ACCESS EXCLUSIVE und kann ewig in der Queue warten.</li>
+  <li>„Row Locks stehen in pg_locks.“ → <b>Meist falsch.</b> Sie stehen im Tuple. In pg_locks sieht man nur das Warten auf die xid.</li>
+  <li>„PostgreSQL eskaliert viele Row Locks zu einem Table Lock.“ → <b>Falsch.</b> Es gibt keine Lock Escalation.</li>
+  <li>„SKIP LOCKED ist gut für konsistente Reports.“ → <b>Falsch.</b> Es lässt Zeilen still weg.</li>
+  <li>„PostgreSQL löst Deadlocks, ich muss nichts tun.“ → <b>Falsch.</b> Eine Transaktion scheitert mit 40P01. Die App braucht Retry.</li>
+  <li>„FOR UPDATE ist die einzige Row-Lock-Stufe.“ → <b>Falsch.</b> Es gibt vier: UPDATE, NO KEY UPDATE, SHARE, KEY SHARE.</li>
+</ul>
+</div>
+
+<h2>11. Fragen</h2>
+<details><summary>Welche Arten von Locks hat PostgreSQL?</summary><p>Table Locks (8 Stufen), Row Locks (4 Stufen), Page Locks intern und Advisory Locks für die Anwendung.</p></details>
+<details><summary>Welchen Lock nimmt ein SELECT?</summary><p>ACCESS SHARE auf die Tabelle. Er kollidiert nur mit ACCESS EXCLUSIVE, z. B. DROP oder die meisten ALTER TABLE.</p></details>
+<details><summary>Welchen Lock nehmen INSERT, UPDATE und DELETE?</summary><p>ROW EXCLUSIVE auf die Tabelle und Row Locks auf die geänderten Zeilen.</p></details>
+<details><summary>Warum blockiert CREATE INDEX das Schreiben?</summary><p>Es nimmt SHARE, das mit ROW EXCLUSIVE kollidiert. CREATE INDEX CONCURRENTLY nimmt nur SHARE UPDATE EXCLUSIVE.</p></details>
+<details><summary>Wo speichert PostgreSQL Row Locks?</summary><p>Im Tuple-Header: xmax plus Lock-Bits. Bei mehreren Haltern eine MultiXact-ID. Darum braucht es keinen Speicher pro Zeile.</p></details>
+<details><summary>Was ist der Unterschied zwischen FOR UPDATE und FOR NO KEY UPDATE?</summary><p>FOR UPDATE blockiert auch Foreign-Key-Checks. FOR NO KEY UPDATE nicht. Ein normales UPDATE ohne Key-Änderung nimmt NO KEY UPDATE.</p></details>
+<details><summary>Wofür ist FOR KEY SHARE?</summary><p>Für Foreign-Key-Checks auf die Elternzeile. Er verhindert nur, dass sie gelöscht wird oder ihr Key sich ändert.</p></details>
+<details><summary>Was macht NOWAIT?</summary><p>Ist die Zeile gesperrt, kommt sofort der Fehler 55P03 statt Warten.</p></details>
+<details><summary>Was macht SKIP LOCKED?</summary><p>Gesperrte Zeilen werden übersprungen. Jeder Worker bekommt freie Zeilen. Ideal für Job-Queues.</p></details>
+<details><summary>Wie bauen Sie eine Job-Queue in PostgreSQL?</summary><p>Ein UPDATE, das per Subquery mit FOR UPDATE SKIP LOCKED und LIMIT auswählt, Status auf processing setzt und RETURNING nutzt. Dazu ein Partial Index auf pending und Stale-Job-Recovery.</p></details>
+<details><summary>Was ist das PostgreSQL-Gegenstück zu SQL Server UPDATE … OUTPUT?</summary><p>UPDATE … RETURNING. Das Gegenstück zu READPAST ist SKIP LOCKED.</p></details>
+<details><summary>Was ist ein Deadlock?</summary><p>Zwei oder mehr Transaktionen warten im Kreis aufeinander. Keine kann weiter.</p></details>
+<details><summary>Wie erkennt PostgreSQL Deadlocks?</summary><p>Wartet ein Backend länger als deadlock_timeout (1 s), sucht es einen Zyklus im Warte-Graphen. Eine Transaktion wird mit 40P01 abgebrochen.</p></details>
+<details><summary>Wie vermeiden Sie Deadlocks?</summary><p>Zeilen immer in gleicher Reihenfolge sperren, kurze Transaktionen, Batches nach Key sortieren. Retry für 40P01 bleibt trotzdem nötig.</p></details>
+<details><summary>Was sind Advisory Locks?</summary><p>Locks auf eine frei gewählte Zahl, ohne Bezug zu Daten. Für „nur einer darf das tun“, z. B. Cron-Jobs oder Migrationen.</p></details>
+<details><summary>Was ist das Problem mit Advisory Locks und PgBouncer?</summary><p>Im Transaction Pooling gehört die Verbindung nach der Transaktion jemand anderem. Session-Locks hängen dann falsch. Lösung: pg_advisory_xact_lock.</p></details>
+<details><summary>Was ist lock_timeout und warum ist es wichtig?</summary><p>Es bricht ab, wenn ein Lock zu lange wartet. In Migrationen verhindert es, dass ein wartendes ALTER TABLE die ganze App blockiert.</p></details>
+<details><summary>Was ist die Lock Queue?</summary><p>Wartende Lock-Anfragen stehen in einer Reihe. Spätere Anfragen warten hinter einer starken wartenden Anfrage, auch wenn sie kompatibel wären.</p></details>
+<details><summary>Gibt es Lock Escalation in PostgreSQL?</summary><p>Nein. Row Locks liegen auf der Disk und werden nie zu Table Locks.</p></details>
+<details><summary>Wie finden Sie, wer wen blockiert?</summary><p>pg_stat_activity mit pg_blocking_pids(pid), dazu pg_locks mit granted = false. log_lock_waits für die Historie.</p></details>
+<details><summary>Lock halten oder Status-Spalte bei langen Jobs?</summary><p>Status-Spalte. So bleiben Transaktionen kurz. Der Preis ist Stale-Job-Recovery und idempotente Verarbeitung.</p></details>
+<details><summary>Szenario: Nach einem Deployment mit Migration hängt die ganze Anwendung. Was ist passiert?</summary><p>Wahrscheinlich wartet ein ALTER TABLE auf ACCESS EXCLUSIVE hinter einer langen Transaktion. Alle Queries stauen sich dahinter. Sofort: Migration abbrechen. Künftig: lock_timeout und Retry.</p></details>
+<details><summary>Szenario: Zwei Worker verarbeiten gelegentlich dieselbe Nachricht. Wie beheben Sie das?</summary><p>Claim atomar machen: ein UPDATE mit FOR UPDATE SKIP LOCKED in der Subquery und RETURNING. Zusätzlich die Verarbeitung idempotent machen, z. B. erst löschen, dann schreiben.</p></details>
+<details><summary>Szenario: Im Log stehen jede Nacht Deadlocks aus einem Batch-Job. Was tun Sie?</summary><p>Die beiden Queries im Server-Log ansehen. Meist sperren zwei Pfade Zeilen in anderer Reihenfolge. Lösung: sortiert sperren, Batches kleiner, Retry für 40P01.</p></details>
+
+</body>
+</html>

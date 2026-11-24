@@ -2,7 +2,7 @@
 
 Generated from content/syllabus.json. Priority 1 = asked in almost every interview. Mark: **Projekt** = shown in CV/Gmail · **— kein Projekt** = no project experience · **? prüfen** = unclear, you decide.
 
-404 topics · P1 239 · P2 125 · P3 40 · written 88
+404 topics · P1 239 · P2 125 · P3 40 · written 93
 
 ## Java 21 (core + advanced) (40)
 Sources: Java SE 21/25 docs (docs.oracle.com) · JVM Specification · OpenJDK source + JEPs (openjdk.org) · Oracle Java SE 21 Developer exam 1Z0-830 topics
@@ -132,7 +132,7 @@ Sources: Apache Kafka documentation · Confluent developer docs · Confluent CCD
 | 1 | Reihenfolge und Keys | Projekt | ✓ |
 | 1 | Replikation, ISR, min.insync.replicas | ? prüfen | ✓ |
 | 1 | Fehler, Retries, Dead Letter Topic | ? prüfen | ✓ |
-| 1 | Kafka vs RabbitMQ vs Event Hub vs Solace | Projekt |  |
+| 1 | Kafka vs RabbitMQ vs Event Hub vs Solace | Projekt | ✓ |
 | 2 | Retention und Log Compaction | ? prüfen |  |
 | 2 | Kafka-Transaktionen | — kein Projekt |  |
 | 2 | Schema Registry, Avro, Kompatibilität | ? prüfen |  |
@@ -235,11 +235,11 @@ Sources: PostgreSQL 16/17 documentation · Use The Index, Luke (Markus Winand)
 | 1 | MVCC: wie PostgreSQL Versionen speichert | ? prüfen | ✓ |
 | 1 | VACUUM, Autovacuum, Bloat | ? prüfen | ✓ |
 | 1 | Isolation Levels und Anomalien | ? prüfen | ✓ |
-| 1 | Locks, Row Locks, Deadlocks, SELECT FOR UPDATE, SKIP LOCKED | ? prüfen |  |
+| 1 | Locks, Row Locks, Deadlocks, SELECT FOR UPDATE, SKIP LOCKED | ? prüfen | ✓ |
 | 1 | Index-Typen in PostgreSQL | ? prüfen | ✓ |
 | 1 | Query Planner und EXPLAIN | ? prüfen | ✓ |
 | 1 | Join-Algorithmen | ? prüfen | ✓ |
-| 1 | Window Functions | ? prüfen |  |
+| 1 | Window Functions | ? prüfen | ✓ |
 | 1 | Normalisierung und Denormalisierung | Projekt | ✓ |
 | 1 | Connection Pooling: HikariCP, PgBouncer | ? prüfen | ✓ |
 | 1 | Performance-Tuning: Konfiguration und Abfragen | ? prüfen | ✓ |
@@ -507,7 +507,7 @@ Sources: angular.dev guides (v20) · RxJS docs
 | 1 | Dependency Injection in Angular, inject() | Projekt | ✓ |
 | 1 | RxJS: Observable, Subscription, Hot vs Cold | Projekt | ✓ |
 | 1 | RxJS-Operatoren: switchMap, mergeMap, concatMap, exhaustMap | Projekt | ✓ |
-| 1 | Subject, BehaviorSubject, ReplaySubject | Projekt |  |
+| 1 | Subject, BehaviorSubject, ReplaySubject | Projekt | ✓ |
 | 1 | Routing, Guards, Resolver, Lazy Loading | Projekt |  |
 | 1 | Reactive Forms vs Template Forms | Projekt |  |
 | 1 | HttpClient und Interceptors | Projekt |  |
@@ -526,7 +526,7 @@ Sources: angular.dev signals guide · NgRx docs (Store, Effects, Entity, SignalS
 | 1 | NgRx Store | — kein Projekt | ✓ |
 | 1 | NgRx Effects | — kein Projekt | ✓ |
 | 1 | NgRx SignalStore | — kein Projekt | ✓ |
-| 1 | Welches State Management wann? | — kein Projekt |  |
+| 1 | Welches State Management wann? | — kein Projekt | ✓ |
 | 2 | linkedSignal und resource() | — kein Projekt |  |
 | 2 | NgRx Entity | — kein Projekt |  |
 
