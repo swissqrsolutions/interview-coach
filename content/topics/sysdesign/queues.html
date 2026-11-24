@@ -1,0 +1,231 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Queues und asynchrone Verarbeitung</title>
+<style>
+  body { font: 17px/1.55 -apple-system, system-ui, sans-serif; max-width: 760px; margin: 0 auto; padding: 16px; color: #1d1d1f; }
+  h1 { font-size: 28px; margin: 8px 0 4px; }
+  h2 { font-size: 21px; margin: 32px 0 8px; padding-top: 12px; border-top: 2px solid #e5e5ea; }
+  .kern { background: #eef6ff; border-left: 4px solid #0a66c2; padding: 10px 14px; border-radius: 6px; }
+  .senior { background: #f0faf0; border-left: 4px solid #2e7d32; padding: 10px 14px; border-radius: 6px; }
+  .trap { background: #fff4f2; border-left: 4px solid #c62828; padding: 10px 14px; border-radius: 6px; }
+  code { background: #f2f2f7; padding: 1px 5px; border-radius: 4px; font-size: 15px; }
+  pre { background: #1e1e1e; color: #e6e6e6; padding: 12px; border-radius: 8px; overflow-x: auto; font-size: 13.5px; line-height: 1.45; }
+  svg { width: 100%; height: auto; display: block; margin: 10px 0; }
+  ol li, ul li { margin: 4px 0; }
+  details { border: 1px solid #e5e5ea; border-radius: 8px; padding: 8px 12px; margin: 6px 0; }
+  summary { font-weight: 600; cursor: pointer; }
+  details p { margin: 6px 0 2px; }
+  .small { color: #6e6e73; font-size: 14px; }
+</style>
+</head>
+<body>
+
+<h1>Queues und asynchrone Verarbeitung</h1>
+<p class="small">System Design · Tier 1 · Quellen: Microsoft Learn (Service Bus: Queues, topics and subscriptions; Message transfers, locks and settlement; Dead-letter queues; Duplicate detection; Message sessions), Microsoft Learn (Event Hubs: Features and terminology), Azure Architecture Center (Competing Consumers, Queue-Based Load Leveling, Claim-Check, Asynchronous messaging options), Apache Kafka Doku (Design: Message Delivery Semantics), RabbitMQ Doku (Consumer Acknowledgements, Dead Letter Exchanges), Kleppmann, DDIA (Kap. 11)</p>
+
+<div class="kern">
+<b>Kern:</b> Eine <b>Queue</b> ist ein Puffer zwischen einem <b>Producer</b>, der Nachrichten schickt, und einem <b>Consumer</b>, der sie später verarbeitet. Sie löst drei Probleme: <b>Entkopplung</b> (beide müssen nicht gleichzeitig laufen), <b>Lastspitzen</b> (die Queue puffert) und <b>Skalierung</b> (mehr Consumer arbeiten parallel). Der Preis: Nachrichten kommen <b>mindestens einmal</b>, also muss der Consumer Duplikate vertragen.
+</div>
+
+<h2>1. Wo sitzt die Queue?</h2>
+<svg viewBox="0 0 720 300" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="a" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="10" y="40" width="130" height="56" rx="8" fill="#fff" stroke="#555"/><text x="75" y="64" text-anchor="middle" font-weight="700">Producer</text><text x="75" y="82" text-anchor="middle" font-size="12">API, Service</text>
+  <line x1="140" y1="68" x2="198" y2="68" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="200" y="10" width="300" height="280" rx="12" fill="#f7f7fa" stroke="#999" stroke-dasharray="5 4"/><text x="350" y="30" text-anchor="middle" font-weight="700">Broker</text>
+  <rect x="220" y="44" width="260" height="50" rx="8" fill="#0a66c2"/><text x="350" y="66" text-anchor="middle" fill="#fff" font-weight="700">Queue</text><text x="350" y="84" text-anchor="middle" fill="#fff" font-size="12">Point-to-Point: 1 Consumer pro Nachricht</text>
+  <rect x="220" y="114" width="260" height="70" rx="8" fill="#dbe9fb" stroke="#0a66c2"/><text x="350" y="136" text-anchor="middle" font-weight="700">Topic</text><text x="350" y="154" text-anchor="middle" font-size="12">Pub/Sub: Kopie pro Subscription</text><text x="350" y="172" text-anchor="middle" font-size="12">Sub „billing“ · Sub „audit“</text>
+  <rect x="220" y="210" width="260" height="56" rx="8" fill="#fff4f2" stroke="#c62828"/><text x="350" y="234" text-anchor="middle" font-weight="700" fill="#c62828">Dead-Letter Queue</text><text x="350" y="252" text-anchor="middle" font-size="12">Nachrichten, die nicht gehen</text>
+  <line x1="500" y1="68" x2="558" y2="50" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <line x1="500" y1="68" x2="558" y2="100" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="560" y="20" width="150" height="44" rx="8" fill="#e8f5e9" stroke="#2e7d32"/><text x="635" y="47" text-anchor="middle">Worker 1</text>
+  <rect x="560" y="80" width="150" height="44" rx="8" fill="#e8f5e9" stroke="#2e7d32"/><text x="635" y="107" text-anchor="middle">Worker 2</text>
+  <text x="635" y="142" text-anchor="middle" font-size="12">Competing Consumers</text>
+  <line x1="500" y1="150" x2="558" y2="180" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="560" y="160" width="150" height="44" rx="8" fill="#fff" stroke="#555"/><text x="635" y="187" text-anchor="middle">Billing, Audit</text>
+</svg>
+<ol>
+  <li><b>Producer:</b> Er schickt eine Nachricht und wartet nicht auf die Verarbeitung.</li>
+  <li><b>Broker:</b> Der <b>Broker</b> speichert Nachrichten dauerhaft, z. B. Azure Service Bus oder RabbitMQ.</li>
+  <li><b>Queue (Point-to-Point):</b> Jede Nachricht geht an <b>genau einen</b> von mehreren Consumern. Mehrere Worker teilen sich die Arbeit: <b>Competing Consumers</b>.</li>
+  <li><b>Topic (Pub/Sub):</b> Jede <b>Subscription</b> bekommt eine eigene Kopie. Billing und Audit sehen dieselbe Nachricht.</li>
+  <li><b>Dead-Letter Queue (DLQ):</b> Eine Neben-Queue für Nachrichten, die zu oft scheitern oder ablaufen. Ein Mensch oder ein Tool prüft sie.</li>
+</ol>
+
+<h2>2. Die Reise einer Nachricht (die Geschichte zum Merken)</h2>
+<svg viewBox="0 0 720 320" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="b" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker><marker id="r" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#c62828"/></marker></defs>
+  <rect x="10" y="30" width="140" height="60" rx="10" fill="#eee" stroke="#777"/><text x="80" y="56" text-anchor="middle" font-weight="700">1. Send</text><text x="80" y="74" text-anchor="middle" font-size="12">MessageId = pay-2</text>
+  <line x1="150" y1="60" x2="198" y2="60" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="200" y="30" width="140" height="60" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="270" y="56" text-anchor="middle" font-weight="700">2. Gespeichert</text><text x="270" y="74" text-anchor="middle" font-size="12">dauerhaft im Broker</text>
+  <line x1="340" y1="60" x2="388" y2="60" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="390" y="30" width="150" height="60" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="465" y="56" text-anchor="middle" font-weight="700">3. Receive + Lock</text><text x="465" y="74" text-anchor="middle" font-size="12">DeliveryCount + 1</text>
+  <line x1="540" y1="60" x2="578" y2="60" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="580" y="30" width="130" height="60" rx="10" fill="#fff" stroke="#555"/><text x="645" y="56" text-anchor="middle" font-weight="700">4. Verarbeiten</text><text x="645" y="74" text-anchor="middle" font-size="12">DB-Write</text>
+  <line x1="645" y1="90" x2="645" y2="138" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="560" y="140" width="150" height="60" rx="10" fill="#0a66c2"/><text x="635" y="166" text-anchor="middle" fill="#fff" font-weight="700">5a. Complete</text><text x="635" y="184" text-anchor="middle" fill="#fff" font-size="12">Nachricht gelöscht</text>
+  <rect x="300" y="140" width="200" height="60" rx="10" fill="#fff" stroke="#c62828"/><text x="400" y="166" text-anchor="middle" font-weight="700">5b. Fehler / Lock weg</text><text x="400" y="184" text-anchor="middle" font-size="12">Abandon oder Absturz</text>
+  <line x1="600" y1="90" x2="480" y2="138" stroke="#c62828" stroke-width="2" marker-end="url(#r)"/>
+  <path d="M340,140 C320,110 400,105 440,92" fill="none" stroke="#c62828" stroke-width="2" stroke-dasharray="6 4" marker-end="url(#r)"/>
+  <text x="300" y="112" text-anchor="end" fill="#c62828" font-size="12">6. erneut zustellen</text>
+  <line x1="400" y1="200" x2="400" y2="248" stroke="#c62828" stroke-width="2" marker-end="url(#r)"/><text x="410" y="230" font-size="12" fill="#c62828">DeliveryCount ≥ Max</text>
+  <rect x="290" y="250" width="220" height="56" rx="10" fill="#fff4f2" stroke="#c62828"/><text x="400" y="274" text-anchor="middle" font-weight="700" fill="#c62828">7. Dead-Letter Queue</text><text x="400" y="292" text-anchor="middle" font-size="12">mit Grund, zur Prüfung</text>
+</svg>
+<ol>
+  <li><b>Send:</b> Der Producer schickt die Nachricht mit einer eindeutigen <b>MessageId</b>. Erst nach der Bestätigung des Brokers gilt sie als gesendet.</li>
+  <li><b>Gespeichert:</b> Der Broker speichert die Nachricht dauerhaft. Der Producer darf jetzt abstürzen.</li>
+  <li><b>Receive mit Lock:</b> Im Modus <b>Peek-Lock</b> sperrt Service Bus die Nachricht für einen Consumer. Andere sehen sie nicht. Der <b>DeliveryCount</b> steigt um 1. Die Lock-Dauer ist standardmässig 1 Minute.</li>
+  <li><b>Verarbeiten:</b> Der Consumer führt die Arbeit aus, z. B. einen DB-Write.</li>
+  <li><b>Complete:</b> Erst jetzt bestätigt der Consumer. Der Broker löscht die Nachricht. Das ist <b>at-least-once</b>: erst arbeiten, dann bestätigen.</li>
+  <li><b>Fehler oder Absturz:</b> Der Consumer meldet <b>Abandon</b>, oder der Lock läuft ab. Die Nachricht wird wieder zugestellt, eventuell an einen anderen Worker. Hat Schritt 4 schon geschrieben, ist das ein <b>Duplikat</b>.</li>
+  <li><b>Dead-Letter:</b> Erreicht der DeliveryCount den Wert <b>MaxDeliveryCount</b> (Service Bus Standard: 10), verschiebt der Broker die Nachricht in die DLQ.</li>
+</ol>
+
+<h2>3. Beispiel: at-least-once, idempotenter Consumer und DLQ</h2>
+<pre>MAX_DELIVERY = 3
+q.send("pay-1", ("anna", 100))
+q.send("pay-2", ("anna", 50))           # Consumer stürzt nach DB-Write ab, vor Complete
+q.send("pay-3", ("anna", "abc"))        # Poison Message: Betrag ungültig
+
+m = q.receive()                          # Lock, deliveries += 1
+if idempotent and m["id"] in processed:  # Dedupe per MessageId
+    q.complete(m); continue
+balance[user] += int(amount)             # in echt: gleiche DB-Transaktion
+processed.add(m["id"])                   # wie der Insert in die processed-Tabelle
+q.complete(m)                            # bei Fehler: q.abandon(m) -&gt; erneut oder DLQ</pre>
+<pre>1) consumer NOT idempotent
+   pay-1: delivery 1, balance=100
+   pay-2: delivery 1, balance=150
+   pay-2: crash before ack, lock expires
+   pay-3: delivery 1 failed: invalid literal for int() with base 10: 'abc'
+   pay-2: delivery 2, balance=200
+   pay-3: delivery 2 failed: invalid literal for int() with base 10: 'abc'
+   pay-3: delivery 3 failed: invalid literal for int() with base 10: 'abc'
+   pay-3: dead-lettered after 3 deliveries
+   final balance=200 (expected 150), dlq=['pay-3']
+2) idempotent consumer (dedupe by message id)
+   pay-1: delivery 1, balance=100
+   pay-2: delivery 1, balance=150
+   pay-2: crash before ack, lock expires
+   pay-3: delivery 1 failed: invalid literal for int() with base 10: 'abc'
+   pay-2: delivery 2, already processed -&gt; skip, ack
+   pay-3: delivery 2 failed: invalid literal for int() with base 10: 'abc'
+   pay-3: delivery 3 failed: invalid literal for int() with base 10: 'abc'
+   pay-3: dead-lettered after 3 deliveries
+   final balance=150 (expected 150), dlq=['pay-3']</pre>
+<p class="small">Echte Ausgabe, Python 3 (Simulation). Kein echter Broker; Peek-Lock, DeliveryCount und DLQ sind nachgebaut.</p>
+<ol>
+  <li><code>pay-2</code> wird verarbeitet, aber nicht bestätigt. Der Broker stellt es erneut zu. Das ist <b>at-least-once</b>.</li>
+  <li>Ohne Idempotenz wird Anna zweimal belastet: 200 statt 150.</li>
+  <li>Mit Idempotenz erkennt der Consumer die <b>MessageId</b> wieder. Er überspringt die Arbeit und bestätigt nur.</li>
+  <li><code>pay-3</code> scheitert bei jeder Zustellung. Ein Retry hilft nie. Nach 3 Versuchen landet es in der <b>DLQ</b> und blockiert die Queue nicht mehr.</li>
+  <li>Die Reihenfolge ist danach nicht mehr die Sende-Reihenfolge: <code>pay-3</code> kommt vor der zweiten Zustellung von <code>pay-2</code>.</li>
+</ol>
+
+<h2>4. Details, die Interviewer fragen</h2>
+<ol>
+  <li><b>Delivery-Garantien:</b> <b>At-most-once</b> heisst, erst bestätigen, dann arbeiten. Bei Absturz geht die Nachricht verloren. <b>At-least-once</b> heisst, erst arbeiten, dann bestätigen. Bei Absturz gibt es Duplikate. <b>Exactly-once</b> gibt es über ein Netz nur als Effekt: at-least-once plus idempotenter Consumer.</li>
+  <li><b>Peek-Lock vs Receive-and-Delete:</b> <b>Peek-Lock</b> sperrt und wartet auf Complete, also at-least-once. <b>Receive-and-Delete</b> löscht beim Abholen, also at-most-once.</li>
+  <li><b>Lock-Dauer:</b> In Service Bus ist der Lock standardmässig 1 Minute, maximal 5 Minuten. Dauert die Arbeit länger, muss der Consumer den Lock <b>erneuern</b>. Sonst verarbeitet ein zweiter Worker dieselbe Nachricht.</li>
+  <li><b>Idempotenter Consumer:</b> Der Consumer speichert verarbeitete MessageIds in einer Tabelle mit <b>Unique Constraint</b>. Insert und Geschäfts-Write laufen in <b>einer</b> DB-Transaktion. Das heisst auch <b>Inbox Pattern</b>.</li>
+  <li><b>Duplicate Detection im Broker:</b> Service Bus verwirft Nachrichten mit bekannter MessageId innerhalb eines Zeitfensters. Standard 10 Minuten, möglich 20 Sekunden bis 7 Tage. Nur Standard und Premium. Das schützt nur vor Producer-Duplikaten, nicht vor Redelivery.</li>
+  <li><b>Transactional Outbox:</b> Ein Service muss DB-Write und Nachricht atomar machen. Er schreibt die Nachricht in eine <b>Outbox-Tabelle</b> in derselben Transaktion. Ein Relay sendet sie danach an den Broker.</li>
+  <li><b>DLQ:</b> Nachrichten landen dort bei zu vielen Zustellungen, bei Ablauf der <b>TTL</b> (wenn aktiviert) oder wenn der Consumer sie bewusst dead-lettert. Die DLQ braucht Alarm, Analyse und einen Weg zum <b>Replay</b>.</li>
+  <li><b>Poison Message:</b> Eine Nachricht, die immer scheitert, z. B. ungültiges Format. Der Consumer sollte sie sofort dead-lettern statt zehnmal zu versuchen.</li>
+  <li><b>Retry mit Backoff:</b> Bei vorübergehenden Fehlern wartet der Consumer immer länger, z. B. 1, 2, 4, 8 Sekunden plus Zufall (<b>Jitter</b>). Sonst trifft jeder Retry den kaputten Dienst gleichzeitig.</li>
+  <li><b>Reihenfolge:</b> Mehrere Competing Consumers zerstören die Reihenfolge. Service Bus garantiert FIFO pro <b>Session</b> (gleiche <code>SessionId</code>). Kafka und Event Hubs garantieren Reihenfolge pro <b>Partition</b>, gewählt über den Key.</li>
+  <li><b>Backpressure:</b> <b>Backpressure</b> heisst, ein langsamer Consumer bremst den Zufluss. Mittel: begrenzte <b>Prefetch</b>-Menge pro Consumer, Pull statt Push, Queue-Grösse begrenzen, Producer mit 429 oder <code>ServerBusy</code> abweisen.</li>
+  <li><b>Autoscaling:</b> Die Anzahl Worker folgt der Queue-Länge. In Kubernetes macht das <b>KEDA</b> mit Scalern für Service Bus, Event Hubs, Kafka und RabbitMQ.</li>
+  <li><b>Claim-Check:</b> Grosse Daten kommen in Blob Storage. Die Nachricht enthält nur den Verweis. Service Bus Standard erlaubt 256 KB pro Nachricht.</li>
+  <li><b>Queue vs Log:</b> Eine <b>Queue</b> löscht Nachrichten nach Bestätigung. Ein <b>Log</b> (Kafka, Event Hubs) behält sie für eine Retention-Zeit. Consumer merken sich nur ihre Position (<b>Offset</b>, <b>Checkpoint</b>) und können zurückspulen.</li>
+</ol>
+
+<h2>5. Vergleich</h2>
+<ul>
+  <li><b>Azure Service Bus:</b> Enterprise-Broker mit Queues und Topics. Peek-Lock, DLQ eingebaut, Sessions für FIFO, Duplicate Detection, Transaktionen, Scheduled Messages. Für Befehle und Geschäftsvorgänge.</li>
+  <li><b>Azure Event Hubs:</b> partitioniertes Log für Event-Streams mit hohem Durchsatz. Consumer Groups und Checkpoints, keine Bestätigung pro Nachricht, keine DLQ. Spricht das Kafka-Protokoll (nicht im Basic-Tier). Für Telemetrie und Event-Streaming.</li>
+  <li><b>Apache Kafka:</b> verteiltes Log mit Partitionen, Replikation und langer Retention. Replay, Ordnung pro Partition, Exactly-once-Semantik innerhalb von Kafka über Transaktionen. Details auf den Kafka-Seiten.</li>
+  <li><b>RabbitMQ:</b> klassischer Broker mit AMQP. <b>Exchanges</b> routen Nachrichten in Queues (direct, topic, fanout, headers). Ack pro Nachricht, Prefetch, <b>Dead Letter Exchange</b>, Quorum Queues für Replikation.</li>
+  <li><b>Azure Storage Queues:</b> einfach und billig, sehr grosse Queues. Keine Topics, keine Sessions, Nachricht max. 64 KB.</li>
+  <li><b>Datenbank als Queue:</b> Tabelle mit Status und <code>SELECT … FOR UPDATE SKIP LOCKED</code>. Gut für moderate Last und wenn Job und Daten in einer Transaktion bleiben sollen.</li>
+</ul>
+
+<h2>6. In der Produktion</h2>
+<ol>
+  <li><b>Doppelte Verarbeitung:</b> Der Lock läuft während langer Arbeit ab. Ein zweiter Worker beginnt dieselbe Nachricht. Lösung: Lock erneuern, Arbeit verkürzen, Consumer idempotent machen.</li>
+  <li><b>DLQ wächst still:</b> Niemand schaut hinein, Aufträge gehen verloren. Lösung: Alarm auf DLQ-Länge, Runbook für Analyse und Replay.</li>
+  <li><b>Queue wächst ohne Ende:</b> Consumer sind zu langsam oder hängen. Lösung: Alarm auf Länge und Alter der ältesten Nachricht, Autoscaling mit KEDA, Backpressure zum Producer.</li>
+  <li><b>Retry-Sturm:</b> Ein Downstream-Dienst fällt aus. Alle Nachrichten scheitern und werden sofort neu versucht. Lösung: Backoff mit Jitter, Circuit Breaker, Verarbeitung pausieren.</li>
+  <li><b>Nachricht weg trotz DB-Commit:</b> Der Service committet und stürzt vor dem Senden ab. Lösung: Transactional Outbox.</li>
+  <li><b>Falsche Reihenfolge:</b> „Konto gelöscht“ kommt vor „Konto geändert“ an. Lösung: Sessions oder Partition Key pro Entität, Versionsnummer in der Nachricht und alte Versionen ignorieren.</li>
+</ol>
+
+<h2>7. Diagnose: Werkzeuge und Metriken</h2>
+<ul>
+  <li><b>Service Bus Metriken</b> in Azure Monitor: <b>Active Messages</b>, <b>Dead-lettered Messages</b>, <b>Scheduled Messages</b>, Incoming vs Outgoing Messages, Server Errors, Throttled Requests.</li>
+  <li><b>Service Bus Explorer</b> im Azure-Portal: Nachrichten und DLQ ansehen (Peek), Nachrichten neu senden.</li>
+  <li><b>DeadLetterReason</b> und <b>DeadLetterErrorDescription</b>: Eigenschaften jeder DLQ-Nachricht. Sie sagen, warum sie dort ist, z. B. <code>MaxDeliveryCountExceeded</code>.</li>
+  <li><b>Event Hubs:</b> Incoming vs Outgoing Messages, Throttled Requests, und der Abstand zwischen letztem Event und letztem Checkpoint (<b>Consumer Lag</b>).</li>
+  <li><b>RabbitMQ:</b> Management-UI oder <code>rabbitmqctl list_queues name messages_ready messages_unacknowledged</code>.</li>
+  <li><b>Kafka:</b> <code>kafka-consumer-groups.sh --describe --group &lt;name&gt;</code> zeigt Lag pro Partition.</li>
+  <li><b>Wichtigste Metrik:</b> Alter der ältesten Nachricht. Es zeigt Verzug direkt in Zeit, nicht nur in Anzahl.</li>
+</ul>
+
+<h2>8. Senior-Punkte</h2>
+<div class="senior">
+<ol>
+  <li><b>Jeder Consumer ist idempotent.</b> At-least-once ist der Normalfall bei jedem Broker. Exactly-once ist ein Effekt im Consumer, keine Broker-Einstellung.</li>
+  <li><b>Command vs Event:</b> Ein <b>Command</b> („Rechnung erstellen“) hat einen Empfänger, also Queue. Ein <b>Event</b> („Bestellung erstellt“) hat viele, also Topic oder Log.</li>
+  <li><b>Reihenfolge nur, wo nötig.</b> Globale Ordnung tötet Parallelität. Ordnung pro Entität (Session, Partition Key) reicht fast immer.</li>
+  <li><b>DLQ ist ein Prozess,</b> kein Mülleimer. Sie braucht Alarm, Besitzer und Replay.</li>
+  <li><b>Outbox für DB plus Nachricht.</b> Zwei Systeme ohne gemeinsame Transaktion brauchen dieses Muster.</li>
+  <li><b>Asynchron ändert die API.</b> Der Client bekommt 202 Accepted und einen Status-Endpunkt statt des Ergebnisses.</li>
+</ol>
+</div>
+
+<h2>9. Aus dem Projekt</h2>
+<p>„Bei MATCH holen Worker Jobs nach Bedarf aus einer Tabelle mit atomarem Claim, und eine Stale-Job-Recovery gibt Jobs abgestürzter Worker nach einem Timeout wieder frei.“ <span class="small">(Prüfen und durch dein echtes Beispiel ersetzen.)</span></p>
+
+<h2>10. Fallen</h2>
+<div class="trap">
+<ul>
+  <li>„Unser Broker liefert exactly-once.“ → <b>Falsch</b> über Systemgrenzen. Duplikate kommen bei Absturz vor dem Ack immer vor.</li>
+  <li>„Duplicate Detection macht den Consumer idempotent.“ → <b>Falsch.</b> Sie filtert nur doppelte Sends, nicht doppelte Zustellungen.</li>
+  <li>„Eine Queue ist FIFO.“ → <b>Nur ohne Parallelität und ohne Retries.</b> Mit Competing Consumers und Redelivery nicht.</li>
+  <li>„Event Hubs ist eine Queue.“ → <b>Falsch.</b> Es ist ein Log: kein Ack pro Nachricht, keine DLQ, Consumer verwalten Offsets.</li>
+  <li>„Mehr Retries machen es zuverlässiger.“ → <b>Falsch</b> bei Poison Messages und überlasteten Diensten. Dann sofort DLQ oder Backoff.</li>
+</ul>
+</div>
+
+<h2>11. Fragen</h2>
+<details><summary>Welche Probleme löst eine Queue?</summary><p>Entkopplung von Producer und Consumer, Pufferung von Lastspitzen und Skalierung durch mehrere Consumer.</p></details>
+<details><summary>Point-to-Point vs Pub/Sub?</summary><p>Point-to-Point: Jede Nachricht geht an genau einen Consumer. Pub/Sub: Jede Subscription bekommt eine eigene Kopie.</p></details>
+<details><summary>Was sind Competing Consumers?</summary><p>Mehrere Worker lesen aus derselben Queue. Jede Nachricht verarbeitet nur einer. So skaliert die Verarbeitung.</p></details>
+<details><summary>At-most-once vs at-least-once?</summary><p>At-most-once: erst bestätigen, dann arbeiten, Verlust möglich. At-least-once: erst arbeiten, dann bestätigen, Duplikate möglich.</p></details>
+<details><summary>Gibt es exactly-once?</summary><p>Nicht als Zustellung über ein Netz. Exactly-once-Effekt entsteht durch at-least-once plus idempotenten Consumer. Kafka bietet exactly-once nur innerhalb von Kafka per Transaktionen.</p></details>
+<details><summary>Was ist Peek-Lock?</summary><p>Service Bus sperrt die Nachricht beim Abholen. Der Consumer bestätigt mit Complete oder gibt sie mit Abandon zurück. Läuft der Lock ab, wird sie neu zugestellt.</p></details>
+<details><summary>Was passiert, wenn die Verarbeitung länger als der Lock dauert?</summary><p>Die Nachricht wird erneut zugestellt, eventuell parallel an einen zweiten Worker. Lösung: Lock erneuern oder die Arbeit aufteilen.</p></details>
+<details><summary>Wie bauen Sie einen idempotenten Consumer?</summary><p>MessageId in eine Tabelle mit Unique Constraint, in derselben Transaktion wie der Geschäfts-Write. Duplikat: Insert scheitert, nur bestätigen.</p></details>
+<details><summary>Was ist eine Dead-Letter Queue?</summary><p>Eine Neben-Queue für Nachrichten, die zu oft scheitern, ablaufen oder bewusst abgelehnt werden. Sie braucht Alarm und Replay.</p></details>
+<details><summary>Wann landet eine Nachricht in Service Bus in der DLQ?</summary><p>Wenn der DeliveryCount MaxDeliveryCount erreicht (Standard 10), bei TTL-Ablauf mit aktivierter Option, oder wenn der Consumer sie dead-lettert.</p></details>
+<details><summary>Was ist eine Poison Message?</summary><p>Eine Nachricht, die immer scheitert, z. B. ungültiges Format. Sofort dead-lettern, nicht endlos neu versuchen.</p></details>
+<details><summary>Was macht Duplicate Detection in Service Bus?</summary><p>Sie verwirft Sends mit gleicher MessageId im Zeitfenster (Standard 10 Minuten). Sie schützt nicht vor erneuter Zustellung an den Consumer.</p></details>
+<details><summary>Was ist das Transactional Outbox Pattern?</summary><p>Die Nachricht wird in derselben DB-Transaktion in eine Outbox-Tabelle geschrieben. Ein Relay sendet sie danach. So gehen DB-Write und Nachricht nicht auseinander.</p></details>
+<details><summary>Wie garantieren Sie Reihenfolge?</summary><p>Pro Entität: Service Bus Sessions mit SessionId, Kafka oder Event Hubs mit Partition Key. Global nur mit einem einzigen Consumer.</p></details>
+<details><summary>Was ist Backpressure?</summary><p>Ein überlasteter Consumer bremst den Zufluss. Mittel: begrenzter Prefetch, Pull-Modell, begrenzte Queue, Producer abweisen.</p></details>
+<details><summary>Wie skalieren Sie Consumer automatisch?</summary><p>Nach Queue-Länge oder Alter der ältesten Nachricht, z. B. mit KEDA in Kubernetes.</p></details>
+<details><summary>Was ist das Claim-Check Pattern?</summary><p>Grosse Daten in Blob Storage, in der Nachricht nur der Verweis. Hält Nachrichten klein und billig.</p></details>
+<details><summary>Queue vs Log?</summary><p>Queue löscht nach Bestätigung, Ack pro Nachricht. Log behält Nachrichten für die Retention, Consumer merken sich den Offset und können zurückspulen.</p></details>
+<details><summary>Service Bus vs Event Hubs?</summary><p>Service Bus für Befehle und Geschäftsvorgänge: Lock, DLQ, Sessions, Transaktionen. Event Hubs für Event-Streams mit hohem Durchsatz: Partitionen, Consumer Groups, Checkpoints.</p></details>
+<details><summary>Kafka vs RabbitMQ?</summary><p>Kafka ist ein Log mit Replay und hohem Durchsatz, Ordnung pro Partition. RabbitMQ ist ein Broker mit flexiblem Routing über Exchanges und Ack pro Nachricht.</p></details>
+<details><summary>Command vs Event?</summary><p>Command: Auftrag an einen Empfänger, über eine Queue. Event: Tatsache für viele Interessenten, über Topic oder Log.</p></details>
+<details><summary>Wann nutzen Sie eine Datenbank-Tabelle als Queue?</summary><p>Bei moderater Last und wenn Job und Daten in einer Transaktion bleiben sollen. Claim mit FOR UPDATE SKIP LOCKED.</p></details>
+<details><summary>Szenario: Kunden bekommen manchmal zwei Bestätigungs-E-Mails. Warum, und was tun Sie?</summary><p>At-least-once: Der Consumer hat gesendet und ist vor Complete abgestürzt, oder der Lock lief ab. Lösung: idempotenter Consumer mit gespeicherter MessageId, Lock erneuern bei langer Arbeit.</p></details>
+<details><summary>Szenario: Die Queue-Länge steigt seit einer Stunde stetig. Wie gehen Sie vor?</summary><p>Alter der ältesten Nachricht und Fehlerrate prüfen. Hängen Consumer oder scheitert ein Downstream? Dann skalieren, Backoff und Circuit Breaker prüfen, DLQ ansehen.</p></details>
+<details><summary>Szenario: Ein Service speichert eine Bestellung und sendet ein Event. Manchmal fehlt das Event. Warum?</summary><p>DB-Commit und Send sind nicht atomar. Absturz dazwischen verliert das Event. Lösung: Transactional Outbox mit Relay.</p></details>
+
+</body>
+</html>

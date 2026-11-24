@@ -1,0 +1,235 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Load Balancing</title>
+<style>
+  body { font: 17px/1.55 -apple-system, system-ui, sans-serif; max-width: 760px; margin: 0 auto; padding: 16px; color: #1d1d1f; }
+  h1 { font-size: 28px; margin: 8px 0 4px; }
+  h2 { font-size: 21px; margin: 32px 0 8px; padding-top: 12px; border-top: 2px solid #e5e5ea; }
+  .kern { background: #eef6ff; border-left: 4px solid #0a66c2; padding: 10px 14px; border-radius: 6px; }
+  .senior { background: #f0faf0; border-left: 4px solid #2e7d32; padding: 10px 14px; border-radius: 6px; }
+  .trap { background: #fff4f2; border-left: 4px solid #c62828; padding: 10px 14px; border-radius: 6px; }
+  code { background: #f2f2f7; padding: 1px 5px; border-radius: 4px; font-size: 15px; }
+  pre { background: #1e1e1e; color: #e6e6e6; padding: 12px; border-radius: 8px; overflow-x: auto; font-size: 13.5px; line-height: 1.45; }
+  svg { width: 100%; height: auto; display: block; margin: 10px 0; }
+  ol li, ul li { margin: 4px 0; }
+  details { border: 1px solid #e5e5ea; border-radius: 8px; padding: 8px 12px; margin: 6px 0; }
+  summary { font-weight: 600; cursor: pointer; }
+  details p { margin: 6px 0 2px; }
+  .small { color: #6e6e73; font-size: 14px; }
+</style>
+</head>
+<body>
+
+<h1>Load Balancing</h1>
+<p class="small">System-Design-Grundlagen · Tier 1 · Quellen: Microsoft Learn (Azure Load Balancer: Distribution Modes, Health Probes; Application Gateway: Features, Session Affinity; Azure Front Door: Overview, Routing Methods, Health Probes), Azure Architecture Center „Load-balancing options“, Kubernetes Docs (Service, Virtual IPs and Service Proxies, Ingress, Gateway API), Kubernetes Blog „Ingress NGINX Retirement“ (Nov. 2025), Karger et al. 1997 (Consistent Hashing), Kleppmann DDIA Kap. 6</p>
+
+<div class="kern">
+<b>Kern:</b> Ein <b>Load Balancer</b> verteilt eingehende Requests auf mehrere Server (<b>Backends</b>). Er löst zwei Probleme: <b>Skalierung</b> (mehr Server, mehr Last) und <b>Verfügbarkeit</b> (kranke Server bekommen keinen Traffic). Er arbeitet entweder auf <b>Layer 4</b> (TCP/UDP) oder auf <b>Layer 7</b> (HTTP).
+</div>
+
+<h2>1. Wo sitzt der Load Balancer?</h2>
+<svg viewBox="0 0 720 330" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="a" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="10" y="20" width="110" height="50" rx="8" fill="#fff" stroke="#555"/><text x="65" y="50" text-anchor="middle">Client</text>
+  <line x1="120" y1="45" x2="168" y2="45" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="170" y="14" width="170" height="62" rx="8" fill="#0a66c2" stroke="#0a66c2"/><text x="255" y="40" text-anchor="middle" fill="#fff" font-weight="700">Azure Front Door</text><text x="255" y="60" text-anchor="middle" fill="#fff" font-size="12">global · L7 · Edge · WAF</text>
+  <line x1="340" y1="45" x2="388" y2="45" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="390" y="14" width="170" height="62" rx="8" fill="#dbe9fb" stroke="#0a66c2"/><text x="475" y="40" text-anchor="middle" font-weight="700">Application Gateway</text><text x="475" y="60" text-anchor="middle" font-size="12">regional · L7 · WAF</text>
+  <rect x="580" y="14" width="130" height="62" rx="8" fill="#dbe9fb" stroke="#0a66c2"/><text x="645" y="40" text-anchor="middle" font-weight="700">Azure LB</text><text x="645" y="60" text-anchor="middle" font-size="12">regional · L4</text>
+  <text x="570" y="96" text-anchor="middle" font-size="12">oder</text>
+  <rect x="300" y="110" width="410" height="210" rx="12" fill="#f7f7fa" stroke="#999" stroke-dasharray="5 4"/><text x="505" y="130" text-anchor="middle" font-weight="700">AKS-Cluster</text>
+  <line x1="475" y1="76" x2="475" y2="146" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <line x1="645" y1="76" x2="645" y2="146" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="320" y="148" width="370" height="48" rx="8" fill="#fff" stroke="#555"/><text x="505" y="168" text-anchor="middle" font-weight="700">Ingress / Gateway-API-Controller</text><text x="505" y="186" text-anchor="middle" font-size="12">L7: Host, Pfad → Service</text>
+  <line x1="505" y1="196" x2="505" y2="214" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="320" y="216" width="370" height="40" rx="8" fill="#fff" stroke="#555"/><text x="505" y="241" text-anchor="middle">Service (ClusterIP, kube-proxy: L4)</text>
+  <line x1="505" y1="256" x2="505" y2="270" stroke="#555" stroke-width="2"/>
+  <rect x="340" y="272" width="100" height="36" rx="6" fill="#e8f5e9" stroke="#2e7d32"/><text x="390" y="295" text-anchor="middle">Pod 1</text>
+  <rect x="455" y="272" width="100" height="36" rx="6" fill="#e8f5e9" stroke="#2e7d32"/><text x="505" y="295" text-anchor="middle">Pod 2</text>
+  <rect x="570" y="272" width="100" height="36" rx="6" fill="#e8f5e9" stroke="#2e7d32"/><text x="620" y="295" text-anchor="middle">Pod 3</text>
+  <text x="20" y="150" font-size="12">Health Probes laufen auf</text><text x="20" y="168" font-size="12">jeder Stufe: kranke Backends</text><text x="20" y="186" font-size="12">fliegen aus dem Pool.</text>
+</svg>
+<ol>
+  <li><b>Azure Front Door:</b> globaler L7-Load-Balancer am Microsoft-Edge. Er leitet den Nutzer zur nächsten gesunden Region. Er bietet WAF und Caching.</li>
+  <li><b>Application Gateway:</b> regionaler L7-Load-Balancer. Er routet nach Host und Pfad, beendet TLS und bietet WAF.</li>
+  <li><b>Azure Load Balancer:</b> regionaler L4-Load-Balancer für TCP und UDP. Ein Kubernetes-Service vom Typ <code>LoadBalancer</code> bekommt auf AKS einen solchen.</li>
+  <li><b>Ingress- oder Gateway-Controller:</b> L7-Router im Cluster. Er verteilt nach Host und Pfad auf Services.</li>
+  <li><b>Service:</b> eine stabile virtuelle IP. <b>kube-proxy</b> verteilt Verbindungen auf die Pods (L4).</li>
+  <li>Man kombiniert die Stufen: global → regional → Cluster → Pod. Jede Stufe prüft die Gesundheit der nächsten.</li>
+</ol>
+
+<h2>2. Die Reise eines Requests (die Geschichte zum Merken)</h2>
+<svg viewBox="0 0 720 320" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="b" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker><marker id="r" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#c62828"/></marker></defs>
+  <rect x="10" y="20" width="150" height="66" rx="10" fill="#eee" stroke="#777"/><text x="85" y="46" text-anchor="middle" font-weight="700">1. DNS</text><text x="85" y="66" text-anchor="middle" font-size="12">Name → Anycast-IP</text>
+  <line x1="160" y1="53" x2="198" y2="53" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="200" y="20" width="150" height="66" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="275" y="46" text-anchor="middle" font-weight="700">2. Edge (L7)</text><text x="275" y="66" text-anchor="middle" font-size="12">TLS · WAF · Route</text>
+  <line x1="350" y1="53" x2="388" y2="53" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="390" y="20" width="150" height="66" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="465" y="46" text-anchor="middle" font-weight="700">3. Pool filtern</text><text x="465" y="66" text-anchor="middle" font-size="12">nur gesunde Backends</text>
+  <line x1="540" y1="53" x2="578" y2="53" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="580" y="20" width="130" height="66" rx="10" fill="#0a66c2" stroke="#0a66c2"/><text x="645" y="46" text-anchor="middle" fill="#fff" font-weight="700">4. Algorithmus</text><text x="645" y="66" text-anchor="middle" fill="#fff" font-size="12">RR · LC · Hash</text>
+  <line x1="645" y1="86" x2="645" y2="138" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="510" y="140" width="200" height="66" rx="10" fill="#fff" stroke="#555"/><text x="610" y="166" text-anchor="middle" font-weight="700">5. Backend</text><text x="610" y="186" text-anchor="middle" font-size="12">X-Forwarded-For lesen</text>
+  <line x1="510" y1="173" x2="402" y2="173" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="200" y="140" width="200" height="66" rx="10" fill="#e8f5e9" stroke="#2e7d32"/><text x="300" y="166" text-anchor="middle" font-weight="700">6. Antwort</text><text x="300" y="186" text-anchor="middle" font-size="12">zurück über den LB</text>
+  <rect x="390" y="240" width="320" height="60" rx="10" fill="#fff4f2" stroke="#c62828"/><text x="550" y="264" text-anchor="middle" fill="#c62828" font-weight="700">Health Probe schlägt fehl</text><text x="550" y="284" text-anchor="middle" fill="#c62828" font-size="12">Backend raus aus dem Pool, Draining</text>
+  <path d="M550,240 C550,220 465,140 465,88" fill="none" stroke="#c62828" stroke-width="2" stroke-dasharray="6 4" marker-end="url(#r)"/>
+</svg>
+<ol>
+  <li><b>DNS:</b> Der Browser fragt <code>app.example.ch</code> auf. Front Door antwortet mit einer <b>Anycast-IP</b>. Anycast heisst: Viele Edge-Standorte teilen eine IP, das Netz wählt den nächsten.</li>
+  <li><b>Edge (L7):</b> Der nächste Edge-Standort beendet <b>TLS</b>. Die <b>WAF</b> (Web Application Firewall) prüft den Request. Eine Route wählt die Origin-Gruppe nach Host und Pfad.</li>
+  <li><b>Pool filtern:</b> Der LB kennt nur gesunde Backends. <b>Health Probes</b> fragen jedes Backend regelmässig ab, z. B. <code>GET /healthz</code>.</li>
+  <li><b>Algorithmus:</b> Aus den gesunden Backends wählt ein Algorithmus eines. Beispiele: <b>Round Robin</b>, <b>Least Connections</b>, <b>Hash</b>.</li>
+  <li><b>Backend:</b> Das Backend sieht als Absender den LB. Die echte Client-IP steht im Header <code>X-Forwarded-For</code>.</li>
+  <li><b>Antwort:</b> Bei L7 geht die Antwort über den LB zurück. Er kann sie komprimieren oder Header ändern.</li>
+  <li><b>Fehlerfall:</b> Ein Pod antwortet nicht mehr auf die Probe. Nach einigen Fehlversuchen nimmt der LB ihn aus dem Pool. Laufende Requests dürfen noch fertig werden (<b>Connection Draining</b>).</li>
+</ol>
+
+<h2>3. Beispiel: drei Algorithmen simuliert</h2>
+<pre># 3 servers, C is 3x slower (noisy neighbour); one request every 4 ms
+rr = lambda i, active: SERVERS[i % len(SERVERS)]                  # round robin
+lc = lambda i, active: min(SERVERS, key=lambda s: len(active[s])) # least connections
+# duration grows with active requests: work * slow * (1 + 0.5 * active)
+
+# consistent hashing ring with virtual nodes
+class Ring:
+    def __init__(self, nodes, vnodes):
+        self.ring = sorted((h(f"{n}#{v}"), n) for n in nodes for v in range(vnodes))
+        self.points = [p for p, _ in self.ring]
+    def get(self, k):
+        i = bisect.bisect(self.points, h(k)) % len(self.ring)
+        return self.ring[i][1]
+# 100,000 keys on 4 nodes, then add n5: how many keys move?</pre>
+<pre>$ python -I lb_sim.py
+== 3 servers, C is 3x slower, 30,000 requests ==
+round robin        share A=33% B=33% C=33% | peak conns A=5 B=6 C=1110 | avg 2843.9 ms p99 36105.3 ms
+least connections  share A=46% B=40% C=14% | peak conns A=5 B=4 C=4 | avg 17.6 ms p99 111.6 ms
+== 100,000 keys, add a 5th node ==
+modulo hash       spread n1=24.9% n2=25.2% n3=24.8% n4=25.2% | moved 80.1%
+ring vnodes=1     spread n1=17.4% n2=32.4% n3=8.7% n4=41.5% | moved 25.5%
+ring vnodes=100   spread n1=22.4% n2=24.1% n3=26.4% n4=27.1% | moved 22.1%</pre>
+<p class="small">Echte Ausgabe, Python 3 (Simulation). Vereinfachtes Modell: Ein Request wird langsamer, je mehr Requests gleichzeitig auf demselben Server laufen.</p>
+<ol>
+  <li><b>Round Robin ist blind:</b> Jeder Server bekommt genau ein Drittel. Der langsame Server C schafft das nicht. Seine Warteschlange wächst auf über 1 000 Verbindungen. Die p99 steigt auf 36 Sekunden.</li>
+  <li><b>Least Connections passt sich an:</b> C bekommt nur noch 14 %, weil er länger beschäftigt ist. Keine Warteschlange, p99 ca. 112 ms.</li>
+  <li><b>Modulo-Hash</b> (<code>hash % N</code>) verteilt gut. Aber bei einem neuen Knoten wandern <b>80 %</b> der Schlüssel. Für einen Cache heisst das: fast alles ist ein Miss.</li>
+  <li><b>Consistent Hashing</b> bewegt nur ca. <b>1/N</b> der Schlüssel (hier 22 %, ideal 20 %).</li>
+  <li><b>Virtuelle Knoten</b> sind nötig: Mit 1 Punkt pro Knoten trägt n4 41 % und n3 nur 9 %. Mit 100 Punkten pro Knoten liegt alles bei 22–27 %.</li>
+</ol>
+
+<h2>4. Details, die Interviewer fragen</h2>
+<ol>
+  <li><b>Layer 4:</b> Ein <b>L4-LB</b> sieht nur IP, Port und Protokoll. Er verteilt <b>Verbindungen</b>, nicht Requests. Er ist sehr schnell und kann jedes TCP/UDP-Protokoll.</li>
+  <li><b>Layer 7:</b> Ein <b>L7-LB</b> versteht HTTP. Er routet nach Host, Pfad, Header oder Cookie. Er beendet TLS, kann Retries, Rewrites und WAF.</li>
+  <li><b>Round Robin:</b> Der Reihe nach. Einfach, aber blind für Last. <b>Weighted Round Robin</b> gibt stärkeren Servern mehr.</li>
+  <li><b>Least Connections:</b> Der Server mit den wenigsten offenen Verbindungen gewinnt. Gut bei unterschiedlich langen Requests.</li>
+  <li><b>Least Response Time / Latency:</b> Der schnellste Server gewinnt. Front Door wählt so zwischen Regionen.</li>
+  <li><b>Power of Two Choices:</b> Zwei Server zufällig wählen, den weniger belasteten nehmen. Fast so gut wie Least Connections, ohne globalen Zustand.</li>
+  <li><b>Hash-basiert:</b> Ein Hash über Client-IP, Header oder Schlüssel wählt den Server. Gleicher Schlüssel, gleicher Server. Das braucht man für Caches und Sharding.</li>
+  <li><b>Consistent Hashing:</b> Knoten und Schlüssel liegen auf einem <b>Ring</b>. Ein Schlüssel gehört zum nächsten Knoten im Uhrzeigersinn. Ein neuer Knoten übernimmt nur seinen Abschnitt. <b>Virtuelle Knoten</b> glätten die Verteilung.</li>
+  <li><b>Health Checks:</b> <b>Aktive Probes</b> fragen regelmässig einen Endpunkt ab. <b>Passive Checks</b> werten echte Fehler aus (Outlier Detection). Der Endpunkt prüft nur, ob die Instanz Traffic annehmen kann.</li>
+  <li><b>Sticky Sessions:</b> <b>Session Affinity</b> schickt einen Client immer zum selben Backend. Application Gateway nutzt dafür ein Cookie. Azure Load Balancer nutzt Client-IP (2-Tupel) oder Client-IP plus Protokoll (3-Tupel).</li>
+  <li><b>Azure Load Balancer Standard-Verteilung:</b> ein <b>5-Tupel-Hash</b> (Quell-IP, Quell-Port, Ziel-IP, Ziel-Port, Protokoll). Stickiness gilt nur innerhalb einer Verbindung.</li>
+  <li><b>Lange Verbindungen:</b> HTTP/2, gRPC und WebSockets halten eine TCP-Verbindung lange offen. Ein L4-LB verteilt dann nur Verbindungen, nicht Requests. Neue Pods bekommen nichts. Lösung: L7-LB oder Service Mesh für gRPC.</li>
+  <li><b>TLS-Terminierung:</b> Der LB entschlüsselt, um L7 zu sehen. Danach geht es unverschlüsselt oder neu verschlüsselt (<b>End-to-End TLS</b>) zum Backend.</li>
+  <li><b>Kubernetes Service:</b> <b>ClusterIP</b> ist eine virtuelle IP. <b>kube-proxy</b> schreibt Regeln (iptables, IPVS oder nftables). Im iptables-Modus wählt er pro Verbindung zufällig einen Pod. <b>Readiness Probes</b> entscheiden, ob ein Pod im Service ist.</li>
+  <li><b>externalTrafficPolicy:</b> <code>Cluster</code> (Standard) kann einen zweiten Hop machen und die Client-IP durch SNAT verlieren. <code>Local</code> behält die Client-IP, verteilt aber nur auf Knoten mit Pods.</li>
+  <li><b>Ingress und Gateway API:</b> <b>Ingress</b> beschreibt L7-Regeln (Host, Pfad → Service). Ein Ingress-Controller setzt sie um. Die <b>Gateway API</b> ist der Nachfolger mit Rollen und mehr Protokollen. Ingress NGINX wurde im März 2026 eingestellt.</li>
+</ol>
+
+<h2>5. Vergleich: Azure-Optionen</h2>
+<ul>
+  <li><b>Azure Load Balancer:</b> L4 (TCP/UDP), regional, sehr niedrige Latenz. Für VMs, AKS-Services, Nicht-HTTP-Protokolle.</li>
+  <li><b>Application Gateway:</b> L7 (HTTP/S), regional. Pfad-Routing, TLS, WAF, Cookie-Affinity. Kann eine private IP im VNet haben.</li>
+  <li><b>Azure Front Door:</b> L7 (HTTP/S), global am Edge. Multi-Region-Failover, WAF, CDN-Caching. Routing nach Latenz, Priorität oder Gewicht.</li>
+  <li><b>Traffic Manager:</b> DNS-basiert, global, jedes Protokoll. Er gibt nur eine IP zurück und sieht den Traffic nie. Failover hängt am DNS-TTL.</li>
+  <li><b>Application Gateway for Containers:</b> L7 für AKS, gesteuert über Gateway API oder Ingress.</li>
+  <li><b>Faustregel der Azure-Doku:</b> global + HTTP → Front Door; global + Nicht-HTTP → Traffic Manager oder Cross-Region-LB; regional + HTTP → Application Gateway; regional + Nicht-HTTP → Load Balancer.</li>
+</ul>
+<table style="border-collapse: collapse; width: 100%; font-size: 15px;">
+  <tr><th style="text-align:left; border-bottom:1px solid #ccc;">Kriterium</th><th style="text-align:left; border-bottom:1px solid #ccc;">L4</th><th style="text-align:left; border-bottom:1px solid #ccc;">L7</th></tr>
+  <tr><td>Sieht</td><td>IP, Port, Protokoll</td><td>URL, Header, Cookie</td></tr>
+  <tr><td>Verteilt</td><td>Verbindungen</td><td>Requests</td></tr>
+  <tr><td>TLS</td><td>reicht durch</td><td>beendet</td></tr>
+  <tr><td>Azure</td><td>Load Balancer</td><td>App Gateway, Front Door</td></tr>
+</table>
+
+<h2>6. In der Produktion</h2>
+<ol>
+  <li><b>Ein Pod bekommt allen gRPC-Traffic:</b> Eine HTTP/2-Verbindung bleibt auf einem Pod. Lösung: L7-Balancing (Gateway, Service Mesh) oder Client-seitiges Balancing.</li>
+  <li><b>Health Check zu tief:</b> <code>/healthz</code> prüft die Datenbank. Die DB hängt kurz, alle Pods fliegen raus. Totalausfall. Lösung: Health Check prüft nur die eigene Instanz.</li>
+  <li><b>Sticky Sessions machen Last ungleich:</b> Ein grosser Kunde klebt an einem Server. Neue Pods bleiben leer. Lösung: zustandslose Server, Session in Redis oder im Token.</li>
+  <li><b>Fehler beim Deployment:</b> Pods werden beendet, während der LB noch Traffic schickt. Lösung: Readiness Probe, <code>preStop</code>-Pause, Connection Draining.</li>
+  <li><b>Idle Timeout trennt Verbindungen:</b> Azure Load Balancer trennt inaktive TCP-Flows standardmässig nach 4 Minuten. Lösung: TCP-Keepalive oder Timeout erhöhen.</li>
+  <li><b>SNAT-Port-Erschöpfung:</b> Viele ausgehende Verbindungen über einen Load Balancer brauchen alle Ports auf. Lösung: Connection Pooling, NAT Gateway.</li>
+  <li><b>Retry-Sturm:</b> Der LB wiederholt fehlgeschlagene Requests. Das verdoppelt die Last auf ein schon krankes System. Lösung: Retries begrenzen, Backoff, Circuit Breaker.</li>
+</ol>
+
+<h2>7. Diagnose: Werkzeuge und Metriken</h2>
+<ul>
+  <li><b>Azure Load Balancer:</b> Metriken <code>Health Probe Status</code> (DipAvailability), <code>Data Path Availability</code>, <code>SNAT Connection Count</code>.</li>
+  <li><b>Application Gateway:</b> <code>Healthy/Unhealthy Host Count</code>, <code>Backend Response Status</code>, Access Logs mit <code>timeTaken</code>. Befehl: <code>az network application-gateway show-backend-health</code>.</li>
+  <li><b>Front Door:</b> <code>Origin Health Percentage</code>, <code>Origin Latency</code>, Access Logs pro Request.</li>
+  <li><b>Kubernetes:</b> <code>kubectl get endpointslices -l kubernetes.io/service-name=&lt;svc&gt;</code> zeigt, welche Pods im Service sind. <code>kubectl describe pod</code> zeigt fehlgeschlagene Readiness Probes.</li>
+  <li><b>Verteilung prüfen:</b> Requests pro Pod in Prometheus vergleichen. Ein Pod mit viel mehr Last zeigt Sticky Sessions oder lange Verbindungen.</li>
+  <li><b><code>curl -v</code></b> mit Header-Ausgabe: zeigt TLS, Weiterleitungen und Cookie-Affinity.</li>
+</ul>
+
+<h2>8. Senior-Punkte</h2>
+<div class="senior">
+<ol>
+  <li><b>Zustandslose Backends</b> sind die Voraussetzung. Dann ist jeder Algorithmus gut genug, und Skalieren ist einfach.</li>
+  <li><b>Health Checks sind ein Design-Thema.</b> Zu flach: kranke Pods bekommen Traffic. Zu tief: ein Abhängigkeitsfehler wird zum Totalausfall.</li>
+  <li><b>L4 oder L7 ist eine Abwägung:</b> L4 ist schneller und protokollneutral. L7 ist klüger, kostet aber TLS-Arbeit und Latenz.</li>
+  <li><b>Lange Verbindungen</b> (gRPC, WebSocket) brauchen L7 oder Client-Balancing. Sonst verteilt der LB nur beim Verbindungsaufbau.</li>
+  <li><b>Consistent Hashing</b> nutze ich, wenn Daten am Server hängen (Cache, Shards). Für zustandslose Server reicht Least Connections.</li>
+  <li><b>Der Load Balancer selbst</b> darf kein Single Point of Failure sein. Cloud-LBs sind redundant. Eigene LBs brauchen ein Paar mit Failover.</li>
+</ol>
+</div>
+
+<h2>9. Aus dem Projekt</h2>
+<p>„Bei MATCH auf AKS geht der Traffic über einen Ingress auf die Services. Readiness Probes sorgen dafür, dass neue Pods erst nach dem Start Traffic bekommen.“ <span class="small">(Prüfen und durch dein echtes Beispiel ersetzen.)</span></p>
+
+<h2>10. Fallen</h2>
+<div class="trap">
+<ul>
+  <li>„Round Robin verteilt die Last gleichmässig.“ → <b>Falsch.</b> Es verteilt die <b>Anzahl</b> gleich, nicht die Arbeit.</li>
+  <li>„Ein Kubernetes-Service balanciert gRPC-Requests.“ → <b>Falsch.</b> Er balanciert nur <b>Verbindungen</b> (L4).</li>
+  <li>„Front Door und Application Gateway sind dasselbe.“ → <b>Falsch.</b> Front Door ist global am Edge, Application Gateway regional im VNet.</li>
+  <li>„Traffic Manager leitet Traffic weiter.“ → <b>Falsch.</b> Er beantwortet nur DNS. Der Client verbindet sich direkt.</li>
+  <li>„Sticky Sessions sind ein gutes Default.“ → <b>Falsch.</b> Sie machen Last ungleich und verlieren Sessions beim Ausfall.</li>
+  <li>„Health Check soll alle Abhängigkeiten prüfen.“ → <b>Falsch.</b> Dann reisst ein DB-Problem alle Instanzen aus dem Pool.</li>
+</ul>
+</div>
+
+<h2>11. Fragen</h2>
+<details><summary>Was ist ein Load Balancer?</summary><p>Eine Komponente, die Requests auf mehrere Backends verteilt. Sie bringt Skalierung und Verfügbarkeit, weil kranke Backends keinen Traffic mehr bekommen.</p></details>
+<details><summary>Was ist der Unterschied zwischen L4 und L7?</summary><p>L4 sieht nur IP, Port und Protokoll und verteilt Verbindungen. L7 versteht HTTP, routet nach Pfad, Header oder Cookie und verteilt einzelne Requests.</p></details>
+<details><summary>Welche Algorithmen kennen Sie?</summary><p>Round Robin, Weighted Round Robin, Least Connections, Least Response Time, Power of Two Choices, IP-Hash und Consistent Hashing.</p></details>
+<details><summary>Wann ist Least Connections besser als Round Robin?</summary><p>Wenn Requests unterschiedlich lange dauern oder Server unterschiedlich schnell sind. Round Robin überlastet dann den langsamen Server.</p></details>
+<details><summary>Was ist Consistent Hashing?</summary><p>Knoten und Schlüssel liegen auf einem Hash-Ring. Ein Schlüssel gehört zum nächsten Knoten im Uhrzeigersinn. Bei einem neuen Knoten wandern nur ca. 1/N der Schlüssel.</p></details>
+<details><summary>Warum virtuelle Knoten?</summary><p>Mit einem Punkt pro Knoten sind die Abschnitte ungleich gross. Viele Punkte pro Knoten glätten die Verteilung. Man kann so auch stärkeren Knoten mehr Gewicht geben.</p></details>
+<details><summary>Warum nicht einfach hash % N?</summary><p>Ändert sich N, wandern fast alle Schlüssel. In der Simulation 80 % bei 4 → 5 Knoten. Ein Cache wird dadurch fast leer.</p></details>
+<details><summary>Was ist ein Health Check?</summary><p>Eine regelmässige Abfrage, ob ein Backend Traffic annehmen kann. Nach mehreren Fehlern nimmt der LB das Backend aus dem Pool.</p></details>
+<details><summary>Was soll ein Health-Endpunkt prüfen?</summary><p>Nur die eigene Instanz: Prozess läuft, kann antworten. Nicht die Datenbank. Sonst reisst ein DB-Fehler alle Instanzen gleichzeitig raus.</p></details>
+<details><summary>Was sind Sticky Sessions und wann brauchen Sie sie?</summary><p>Ein Client geht immer zum selben Backend, per Cookie oder Client-IP. Nur bei Altsystemen mit Session im Speicher. Besser: Session extern speichern.</p></details>
+<details><summary>Wie verteilt Azure Load Balancer standardmässig?</summary><p>Mit einem 5-Tupel-Hash aus Quell-IP, Quell-Port, Ziel-IP, Ziel-Port und Protokoll. Optional Session Persistence mit 2- oder 3-Tupel.</p></details>
+<details><summary>Azure Load Balancer vs Application Gateway vs Front Door?</summary><p>Load Balancer: regional, L4. Application Gateway: regional, L7 mit WAF im VNet. Front Door: global, L7 am Edge mit WAF und Caching.</p></details>
+<details><summary>Was macht Traffic Manager?</summary><p>Globales Load Balancing über DNS. Er gibt die IP eines gesunden Endpunkts zurück. Der Traffic selbst geht nicht durch ihn.</p></details>
+<details><summary>Wie funktioniert ein Kubernetes-Service?</summary><p>Er hat eine stabile virtuelle IP. kube-proxy programmiert Regeln, die jede neue Verbindung auf einen bereiten Pod leiten.</p></details>
+<details><summary>Was ist der Unterschied zwischen Service und Ingress?</summary><p>Ein Service balanciert auf L4 zwischen Pods. Ein Ingress beschreibt L7-Regeln nach Host und Pfad zu Services. Er braucht einen Ingress-Controller.</p></details>
+<details><summary>Was ist die Gateway API?</summary><p>Der Nachfolger von Ingress in Kubernetes. Sie trennt Rollen (Infrastruktur, Cluster, App) und kann mehr Protokolle und Traffic-Splitting.</p></details>
+<details><summary>Warum balanciert ein Service gRPC schlecht?</summary><p>gRPC nutzt eine lange HTTP/2-Verbindung. kube-proxy verteilt nur beim Verbindungsaufbau. Alle Requests gehen an denselben Pod.</p></details>
+<details><summary>Was ist Connection Draining?</summary><p>Ein Backend bekommt keine neuen Verbindungen mehr, laufende dürfen fertig werden. Wichtig bei Deployments und Scale-in.</p></details>
+<details><summary>Wie sieht das Backend die echte Client-IP?</summary><p>Bei L7 im Header X-Forwarded-For. Bei L4 bleibt sie oft erhalten, in Kubernetes mit externalTrafficPolicy: Local.</p></details>
+<details><summary>Wo beenden Sie TLS?</summary><p>Am L7-LB, damit er Routing und WAF machen kann. Für sensible Daten neu verschlüsseln bis zum Backend (End-to-End TLS).</p></details>
+<details><summary>Wie verhindern Sie, dass der LB ein Single Point of Failure ist?</summary><p>Cloud-LBs sind intern redundant und zonenredundant. Eigene LBs laufen als Paar mit Failover, z. B. über eine virtuelle IP.</p></details>
+<details><summary>Szenario: Nach einem Scale-out bekommen die neuen Pods kaum Traffic. Warum?</summary><p>Wahrscheinlich lange Verbindungen (HTTP/2, gRPC, Keepalive) oder Sticky Sessions. Bestehende Verbindungen bleiben auf alten Pods. Lösung: L7-Balancing, maximale Verbindungsdauer begrenzen, Affinity entfernen.</p></details>
+<details><summary>Szenario: Die Datenbank hat 30 Sekunden Störung, danach ist die ganze App 5 Minuten down. Warum?</summary><p>Der Health Check prüft die Datenbank. Alle Pods wurden unhealthy und aus dem Pool genommen. Dazu Retry-Sturm beim Wiederanlauf. Lösung: flache Health Checks, Backoff, Circuit Breaker.</p></details>
+<details><summary>Szenario: Eine App soll in zwei Azure-Regionen laufen, mit Failover. Was bauen Sie?</summary><p>Front Door global mit Health Probes auf beide Regionen. Pro Region Application Gateway oder AKS-Gateway mit WAF. Daten repliziert. Routing nach Latenz oder Priorität.</p></details>
+
+</body>
+</html>

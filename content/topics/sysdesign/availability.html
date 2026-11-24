@@ -1,0 +1,240 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Verfügbarkeit, Redundanz, Disaster Recovery</title>
+<style>
+  body { font: 17px/1.55 -apple-system, system-ui, sans-serif; max-width: 760px; margin: 0 auto; padding: 16px; color: #1d1d1f; }
+  h1 { font-size: 28px; margin: 8px 0 4px; }
+  h2 { font-size: 21px; margin: 32px 0 8px; padding-top: 12px; border-top: 2px solid #e5e5ea; }
+  .kern { background: #eef6ff; border-left: 4px solid #0a66c2; padding: 10px 14px; border-radius: 6px; }
+  .senior { background: #f0faf0; border-left: 4px solid #2e7d32; padding: 10px 14px; border-radius: 6px; }
+  .trap { background: #fff4f2; border-left: 4px solid #c62828; padding: 10px 14px; border-radius: 6px; }
+  code { background: #f2f2f7; padding: 1px 5px; border-radius: 4px; font-size: 15px; }
+  pre { background: #1e1e1e; color: #e6e6e6; padding: 12px; border-radius: 8px; overflow-x: auto; font-size: 13.5px; line-height: 1.45; }
+  svg { width: 100%; height: auto; display: block; margin: 10px 0; }
+  ol li, ul li { margin: 4px 0; }
+  details { border: 1px solid #e5e5ea; border-radius: 8px; padding: 8px 12px; margin: 6px 0; }
+  summary { font-weight: 600; cursor: pointer; }
+  details p { margin: 6px 0 2px; }
+  .small { color: #6e6e73; font-size: 14px; }
+</style>
+</head>
+<body>
+
+<h1>Verfügbarkeit, Redundanz, Disaster Recovery</h1>
+<p class="small">System Design · Tier 1 · Quellen: Google SRE Book, Kap. 3 „Embracing Risk“ und Kap. 4 „Service Level Objectives“, Azure Architecture Center und Well-Architected Framework (Reliability: Redundanz, Multi-Region, Disaster Recovery, Failure Mode Analysis), Microsoft Learn: „List of Azure Regions“ (Switzerland North/West), „What are availability zones?“, „Azure region pairs“, Azure Storage Redundancy, Azure SQL Database Business Continuity, AKS Pricing Tiers, Azure Chaos Studio, SLA for Online Services (Virtual Machines)</p>
+
+<div class="kern">
+<b>Kern:</b> <b>Verfügbarkeit</b> ist der Anteil der Zeit oder der Requests, in dem ein System korrekt antwortet. Man misst sie in <b>Neunen</b>: 99,9 % erlaubt ca. 8,8 Stunden Ausfall pro Jahr. <b>Redundanz</b> hält das System bei kleinen Fehlern am Laufen, z. B. beim Ausfall einer Zone. <b>Disaster Recovery</b> (DR) bringt es nach grossen Fehlern zurück, z. B. beim Ausfall einer Region. Zwei Zahlen steuern DR: <b>RTO</b> (wie lange weg) und <b>RPO</b> (wie viele Daten weg).
+</div>
+
+<h2>1. Wo sitzt Redundanz? Zonen und Regionen in der Schweiz</h2>
+<svg viewBox="0 0 720 330" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="a" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="250" y="8" width="220" height="44" rx="8" fill="#fff" stroke="#555"/><text x="360" y="28" text-anchor="middle" font-weight="700">Azure Front Door</text><text x="360" y="44" text-anchor="middle" font-size="12">globaler Einstieg, Health Probes</text>
+  <line x1="300" y1="52" x2="230" y2="88" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <line x1="420" y1="52" x2="560" y2="88" stroke="#555" stroke-width="1.5" stroke-dasharray="6 4" marker-end="url(#a)"/>
+  <rect x="10" y="90" width="430" height="230" rx="12" fill="#f7f7fa" stroke="#999" stroke-dasharray="5 4"/><text x="225" y="112" text-anchor="middle" font-weight="700">Switzerland North (Zürich) · 3 Zonen</text>
+  <rect x="24" y="126" width="128" height="96" rx="8" fill="#0a66c2"/><text x="88" y="152" text-anchor="middle" fill="#fff" font-weight="700">Zone 1</text><text x="88" y="174" text-anchor="middle" fill="#fff" font-size="12">AKS-Nodes</text><text x="88" y="192" text-anchor="middle" fill="#fff" font-size="12">DB-Replika</text>
+  <rect x="161" y="126" width="128" height="96" rx="8" fill="#0a66c2"/><text x="225" y="152" text-anchor="middle" fill="#fff" font-weight="700">Zone 2</text><text x="225" y="174" text-anchor="middle" fill="#fff" font-size="12">AKS-Nodes</text><text x="225" y="192" text-anchor="middle" fill="#fff" font-size="12">DB-Replika</text>
+  <rect x="298" y="126" width="128" height="96" rx="8" fill="#0a66c2"/><text x="362" y="152" text-anchor="middle" fill="#fff" font-weight="700">Zone 3</text><text x="362" y="174" text-anchor="middle" fill="#fff" font-size="12">AKS-Nodes</text><text x="362" y="192" text-anchor="middle" fill="#fff" font-size="12">DB-Replika</text>
+  <text x="225" y="246" text-anchor="middle" font-size="12">synchron, Latenz zwischen Zonen ca. &lt; 2 ms</text>
+  <rect x="60" y="260" width="330" height="44" rx="8" fill="#e8f5e9" stroke="#2e7d32"/><text x="225" y="287" text-anchor="middle">Backups (ZRS / GRS, unveränderlich)</text>
+  <rect x="470" y="90" width="240" height="160" rx="12" fill="#f7f7fa" stroke="#999" stroke-dasharray="5 4"/><text x="590" y="112" text-anchor="middle" font-weight="700">Switzerland West (Genf)</text>
+  <rect x="490" y="126" width="200" height="96" rx="8" fill="#eee" stroke="#777"/><text x="590" y="152" text-anchor="middle" font-weight="700">DR-Standby</text><text x="590" y="174" text-anchor="middle" font-size="12">keine Zonen</text><text x="590" y="192" text-anchor="middle" font-size="12">Zugang auf Antrag</text>
+  <line x1="440" y1="174" x2="488" y2="174" stroke="#c62828" stroke-width="2" stroke-dasharray="6 4" marker-end="url(#a)"/>
+  <text x="590" y="276" text-anchor="middle" font-size="12" fill="#c62828">asynchrone Replikation</text>
+  <text x="590" y="294" text-anchor="middle" font-size="12" fill="#c62828">→ RPO &gt; 0</text>
+</svg>
+<ol>
+  <li><b>Region:</b> Eine <b>Region</b> ist ein geografisches Gebiet mit einem oder mehreren Rechenzentren. Beispiel: <b>Switzerland North</b> in Zürich.</li>
+  <li><b>Availability Zone:</b> Eine <b>Zone</b> ist eine Gruppe von Rechenzentren mit eigenem Strom, Kühlung und Netz. Switzerland North hat <b>3 Zonen</b>.</li>
+  <li><b>Zonenredundanz:</b> Der Service läuft in allen 3 Zonen. Fällt eine aus, übernehmen die anderen automatisch. Die Daten replizieren <b>synchron</b>, also ohne Verlust.</li>
+  <li><b>Region Pair:</b> <b>Switzerland West</b> in Genf ist das Paar von Switzerland North. Sie hat <b>keine Zonen</b>. Der Zugang ist <b>eingeschränkt</b> und braucht einen Antrag bei Microsoft.</li>
+  <li><b>Zweite Region:</b> Sie schützt vor dem Ausfall der ganzen Region. Die Replikation ist <b>asynchron</b>, darum gehen einige Sekunden Daten verloren.</li>
+  <li><b>Front Door:</b> Der globale Einstieg prüft beide Regionen mit <b>Health Probes</b>. Er leitet Traffic zur gesunden Region.</li>
+  <li><b>Backups:</b> Sie schützen vor <b>logischen Fehlern</b>, z. B. gelöschten Daten oder Ransomware. Redundanz kopiert solche Fehler sofort mit.</li>
+</ol>
+
+<h2>2. Die Reise eines Ausfalls: von der Zone bis zur Region (die Geschichte zum Merken)</h2>
+<svg viewBox="0 0 720 300" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="b" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker><marker id="r" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#c62828"/></marker></defs>
+  <rect x="10" y="20" width="160" height="70" rx="10" fill="#e8f5e9" stroke="#2e7d32"/><text x="90" y="46" text-anchor="middle" font-weight="700">1. Normalbetrieb</text><text x="90" y="66" text-anchor="middle" font-size="12">3 Zonen, Region North</text>
+  <line x1="170" y1="55" x2="208" y2="55" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="210" y="20" width="160" height="70" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="290" y="46" text-anchor="middle" font-weight="700">2. Zone 1 fällt</text><text x="290" y="66" text-anchor="middle" font-size="12">automatisch, RPO = 0</text>
+  <line x1="370" y1="55" x2="408" y2="55" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="410" y="20" width="140" height="70" rx="10" fill="#fff4f2" stroke="#c62828"/><text x="480" y="46" text-anchor="middle" font-weight="700" fill="#c62828">3. Region fällt</text><text x="480" y="66" text-anchor="middle" font-size="12">Probes rot</text>
+  <line x1="550" y1="55" x2="588" y2="55" stroke="#c62828" stroke-width="2" marker-end="url(#r)"/>
+  <rect x="590" y="20" width="120" height="70" rx="10" fill="#fff" stroke="#555"/><text x="650" y="46" text-anchor="middle" font-weight="700">4. Entscheid</text><text x="650" y="66" text-anchor="middle" font-size="12">Failover ja?</text>
+  <line x1="650" y1="90" x2="650" y2="148" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="520" y="150" width="190" height="70" rx="10" fill="#0a66c2"/><text x="615" y="176" text-anchor="middle" fill="#fff" font-weight="700">5. DB in West</text><text x="615" y="196" text-anchor="middle" fill="#fff" font-size="12">zur Primären machen</text>
+  <line x1="520" y1="185" x2="442" y2="185" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="250" y="150" width="190" height="70" rx="10" fill="#0a66c2"/><text x="345" y="176" text-anchor="middle" fill="#fff" font-weight="700">6. Traffic nach West</text><text x="345" y="196" text-anchor="middle" fill="#fff" font-size="12">Front Door umleiten</text>
+  <line x1="250" y1="185" x2="192" y2="185" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="10" y="150" width="180" height="70" rx="10" fill="#eee" stroke="#777"/><text x="100" y="176" text-anchor="middle" font-weight="700">7. Failback</text><text x="100" y="196" text-anchor="middle" font-size="12">geplant, später</text>
+  <text x="360" y="262" text-anchor="middle" font-size="12">RTO = Zeit von 3 bis 6 · RPO = Daten, die bei 5 noch nicht in West waren</text>
+</svg>
+<ol>
+  <li><b>Normalbetrieb.</b> Der Service läuft in Switzerland North über 3 Zonen. Die Datenbank hat eine synchrone Replika pro Zone und eine asynchrone in West.</li>
+  <li><b>Zone 1 fällt aus.</b> Load Balancer und Datenbank merken es in Sekunden. Traffic geht zu Zone 2 und 3. Niemand muss etwas tun. Keine Daten gehen verloren (<b>RPO = 0</b>).</li>
+  <li><b>Die ganze Region fällt aus.</b> Die Health Probes von Front Door werden rot. Jetzt hilft keine Zone mehr.</li>
+  <li><b>Entscheid.</b> Ein Mensch oder eine Regel entscheidet den <b>Failover</b>. Ein automatischer Failover bei kurzem Wackeln ist teuer. Darum ist er oft bewusst manuell.</li>
+  <li><b>Datenbank umschalten.</b> Die Replika in Switzerland West wird zur <b>Primären</b> (Promotion). Was noch nicht repliziert war, ist weg. Das ist der <b>RPO</b>.</li>
+  <li><b>Traffic umleiten.</b> Front Door schickt alle Requests nach West. Die Zeit vom Ausfall bis hier ist der <b>RTO</b>.</li>
+  <li><b>Failback.</b> Ist North zurück, wird es wieder Replika. Der Rückweg ist ein geplanter, getesteter Schritt.</li>
+</ol>
+
+<h2>3. Beispiel: Verfügbarkeit ausrechnen</h2>
+<pre>YEAR_MIN = 365 * 24 * 60
+def serial(*xs):   return product(xs)                  # alle müssen laufen
+def parallel(*xs): return 1 - product(1 - x for x in xs)  # einer reicht
+
+for a in [99.0, 99.9, 99.95, 99.99, 99.999]: print(downtime(a))
+gw, app, db = 0.9995, 0.999, 0.9999
+serial(gw, app, db)                       # 1)
+serial(gw, parallel(app, app), db)        # 2) App in 2 Zonen
+serial(gw, parallel(app, app, app), db)   # 3) App in 3 Zonen
+serial(*[0.999] * 10)                     # 4) 10 Microservices in Reihe
+parallel(r, r)                            # 5) 2 Regionen active-active</pre>
+<pre>SLA        downtime/year   downtime/30 days
+99.0    %         3.65 d          7.20 h
+99.9    %         8.76 h       43.20 min
+99.95   %         4.38 h       21.60 min
+99.99   %      52.56 min        4.32 min
+99.999  %       5.26 min        0.43 min
+
+1) serial: gateway 99.95 % -> app 99.9 % -> db 99.99 %
+   = 99.84006 %  (14.01 h/year)
+2) app in 2 zones (parallel), rest serial
+   = 99.93991 %  (5.26 h/year)
+3) app in 3 zones (parallel), rest serial
+   = 99.94000 %  (5.26 h/year)
+4) 10 serial microservices, each 99.9 %
+   = 99.00449 %  (3.63 d/year)
+5) 2 regions active-active, each region = case 2
+   = 99.99996 %  (0.19 min/year)</pre>
+<p class="small">Echte Ausgabe, Python 3 (Simulation). Annahmen: 365 Tage, unabhängige Ausfälle. Die Prozentwerte sind Beispielzahlen, keine Azure-SLAs.</p>
+<ol>
+  <li><b>Jede Neun</b> teilt die erlaubte Ausfallzeit durch 10. 99,99 % heisst nur 4,3 Minuten pro Monat.</li>
+  <li><b>In Reihe</b> (Fall 1) multiplizieren sich die Werte. Das Ganze ist schlechter als das schwächste Glied: 99,84 %.</li>
+  <li><b>Parallel</b> (Fall 2) wird die App fast perfekt. Das Gesamtsystem steigt aber nur auf 99,94 %. Jetzt begrenzen Gateway und DB.</li>
+  <li><b>Eine dritte Zone</b> (Fall 3) bringt fast nichts mehr. Der Engpass liegt woanders.</li>
+  <li><b>10 Services in Reihe</b> (Fall 4) mit je 99,9 % ergeben nur 99 %. Das sind 3,6 Tage Ausfall pro Jahr.</li>
+  <li><b>Zwei Regionen</b> (Fall 5) sehen auf dem Papier perfekt aus. Die Formel nimmt aber <b>unabhängige</b> Ausfälle an. Ein fehlerhaftes Deployment trifft beide Regionen gleichzeitig.</li>
+</ol>
+
+<h2>4. Details, die Interviewer fragen</h2>
+<ol>
+  <li><b>SLI, SLO, SLA:</b> Ein <b>SLI</b> ist eine Messgrösse, z. B. Anteil erfolgreicher Requests. Ein <b>SLO</b> ist das interne Ziel, z. B. 99,9 %. Ein <b>SLA</b> ist ein Vertrag mit Folgen, z. B. Gutschriften.</li>
+  <li><b>Zwei Messarten:</b> <b>Zeitbasiert</b>: Uptime / Gesamtzeit. <b>Request-basiert</b>: erfolgreiche / alle Requests. Das SRE Book empfiehlt für verteilte Dienste die Request-Sicht.</li>
+  <li><b>Error Budget:</b> Das <b>Error Budget</b> ist 1 − SLO. Bei 99,9 % sind das 0,1 % Fehler. Ist das Budget aufgebraucht, stoppt man riskante Releases.</li>
+  <li><b>Serielle und parallele Formel:</b> In Reihe: <code>A = A1 × A2 × …</code>. Parallel: <code>A = 1 − (1 − A1) × (1 − A2)</code>. Parallel gilt nur bei unabhängigen Ausfällen.</li>
+  <li><b>Zonal vs zonenredundant:</b> <b>Zonal</b> heisst: Die Ressource liegt fest in einer Zone. <b>Zonenredundant</b> heisst: Azure verteilt sie selbst über mehrere Zonen.</li>
+  <li><b>Logische Zonennummern:</b> Zone 1 in Subscription A ist nicht unbedingt Zone 1 in Subscription B. Azure mappt die Nummern pro Subscription.</li>
+  <li><b>VM-SLA als Merkzahl:</b> 2+ VMs über 2+ Zonen: 99,99 %. Availability Set: 99,95 %. Eine VM mit Premium SSD: 99,9 %.</li>
+  <li><b>AKS:</b> Die Control Plane hat im <b>Standard Tier</b> ein SLA: 99,95 % mit Zonen, sonst 99,9 %. Die Workloads verteilt man selbst mit Node Pools über Zonen und <code>topologySpreadConstraints</code>.</li>
+  <li><b>RTO und RPO:</b> <b>RTO</b> (Recovery Time Objective) ist die maximale Ausfallzeit. <b>RPO</b> (Recovery Point Objective) ist der maximale Datenverlust, gemessen in Zeit. Beide kommen vom Business, nicht von der Technik.</li>
+  <li><b>DR-Stufen:</b> <b>Backup &amp; Restore</b> (Stunden, billig), <b>Cold/Warm Standby</b> (Minuten, Infrastruktur steht teilweise), <b>Hot Standby</b> (aktiv-passiv, schnell), <b>Active-Active</b> (beide Regionen nehmen Traffic). Je kleiner RTO und RPO, desto teurer.</li>
+  <li><b>Active-Active:</b> Beide Regionen bedienen Benutzer. Failover ist fast sofort. Schwierig sind Schreibkonflikte und Datenkonsistenz.</li>
+  <li><b>Active-Passive:</b> Nur eine Region schreibt. Die andere wartet und repliziert. Einfacher, aber Failover dauert länger und die passive Region ist oft ungetestet.</li>
+  <li><b>Storage-Redundanz:</b> <b>LRS</b>: 3 Kopien in einem Rechenzentrum. <b>ZRS</b>: 3 Kopien über 3 Zonen. <b>GRS</b>: LRS plus asynchrone Kopie in der Paar-Region. <b>GZRS</b>: ZRS plus Paar-Region.</li>
+  <li><b>Backups:</b> <b>3-2-1-Regel</b>: 3 Kopien, 2 Medien, 1 ausser Haus. Dazu <b>unveränderliche</b> Backups gegen Ransomware. Ein Backup zählt erst nach einem <b>getesteten Restore</b>. Azure SQL bietet Point-in-Time-Restore, Standard 7 Tage, bis 35 Tage.</li>
+  <li><b>Quorum und Split Brain:</b> <b>Split Brain</b> heisst: Zwei Seiten halten sich beide für primär. Ein <b>Quorum</b> (Mehrheit) verhindert das. Darum 3 Zonen, nicht 2.</li>
+  <li><b>Chaos Testing:</b> <b>Chaos Engineering</b> löst Fehler absichtlich und kontrolliert aus. Beispiel: <b>Azure Chaos Studio</b> stoppt VMs einer Zone oder blockt Netzverkehr. Ziel: Beweis, dass der Failover wirklich klappt.</li>
+</ol>
+
+<h2>5. Vergleich</h2>
+<table style="border-collapse: collapse; width: 100%; font-size: 15px;">
+  <tr style="border-bottom: 2px solid #e5e5ea; text-align: left;"><th>Strategie</th><th>RTO / RPO</th><th>Kosten und Aufwand</th></tr>
+  <tr style="border-bottom: 1px solid #e5e5ea;"><td><b>Backup &amp; Restore</b></td><td>Stunden / Stunden</td><td>tief; Restore muss geübt sein</td></tr>
+  <tr style="border-bottom: 1px solid #e5e5ea;"><td><b>Warm Standby</b></td><td>Minuten bis 1 h / Sekunden bis Minuten</td><td>mittel; Infrastruktur klein vorhanden</td></tr>
+  <tr style="border-bottom: 1px solid #e5e5ea;"><td><b>Hot Standby (aktiv-passiv)</b></td><td>Minuten / Sekunden</td><td>hoch; zweite Region voll bezahlt</td></tr>
+  <tr><td><b>Active-Active</b></td><td>Sekunden / ~0 bis Sekunden</td><td>sehr hoch; Konflikte, Konsistenz</td></tr>
+</table>
+<ul>
+  <li><b>Zonen vs Regionen:</b> Zonen schützen vor Rechenzentrumsausfall, synchron und ohne Datenverlust. Regionen schützen vor Katastrophen, asynchron und mit RPO &gt; 0.</li>
+  <li><b>Redundanz vs Backup:</b> Redundanz schützt vor Hardware-Ausfall. Backup schützt vor Löschung und Korruption. Man braucht beides.</li>
+  <li><b>Hochverfügbarkeit vs DR:</b> HA ist automatisch und innerhalb der Region. DR ist ein Plan für den Verlust der Region.</li>
+</ul>
+
+<h2>6. In der Produktion</h2>
+<ol>
+  <li><b>Versteckter Single Point of Failure:</b> Die App läuft in 3 Zonen, aber Redis oder das NAT Gateway nur in einer. Lösung: jede Abhängigkeit prüfen, mit Failure Mode Analysis.</li>
+  <li><b>Deployment als häufigste Ursache:</b> Viele Ausfälle kommen von Releases, nicht von Hardware. Zonen helfen hier nicht. Lösung: Canary, schneller Rollback, Feature Flags.</li>
+  <li><b>Ungetesteter Failover:</b> Die DR-Region existiert, aber niemand hat je umgeschaltet. Im Ernstfall fehlen Secrets, DNS oder Kapazität. Lösung: regelmässige DR-Übungen.</li>
+  <li><b>Kapazität in der zweiten Region:</b> Bei einem grossen Ausfall wollen alle Kunden gleichzeitig dorthin. Lösung: Kapazität reservieren, und Switzerland West früh beantragen.</li>
+  <li><b>Backups ohne Restore-Test:</b> Das Backup ist korrupt oder der Restore dauert 3 Tage. Lösung: Restore regelmässig üben und Zeit messen.</li>
+  <li><b>Zonenausfall und Pod-Verteilung:</b> Alle Pods landen in einer Zone. Lösung: <code>topologySpreadConstraints</code>, <code>PodDisruptionBudget</code>, Node Pools über 3 Zonen.</li>
+  <li><b>DNS-TTL:</b> Ein DNS-Failover wirkt erst nach Ablauf der TTL in Caches. Lösung: kurze TTL oder Front Door (Anycast) statt reinem DNS.</li>
+</ol>
+
+<h2>7. Diagnose: Werkzeuge und Metriken</h2>
+<ul>
+  <li><b>SLO-Messung:</b> Erfolgsquote und Latenz pro Endpunkt, z. B. in Application Insights oder Prometheus. Error-Budget-Verbrauch als <b>Burn Rate</b> alarmieren.</li>
+  <li><b>Azure Service Health und Resource Health:</b> zeigen Plattform-Störungen pro Region und Ressource.</li>
+  <li><b>Zonen prüfen:</b> <code>kubectl get nodes -L topology.kubernetes.io/zone</code> zeigt die Zone jedes Nodes. <code>kubectl get pods -o wide</code> zeigt, wo Pods laufen.</li>
+  <li><b>Azure CLI:</b> <code>az vm list-skus --location switzerlandnorth --zone</code> zeigt, welche VM-Grössen Zonen unterstützen.</li>
+  <li><b>Azure Chaos Studio:</b> Experimente für Zonenausfall, Netzfehler, CPU-Last.</li>
+  <li><b>DR-Übung:</b> RTO und RPO real messen und mit dem Ziel vergleichen.</li>
+  <li><b>Front Door:</b> Health-Probe-Metriken und Origin-Status zeigen, welche Region als gesund gilt.</li>
+</ul>
+
+<h2>8. Senior-Punkte</h2>
+<div class="senior">
+<ol>
+  <li><b>Verfügbarkeit ist eine Geschäftsentscheidung.</b> Jede Neun kostet viel mehr. Zuerst fragen: Was kostet eine Stunde Ausfall?</li>
+  <li><b>Das schwächste serielle Glied bestimmt das Ganze.</b> Erst den Engpass redundant machen, dann den Rest.</li>
+  <li><b>Unabhängigkeit ist die Annahme hinter jeder Rechnung.</b> Gemeinsame Konfiguration, Releases oder Identität (Entra ID) brechen sie.</li>
+  <li><b>Ein ungetesteter DR-Plan ist kein Plan.</b> Regelmässig üben, mit gemessenem RTO und RPO.</li>
+  <li><b>Zonen zuerst, Regionen gezielt.</b> In der Schweiz geben 3 Zonen in North viel Schutz. Eine zweite Region bringt Komplexität und RPO &gt; 0.</li>
+  <li><b>Graceful Degradation:</b> Lieber eingeschränkt laufen als ganz ausfallen. Beispiel: nur lesen, wenn die Schreib-DB weg ist.</li>
+</ol>
+</div>
+
+<h2>9. Aus dem Projekt</h2>
+<p>„Bei MATCH auf AKS war unser schnellster Weg aus einem fehlerhaften Release ein <code>git revert</code>, den ArgoCD automatisch ausrollte; das senkte unsere Wiederherstellungszeit stärker als jede zusätzliche Zone.“ <span class="small">(Prüfen und durch dein echtes Beispiel ersetzen.)</span></p>
+
+<h2>10. Fallen</h2>
+<div class="trap">
+<ul>
+  <li>„Mehr Komponenten machen das System verfügbarer.“ → <b>Falsch.</b> Nur parallel. In Reihe sinkt die Verfügbarkeit mit jeder Komponente.</li>
+  <li>„Replikation ersetzt Backups.“ → <b>Falsch.</b> Ein gelöschter Datensatz wird sofort mit repliziert.</li>
+  <li>„Zwei Regionen geben 99,9999 %.“ → Nur auf dem Papier. Gemeinsame Fehler wie ein schlechtes Release treffen beide.</li>
+  <li>„Switzerland West hat auch Zonen.“ → <b>Falsch.</b> Nur Switzerland North hat 3 Zonen. West ist eingeschränkt und für DR gedacht.</li>
+  <li>„RPO ist eine Zeitdauer bis zur Wiederherstellung.“ → <b>Falsch.</b> Das ist der RTO. Der RPO misst den Datenverlust.</li>
+  <li>„Das SLA von Azure ist unsere Verfügbarkeit.“ → <b>Falsch.</b> Das SLA gilt pro Dienst. Unsere Kette ist das Produkt aller Teile plus eigener Code.</li>
+</ul>
+</div>
+
+<h2>11. Fragen</h2>
+<details><summary>Was ist Verfügbarkeit, und wie misst man sie?</summary><p>Der Anteil, in dem das System korrekt antwortet. Zeitbasiert (Uptime / Gesamtzeit) oder request-basiert (erfolgreiche / alle Requests).</p></details>
+<details><summary>Wie viel Ausfall erlaubt 99,9 % pro Jahr?</summary><p>Ca. 8,76 Stunden pro Jahr oder 43 Minuten pro 30 Tage.</p></details>
+<details><summary>Und 99,99 %?</summary><p>Ca. 52,6 Minuten pro Jahr oder 4,3 Minuten pro 30 Tage.</p></details>
+<details><summary>Wie rechnen Sie Komponenten in Reihe?</summary><p>Multiplizieren. 99,95 % × 99,9 % × 99,99 % ergibt ca. 99,84 %.</p></details>
+<details><summary>Wie rechnen Sie parallele Komponenten?</summary><p>1 − Produkt der Ausfallwahrscheinlichkeiten. Zwei mal 99,9 % ergeben 99,9999 %, wenn die Ausfälle unabhängig sind.</p></details>
+<details><summary>SLI, SLO, SLA?</summary><p>SLI ist die Messgrösse. SLO ist das interne Ziel. SLA ist der Vertrag mit Folgen. Das SLO ist strenger als das SLA.</p></details>
+<details><summary>Was ist ein Error Budget?</summary><p>1 − SLO. Es erlaubt Risiko. Ist es verbraucht, gehen Stabilität und Fixes vor neuen Features.</p></details>
+<details><summary>Was ist eine Availability Zone?</summary><p>Eine Gruppe von Rechenzentren in einer Region mit eigenem Strom, Kühlung und Netz. Zonen sind nah genug für synchrone Replikation.</p></details>
+<details><summary>Welche Azure-Regionen gibt es in der Schweiz?</summary><p>Switzerland North (Zürich) mit 3 Zonen und Switzerland West (Genf) ohne Zonen. West ist das Paar von North und hat eingeschränkten Zugang.</p></details>
+<details><summary>Zonal vs zonenredundant?</summary><p>Zonal: fest in einer Zone, man verteilt selbst. Zonenredundant: Azure verteilt automatisch über Zonen.</p></details>
+<details><summary>Was sind RTO und RPO?</summary><p>RTO: maximale Ausfallzeit bis zur Wiederherstellung. RPO: maximaler Datenverlust in Zeit.</p></details>
+<details><summary>Warum ist RPO bei Multi-Region meist grösser als 0?</summary><p>Die Replikation zwischen Regionen ist asynchron. Was beim Ausfall noch nicht kopiert war, ist weg.</p></details>
+<details><summary>Active-Active vs Active-Passive?</summary><p>Active-Active: beide Regionen bedienen Traffic, schneller Failover, aber Schreibkonflikte. Active-Passive: eine schreibt, die andere wartet. Einfacher, langsamerer Failover.</p></details>
+<details><summary>Welche DR-Strategien gibt es?</summary><p>Backup und Restore, Warm Standby, Hot Standby, Active-Active. Kleineres RTO und RPO kostet mehr.</p></details>
+<details><summary>Was ist der Unterschied zwischen LRS, ZRS und GRS?</summary><p>LRS: 3 Kopien in einem Rechenzentrum. ZRS: über 3 Zonen. GRS: zusätzlich asynchron in die Paar-Region.</p></details>
+<details><summary>Warum braucht man Backups trotz Replikation?</summary><p>Replikation kopiert auch Fehler und Löschungen. Nur ein Backup bringt einen alten, guten Stand zurück.</p></details>
+<details><summary>Was macht ein gutes Backup aus?</summary><p>3-2-1-Regel, unveränderlich, verschlüsselt, getrennte Berechtigung, und regelmässig getesteter Restore.</p></details>
+<details><summary>Was ist Split Brain?</summary><p>Zwei Knoten halten sich beide für primär und schreiben. Ein Quorum mit Mehrheit verhindert das. Darum 3 Zonen.</p></details>
+<details><summary>Automatischer oder manueller Region-Failover?</summary><p>Zonen-Failover ist automatisch. Region-Failover ist oft bewusst manuell, weil er Datenverlust und Kosten bringt.</p></details>
+<details><summary>Wie verteilen Sie Pods in AKS über Zonen?</summary><p>Node Pools über 3 Zonen, topologySpreadConstraints mit topology.kubernetes.io/zone, PodDisruptionBudgets.</p></details>
+<details><summary>Was ist Chaos Engineering?</summary><p>Absichtliche, kontrollierte Fehler in einem System. Es beweist, dass Redundanz und Failover funktionieren. In Azure: Chaos Studio.</p></details>
+<details><summary>Was ist Graceful Degradation?</summary><p>Das System bietet bei Fehlern weniger Funktionen statt gar keine. Beispiel: Lesen geht, Schreiben ist pausiert.</p></details>
+<details><summary>Warum hilft ein DNS-Failover manchmal erst spät?</summary><p>Resolver und Clients cachen den alten Eintrag bis zum Ablauf der TTL. Front Door mit Anycast schaltet schneller.</p></details>
+<details><summary>Szenario: Das Business will 99,99 % für eine App mit 6 Abhängigkeiten in Reihe. Was antworten Sie?</summary><p>Ich rechne die Kette aus. Mit 6 Diensten à 99,95 % sind 99,99 % unmöglich. Lösung: kritische Teile redundant, asynchron entkoppeln, oder das Ziel anpassen.</p></details>
+<details><summary>Szenario: Switzerland North ist komplett ausgefallen. Was passiert, und was ist Ihr Plan?</summary><p>Zonen helfen nicht mehr. DR-Plan: Entscheid, DB in Switzerland West promoten, Front Door umleiten. Datenverlust gleich RPO. Vorbedingung: Zugang zu West, Kapazität, geübtes Runbook.</p></details>
+<details><summary>Szenario: Ein Mitarbeiter löscht versehentlich eine Tabelle in der produktiven DB. Hilft Ihre Geo-Replikation?</summary><p>Nein, die Löschung ist sofort repliziert. Hilfe bringt Point-in-Time-Restore in eine neue DB, dann die Daten zurückkopieren.</p></details>
+
+</body>
+</html>

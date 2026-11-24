@@ -1,0 +1,257 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Vektorsuche und Embeddings</title>
+<style>
+  body { font: 17px/1.55 -apple-system, system-ui, sans-serif; max-width: 760px; margin: 0 auto; padding: 16px; color: #1d1d1f; }
+  h1 { font-size: 28px; margin: 8px 0 4px; }
+  h2 { font-size: 21px; margin: 32px 0 8px; padding-top: 12px; border-top: 2px solid #e5e5ea; }
+  .kern { background: #eef6ff; border-left: 4px solid #0a66c2; padding: 10px 14px; border-radius: 6px; }
+  .senior { background: #f0faf0; border-left: 4px solid #2e7d32; padding: 10px 14px; border-radius: 6px; }
+  .trap { background: #fff4f2; border-left: 4px solid #c62828; padding: 10px 14px; border-radius: 6px; }
+  code { background: #f2f2f7; padding: 1px 5px; border-radius: 4px; font-size: 15px; }
+  pre { background: #1e1e1e; color: #e6e6e6; padding: 12px; border-radius: 8px; overflow-x: auto; font-size: 13.5px; line-height: 1.45; }
+  svg { width: 100%; height: auto; display: block; margin: 10px 0; }
+  ol li, ul li { margin: 4px 0; }
+  details { border: 1px solid #e5e5ea; border-radius: 8px; padding: 8px 12px; margin: 6px 0; }
+  summary { font-weight: 600; cursor: pointer; }
+  details p { margin: 6px 0 2px; }
+  .small { color: #6e6e73; font-size: 14px; }
+</style>
+</head>
+<body>
+
+<h1>Vektorsuche und Embeddings</h1>
+<p class="small">Search · Tier 1 · Quellen: pgvector README (v0.8.x), Elasticsearch 9 Reference (<code>dense_vector</code>, <code>knn</code>-Query, Reciprocal Rank Fusion), OpenSearch Doku (k-NN: Methods and engines), Malkov &amp; Yashunin: HNSW-Paper (2016), OpenAI CLIP-Paper (2021)</p>
+
+<div class="kern">
+<b>Kern:</b> <b>Vektorsuche</b> findet Daten nach <b>Bedeutung</b> statt nach gleichen Wörtern. Ein <b>Embedding-Modell</b> macht aus Bild oder Text einen <b>Vektor</b>, also eine Liste von Zahlen. Ähnliche Inhalte liegen nah beieinander, und die Suche liefert die <b>k nächsten Nachbarn</b>, meist mit einem Näherungs-Index wie <b>HNSW</b>.
+</div>
+
+<h2>1. Wo sitzt die Vektorsuche?</h2>
+<svg viewBox="0 0 720 320" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="a" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <text x="10" y="18" font-size="12" font-weight="700">Indexieren (beim Upload)</text>
+  <rect x="10" y="28" width="130" height="50" rx="8" fill="#fff" stroke="#555"/><text x="75" y="58" text-anchor="middle">Bild</text>
+  <line x1="140" y1="53" x2="208" y2="53" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="210" y="28" width="200" height="50" rx="8" fill="#dbe9fb" stroke="#0a66c2"/><text x="310" y="50" text-anchor="middle" font-weight="700">Embedding-Modell</text><text x="310" y="68" text-anchor="middle" font-size="12">z. B. CLIP (Bild + Text)</text>
+  <line x1="410" y1="53" x2="478" y2="53" stroke="#555" stroke-width="2" marker-end="url(#a)"/><text x="444" y="45" text-anchor="middle" font-size="12">[0.12, …]</text>
+  <rect x="480" y="20" width="230" height="140" rx="10" fill="#0a66c2" stroke="#0a66c2"/><text x="595" y="46" text-anchor="middle" fill="#fff" font-weight="700">Vektorspeicher</text><text x="595" y="70" text-anchor="middle" fill="#fff" font-size="12">pgvector-Spalte</text><text x="595" y="88" text-anchor="middle" fill="#fff" font-size="12">oder dense_vector / knn_vector</text><text x="595" y="114" text-anchor="middle" fill="#fff">HNSW-Index</text><text x="595" y="134" text-anchor="middle" fill="#fff" font-size="12">Graph der Nachbarn</text>
+  <text x="10" y="208" font-size="12" font-weight="700">Suchen</text>
+  <rect x="10" y="218" width="130" height="50" rx="8" fill="#fff" stroke="#555"/><text x="75" y="240" text-anchor="middle">Anfrage</text><text x="75" y="258" text-anchor="middle" font-size="12">"Hund am Meer"</text>
+  <line x1="140" y1="243" x2="208" y2="243" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="210" y="218" width="200" height="50" rx="8" fill="#dbe9fb" stroke="#0a66c2"/><text x="310" y="240" text-anchor="middle" font-weight="700">gleiches Modell</text><text x="310" y="258" text-anchor="middle" font-size="12">Text → Vektor</text>
+  <line x1="410" y1="243" x2="560" y2="162" stroke="#555" stroke-width="2" marker-end="url(#a)"/><text x="470" y="216" font-size="12">k-NN</text>
+  <line x1="640" y1="160" x2="640" y2="226" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="540" y="228" width="170" height="50" rx="8" fill="#e8f5e9" stroke="#2e7d32"/><text x="625" y="250" text-anchor="middle" font-weight="700">Top-k Bilder</text><text x="625" y="268" text-anchor="middle" font-size="12">nach Ähnlichkeit</text>
+</svg>
+<ol>
+  <li><b>Embedding-Modell:</b> Ein neuronales Netz macht aus einem Bild einen Vektor mit fester Länge, z. B. 512 Zahlen. Diese Länge heisst <b>Dimension</b>.</li>
+  <li><b>Gemeinsamer Raum:</b> Ein Modell wie <b>CLIP</b> bildet Bilder und Texte in denselben Raum ab. So findet ein Text-Satz passende Bilder.</li>
+  <li><b>Vektorspeicher:</b> Der Vektor kommt in eine <b>pgvector</b>-Spalte in PostgreSQL oder in ein <code>dense_vector</code>-Feld in Elasticsearch. OpenSearch nennt den Typ <code>knn_vector</code>.</li>
+  <li><b>Index:</b> Ein <b>HNSW-Index</b> verbindet jeden Vektor mit seinen nahen Nachbarn. So muss die Suche nicht alle Vektoren vergleichen.</li>
+  <li><b>Suche:</b> Die Anfrage geht durch <b>dasselbe Modell</b>. Dann sucht der Index die k Vektoren mit dem kleinsten Abstand.</li>
+</ol>
+
+<h2>2. Die Reise eines Anfrage-Vektors durch HNSW (die Geschichte zum Merken)</h2>
+<svg viewBox="0 0 720 300" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="b" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker><marker id="r" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#c62828"/></marker></defs>
+  <rect x="10" y="10" width="560" height="70" rx="10" fill="#f7f7fa" stroke="#999"/><text x="20" y="30" font-size="12" font-weight="700">Ebene 2: wenige Knoten, lange Sprünge</text>
+  <circle cx="120" cy="55" r="10" fill="#0a66c2"/><circle cx="420" cy="55" r="10" fill="#bbb"/>
+  <line x1="130" y1="55" x2="408" y2="55" stroke="#c62828" stroke-width="2" marker-end="url(#r)"/>
+  <rect x="10" y="100" width="560" height="70" rx="10" fill="#f7f7fa" stroke="#999"/><text x="20" y="120" font-size="12" font-weight="700">Ebene 1: mehr Knoten</text>
+  <circle cx="420" cy="145" r="10" fill="#bbb"/><circle cx="300" cy="145" r="10" fill="#bbb"/><circle cx="500" cy="145" r="10" fill="#bbb"/>
+  <line x1="420" y1="65" x2="420" y2="133" stroke="#c62828" stroke-width="2" stroke-dasharray="5 4" marker-end="url(#r)"/>
+  <line x1="430" y1="145" x2="488" y2="145" stroke="#c62828" stroke-width="2" marker-end="url(#r)"/>
+  <rect x="10" y="190" width="560" height="90" rx="10" fill="#f7f7fa" stroke="#999"/><text x="20" y="210" font-size="12" font-weight="700">Ebene 0: alle Vektoren, kurze Kanten</text>
+  <circle cx="500" cy="245" r="10" fill="#bbb"/><circle cx="460" cy="260" r="8" fill="#bbb"/><circle cx="540" cy="230" r="8" fill="#2e7d32"/><circle cx="545" cy="262" r="8" fill="#2e7d32"/><circle cx="380" cy="250" r="8" fill="#bbb"/><circle cx="250" cy="240" r="8" fill="#bbb"/>
+  <line x1="500" y1="155" x2="500" y2="233" stroke="#c62828" stroke-width="2" stroke-dasharray="5 4" marker-end="url(#r)"/>
+  <line x1="510" y1="242" x2="530" y2="233" stroke="#c62828" stroke-width="2"/>
+  <rect x="590" y="100" width="120" height="70" rx="10" fill="#fff" stroke="#555"/><text x="650" y="128" text-anchor="middle" font-weight="700">Anfrage q</text><text x="650" y="148" text-anchor="middle" font-size="12">Ziel: nah an</text><text x="650" y="162" text-anchor="middle" font-size="12">grünen Punkten</text>
+  <rect x="590" y="200" width="120" height="70" rx="10" fill="#e8f5e9" stroke="#2e7d32"/><text x="650" y="228" text-anchor="middle" font-weight="700">ef_search</text><text x="650" y="248" text-anchor="middle" font-size="12">Kandidaten-Liste</text>
+</svg>
+<ol>
+  <li><b>Einstieg oben:</b> HNSW (<b>Hierarchical Navigable Small World</b>) ist ein Graph mit mehreren <b>Ebenen</b>. Die Suche startet am Einstiegsknoten der obersten Ebene.</li>
+  <li><b>Gierig springen:</b> Auf jeder Ebene geht die Suche zum Nachbarn, der näher an <code>q</code> liegt. Oben gibt es wenige Knoten, also lange Sprünge.</li>
+  <li><b>Eine Ebene tiefer:</b> Findet sie keinen näheren Nachbarn, steigt sie ab. Unten sind die Kanten kurz und die Suche wird genauer.</li>
+  <li><b>Ebene 0 mit Kandidaten-Liste:</b> Unten hält die Suche eine Liste der besten <b><code>ef_search</code></b> Kandidaten. Grössere Liste: genauer, aber langsamer.</li>
+  <li><b>Ergebnis:</b> Die besten k Kandidaten sind die Antwort. Das ist <b>approximativ</b>: Ein echter Nachbar kann fehlen.</li>
+  <li><b>Beim Einfügen</b> läuft dieselbe Suche. Der neue Knoten bekommt bis zu <b><code>m</code></b> Kanten zu seinen Nachbarn. <b><code>ef_construction</code></b> ist die Kandidaten-Liste beim Bauen.</li>
+</ol>
+<p>Kosten: Suche etwa <b>O(log n)</b> statt O(n). Preis: Der Graph braucht viel <b>RAM</b>, und das Bauen ist langsam.</p>
+
+<h2>3. Beispiel: Cosine Similarity und exaktes k-NN selbst rechnen</h2>
+<pre># Spielzeug-Embeddings, 4 Dimensionen ≈ [hund, strand, katze, rot]
+images = {
+    "img1 Hund am Strand": [0.9, 0.8, 0.0, 0.1],
+    "img2 Welpe im Park":  [0.8, 0.0, 0.1, 0.0],
+    "img3 Ball am Strand": [0.1, 0.9, 0.0, 0.6],
+    "img4 Katze auf Sofa": [0.0, 0.0, 0.9, 0.5],
+}
+def cosine(a, b): return dot(a, b) / (norm(a) * norm(b))
+query = [0.85, 0.6, 0.0, 0.0]              # "Hund am Meer", gleiches Modell
+top = sorted((cosine(query, v), n) for n, v in images.items())[::-1][:2]
+# Hybrid: RRF aus BM25-Liste und kNN-Liste, rank_constant = 60
+rrf[n] += 1 / (60 + rank)</pre>
+<pre>1) Query vector 'Hund am Meer' = [0.85, 0.6, 0.0, 0.0]
+2) Brute-force k-NN (k=2), compare with ALL vectors:
+   img1 Hund am Strand    cosine=0.990  cosine_distance=0.010  l2=0.229
+   img2 Welpe im Park     cosine=0.811  cosine_distance=0.189  l2=0.610
+   img3 Ball am Strand    cosine=0.553  cosine_distance=0.447  l2=1.006
+   img4 Katze auf Sofa    cosine=0.000  cosine_distance=1.000  l2=1.464
+   top-2: ['img1 Hund am Strand', 'img2 Welpe im Park'] (comparisons: 4)
+3) Same direction, different length: cosine=1.000, dot=10, l2=2.236
+4) Normalized query length=1.000; dot(u, img1/|img1|) = 0.990 (= cosine)
+5) RRF hybrid (k=60): bm25 = ['img3 Ball am Strand', 'img1 Hund am Strand']  knn = ['img1 Hund am Strand', 'img2 Welpe im Park', 'img3 Ball am Strand']
+   img1 Hund am Strand    rrf=0.03252
+   img3 Ball am Strand    rrf=0.03227
+   img2 Welpe im Park     rrf=0.01613
+6) Brute force cost: 1,000,000 images x 768 dims = 768,000,000 multiply-adds per query</pre>
+<p class="small">Echte Ausgabe, Python 3.12 (Modell von Cosine Similarity, exaktem k-NN und RRF, nicht Elasticsearch oder pgvector selbst). Die Vektoren sind von Hand gewählt, kein echtes Modell.</p>
+<ol>
+  <li><b>img2 „Welpe im Park“</b> ist Platz 2, obwohl „Hund“ nicht im Text steht. Das kann ein Inverted Index nicht.</li>
+  <li><b>Cosine Similarity</b> misst den Winkel zwischen zwei Vektoren: 1 = gleiche Richtung, 0 = nichts gemeinsam. <b>Cosine Distance</b> ist <code>1 − Similarity</code>. pgvector-Operator <code>&lt;=&gt;</code> liefert die Distanz.</li>
+  <li>Bei 3) zeigen beide Vektoren in die gleiche Richtung: cosine = 1. <b>L2</b> (Luftlinie) und <b>Dot Product</b> sehen aber einen Unterschied. Die Länge zählt nur bei L2 und Dot.</li>
+  <li>Bei 4) ist der Vektor <b>normalisiert</b> (Länge 1). Dann ist Dot Product gleich Cosine. Darum normalisiert man oft und nutzt den schnelleren Dot Product.</li>
+  <li>Bei 2) vergleicht die Suche <b>alle</b> Vektoren: <b>exaktes k-NN</b> (Brute Force). Bei 1 Mio. Bildern sind das 768 Mio. Rechenschritte pro Anfrage, siehe 6).</li>
+  <li>Bei 5) kombiniert <b>RRF</b> zwei Listen nur über die <b>Ränge</b>. img1 steht in beiden Listen weit oben und gewinnt.</li>
+</ol>
+<p><b>pgvector</b> (Syntax echt, hier nicht ausgeführt):</p>
+<pre>CREATE EXTENSION vector;
+ALTER TABLE image ADD COLUMN embedding vector(512);
+CREATE INDEX image_embedding_hnsw ON image
+  USING hnsw (embedding vector_cosine_ops) WITH (m = 16, ef_construction = 64);
+
+SET hnsw.ef_search = 100;                   -- Standard 40
+SELECT id, caption, 1 - (embedding &lt;=&gt; $1) AS similarity
+FROM image
+WHERE owner_id = 42
+ORDER BY embedding &lt;=&gt; $1                  -- Distanz, aufsteigend
+LIMIT 10;</pre>
+<p><b>Elasticsearch</b> (Syntax echt, hier nicht ausgeführt):</p>
+<pre>PUT images
+{ "mappings": { "properties": {
+    "caption":   { "type": "text", "analyzer": "german" },
+    "owner_id":  { "type": "keyword" },
+    "embedding": { "type": "dense_vector", "dims": 512, "similarity": "cosine" } } } }
+
+GET images/_search
+{ "retriever": { "rrf": { "retrievers": [
+    { "standard": { "query": { "match": { "caption": "Hund am Meer" } } } },
+    { "knn": { "field": "embedding", "query_vector": [0.12, …],
+               "k": 10, "num_candidates": 100,
+               "filter": { "term": { "owner_id": "42" } } } } ] } } }</pre>
+
+<h2>4. Details, die Interviewer fragen</h2>
+<ol>
+  <li><b>Embedding:</b> Ein <b>Embedding</b> ist ein Vektor, der die Bedeutung eines Inhalts kodiert. Ähnliche Inhalte haben nahe Vektoren. Nur Vektoren aus <b>demselben Modell</b> sind vergleichbar.</li>
+  <li><b>Dense vs Sparse:</b> Ein <b>Dense Vector</b> hat wenige hundert Zahlen, fast alle nicht null. Ein <b>Sparse Vector</b> (z. B. BM25-Terms, ELSER) hat sehr viele Dimensionen, fast alle null.</li>
+  <li><b>Distanzmasse:</b> <b>Cosine</b> (Winkel), <b>Dot Product</b> (Winkel mal Längen), <b>L2</b> (Luftlinie). Bei normalisierten Vektoren ergeben alle drei dieselbe Reihenfolge. Man nimmt das Mass, mit dem das Modell trainiert wurde.</li>
+  <li><b>pgvector-Operatoren:</b> <code>&lt;-&gt;</code> L2, <code>&lt;#&gt;</code> negatives Inner Product, <code>&lt;=&gt;</code> Cosine Distance, <code>&lt;+&gt;</code> L1. Der Index muss zur Operator-Klasse passen: <code>&lt;=&gt;</code> braucht <code>vector_cosine_ops</code>.</li>
+  <li><b>k-NN vs ANN:</b> <b>k-NN</b> exakt vergleicht alle Vektoren, O(n), Recall 100 %. <b>ANN</b> (Approximate Nearest Neighbor) nutzt einen Index, ist viel schneller, findet aber nicht immer alle echten Nachbarn.</li>
+  <li><b>Recall:</b> <b>Recall@k</b> ist der Anteil der echten Top-k, die ANN findet. Man misst ihn, indem man ANN mit exaktem k-NN vergleicht.</li>
+  <li><b>HNSW-Parameter:</b> <code>m</code> = Kanten pro Knoten (pgvector, Elasticsearch, OpenSearch: 16). <code>ef_construction</code> = Kandidaten beim Bauen (pgvector 64, Elasticsearch und OpenSearch 100). <code>ef_search</code> = Kandidaten beim Suchen (pgvector 40). Mehr = genauer, langsamer, mehr Speicher.</li>
+  <li><b>IVFFlat (pgvector):</b> <b>IVFFlat</b> teilt die Vektoren in <code>lists</code> Cluster. Die Suche prüft nur <code>probes</code> Cluster (Standard 1). Schneller zu bauen, weniger RAM als HNSW, aber schlechterer Recall. Den Index erst <b>nach</b> dem Laden der Daten bauen.</li>
+  <li><b>num_candidates in Elasticsearch:</b> <code>k</code> = Anzahl Ergebnisse. <code>num_candidates</code> = Kandidaten <b>pro Shard</b>, Standard 1.5 × k, maximal 10 000. Mehr Kandidaten heisst besserer Recall.</li>
+  <li><b>Filter: pre vs post:</b> Elasticsearch filtert im <code>knn</code>-<code>filter</code> <b>während</b> der Suche (pre-filter). pgvector filtert mit <code>WHERE</code> <b>nach</b> dem Index-Scan. Bei starkem Filter kommen dann weniger als k Zeilen zurück.</li>
+  <li><b>Iterative Index Scans (pgvector 0.8+):</b> <code>SET hnsw.iterative_scan = strict_order;</code> scannt weiter, bis genug gefilterte Zeilen da sind. Alternativen: B-Tree auf der Filterspalte, Partial Index, Partitionierung.</li>
+  <li><b>Dimensionen-Grenzen:</b> pgvector indexiert <code>vector</code> bis 2000 Dimensionen, <code>halfvec</code> bis 4000. Elasticsearch erlaubt bis 4096.</li>
+  <li><b>Quantisierung:</b> <b>Quantisierung</b> speichert Vektoren mit weniger Bits: <code>int8</code>, <code>int4</code> oder binär (<b>BBQ</b>). Weniger RAM, etwas schlechterer Recall. Elasticsearch 9.1+ nutzt ab 384 Dimensionen standardmässig <code>bbq_hnsw</code>, darunter <code>int8_hnsw</code>. pgvector bietet <code>halfvec</code> und <code>bit</code>.</li>
+  <li><b>OpenSearch:</b> Feldtyp <code>knn_vector</code>, Index-Setting <code>index.knn: true</code>. Engines: <code>faiss</code> (Standard) und <code>lucene</code>; <code>nmslib</code> ist veraltet. Standard-Distanz ist <code>l2</code>.</li>
+  <li><b>Hybrid Search:</b> <b>Hybrid Search</b> kombiniert BM25 und Vektorsuche. BM25 findet exakte Wörter, Namen, IDs. Vektoren finden Bedeutung. Kombination per <b>RRF</b> oder per gewichteter Score-Summe.</li>
+  <li><b>RRF:</b> <b>Reciprocal Rank Fusion</b> rechnet pro Dokument <code>Σ 1 / (k + Rang)</code>, in Elasticsearch mit <code>rank_constant</code> 60. Vorteil: Die Scores müssen nicht vergleichbar sein. BM25 hat keine feste Skala, Cosine liegt zwischen −1 und 1.</li>
+  <li><b>Modell-Wechsel:</b> Ein neues Embedding-Modell erzeugt einen neuen Raum. Alle Vektoren müssen neu berechnet und neu indexiert werden. Darum Modellname und Version mitspeichern.</li>
+  <li><b>Chunking (für Texte):</b> Lange Dokumente teilt man in Abschnitte mit je einem Vektor. Ein Vektor für ein ganzes Buch verliert die Details. Bilder haben meist einen Vektor pro Bild.</li>
+</ol>
+
+<h2>5. Vergleich</h2>
+<ul>
+  <li><b>pgvector:</b> Vektoren in PostgreSQL. Transaktional, JOINs, gleiche Backups, kein zweites System. Gut bis einige Millionen Vektoren. Grenzen: Post-Filtering, HNSW-Bau braucht viel <code>maintenance_work_mem</code>.</li>
+  <li><b>Elasticsearch / OpenSearch:</b> Vektoren plus BM25 in einem Index, Hybrid und Filter eingebaut, horizontal skalierbar mit Shards. Preis: eigenes System und Synchronisation.</li>
+  <li><b>Eigene Vektor-Datenbank</b> (z. B. Qdrant, Milvus, Pinecone): für sehr viele Vektoren und reine Vektor-Workloads. Noch ein System mehr.</li>
+  <li><b>Exaktes k-NN:</b> Recall 100 %, O(n). Gut für kleine Mengen oder nach starkem Filter. pgvector macht das ohne Index, Elasticsearch mit <code>script_score</code>.</li>
+  <li><b>HNSW:</b> schnell, hoher Recall, viel RAM, langsamer Bau.</li>
+  <li><b>IVFFlat:</b> schneller Bau, weniger RAM, schlechterer Recall, braucht Daten vor dem Bau.</li>
+  <li><b>BM25 (Inverted Index):</b> exakte Wörter, erklärbar mit <code>_explain</code>. Kennt keine Synonyme ohne Konfiguration.</li>
+</ul>
+
+<h2>6. In der Produktion</h2>
+<ol>
+  <li><b>Gefilterte Suche liefert zu wenig Treffer (pgvector):</b> HNSW liefert <code>ef_search</code> Kandidaten, dann filtert <code>WHERE</code>. Lösung: <code>hnsw.iterative_scan</code>, höheres <code>ef_search</code>, Partial Index oder Partitionierung pro Mandant.</li>
+  <li><b>Index wird nicht genutzt:</b> pgvector braucht <code>ORDER BY embedding &lt;=&gt; … LIMIT n</code> mit passender Operator-Klasse. Sortieren nach <code>1 - distance DESC</code> nutzt den Index nicht. Lösung: nach der Distanz aufsteigend sortieren.</li>
+  <li><b>RAM reicht nicht:</b> Der HNSW-Graph muss im Speicher liegen. Sonst wird jede Suche zu Plattenzugriffen. Lösung: Quantisierung (<code>halfvec</code>, int8, BBQ), weniger Dimensionen, mehr RAM.</li>
+  <li><b>Langer Index-Bau:</b> HNSW auf Millionen Zeilen dauert lange. Lösung (pgvector): <code>maintenance_work_mem</code> erhöhen, <code>max_parallel_maintenance_workers</code>, Index nach dem Laden bauen.</li>
+  <li><b>Modell-Update mischt Räume:</b> Neue Bilder mit neuem Modell, alte mit altem. Die Suche wird still schlecht. Lösung: neues Feld oder neuer Index, alles neu einbetten, dann umschalten.</li>
+  <li><b>Embedding-Aufruf ist langsam:</b> Das Modell braucht Zeit pro Bild. Lösung: asynchron nach dem Upload, Queue, Batching. Das Bild ist erst danach per Vektor suchbar.</li>
+  <li><b>Schlechte Ergebnisse bei exakten Begriffen:</b> Vektoren verwischen Namen, Nummern, seltene Wörter. Lösung: Hybrid Search mit BM25.</li>
+</ol>
+
+<h2>7. Diagnose: Werkzeuge und Befehle</h2>
+<ul>
+  <li>pgvector: <code>EXPLAIN (ANALYZE, BUFFERS) SELECT … ORDER BY embedding &lt;=&gt; $1 LIMIT 10;</code> Gesucht: <code>Index Scan using image_embedding_hnsw</code>. Ein <code>Seq Scan</code> mit <code>Sort</code> heisst: Index nicht genutzt.</li>
+  <li>pgvector Recall messen: dieselbe Abfrage mit <code>SET enable_indexscan = off;</code> exakt ausführen und die Top-k vergleichen.</li>
+  <li>pgvector Fortschritt beim Bau: <code>SELECT phase, tuples_done, tuples_total FROM pg_stat_progress_create_index;</code></li>
+  <li>Elasticsearch: <code>"profile": true</code> zeigt die Zeit der kNN-Suche pro Shard.</li>
+  <li>Elasticsearch: <code>GET images/_mapping</code> prüft <code>dims</code>, <code>similarity</code> und <code>index_options</code>.</li>
+  <li>Elasticsearch Speicher: <code>GET _nodes/stats</code> und <code>GET _cat/segments/images?v</code>. Der Vektorindex braucht Platz im <b>Page Cache</b> des Betriebssystems, nicht im JVM-Heap.</li>
+  <li>OpenSearch: <code>GET _plugins/_knn/stats</code> zeigt Graph-Speicher und Cache-Treffer.</li>
+</ul>
+
+<h2>8. Senior-Punkte</h2>
+<div class="senior">
+<ol>
+  <li><b>Vektorsuche ersetzt BM25 nicht.</b> In der Praxis gewinnt fast immer <b>Hybrid Search</b>.</li>
+  <li><b>ANN ist ein Tausch:</b> Recall gegen Latenz gegen RAM. Man misst Recall gegen exaktes k-NN und stellt <code>ef_search</code> / <code>num_candidates</code> danach ein.</li>
+  <li><b>Erst pgvector,</b> wenn PostgreSQL schon da ist. Ein zweites System nur, wenn Grösse, Filter oder Hybrid-Bedarf es verlangen.</li>
+  <li><b>Filter und Mandanten früh planen.</b> Post-Filtering bricht sonst die Ergebnisse.</li>
+  <li><b>Das Modell ist Teil des Schemas.</b> Modell und Version werden versioniert, ein Wechsel ist ein Reindex.</li>
+  <li><b>Embedding-Berechnung gehört in eine asynchrone Pipeline,</b> nicht in den Upload-Request.</li>
+</ol>
+</div>
+
+<h2>9. Aus dem Projekt</h2>
+<p>„Vektorsuche habe ich noch nicht in Produktion gebaut. Am nächsten dran sind PostgreSQL-Abfragen und Indizes bei DigiSanté und CARIAD, die ich mit <code>EXPLAIN</code> geprüft habe, und Dremio bei MATCH.“ <span class="small">(Prüfen und durch dein echtes Beispiel ersetzen.)</span></p>
+
+<h2>10. Fallen</h2>
+<div class="trap">
+<ul>
+  <li>„Vektorsuche findet immer die besten Treffer.“ → <b>Falsch.</b> ANN ist approximativ. Recall unter 100 % ist normal.</li>
+  <li>„Vektoren aus zwei Modellen kann man mischen.“ → <b>Falsch.</b> Jedes Modell hat seinen eigenen Raum.</li>
+  <li>„<code>WHERE</code> plus HNSW liefert immer k Zeilen.“ → <b>Falsch.</b> pgvector filtert nach dem Index-Scan.</li>
+  <li>„Cosine und Dot Product sind immer gleich.“ → Nur bei normalisierten Vektoren.</li>
+  <li>„Ein höherer <code>m</code> ist immer besser.“ → Besserer Recall, aber mehr RAM und langsamerer Bau.</li>
+  <li>„Mit Vektorsuche braucht man BM25 nicht mehr.“ → Exakte Namen und IDs findet BM25 besser.</li>
+</ul>
+</div>
+
+<h2>11. Fragen</h2>
+<details><summary>Was ist ein Embedding?</summary><p>Ein Vektor fester Länge, den ein Modell aus Text oder Bild erzeugt. Ähnliche Inhalte haben nahe Vektoren.</p></details>
+<details><summary>Wie findet eine Text-Anfrage passende Bilder?</summary><p>Mit einem Modell wie CLIP, das Text und Bild in denselben Raum abbildet. Die Anfrage wird mit demselben Modell eingebettet, dann sucht man die nächsten Bild-Vektoren.</p></details>
+<details><summary>Was ist Cosine Similarity?</summary><p>Der Kosinus des Winkels zwischen zwei Vektoren. 1 heisst gleiche Richtung. Die Länge der Vektoren spielt keine Rolle.</p></details>
+<details><summary>Cosine, Dot Product oder L2?</summary><p>Das Mass, mit dem das Modell trainiert wurde. Bei normalisierten Vektoren liefern alle drei dieselbe Reihenfolge, Dot Product ist am schnellsten.</p></details>
+<details><summary>Was ist der Unterschied zwischen k-NN und ANN?</summary><p>k-NN exakt vergleicht alle Vektoren, O(n), Recall 100 %. ANN nutzt einen Index wie HNSW, ist viel schneller, kann aber Nachbarn verpassen.</p></details>
+<details><summary>Wie funktioniert HNSW?</summary><p>Ein Graph mit Ebenen. Oben wenige Knoten für lange Sprünge, unten alle Knoten. Die Suche läuft gierig von oben nach unten zum nächsten Nachbarn.</p></details>
+<details><summary>Was bedeuten m, ef_construction und ef_search?</summary><p>m: Kanten pro Knoten. ef_construction: Kandidaten beim Bauen. ef_search: Kandidaten beim Suchen. Höher heisst genauer, aber langsamer und mehr Speicher.</p></details>
+<details><summary>Was ist Recall bei ANN?</summary><p>Der Anteil der echten Top-k, den ANN findet. Man misst ihn gegen eine exakte Suche.</p></details>
+<details><summary>HNSW oder IVFFlat in pgvector?</summary><p>HNSW: besserer Recall und schnellere Suche, aber mehr RAM und langsamer Bau. IVFFlat: schneller Bau, weniger RAM, muss nach dem Laden gebaut werden.</p></details>
+<details><summary>Wie sieht eine pgvector-Abfrage aus?</summary><p>SELECT id FROM image ORDER BY embedding &lt;=&gt; $1 LIMIT 10. Dazu ein HNSW-Index mit vector_cosine_ops.</p></details>
+<details><summary>Warum nutzt pgvector meinen Index nicht?</summary><p>Häufige Gründe: kein LIMIT, falscher Operator für die Operator-Klasse, Sortierung nach einem Ausdruck statt nach der Distanz, oder sehr kleine Tabelle.</p></details>
+<details><summary>Warum liefert eine gefilterte pgvector-Abfrage weniger als 10 Zeilen?</summary><p>Der HNSW-Index liefert ef_search Kandidaten, erst danach filtert WHERE. Lösung: iterative Index Scans, höheres ef_search, Partial Index oder Partitionierung.</p></details>
+<details><summary>Was sind k und num_candidates in Elasticsearch?</summary><p>k ist die Anzahl Ergebnisse. num_candidates sind die Kandidaten pro Shard, Standard 1.5 × k, maximal 10 000. Mehr heisst genauer und langsamer.</p></details>
+<details><summary>Filtert Elasticsearch vor oder nach der kNN-Suche?</summary><p>Der filter in der knn-Query wirkt während der Suche (pre-filter). Andere Filter im bool um die Query wirken danach.</p></details>
+<details><summary>Was ist Quantisierung?</summary><p>Vektoren mit weniger Bits speichern, z. B. int8 oder binär. Spart viel RAM, kostet etwas Recall. Oft mit Rescoring auf den Originalvektoren.</p></details>
+<details><summary>Was ist Hybrid Search?</summary><p>BM25 und Vektorsuche zusammen. BM25 für exakte Wörter, Vektoren für Bedeutung. Kombiniert per RRF oder gewichteter Summe.</p></details>
+<details><summary>Wie funktioniert RRF?</summary><p>Jedes Dokument bekommt pro Liste 1 / (60 + Rang). Die Summe ergibt die neue Reihenfolge. Scores müssen nicht vergleichbar sein.</p></details>
+<details><summary>Warum nicht einfach BM25-Score und Cosine addieren?</summary><p>Die Skalen sind verschieden. BM25 hat keine feste Obergrenze, Cosine liegt zwischen −1 und 1. Man müsste normalisieren und gewichten.</p></details>
+<details><summary>Was passiert, wenn das Embedding-Modell wechselt?</summary><p>Alle Vektoren müssen neu berechnet und indexiert werden. Alte und neue Vektoren sind nicht vergleichbar.</p></details>
+<details><summary>pgvector oder Elasticsearch für Vektoren?</summary><p>pgvector, wenn PostgreSQL schon da ist und die Menge moderat ist. Elasticsearch oder OpenSearch, wenn man Hybrid, viele Filter und horizontale Skalierung braucht.</p></details>
+<details><summary>Wo liegt der HNSW-Graph im Speicher?</summary><p>Er muss im RAM liegen. In Elasticsearch im Page Cache des Betriebssystems, nicht im JVM-Heap. Sonst wird die Suche langsam.</p></details>
+<details><summary>Wann rechnet man das Embedding eines Bildes?</summary><p>Asynchron nach dem Upload, über eine Queue. Der Upload bleibt schnell, das Bild ist kurz danach per Vektor suchbar.</p></details>
+<details><summary>Szenario: Entwerfen Sie „Finde Bilder wie dieses“ für einen Bild-Upload.</summary><p>Beim Upload CLIP-Embedding asynchron rechnen, in pgvector oder dense_vector mit HNSW speichern. Suche: Vektor des Bildes nehmen, ORDER BY embedding &lt;=&gt; $1 LIMIT 20, mit Filter auf Besitzer oder Sichtbarkeit.</p></details>
+<details><summary>Szenario: Nach einem Filter auf den Mandanten kommen nur 3 statt 20 Bilder. Warum?</summary><p>Post-Filtering in pgvector: Der Index lieferte 40 Kandidaten, die meisten von anderen Mandanten. Lösung: hnsw.iterative_scan, Partitionierung pro Mandant oder Partial Index.</p></details>
+<details><summary>Szenario: Nutzer suchen eine Artikelnummer und die Vektorsuche findet sie nicht. Was tun Sie?</summary><p>Vektoren erfassen Bedeutung, nicht exakte Zeichenfolgen. Lösung: Hybrid Search mit BM25 oder ein keyword-Feld für exakte Treffer, kombiniert mit RRF.</p></details>
+
+</body>
+</html>

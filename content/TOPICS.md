@@ -2,7 +2,7 @@
 
 Generated from content/syllabus.json. Priority 1 = asked in almost every interview. Mark: **Projekt** = shown in CV/Gmail · **— kein Projekt** = no project experience · **? prüfen** = unclear, you decide.
 
-404 topics · P1 239 · P2 125 · P3 40 · written 11
+404 topics · P1 239 · P2 125 · P3 40 · written 29
 
 ## Java 21 (core + advanced) (40)
 Sources: Java SE 21/25 docs (docs.oracle.com) · JVM Specification · OpenJDK source + JEPs (openjdk.org) · Oracle Java SE 21 Developer exam 1Z0-830 topics
@@ -14,7 +14,7 @@ Sources: Java SE 21/25 docs (docs.oracle.com) · JVM Specification · OpenJDK so
 | 1 | Speicherbereiche der JVM | Projekt | ✓ |
 | 1 | Garbage Collection: Grundlagen | Projekt | ✓ |
 | 1 | GC-Collectors | ? prüfen | ✓ |
-| 1 | Memory Leaks und OutOfMemoryError: Ursachen, Heap Dump, Analyse | ? prüfen |  |
+| 1 | Memory Leaks und OutOfMemoryError | ? prüfen | ✓ |
 | 1 | Java Memory Model | ? prüfen | ✓ |
 | 1 | Threads | Projekt | ✓ |
 | 1 | Synchronisation und Locks | Projekt | ✓ |
@@ -565,9 +565,9 @@ Sources: Elasticsearch / OpenSearch docs · Introduction to Information Retrieva
 
 | P | Topic | Project | Written |
 |---|---|---|---|
-| 1 | Inverted Index: wie Suche funktioniert | — kein Projekt |  |
-| 1 | Vektorsuche und Embeddings | — kein Projekt |  |
-| 1 | Suchindex synchron halten mit der Datenbank | — kein Projekt |  |
+| 1 | Inverted Index | — kein Projekt | ✓ |
+| 1 | Vektorsuche und Embeddings | — kein Projekt | ✓ |
+| 1 | Suchindex synchron halten | — kein Projekt | ✓ |
 | 2 | Analyzer, Tokenizer, Stemming | — kein Projekt |  |
 | 2 | Relevanz: TF-IDF und BM25 | — kein Projekt |  |
 | 2 | Elasticsearch: Shards, Replicas, Cluster | — kein Projekt |  |
@@ -622,17 +622,17 @@ Sources: Designing Data-Intensive Applications (Kleppmann) · System Design Inte
 
 | P | Topic | Project | Written |
 |---|---|---|---|
-| 1 | Back-of-the-Envelope-Schätzung | — kein Projekt |  |
-| 1 | Load Balancing | — kein Projekt |  |
-| 1 | Caching: Strategien, Redis, Invalidierung | — kein Projekt |  |
-| 1 | CDN und Object Storage | — kein Projekt |  |
-| 1 | SQL vs NoSQL | — kein Projekt |  |
-| 1 | Replikation und Sharding | — kein Projekt |  |
-| 1 | CAP, PACELC, Konsistenzmodelle | — kein Projekt |  |
-| 1 | Queues und asynchrone Verarbeitung | — kein Projekt |  |
-| 1 | Rate Limiting: Algorithmen | — kein Projekt |  |
-| 1 | Verfügbarkeit, Redundanz, Disaster Recovery | — kein Projekt |  |
-| 1 | API-Design im System Design | — kein Projekt |  |
+| 1 | Back-of-the-Envelope-Schätzung | — kein Projekt | ✓ |
+| 1 | Load Balancing | — kein Projekt | ✓ |
+| 1 | Caching: Strategien, Redis, Invalidierung | — kein Projekt | ✓ |
+| 1 | CDN und Object Storage | — kein Projekt | ✓ |
+| 1 | SQL vs NoSQL | — kein Projekt | ✓ |
+| 1 | Replikation und Sharding | — kein Projekt | ✓ |
+| 1 | CAP, PACELC, Konsistenzmodelle | — kein Projekt | ✓ |
+| 1 | Queues und asynchrone Verarbeitung | — kein Projekt | ✓ |
+| 1 | Rate Limiting: Algorithmen | — kein Projekt | ✓ |
+| 1 | Verfügbarkeit, Redundanz, Disaster Recovery | — kein Projekt | ✓ |
+| 1 | API-Design im System Design | — kein Projekt | ✓ |
 | 2 | Consistent Hashing | — kein Projekt |  |
 
 ## Algorithmen und Datenstrukturen (14)
@@ -690,9 +690,9 @@ Sources: RFC 9110/9113/9114 (HTTP) · RFC 8446 (TLS 1.3) · MDN web docs
 
 | P | Topic | Project | Written |
 |---|---|---|---|
-| 1 | TCP vs UDP | — kein Projekt |  |
-| 1 | DNS: Auflösung, Records, TTL | — kein Projekt |  |
-| 1 | HTTP/1.1 vs HTTP/2 vs HTTP/3 | — kein Projekt |  |
+| 1 | TCP vs UDP | — kein Projekt | ✓ |
+| 1 | DNS: Auflösung, Records, TTL | — kein Projekt | ✓ |
+| 1 | HTTP/1.1 vs HTTP/2 vs HTTP/3 | — kein Projekt | ✓ |
 | 1 | TLS-Handshake und Zertifikate | — kein Projekt |  |
 | 1 | Layer-4 vs Layer-7 Load Balancer und Proxies | — kein Projekt |  |
 

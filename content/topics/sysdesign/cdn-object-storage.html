@@ -1,0 +1,232 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CDN und Object Storage</title>
+<style>
+  body { font: 17px/1.55 -apple-system, system-ui, sans-serif; max-width: 760px; margin: 0 auto; padding: 16px; color: #1d1d1f; }
+  h1 { font-size: 28px; margin: 8px 0 4px; }
+  h2 { font-size: 21px; margin: 32px 0 8px; padding-top: 12px; border-top: 2px solid #e5e5ea; }
+  .kern { background: #eef6ff; border-left: 4px solid #0a66c2; padding: 10px 14px; border-radius: 6px; }
+  .senior { background: #f0faf0; border-left: 4px solid #2e7d32; padding: 10px 14px; border-radius: 6px; }
+  .trap { background: #fff4f2; border-left: 4px solid #c62828; padding: 10px 14px; border-radius: 6px; }
+  code { background: #f2f2f7; padding: 1px 5px; border-radius: 4px; font-size: 15px; }
+  pre { background: #1e1e1e; color: #e6e6e6; padding: 12px; border-radius: 8px; overflow-x: auto; font-size: 13.5px; line-height: 1.45; }
+  svg { width: 100%; height: auto; display: block; margin: 10px 0; }
+  ol li, ul li { margin: 4px 0; }
+  details { border: 1px solid #e5e5ea; border-radius: 8px; padding: 8px 12px; margin: 6px 0; }
+  summary { font-weight: 600; cursor: pointer; }
+  details p { margin: 6px 0 2px; }
+  .small { color: #6e6e73; font-size: 14px; }
+</style>
+</head>
+<body>
+
+<h1>CDN und Object Storage</h1>
+<p class="small">System-Design-Grundlagen · Tier 1 · Quellen: Microsoft Learn (Blob Storage Introduction, Access Tiers, Scalability Targets, Put Block List, Grant limited access with SAS, Create a user delegation SAS, Private Endpoints for Storage, Azure Front Door Caching und Purge, Event Grid Blob Events), AWS S3 User Guide (Consistency Model, Multipart Upload Limits, Presigned URLs, Lifecycle), AWS What's New Dez. 2025 (S3-Objekte bis 50 TB), RFC 9111 (HTTP Caching), RFC 5861, RFC 8246 (immutable)</p>
+
+<div class="kern">
+<b>Kern:</b> <b>Object Storage</b> (Azure Blob, AWS S3, MinIO) speichert Dateien als <b>Objekte</b> mit Schlüssel, Daten und Metadaten. Er ist billig, praktisch unbegrenzt und über HTTP erreichbar. Ein <b>CDN</b> (Content Delivery Network) hält Kopien an <b>Edge-Standorten</b> nahe beim Nutzer. Es senkt Latenz, Egress-Kosten und Last auf dem Origin.
+</div>
+
+<h2>1. Wo sitzen Object Storage und CDN?</h2>
+<svg viewBox="0 0 720 320" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="a" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="10" y="120" width="110" height="60" rx="8" fill="#fff" stroke="#555"/><text x="65" y="155" text-anchor="middle" font-weight="700">Client</text>
+  <line x1="120" y1="135" x2="198" y2="60" stroke="#555" stroke-width="2" marker-end="url(#a)"/><text x="140" y="88" font-size="12">1 URL holen</text>
+  <rect x="200" y="20" width="160" height="62" rx="8" fill="#fff" stroke="#555"/><text x="280" y="46" text-anchor="middle" font-weight="700">API</text><text x="280" y="66" text-anchor="middle" font-size="12">Auth · signiert URL</text>
+  <line x1="360" y1="51" x2="418" y2="51" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="420" y="20" width="140" height="62" rx="8" fill="#fff" stroke="#555"/><text x="490" y="46" text-anchor="middle" font-weight="700">Datenbank</text><text x="490" y="66" text-anchor="middle" font-size="12">Metadaten</text>
+  <line x1="120" y1="150" x2="418" y2="150" stroke="#555" stroke-width="2" marker-end="url(#a)"/><text x="270" y="142" text-anchor="middle" font-size="12">2 Upload direkt (PUT mit Signatur)</text>
+  <rect x="420" y="115" width="180" height="70" rx="8" fill="#0a66c2" stroke="#0a66c2"/><text x="510" y="142" text-anchor="middle" fill="#fff" font-weight="700">Object Storage</text><text x="510" y="162" text-anchor="middle" fill="#fff" font-size="12">Blob · S3 · MinIO</text>
+  <line x1="600" y1="150" x2="640" y2="150" stroke="#555" stroke-width="2"/><line x1="640" y1="150" x2="640" y2="82" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="580" y="20" width="130" height="60" rx="8" fill="#e8f5e9" stroke="#2e7d32"/><text x="645" y="44" text-anchor="middle" font-weight="700">Event → Worker</text><text x="645" y="64" text-anchor="middle" font-size="12">Scan · Thumbnail</text>
+  <rect x="200" y="230" width="180" height="62" rx="8" fill="#dbe9fb" stroke="#0a66c2"/><text x="290" y="256" text-anchor="middle" font-weight="700">CDN Edge (POP)</text><text x="290" y="276" text-anchor="middle" font-size="12">Front Door · CloudFront</text>
+  <line x1="120" y1="170" x2="198" y2="250" stroke="#555" stroke-width="2" marker-end="url(#a)"/><text x="120" y="220" font-size="12">3 Download</text>
+  <line x1="380" y1="261" x2="510" y2="261" stroke="#555" stroke-width="2"/><line x1="510" y1="261" x2="510" y2="187" stroke="#555" stroke-width="2" marker-end="url(#a)"/><text x="450" y="282" text-anchor="middle" font-size="12">nur bei Miss: Origin</text>
+</svg>
+<ol>
+  <li><b>API:</b> prüft, wer der Nutzer ist und was er darf. Sie gibt eine <b>signierte URL</b> heraus: eine URL mit Ablaufzeit und Signatur.</li>
+  <li><b>Object Storage:</b> nimmt die Datei direkt vom Client an. Die Bytes laufen nicht durch die API.</li>
+  <li><b>Datenbank:</b> speichert nur Metadaten: Schlüssel, Besitzer, Grösse, Status.</li>
+  <li><b>Event und Worker:</b> Ein Event (z. B. <code>BlobCreated</code>) startet Nacharbeit: Virenscan, Vorschaubild.</li>
+  <li><b>CDN:</b> liefert Downloads vom nächsten Edge-Standort (<b>POP</b>, Point of Presence). Nur bei einem Miss fragt es den <b>Origin</b>, also den Storage.</li>
+</ol>
+
+<h2>2. Die Reise eines Uploads und Downloads (die Geschichte zum Merken)</h2>
+<svg viewBox="0 0 720 320" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="b" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker><marker id="r" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#c62828"/></marker></defs>
+  <rect x="10" y="20" width="160" height="66" rx="10" fill="#eee" stroke="#777"/><text x="90" y="46" text-anchor="middle" font-weight="700">1. Upload-URL</text><text x="90" y="66" text-anchor="middle" font-size="12">SAS: nur write, 15 min</text>
+  <line x1="170" y1="53" x2="198" y2="53" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="200" y="20" width="160" height="66" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="280" y="46" text-anchor="middle" font-weight="700">2. Teile hochladen</text><text x="280" y="66" text-anchor="middle" font-size="12">Blocks / Parts parallel</text>
+  <line x1="360" y1="53" x2="388" y2="53" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="390" y="20" width="150" height="66" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="465" y="46" text-anchor="middle" font-weight="700">3. Commit</text><text x="465" y="66" text-anchor="middle" font-size="12">Block List / Complete</text>
+  <line x1="540" y1="53" x2="568" y2="53" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="570" y="20" width="140" height="66" rx="10" fill="#e8f5e9" stroke="#2e7d32"/><text x="640" y="46" text-anchor="middle" font-weight="700">4. Event</text><text x="640" y="66" text-anchor="middle" font-size="12">Scan · Metadaten</text>
+  <line x1="640" y1="86" x2="640" y2="138" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="500" y="140" width="210" height="66" rx="10" fill="#fff" stroke="#555"/><text x="605" y="166" text-anchor="middle" font-weight="700">5. Download-Request</text><text x="605" y="186" text-anchor="middle" font-size="12">an den nächsten POP</text>
+  <line x1="500" y1="173" x2="392" y2="173" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="210" y="140" width="180" height="66" rx="10" fill="#0a66c2" stroke="#0a66c2"/><text x="300" y="166" text-anchor="middle" fill="#fff" font-weight="700">6. Edge-Cache</text><text x="300" y="186" text-anchor="middle" fill="#fff" font-size="12">Hit → sofort zurück</text>
+  <line x1="210" y1="173" x2="152" y2="173" stroke="#555" stroke-width="2" marker-end="url(#b)"/><text x="181" y="164" text-anchor="middle" font-size="12">Miss</text>
+  <rect x="10" y="140" width="140" height="66" rx="10" fill="#fff" stroke="#555"/><text x="80" y="166" text-anchor="middle" font-weight="700">7. Origin</text><text x="80" y="186" text-anchor="middle" font-size="12">Cache-Control</text>
+  <rect x="210" y="240" width="500" height="60" rx="10" fill="#fff4f2" stroke="#c62828"/><text x="460" y="264" text-anchor="middle" fill="#c62828" font-weight="700">8. Datei geändert, Edge hat noch die alte</text><text x="460" y="284" text-anchor="middle" fill="#c62828" font-size="12">neuer Dateiname (Version) oder Purge</text>
+  <path d="M300,206 C300,226 330,236 360,240" fill="none" stroke="#c62828" stroke-width="2" stroke-dasharray="6 4" marker-end="url(#r)"/>
+</svg>
+<ol>
+  <li><b>Upload-URL holen:</b> Der Client fragt die API. Die API prüft die Rechte und erzeugt einen eindeutigen Schlüssel, z. B. <code>uploads/2026/11/&lt;uuid&gt;.pdf</code>. Sie gibt eine <b>SAS-URL</b> (Azure) oder <b>Presigned URL</b> (S3) zurück: nur Schreiben, nur dieser Blob, 15 Minuten gültig.</li>
+  <li><b>Teile hochladen:</b> Grosse Dateien gehen in Teilen. Azure: <code>Put Block</code>. S3: <code>UploadPart</code>. Teile laufen parallel, ein Fehler wiederholt nur ein Teil.</li>
+  <li><b>Commit:</b> Azure: <code>Put Block List</code>. S3: <code>CompleteMultipartUpload</code>. Erst jetzt ist das Objekt sichtbar, und zwar ganz oder gar nicht.</li>
+  <li><b>Event:</b> Der Storage meldet „Objekt erstellt“ (Azure Event Grid, S3 Event Notifications). Ein Worker scannt die Datei und setzt den Status in der Datenbank auf „bereit“.</li>
+  <li><b>Download-Request:</b> Ein Nutzer öffnet die Datei. DNS führt ihn zum nächsten POP des CDN.</li>
+  <li><b>Edge-Cache:</b> Hat der POP eine frische Kopie, antwortet er sofort. Das ist ein <b>Cache-Hit</b>.</li>
+  <li><b>Origin:</b> Bei einem Miss holt der POP die Datei vom Storage. Der Header <code>Cache-Control</code> sagt, wie lange er sie behalten darf.</li>
+  <li><b>Änderung:</b> Ändert sich die Datei unter gleichem Namen, liefert das Edge die alte bis zum Ablauf. Lösung: neuer Name pro Version (z. B. <code>app.3f9a.js</code>) oder <b>Purge</b> (Invalidierung im CDN).</li>
+</ol>
+
+<h2>3. Beispiel: wie eine signierte URL geprüft wird</h2>
+<pre># Simplified SAS / presigned-URL idea: HMAC-SHA256 over the request + expiry
+# (not the exact Azure or S3 string-to-sign, only the principle)
+def sign(method, path, perms, expiry):
+    string_to_sign = f"{method}\n{path}\n{perms}\n{expiry}"
+    mac = hmac.new(ACCOUNT_KEY, string_to_sign.encode(), hashlib.sha256).digest()
+    return base64.urlsafe_b64encode(mac).decode().rstrip("=")
+
+def check(url, now):
+    # 1. expired?  2. permission allows GET?  3. recompute signature, compare
+    ...
+url = make_url("uploads/scan-4711.pdf", "r", ttl=900)
+# then: change file name, change permission, wait 15 min, push expiry</pre>
+<pre>$ python -I sign_demo.py
+URL: https://store.example/uploads/scan-4711.pdf?sp=r&amp;se=1800000900&amp;sig=_bk9DVchdg93xa-bBVk3XX5gI7kXo0iqOdImNeqojS8
+1 valid, now            -&gt; 200 OK
+2 other file            -&gt; 403 signature mismatch
+3 permission r -&gt; rw    -&gt; 403 signature mismatch
+4 after 15 min          -&gt; 403 expired
+5 expiry pushed by user -&gt; 403 signature mismatch</pre>
+<p class="small">Echte Ausgabe, Python 3 (Simulation). Vereinfachtes Prinzip; echtes SAS und SigV4 signieren mehr Felder in festem Format.</p>
+<ol>
+  <li><b>Die Signatur ist ein HMAC:</b> ein Hash über die Request-Felder mit einem geheimen Schlüssel. Nur der Server kennt den Schlüssel.</li>
+  <li><b>Die URL ist öffentlich lesbar,</b> aber nicht änderbar. Jede Änderung an Pfad, Rechten oder Ablaufzeit bricht die Signatur (Fälle 2, 3, 5).</li>
+  <li><b>Die Ablaufzeit steht in der URL</b> und ist mitsigniert. Nach 15 Minuten lehnt der Server ab (Fall 4).</li>
+  <li><b>Der Storage braucht keinen Zustand:</b> Er rechnet die Signatur nach. Darum kann man eine einzelne URL nicht gezielt widerrufen, nur den Schlüssel.</li>
+  <li><b>Wer die URL hat, hat den Zugriff.</b> Darum kurze Laufzeit, minimale Rechte, nur HTTPS.</li>
+</ol>
+
+<h2>4. Details, die Interviewer fragen</h2>
+<ol>
+  <li><b>Objekt-Modell:</b> <b>Bucket</b> (S3) oder <b>Container</b> (Azure) enthält Objekte. Ein Objekt hat <b>Key</b>, Daten, Metadaten und ein <b>ETag</b> (Versionskennung). Der Namensraum ist flach. „Ordner“ sind nur Präfixe im Key.</li>
+  <li><b>Unveränderliche Objekte:</b> Man ändert kein Byte in der Mitte. Man ersetzt das ganze Objekt. Darum passt Object Storage für Dateien, nicht für Datenbanken.</li>
+  <li><b>Konsistenz:</b> S3 bietet seit Dezember 2020 <b>Strong Read-after-Write</b> für alle Operationen. Azure Blob ist ebenfalls stark konsistent. Ein CDN davor ist es nicht.</li>
+  <li><b>Speicher-Tiers:</b> Azure hat Hot, Cool, Cold und Archive. Je kälter, desto billiger der Speicher und teurer der Zugriff. Archive ist offline: Lesen braucht erst eine <b>Rehydrierung</b> (Stunden). Cool, Cold und Archive haben Mindest-Liegezeiten (30, 90, 180 Tage).</li>
+  <li><b>Lifecycle Policies:</b> Regeln verschieben Objekte nach Alter in kältere Tiers oder löschen sie. Beispiel: nach 30 Tagen Cool, nach 1 Jahr Archive, nach 10 Jahren löschen.</li>
+  <li><b>Azure-SAS-Arten:</b> <b>Account SAS</b> und <b>Service SAS</b> sind mit dem Account Key signiert. <b>User Delegation SAS</b> ist mit Microsoft-Entra-Anmeldedaten signiert. Microsoft empfiehlt die User Delegation SAS. Sie gilt höchstens 7 Tage.</li>
+  <li><b>SAS widerrufen:</b> Eine Service SAS kann an eine <b>Stored Access Policy</b> gebunden sein. Löscht man die Policy, ist die SAS ungültig. Sonst hilft nur Key-Rotation oder das Widerrufen der User Delegation Keys.</li>
+  <li><b>S3 Presigned URL:</b> mit Signature Version 4 signiert. Höchstens 7 Tage gültig. Mit temporären Credentials endet sie spätestens mit diesen.</li>
+  <li><b>Multipart bei S3:</b> Teile von 5 MiB bis 5 GiB, das letzte darf kleiner sein. Maximal 10 000 Teile. Objekte bis 50 TB (seit Dezember 2025, vorher 5 TB). Ein einzelnes PUT schafft bis 5 GB.</li>
+  <li><b>Blocks bei Azure:</b> Ein Block Blob besteht aus bis zu 50 000 Blöcken. <code>Put Block</code> lädt einen Block, <code>Put Block List</code> setzt die Datei zusammen. Nicht bestätigte Blöcke löscht Azure nach einer Woche.</li>
+  <li><b>Abgebrochene Uploads:</b> Bei S3 kosten nicht abgeschlossene Multipart-Uploads Speicher. Eine Lifecycle-Regel <code>AbortIncompleteMultipartUpload</code> räumt sie auf.</li>
+  <li><b>Cache-Control (RFC 9111):</b> <code>max-age</code> gilt für alle Caches, <code>s-maxage</code> nur für geteilte Caches wie CDNs. <code>no-cache</code> heisst: speichern, aber vor jeder Nutzung prüfen. <code>no-store</code> heisst: gar nicht speichern. <code>private</code> heisst: nur der Browser darf cachen.</li>
+  <li><b>Revalidierung:</b> Ist eine Kopie abgelaufen, fragt der Cache mit <code>If-None-Match: &lt;ETag&gt;</code> nach. Ist sie unverändert, antwortet der Origin <code>304 Not Modified</code> ohne Body.</li>
+  <li><b>Cache Key:</b> Der <b>Cache Key</b> bestimmt, welche Requests dieselbe Kopie teilen. Meist URL plus ausgewählte Query-Parameter. Der Header <code>Vary</code> fügt Request-Header hinzu, z. B. <code>Accept</code> für WebP/AVIF.</li>
+  <li><b>Versionierte Dateinamen:</b> Ein Hash im Namen (<code>app.3f9a.js</code>) erlaubt <code>max-age=31536000, immutable</code>. Ein Deployment ändert den Namen, kein Purge nötig.</li>
+  <li><b>Purge:</b> Ein Purge löscht Kopien an allen POPs. Er dauert Minuten und ist bei manchen Anbietern pro Pfad kostenpflichtig. Er ist das Notfallwerkzeug, nicht der Normalfall.</li>
+  <li><b>Bildauslieferung:</b> Varianten (Thumbnail, mittel, gross) beim Upload erzeugen oder bei Bedarf durch einen Resize-Dienst hinter dem CDN. Moderne Formate (WebP, AVIF) über <code>Accept</code> und <code>Vary</code>. Im HTML <code>srcset</code> für passende Grössen.</li>
+  <li><b>Privater Storage:</b> <b>Private Endpoints</b> geben dem Storage eine private IP im VNet. Der öffentliche Zugang wird abgeschaltet. Front Door Premium erreicht so einen Origin über <b>Private Link</b>.</li>
+</ol>
+
+<h2>5. Vergleich</h2>
+<ul>
+  <li><b>Object Storage:</b> Dateien über HTTP, flach, billig, praktisch unbegrenzt. Kein Ändern in der Mitte.</li>
+  <li><b>Block Storage</b> (Azure Managed Disk, EBS): eine Festplatte für eine VM. Schnell, änderbar, an einen Server gebunden.</li>
+  <li><b>File Storage</b> (Azure Files, EFS): ein Netzlaufwerk mit Ordnern und Sperren (SMB, NFS). Für Altanwendungen und geteilte Ordner.</li>
+  <li><b>Datenbank:</b> für kleine, strukturierte, abfragbare Daten. Nicht für grosse Dateien.</li>
+  <li><b>Azure Blob vs S3 vs MinIO:</b> gleiches Modell. Blob nutzt SAS und Entra ID, S3 nutzt IAM und SigV4. MinIO spricht die S3-API und läuft selbst gehostet, z. B. in Kubernetes.</li>
+  <li><b>CDN-Produkte:</b> Azure Front Door Standard/Premium ist das aktuelle Azure-CDN (CDN plus L7-Routing plus WAF). Dazu CloudFront, Cloudflare, Akamai.</li>
+</ul>
+<table style="border-collapse: collapse; width: 100%; font-size: 15px;">
+  <tr><th style="text-align:left; border-bottom:1px solid #ccc;">Ansatz</th><th style="text-align:left; border-bottom:1px solid #ccc;">Vorteil</th><th style="text-align:left; border-bottom:1px solid #ccc;">Nachteil</th></tr>
+  <tr><td>Upload über die API</td><td>volle Kontrolle, einfach</td><td>API trägt alle Bytes, skaliert schlecht</td></tr>
+  <tr><td>Direkt mit SAS/Presigned</td><td>API entlastet, parallel</td><td>Prüfung erst nach dem Upload</td></tr>
+  <tr><td>Versionierter Dateiname</td><td>kein Purge, lange TTL</td><td>Build muss Namen ändern</td></tr>
+  <tr><td>Purge</td><td>gleiche URL bleibt</td><td>langsam, teils kostenpflichtig</td></tr>
+</table>
+
+<h2>6. In der Produktion</h2>
+<ol>
+  <li><b>Öffentlicher Container mit Patientendaten:</b> Jemand stellt den Zugriff auf „public“. Lösung: anonymen Zugriff auf Account-Ebene verbieten, Private Endpoints, Azure Policy.</li>
+  <li><b>SAS mit langer Laufzeit geleakt:</b> Ein Jahr gültig, mit Account Key signiert. Lösung: User Delegation SAS, Minuten statt Monate, Key-Rotation, <code>AllowSharedKeyAccess = false</code>.</li>
+  <li><b>Direkter Upload scheitert mit Private Endpoint:</b> Der Client im Internet erreicht die private IP nicht. Lösung: Upload über einen Dienst im VNet oder über einen freigegebenen Eingang (z. B. Front Door Premium mit Private Link).</li>
+  <li><b>Nutzer sehen alte Dateien:</b> Gleicher Name, lange <code>max-age</code>. Lösung: versionierte Namen, kürzere TTL für HTML, Purge im Notfall.</li>
+  <li><b>Private Antwort im CDN:</b> Eine personalisierte Antwort ohne <code>private</code> wird für alle gecacht. Lösung: <code>Cache-Control: private</code> oder <code>no-store</code>, Auth-Pfade vom Caching ausnehmen.</li>
+  <li><b>Kostenexplosion:</b> Egress direkt aus dem Storage, abgebrochene Multipart-Uploads, Lesen aus Archive. Lösung: CDN, Lifecycle-Regeln, Tier-Planung.</li>
+  <li><b>Upload-Abbrüche bei grossen Dateien:</b> Ein PUT über 2 GB bricht im Mobilnetz ab. Lösung: Multipart mit Wiederaufnahme pro Teil.</li>
+</ol>
+
+<h2>7. Diagnose: Werkzeuge und Befehle</h2>
+<ul>
+  <li><code>curl -I https://cdn.example.ch/app.js</code>: zeigt <code>Cache-Control</code>, <code>Age</code>, <code>ETag</code> und den Cache-Status-Header des CDN (z. B. <code>X-Cache: TCP_HIT</code> bei Front Door).</li>
+  <li><b>Front Door Metriken:</b> <code>Byte Hit Ratio</code>, <code>Origin Request Count</code>, <code>Origin Latency</code>, Access Logs mit Cache-Status.</li>
+  <li><b>Storage-Metriken:</b> <code>Transactions</code> nach <code>ResponseType</code> (z. B. <code>AuthorizationFailure</code>), <code>Egress</code>, <code>SuccessE2ELatency</code> vs <code>SuccessServerLatency</code>.</li>
+  <li><b>Storage-Logs</b> (Diagnostic Settings, S3 Server Access Logs, CloudTrail): wer hat mit welcher Auth-Art zugegriffen.</li>
+  <li><code>az storage blob list --account-name … --container-name … --auth-mode login</code>: prüft Zugriff mit Entra ID statt Key.</li>
+  <li><code>aws s3api list-multipart-uploads --bucket …</code>: zeigt offene, nie abgeschlossene Uploads.</li>
+  <li><code>nslookup &lt;account&gt;.blob.core.windows.net</code> im VNet: muss die private IP des Private Endpoints liefern.</li>
+</ul>
+
+<h2>8. Senior-Punkte</h2>
+<div class="senior">
+<ol>
+  <li><b>Bytes gehen nicht durch die API.</b> Die API vergibt Rechte, der Storage trägt die Last.</li>
+  <li><b>Kurzlebige, minimale Rechte:</b> User Delegation SAS, nur ein Blob, nur write, Minuten. Ein geleakter Link schadet dann kaum.</li>
+  <li><b>Hochgeladen ist nicht gleich sicher:</b> Status „pending“, bis Scan und Prüfung fertig sind. Erst dann freigeben.</li>
+  <li><b>Versionierte Namen statt Purge.</b> Purge ist das Notfallwerkzeug.</li>
+  <li><b>Cache-Header sind ein Vertrag</b> zwischen Origin und allen Caches. Öffentlich, privat und Laufzeit bewusst pro Pfad setzen.</li>
+  <li><b>Kosten mitdenken:</b> Tier, Lifecycle, Egress und Transaktionen gehören ins Design, nicht erst in die Rechnung.</li>
+</ol>
+</div>
+
+<h2>9. Aus dem Projekt</h2>
+<p>„Bei DigiSanté laden Nutzer Dokumente nach Azure Blob hoch; der Storage ist nur über Private Endpoints erreichbar, darum läuft der Upload über einen Dienst im VNet und nicht direkt mit SAS aus dem Internet.“ <span class="small">(Prüfen und durch dein echtes Beispiel ersetzen, z. B. MinIO als S3-Speicher bei MATCH auf AKS.)</span></p>
+
+<h2>10. Fallen</h2>
+<div class="trap">
+<ul>
+  <li>„Object Storage hat Ordner.“ → <b>Falsch.</b> Der Namensraum ist flach. Ordner sind Präfixe im Key.</li>
+  <li>„Eine SAS-URL kann ich gezielt widerrufen.“ → Meist <b>nicht</b>. Nur über Stored Access Policy, Key-Rotation oder Widerruf der Delegation Keys.</li>
+  <li>„<code>no-cache</code> heisst: nicht cachen.“ → <b>Falsch.</b> Es heisst: vor Nutzung prüfen. Nicht speichern ist <code>no-store</code>.</li>
+  <li>„Das CDN ist konsistent mit dem Storage.“ → <b>Falsch.</b> Es liefert bis zum Ablauf der TTL die alte Kopie.</li>
+  <li>„Archive ist einfach billiger Speicher.“ → Lesen braucht Stunden und kostet. Dazu Mindest-Liegezeit von 180 Tagen.</li>
+  <li>„Ein Purge ist sofort weltweit wirksam.“ → <b>Falsch.</b> Er dauert, und Browser-Caches bleiben unberührt.</li>
+</ul>
+</div>
+
+<h2>11. Fragen</h2>
+<details><summary>Was ist Object Storage?</summary><p>Ein Speicher für Dateien als Objekte mit Key, Daten und Metadaten, erreichbar über HTTP. Billig, praktisch unbegrenzt, flacher Namensraum.</p></details>
+<details><summary>Object Storage vs Block Storage vs File Storage?</summary><p>Object: Dateien über HTTP, unveränderlich. Block: virtuelle Festplatte für eine VM. File: Netzlaufwerk mit Ordnern über SMB oder NFS.</p></details>
+<details><summary>Warum Dateien nicht in die Datenbank?</summary><p>Grosse Binärdaten machen Backups, Replikation und Cache der DB teuer. Object Storage ist billiger und skaliert besser. Die DB hält nur Metadaten.</p></details>
+<details><summary>Was ist eine SAS?</summary><p>Ein Shared Access Signature-Token in der URL. Es erlaubt begrenzten Zugriff auf Azure Storage: welche Ressource, welche Rechte, wie lange. Signiert mit Account Key oder Entra-Anmeldedaten.</p></details>
+<details><summary>Welche SAS-Arten gibt es?</summary><p>Account SAS, Service SAS (beide mit Account Key) und User Delegation SAS (mit Entra ID). Microsoft empfiehlt die User Delegation SAS.</p></details>
+<details><summary>Wie widerrufen Sie eine SAS?</summary><p>Service SAS über eine Stored Access Policy. Sonst Account Key rotieren oder User Delegation Keys widerrufen. Darum kurze Laufzeiten.</p></details>
+<details><summary>Was ist eine S3 Presigned URL?</summary><p>Eine URL mit SigV4-Signatur und Ablaufzeit. Sie erlaubt eine bestimmte Operation auf ein Objekt ohne eigene AWS-Credentials. Höchstens 7 Tage gültig.</p></details>
+<details><summary>Warum lädt der Client direkt in den Storage?</summary><p>Die API muss keine Bytes tragen. Uploads laufen parallel und skalieren mit dem Storage. Die API vergibt nur die Rechte.</p></details>
+<details><summary>Wie funktioniert Multipart Upload?</summary><p>Upload starten, Teile parallel hochladen, dann abschliessen. S3: 5 MiB bis 5 GiB pro Teil, maximal 10 000 Teile. Azure: Put Block und Put Block List, bis 50 000 Blöcke.</p></details>
+<details><summary>Was passiert mit abgebrochenen Multipart-Uploads?</summary><p>Bei S3 bleiben die Teile und kosten Speicher, bis man sie abbricht. Lifecycle-Regel AbortIncompleteMultipartUpload. Azure löscht unbestätigte Blöcke nach einer Woche.</p></details>
+<details><summary>Ist S3 konsistent?</summary><p>Ja, seit Dezember 2020 mit Strong Read-after-Write für alle Operationen. Ein CDN davor ist es nicht.</p></details>
+<details><summary>Welche Access Tiers hat Azure Blob?</summary><p>Hot, Cool, Cold, Archive. Je kälter, desto billiger der Speicher und teurer der Zugriff. Archive braucht Rehydrierung über Stunden.</p></details>
+<details><summary>Was ist ein CDN?</summary><p>Ein Netz von Edge-Servern, die Kopien von Inhalten nahe beim Nutzer halten. Weniger Latenz, weniger Egress und weniger Last am Origin.</p></details>
+<details><summary>Was steuert, wie lange das CDN cacht?</summary><p>Cache-Control vom Origin: max-age und s-maxage. Das CDN kann es per Regel überschreiben. Ohne Header gelten Standardwerte des Anbieters.</p></details>
+<details><summary>no-cache vs no-store?</summary><p>no-cache: speichern, aber vor jeder Nutzung beim Origin prüfen. no-store: gar nicht speichern.</p></details>
+<details><summary>Was ist ein ETag und ein 304?</summary><p>Das ETag kennzeichnet eine Version. Der Cache fragt mit If-None-Match. Ist die Version gleich, antwortet der Origin 304 ohne Body.</p></details>
+<details><summary>Wie invalidieren Sie Inhalte im CDN?</summary><p>Am besten mit versionierten Dateinamen. Sonst per Purge für Pfade oder Wildcards. Purge dauert Minuten und erreicht keine Browser-Caches.</p></details>
+<details><summary>Was ist der Cache Key?</summary><p>Die Teile eines Requests, die eine gecachte Kopie bestimmen: meist URL und gewählte Query-Parameter, dazu Header aus Vary.</p></details>
+<details><summary>Wie liefern Sie Bilder effizient aus?</summary><p>Varianten in passenden Grössen, moderne Formate (WebP, AVIF) über Accept und Vary, srcset im HTML, lange TTL mit versionierten Namen, alles über das CDN.</p></details>
+<details><summary>Wie schützen Sie private Dateien hinter einem CDN?</summary><p>Signierte URLs oder Tokens am Edge, kurze Laufzeit. Personalisierte Antworten mit Cache-Control: private. Origin nur über Private Link erreichbar.</p></details>
+<details><summary>Was bringen Private Endpoints für Storage?</summary><p>Der Storage bekommt eine private IP im VNet, öffentlicher Zugang ist aus. Daten verlassen das private Netz nicht. Clients im Internet erreichen ihn dann nicht direkt.</p></details>
+<details><summary>Was ist MinIO?</summary><p>Ein selbst gehosteter Object Storage mit S3-kompatibler API. Er läuft z. B. in Kubernetes. Code für S3 funktioniert damit meist ohne Änderung.</p></details>
+<details><summary>Szenario: Nach einem Deployment sehen manche Nutzer die alte JavaScript-Datei. Warum, und was tun Sie?</summary><p>Gleicher Dateiname und lange max-age im CDN oder Browser. Kurzfristig Purge. Dauerhaft: Hash im Dateinamen, lange TTL mit immutable, HTML selbst kurz cachen.</p></details>
+<details><summary>Szenario: Patienten sollen PDFs bis 2 GB hochladen. Der Storage ist privat. Wie bauen Sie das?</summary><p>API prüft Rechte und legt Metadaten an. Upload in Blöcken mit Wiederaufnahme, über einen Dienst im VNet oder einen Private-Link-Eingang. Danach Event, Virenscan, Status „bereit“. Download mit kurzlebiger User Delegation SAS.</p></details>
+<details><summary>Szenario: Die Storage-Rechnung hat sich verdreifacht. Wo suchen Sie?</summary><p>Egress-Metriken (fehlt ein CDN?), Transaktionen (viele kleine Objekte?), offene Multipart-Uploads, falsches Tier, Lesen aus Archive, fehlende Lifecycle-Regeln.</p></details>
+
+</body>
+</html>

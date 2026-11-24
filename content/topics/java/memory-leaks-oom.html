@@ -1,0 +1,286 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Memory Leaks und OutOfMemoryError</title>
+<style>
+  body { font: 17px/1.55 -apple-system, system-ui, sans-serif; max-width: 760px; margin: 0 auto; padding: 16px; color: #1d1d1f; }
+  h1 { font-size: 28px; margin: 8px 0 4px; }
+  h2 { font-size: 21px; margin: 32px 0 8px; padding-top: 12px; border-top: 2px solid #e5e5ea; }
+  .kern { background: #eef6ff; border-left: 4px solid #0a66c2; padding: 10px 14px; border-radius: 6px; }
+  .senior { background: #f0faf0; border-left: 4px solid #2e7d32; padding: 10px 14px; border-radius: 6px; }
+  .trap { background: #fff4f2; border-left: 4px solid #c62828; padding: 10px 14px; border-radius: 6px; }
+  code { background: #f2f2f7; padding: 1px 5px; border-radius: 4px; font-size: 15px; }
+  pre { background: #1e1e1e; color: #e6e6e6; padding: 12px; border-radius: 8px; overflow-x: auto; font-size: 13.5px; line-height: 1.45; }
+  svg { width: 100%; height: auto; display: block; margin: 10px 0; }
+  ol li, ul li { margin: 4px 0; }
+  details { border: 1px solid #e5e5ea; border-radius: 8px; padding: 8px 12px; margin: 6px 0; }
+  summary { font-weight: 600; cursor: pointer; }
+  details p { margin: 6px 0 2px; }
+  .small { color: #6e6e73; font-size: 14px; }
+</style>
+</head>
+<body>
+
+<h1>Memory Leaks und OutOfMemoryError</h1>
+<p class="small">Java · Tier 1 · Quellen: Java SE 25 Troubleshooting Guide („Troubleshoot Memory Leaks“, „Understand the OutOfMemoryError Exception“), Java SE 21 Troubleshooting Guide, OpenJDK-Quellcode JDK 21/25 (<code>runtime/os.hpp</code>, <code>prims/jvm.cpp</code>, <code>java.nio.Bits</code>, <code>gc_globals.hpp</code>, <code>globals.hpp</code>, <code>g1CollectedHeap.cpp</code>), JEP 387 (Elastic Metaspace)</p>
+
+<div class="kern">
+<b>Kern:</b> Ein <b>Memory Leak</b> in Java ist ein Objekt, das das Programm nicht mehr braucht, aber noch <b>erreichbar</b> ist. Der GC darf es darum nicht löschen. Ein <b>OutOfMemoryError</b> (OOM) kommt, wenn ein Speicherbereich voll ist und der GC keinen Platz mehr schafft. Die <b>Meldung</b> zeigt, welcher Bereich voll ist.
+</div>
+
+<h2>1. Wo sitzt ein Memory Leak?</h2>
+<svg viewBox="0 0 720 300" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="a" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="10" y="20" width="150" height="120" rx="8" fill="#0a66c2" stroke="#0a66c2"/><text x="85" y="44" text-anchor="middle" fill="#fff" font-weight="700">GC Roots</text>
+  <text x="85" y="68" text-anchor="middle" fill="#fff" font-size="12">statische Felder</text><text x="85" y="86" text-anchor="middle" fill="#fff" font-size="12">Thread-Stacks</text><text x="85" y="104" text-anchor="middle" fill="#fff" font-size="12">ThreadLocals</text><text x="85" y="122" text-anchor="middle" fill="#fff" font-size="12">JNI-Referenzen</text>
+  <line x1="160" y1="80" x2="208" y2="80" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="210" y="50" width="140" height="60" rx="8" fill="#fff" stroke="#555"/><text x="280" y="75" text-anchor="middle" font-weight="700">static CACHE</text><text x="280" y="95" text-anchor="middle" font-size="12">HashMap</text>
+  <line x1="350" y1="80" x2="398" y2="80" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="400" y="20" width="310" height="120" rx="8" fill="#fff4f2" stroke="#c62828"/><text x="555" y="44" text-anchor="middle" font-weight="700" fill="#c62828">Leak: erreichbar, aber unnötig</text>
+  <rect x="416" y="58" width="88" height="34" rx="6" fill="#fff" stroke="#c62828"/><text x="460" y="80" text-anchor="middle" font-size="12">Session 1</text>
+  <rect x="512" y="58" width="88" height="34" rx="6" fill="#fff" stroke="#c62828"/><text x="556" y="80" text-anchor="middle" font-size="12">Session 2</text>
+  <rect x="608" y="58" width="88" height="34" rx="6" fill="#fff" stroke="#c62828"/><text x="652" y="80" text-anchor="middle" font-size="12">… 100 000</text>
+  <text x="555" y="122" text-anchor="middle" font-size="12">GC darf nichts löschen → Old Gen wächst</text>
+  <rect x="400" y="190" width="310" height="80" rx="8" fill="#e8f5e9" stroke="#2e7d32"/><text x="555" y="216" text-anchor="middle" font-weight="700">Müll: unerreichbar</text>
+  <text x="555" y="238" text-anchor="middle" font-size="12">keine Kette von einer GC Root</text><text x="555" y="256" text-anchor="middle" font-size="12">GC gibt den Speicher frei</text>
+  <rect x="10" y="190" width="340" height="80" rx="8" fill="#eee" stroke="#777"/><text x="180" y="216" text-anchor="middle" font-weight="700">Heap Dump zeigt</text>
+  <text x="180" y="238" text-anchor="middle" font-size="12">Retained Size: wer hält wie viel?</text><text x="180" y="256" text-anchor="middle" font-size="12">Path to GC Roots: wer hält es fest?</text>
+</svg>
+<ol>
+  <li><b>GC Roots:</b> Eine <b>GC Root</b> ist ein Startpunkt, den der GC immer als lebendig ansieht. Beispiele: statische Felder, lokale Variablen auf Thread-Stacks, aktive Threads, JNI-Referenzen.</li>
+  <li><b>Erreichbarkeit:</b> Der GC folgt allen Referenzen ab den Roots. Alles, was er erreicht, bleibt. Alles andere ist <b>Müll</b> und wird frei.</li>
+  <li><b>Leak:</b> Ein statischer <code>CACHE</code> hält Sessions, die niemand mehr braucht. Sie sind erreichbar, also kein Müll. Der GC kann nichts tun.</li>
+  <li><b>Folge:</b> Die Objekte wandern in die <b>Old Generation</b> und füllen sie Stück für Stück. Am Ende kommt ein <code>OutOfMemoryError</code>.</li>
+  <li><b>Heap Dump:</b> Ein <b>Heap Dump</b> ist eine Datei mit allen Objekten im Heap und ihren Referenzen. Er zeigt, wer den Speicher hält.</li>
+</ol>
+
+<h2>2. Die Reise zum OutOfMemoryError (die Geschichte zum Merken)</h2>
+<svg viewBox="0 0 720 320" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="b" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker><marker id="r" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#c62828"/></marker></defs>
+  <rect x="10" y="20" width="160" height="70" rx="10" fill="#fff" stroke="#555"/><text x="90" y="44" text-anchor="middle" font-weight="700">1. Leak</text><text x="90" y="64" text-anchor="middle" font-size="12">put() ohne remove()</text><text x="90" y="80" text-anchor="middle" font-size="12">bei jedem Request</text>
+  <line x1="170" y1="55" x2="198" y2="55" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="200" y="20" width="160" height="70" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="280" y="44" text-anchor="middle" font-weight="700">2. Old Gen füllt</text><text x="280" y="64" text-anchor="middle" font-size="12">nach jedem GC bleibt</text><text x="280" y="80" text-anchor="middle" font-size="12">mehr übrig</text>
+  <line x1="360" y1="55" x2="388" y2="55" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="390" y="20" width="160" height="70" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="470" y="44" text-anchor="middle" font-weight="700">3. GC im Stress</text><text x="470" y="64" text-anchor="middle" font-size="12">mehr GCs, Full GCs,</text><text x="470" y="80" text-anchor="middle" font-size="12">Latenz steigt</text>
+  <line x1="550" y1="55" x2="578" y2="55" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="580" y="20" width="130" height="70" rx="10" fill="#0a66c2" stroke="#0a66c2"/><text x="645" y="44" text-anchor="middle" fill="#fff" font-weight="700">4. Full GC</text><text x="645" y="64" text-anchor="middle" fill="#fff" font-size="12">15M -&gt; 15M</text><text x="645" y="80" text-anchor="middle" fill="#fff" font-size="12">nichts frei</text>
+  <line x1="645" y1="90" x2="645" y2="148" stroke="#c62828" stroke-width="2" marker-end="url(#r)"/>
+  <rect x="530" y="150" width="180" height="70" rx="10" fill="#fff4f2" stroke="#c62828"/><text x="620" y="174" text-anchor="middle" font-weight="700" fill="#c62828">5. OutOfMemoryError</text><text x="620" y="194" text-anchor="middle" font-size="12">Java heap space</text><text x="620" y="210" text-anchor="middle" font-size="12">in irgendeinem Thread</text>
+  <line x1="530" y1="185" x2="382" y2="185" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="200" y="150" width="180" height="70" rx="10" fill="#fff" stroke="#555"/><text x="290" y="174" text-anchor="middle" font-weight="700">6. Heap Dump</text><text x="290" y="194" text-anchor="middle" font-size="12">HeapDumpOnOutOf-</text><text x="290" y="210" text-anchor="middle" font-size="12">MemoryError → .hprof</text>
+  <line x1="200" y1="185" x2="172" y2="185" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="10" y="150" width="160" height="70" rx="10" fill="#e8f5e9" stroke="#2e7d32"/><text x="90" y="174" text-anchor="middle" font-weight="700">7. Analyse</text><text x="90" y="194" text-anchor="middle" font-size="12">Eclipse MAT:</text><text x="90" y="210" text-anchor="middle" font-size="12">Dominator Tree</text>
+  <text x="360" y="262" text-anchor="middle" font-size="13">Danach: Pod neu starten (ExitOnOutOfMemoryError), Leak im Code beheben</text>
+  <text x="360" y="284" text-anchor="middle" font-size="13">Container ohne Java-Limit: Kernel beendet den Prozess (OOMKilled, Exit 137)</text>
+</svg>
+<ol>
+  <li><b>Der Leak beginnt:</b> Jeder Request legt eine Session in eine statische Map. Niemand entfernt sie. Pro Request bleiben 10 KB übrig.</li>
+  <li><b>Die Old Gen füllt sich:</b> Die Sessions überleben jeden Young GC und landen in der Old Gen. Nach jedem GC ist der Heap etwas voller. Im GC-Log steigt die Zahl <b>nach</b> dem Pfeil.</li>
+  <li><b>Der GC gerät in Stress:</b> Der GC läuft immer öfter. Dann kommen <b>Full GCs</b> (Stop-the-World über den ganzen Heap). Die Latenz steigt, der Durchsatz fällt.</li>
+  <li><b>Full GC ohne Erfolg:</b> Der Full GC findet nichts mehr zum Freigeben. Das Log zeigt <code>15M-&gt;15M(16M)</code>.</li>
+  <li><b>OutOfMemoryError:</b> Die nächste Allokation scheitert. Der Thread, der gerade <code>new</code> ruft, bekommt den Fehler. Das ist oft nicht der Thread mit dem Leak.</li>
+  <li><b>Heap Dump:</b> Mit <code>-XX:+HeapDumpOnOutOfMemoryError</code> schreibt die JVM vorher eine <code>.hprof</code>-Datei. Sie ist so gross wie der belegte Heap.</li>
+  <li><b>Analyse:</b> In <b>Eclipse MAT</b> zeigt der <b>Dominator Tree</b> das Objekt, das den meisten Speicher hält. <b>Path to GC Roots</b> zeigt, warum es lebt.</li>
+</ol>
+
+<h2>3. Beispiel: einen Leak bis zum OOM treiben</h2>
+<pre>public class Leak {
+  record Session(String id, byte[] data) {}
+  static final Map&lt;String, Session&gt; CACHE = new HashMap&lt;&gt;();   // wächst ohne Grenze
+
+  public static void main(String[] args) throws Exception {
+    switch (args[0]) {
+      case "heap" -&gt; { for (int i = 0; ; i++) CACHE.put("s" + i, new Session("s" + i, new byte[10_000])); }
+      case "slow" -&gt; { /* 1000 Sessions, dann 60 s schlafen für jcmd */ }
+      case "meta" -&gt; { /* je Iteration neuer URLClassLoader + Proxy-Klasse, alles behalten */ }
+      case "direct" -&gt; { /* ByteBuffer.allocateDirect(1 MB) in einer Schleife, alles behalten */ }
+      case "gc" -&gt; { Map&lt;Integer, String&gt; m = new HashMap&lt;&gt;(); for (int i = 0; ; i++) m.put(i, "v" + i); }
+    }
+  }
+}</pre>
+<pre>$ java -Xmx16m -Xlog:gc -XX:+HeapDumpOnOutOfMemoryError -XX:HeapDumpPath=dump.hprof Leak heap
+[0.013s][info][gc] Using G1
+[0.106s][info][gc] GC(0) Pause Young (Normal) (G1 Evacuation Pause) 6M-&gt;5M(16M) 4.135ms
+[0.108s][info][gc] GC(1) Pause Young (Normal) (G1 Evacuation Pause) 6M-&gt;6M(16M) 1.670ms
+...
+[0.194s][info][gc] GC(12) Pause Full (G1 Compaction Pause) 15M-&gt;15M(16M) 3.801ms
+[0.201s][info][gc] GC(13) Pause Full (G1 Compaction Pause) 15M-&gt;15M(16M) 7.013ms
+java.lang.OutOfMemoryError: Java heap space
+Dumping heap to dump.hprof ...
+Heap dump file created [18305890 bytes in 0.025 secs]
+...
+Exception: java.lang.OutOfMemoryError thrown from the UncaughtExceptionHandler in thread "main"
+
+$ java -Xmx64m Leak slow &amp;
+$ jcmd &lt;pid&gt; GC.class_histogram
+ num     #instances         #bytes  class name (module)
+-------------------------------------------------------
+   1:          5504       10189936  [B (java.base@17.0.3.1)
+   2:          4418         106032  java.lang.String (java.base@17.0.3.1)
+   ...
+   5:          2005          64160  java.util.HashMap$Node (java.base@17.0.3.1)
+   ...
+   9:          1000          24000  Leak$Session
+
+$ jcmd &lt;pid&gt; GC.heap_info
+ garbage-first heap   total 40960K, used 10653K [0x00000000fc000000, 0x0000000100000000)
+  region size 1024K, 0 young (0K), 0 survivors (0K)
+ Metaspace       used 270K, committed 448K, reserved 1056768K
+  class space    used 9K, committed 128K, reserved 1048576K
+
+$ java -XX:MaxMetaspaceSize=16m Leak meta
+0 Klassen
+1000 Klassen
+2000 Klassen
+Exception in thread "main" java.lang.OutOfMemoryError: Metaspace
+
+$ java -XX:MaxDirectMemorySize=8m -XX:+HeapDumpOnOutOfMemoryError Leak direct
+Exception in thread "main" java.lang.OutOfMemoryError: Cannot reserve 1048576 bytes of direct buffer memory (allocated: 8388608, limit: 8388608)
+	at java.base/java.nio.Bits.reserveMemory(Bits.java:178)
+
+$ java -Xmx16m -XX:+UseParallelGC Leak gc
+Exception in thread "main" java.lang.OutOfMemoryError: GC overhead limit exceeded
+
+$ java -Xmx16m Arr.java          # long[] x = new long[Integer.MAX_VALUE];
+Exception in thread "main" java.lang.OutOfMemoryError: Requested array size exceeds VM limit
+
+$ java -Xmx16m -XX:+ExitOnOutOfMemoryError Leak heap ; echo $?
+Terminating due to java.lang.OutOfMemoryError: Java heap space
+3</pre>
+<p class="small">Echte Ausgabe, OpenJDK 17.0.3 (Windows x64). Gekürzt: GC-Log-Zeilen, Stacktraces und Histogramm-Zeilen (markiert mit <code>...</code>). Der Java-Code ist gekürzt. Java 21 und 25 geben die gleichen Meldungen aus; der Text für Direct Memory ist im Quellcode von 21 und 25 gleich. Den Fehler <code>unable to create native thread</code> haben wir nicht provoziert, weil er das ganze System belastet.</p>
+<ol>
+  <li><b>GC-Log:</b> Der Heap ist nach jedem GC voller: 5M, 6M, dann 15M. Am Ende räumen Full GCs nichts mehr frei (<code>15M-&gt;15M</code>). Das ist das typische Muster eines Leaks.</li>
+  <li><b>Heap Dump:</b> Die Datei ist 18 MB gross, also etwas mehr als der 16-MB-Heap. Ein Dump von einem 8-GB-Heap ist entsprechend etwa 8 GB gross.</li>
+  <li><b>Fehler im Fehler:</b> Auch das Ausgeben des Stacktraces braucht Speicher. Darum kommt die Meldung <code>thrown from the UncaughtExceptionHandler</code>. Ein Programm nach einem OOM ist nicht mehr verlässlich.</li>
+  <li><b>Histogramm:</b> <code>[B</code> (byte-Arrays) belegen 10 MB. Genau 1000 <code>Leak$Session</code> zeigen den Verursacher. Das Histogramm zeigt nur flache Grössen; wer die Arrays hält, zeigt erst der Heap Dump.</li>
+  <li><b>Metaspace:</b> Jeder neue Class Loader mit eigener Proxy-Klasse belegt Metaspace. Nach ca. 2 000 Klassen sind 16 MB voll.</li>
+  <li><b>Direct Memory:</b> Die Meldung nennt Grösse, Belegung und Limit. Trotz <code>HeapDumpOnOutOfMemoryError</code> entsteht <b>kein Heap Dump</b>. Diesen Fehler wirft Java-Code (<code>java.nio.Bits</code>), nicht die JVM.</li>
+  <li><b>GC overhead:</b> Mit dem Parallel GC erkennt die JVM, dass sie fast nur noch GC macht. Sie bricht früher ab, statt endlos zu kriechen.</li>
+  <li><b>Array zu gross:</b> Ein Array über dem VM-Limit scheitert sofort, egal wie gross der Heap ist.</li>
+  <li><b>ExitOnOutOfMemoryError:</b> Die JVM beendet sich beim ersten OOM mit Exit-Code 3. So startet Kubernetes den Pod sauber neu.</li>
+</ol>
+
+<h2>4. Details, die Interviewer fragen</h2>
+<ol>
+  <li><b><code>Java heap space</code>:</b> Ein Objekt passt nicht in den Heap. Ursache: Leak oder zu kleiner Heap. Unterscheiden: Wächst der Heap nach Full GCs stetig, ist es ein Leak.</li>
+  <li><b><code>GC overhead limit exceeded</code>:</b> Der GC braucht über 98 % der Zeit (<code>GCTimeLimit</code>) und gewinnt unter 2 % Heap zurück (<code>GCHeapFreeLimit</code>). Das gilt in Java 21 und 25 nur für den <b>Parallel GC</b>. G1 (Standard) wirft stattdessen <code>Java heap space</code>. Abschalten mit <code>-XX:-UseGCOverheadLimit</code>.</li>
+  <li><b><code>Metaspace</code>:</b> Klassen-Metadaten erreichen <code>MaxMetaspaceSize</code>. Ursache: <b>Class-Loader-Leak</b> oder viele generierte Klassen (Proxies, Lambdas, Groovy, Bytecode-Bibliotheken).</li>
+  <li><b><code>Compressed class space</code>:</b> Die Klassenstrukturen erreichen <code>CompressedClassSpaceSize</code> (Standard 1 GB). Gleiche Ursachen wie bei Metaspace.</li>
+  <li><b><code>Cannot reserve … bytes of direct buffer memory</code>:</b> Direct ByteBuffers erreichen <code>MaxDirectMemorySize</code>. Bis Java 12 hiess die Meldung kurz <code>Direct buffer memory</code>. Ursache: Netty-Buffer ohne <code>release()</code> oder zu wenig GC, der die Buffer-Objekte einsammelt.</li>
+  <li><b><code>unable to create native thread: possibly out of memory or process/resource limits reached</code>:</b> Das Betriebssystem erlaubt keinen weiteren Thread. Ursache: Thread-Leak, <code>ulimit -u</code>, <code>pids.max</code> im Container oder kein Speicher für den Stack.</li>
+  <li><b><code>Requested array size exceeds VM limit</code>:</b> Ein Array ist grösser als die JVM erlaubt (knapp unter <code>Integer.MAX_VALUE</code> Elemente). Ursache: meist ein Rechenfehler bei der Grösse.</li>
+  <li><b><code>request … bytes for … Out of swap space?</code>:</b> Eine native Allokation der JVM scheitert. Die JVM stürzt ab und schreibt ein <b>Fatal Error Log</b> (<code>hs_err_pid&lt;pid&gt;.log</code>).</li>
+  <li><b>Typische Leak-Ursachen:</b>
+    <ul><li><b>Statische Collections:</b> Caches ohne Grenze und Ablaufzeit.</li>
+    <li><b>Listener und Callbacks:</b> registriert, aber nie abgemeldet.</li>
+    <li><b>ThreadLocal in Thread-Pools:</b> Der Thread lebt ewig, also auch der Wert. Lösung: <code>remove()</code> im <code>finally</code>.</li>
+    <li><b>Veränderte HashMap-Schlüssel:</b> Der Eintrag ist unerreichbar, belegt aber Speicher.</li>
+    <li><b>Nicht geschlossene Ressourcen:</b> Streams, Connections, Statements. Lösung: try-with-resources.</li>
+    <li><b>Class-Loader-Leak:</b> Ein Objekt der alten App-Version bleibt erreichbar, z. B. über einen JDBC-Treiber oder ThreadLocal. Dann bleibt der ganze Class Loader mit allen Klassen im Metaspace.</li>
+    <li><b>Innere Klassen:</b> Eine nicht-statische innere Klasse hält eine versteckte Referenz auf das äussere Objekt.</li></ul></li>
+  <li><b>Shallow vs Retained Size:</b> <b>Shallow Size</b> ist die Grösse des Objekts selbst. <b>Retained Size</b> ist alles, was mit ihm frei würde. Ein Leak zeigt sich in der Retained Size.</li>
+  <li><b>Dominator:</b> Ein Objekt A <b>dominiert</b> B, wenn jeder Weg von den Roots zu B über A geht. Der <b>Dominator Tree</b> in MAT zeigt so die echten Besitzer des Speichers.</li>
+  <li><b>Referenztypen:</b> <b>WeakReference</b> hält ein Objekt nicht am Leben (z. B. <code>WeakHashMap</code>-Schlüssel). <b>SoftReference</b> wird erst bei Speichermangel geleert. Beide sind kein Ersatz für einen begrenzten Cache.</li>
+  <li><b>OOM fangen:</b> <code>OutOfMemoryError</code> ist ein <code>Error</code>, keine <code>Exception</code>. Man sollte ihn nicht fangen und weiterlaufen. Der Zustand der Anwendung ist danach unklar.</li>
+</ol>
+
+<h2>5. Vergleich</h2>
+<ul>
+  <li><b>Memory Leak:</b> Speicher steigt stetig, auch nach Full GCs. Mehr Heap verschiebt nur den Zeitpunkt des OOM.</li>
+  <li><b>Zu kleiner Heap:</b> Speicher ist stabil, aber zu nah am Limit. Eine Lastspitze reicht für ein OOM. Mehr Heap löst es.</li>
+  <li><b>Allokations-Spitze:</b> Ein Request lädt z. B. 2 GB in eine Liste. Kein Leak, sondern ein Designfehler. Lösung: Streaming, Paging.</li>
+  <li><b>Java-OOM:</b> Die JVM wirft <code>OutOfMemoryError</code> mit Meldung, Heap Dump möglich.</li>
+  <li><b>Container OOMKilled:</b> Der Kernel beendet den Prozess (Exit 137). Keine Java-Meldung, kein Heap Dump. Ursache: Summe aller Bereiche über dem Pod-Limit.</li>
+  <li><b>Nativer Leak:</b> RSS wächst, Heap und NMT bleiben stabil. Ursache: JNI-Bibliothek oder <code>malloc</code>-Fragmentierung ausserhalb der JVM.</li>
+</ul>
+
+<h2>6. In der Produktion</h2>
+<ol>
+  <li><b>Kein Heap Dump nach OOM:</b> Das Flag fehlt, oder der Pfad liegt im flüchtigen Container-Dateisystem. Lösung: <code>-XX:+HeapDumpOnOutOfMemoryError -XX:HeapDumpPath=/dumps</code> auf ein Volume mit genug Platz.</li>
+  <li><b>App lebt halb tot weiter:</b> Ein Thread stirbt am OOM, die anderen laufen fehlerhaft weiter. Lösung: <code>-XX:+ExitOnOutOfMemoryError</code>. Kubernetes startet den Pod neu.</li>
+  <li><b>Unbegrenzter Cache:</b> Eine statische Map wächst mit jedem Kunden. Lösung: Caffeine mit <code>maximumSize</code> und <code>expireAfterWrite</code>.</li>
+  <li><b>ThreadLocal-Leak im Webserver:</b> Tomcat-Threads leben ewig, ThreadLocal-Werte auch. Lösung: <code>ThreadLocal.remove()</code> im <code>finally</code> oder im Filter.</li>
+  <li><b>Metaspace-Leak nach Redeploy:</b> Jeder Redeploy lädt alle Klassen neu, der alte Class Loader bleibt. Lösung: Leak in MAT über <code>ClassLoader</code>-Pfade finden. Besser: ein Deployment pro Container, Neustart statt Redeploy.</li>
+  <li><b>Heap Dump enthält Geheimnisse:</b> Ein Dump hat Passwörter, Tokens und Kundendaten im Klartext. Lösung: wie Produktionsdaten behandeln, verschlüsselt speichern, schnell löschen.</li>
+  <li><b>Dump stoppt die App:</b> Ein Heap Dump ist eine lange Pause. Bei 30 GB Heap dauert er Minuten. Lösung: Pod vorher aus dem Load Balancer nehmen, <code>-gz</code> nutzen oder mit JFR beginnen.</li>
+</ol>
+
+<h2>7. Diagnose: Werkzeuge, Flags und Befehle</h2>
+<ul>
+  <li><code>-XX:+HeapDumpOnOutOfMemoryError -XX:HeapDumpPath=/dumps</code>: Dump beim ersten OOM aus der JVM. <code>-XX:HeapDumpGzipLevel=1</code> komprimiert ihn (seit Java 17).</li>
+  <li><code>-XX:+ExitOnOutOfMemoryError</code>: beenden beim ersten OOM. <code>-XX:+CrashOnOutOfMemoryError</code>: Absturz mit <code>hs_err</code>-Log und Core Dump.</li>
+  <li><code>jcmd &lt;pid&gt; GC.heap_dump -gz=1 /dumps/app.hprof</code>: Dump einer laufenden JVM. Standard: nur lebende Objekte (vorher Full GC).</li>
+  <li><code>jcmd &lt;pid&gt; GC.class_histogram</code>: Objekte pro Klasse. Mehrmals im Abstand von Minuten ausführen und vergleichen.</li>
+  <li><code>jcmd &lt;pid&gt; GC.heap_info</code>: aktuelle Belegung von Heap und Metaspace.</li>
+  <li><code>-Xlog:gc*:file=gc.log</code>: GC-Log. Wichtig ist die Heap-Grösse <b>nach</b> dem GC über die Zeit.</li>
+  <li><b>JFR</b> (Java Flight Recorder): Das Event <code>jdk.OldObjectSample</code> zeigt alte, lebende Objekte mit Allokations-Stack. <code>jcmd &lt;pid&gt; JFR.dump filename=rec.jfr path-to-gc-roots=true</code> fügt den Weg zur GC Root hinzu.</li>
+  <li><b>Eclipse MAT</b>: Leak Suspects Report, Dominator Tree, Path to GC Roots, OQL. Für grosse Dumps braucht MAT selbst viel RAM.</li>
+  <li><b>NMT</b>: <code>-XX:NativeMemoryTracking=summary</code>, dann <code>jcmd &lt;pid&gt; VM.native_memory baseline</code> und <code>summary.diff</code> für Metaspace, Threads und Direct Memory.</li>
+  <li><code>jcmd &lt;pid&gt; VM.classloader_stats</code> und <code>VM.metaspace</code>: welcher Class Loader wie viel Metaspace hält.</li>
+  <li><code>jcmd &lt;pid&gt; Thread.print</code>: Thread-Liste bei <code>unable to create native thread</code>.</li>
+  <li><b>Monitoring</b>: Micrometer-Metriken wie <code>jvm_memory_used_bytes{area="heap"}</code> nach GC, <code>jvm_buffer_memory_used_bytes</code>, <code>jvm_threads_live_threads</code>, Alarm bei stetigem Anstieg.</li>
+</ul>
+
+<h2>8. Senior-Punkte</h2>
+<div class="senior">
+<ol>
+  <li><b>Erst die Meldung lesen.</b> Sie sagt, welcher Bereich voll ist. Mehr <code>-Xmx</code> hilft bei <code>Metaspace</code>, <code>Direct</code> oder <code>native thread</code> nicht.</li>
+  <li><b>Mehr Heap ist keine Lösung für einen Leak.</b> Er verschiebt nur den Absturz und macht Dumps und Full GCs grösser.</li>
+  <li><b>Exit statt Weiterlaufen:</b> Nach einem OOM ist der Zustand unklar. <code>ExitOnOutOfMemoryError</code> plus Neustart durch Kubernetes ist meist die sichere Wahl.</li>
+  <li><b>Heap Dump oder JFR:</b> Ein Dump ist genau, aber gross, langsam und enthält sensible Daten. JFR mit <code>OldObjectSample</code> ist leicht genug für die Produktion. Erst JFR, dann gezielt ein Dump.</li>
+  <li><b>Jeder Cache braucht eine Grenze</b> und eine Ablaufzeit. Das ist eine Architektur-Entscheidung, keine Optimierung.</li>
+  <li><b>Grenzen für native Bereiche</b> (<code>MaxMetaspaceSize</code>, <code>MaxDirectMemorySize</code>) machen aus einem stillen Container-Kill einen klaren Java-Fehler mit Stacktrace.</li>
+</ol>
+</div>
+
+<h2>9. Aus dem Projekt</h2>
+<p>„Ein statischer Cache ohne Grenze hat den Heap Tag für Tag gefüllt; im Heap Dump zeigte MAT die Map als grössten Dominator, und ein Caffeine-Cache mit Grösse und Ablaufzeit hat es gelöst.“ <span class="small">(Prüfen und durch dein echtes Beispiel ersetzen.)</span></p>
+
+<h2>10. Fallen</h2>
+<div class="trap">
+<ul>
+  <li>„Java hat einen GC, also gibt es keine Memory Leaks.“ → <b>Falsch.</b> Der GC löscht nur unerreichbare Objekte. Unnötige, aber erreichbare Objekte bleiben.</li>
+  <li>„Bei OOM einfach <code>-Xmx</code> erhöhen.“ → <b>Falsch.</b> Bei einem Leak verschiebt das nur den Absturz. Bei Metaspace- oder Thread-OOM hilft es gar nicht.</li>
+  <li>„<code>OutOfMemoryError: PermGen space</code> heisst <code>MaxPermSize</code> erhöhen.“ → <b>Veraltet.</b> Die PermGen gibt es seit Java 8 nicht mehr. Heute heisst die Meldung <code>Metaspace</code>, und das Flag ist <code>MaxMetaspaceSize</code>.</li>
+  <li>„Der Stacktrace des OOM zeigt den Verursacher.“ → <b>Falsch.</b> Er zeigt nur die letzte Allokation. Den Verursacher zeigt der Heap Dump.</li>
+  <li>„<code>HeapDumpOnOutOfMemoryError</code> schreibt bei jedem OOM einen Dump.“ → <b>Falsch.</b> Nur bei OOMs aus der JVM. Bei Direct Memory (aus <code>java.nio.Bits</code>) gibt es keinen Dump.</li>
+  <li>„<code>GC overhead limit exceeded</code> kommt bei jedem GC.“ → <b>Falsch.</b> In Java 21 und 25 nur beim Parallel GC. G1 meldet <code>Java heap space</code>.</li>
+  <li>„OOMKilled im Pod ist ein Java-OOM.“ → <b>Falsch.</b> Das ist der Linux-Kernel. Java merkt nichts, es gibt keinen Dump.</li>
+  <li>„<code>System.gc()</code> rettet vor einem OOM.“ → <b>Falsch.</b> Die JVM macht vor jedem OOM schon einen Full GC.</li>
+</ul>
+</div>
+
+<h2>11. Fragen</h2>
+<details><summary>Was ist ein Memory Leak in Java?</summary><p>Ein Objekt, das nicht mehr gebraucht wird, aber noch von einer GC Root erreichbar ist. Der GC darf es darum nicht löschen.</p></details>
+<details><summary>Wie kann es mit einem GC überhaupt Leaks geben?</summary><p>Der GC entscheidet nach Erreichbarkeit, nicht nach Nutzen. Eine vergessene Referenz hält das Objekt am Leben.</p></details>
+<details><summary>Was ist eine GC Root?</summary><p>Ein Startpunkt, den der GC immer als lebendig ansieht. Beispiele: statische Felder, lokale Variablen aktiver Threads, JNI-Referenzen.</p></details>
+<details><summary>Nennen Sie typische Ursachen für Leaks.</summary><p>Statische Caches ohne Grenze, nicht abgemeldete Listener, ThreadLocal in Thread-Pools, nicht geschlossene Ressourcen, veränderte HashMap-Schlüssel, Class-Loader-Leaks.</p></details>
+<details><summary>Welche OutOfMemoryError-Meldungen kennen Sie?</summary><p>Java heap space, GC overhead limit exceeded, Metaspace, Compressed class space, Cannot reserve … bytes of direct buffer memory, unable to create native thread, Requested array size exceeds VM limit.</p></details>
+<details><summary>Was bedeutet „Java heap space“?</summary><p>Ein Objekt passt nicht mehr in den Heap, auch nach einem Full GC. Ursache ist ein Leak oder ein zu kleiner Heap.</p></details>
+<details><summary>Was bedeutet „GC overhead limit exceeded“?</summary><p>Der GC braucht über 98 % der Zeit und gewinnt unter 2 % zurück. In Java 21 und 25 meldet das nur der Parallel GC.</p></details>
+<details><summary>Was bedeutet „OutOfMemoryError: Metaspace“?</summary><p>Die Klassen-Metadaten haben MaxMetaspaceSize erreicht. Meist ein Class-Loader-Leak oder sehr viele generierte Klassen.</p></details>
+<details><summary>Was bedeutet „unable to create native thread“?</summary><p>Das Betriebssystem erlaubt keinen weiteren Thread. Ursachen: Thread-Leak, Prozess- oder Container-Limits, kein Speicher für den Stack.</p></details>
+<details><summary>Was bedeutet der Fehler zu Direct Buffer Memory?</summary><p>Direct ByteBuffers haben MaxDirectMemorySize erreicht. Typisch bei Netty ohne release() oder zu grossen Puffern.</p></details>
+<details><summary>Was ist ein Heap Dump?</summary><p>Eine Datei (.hprof) mit allen Objekten im Heap und ihren Referenzen. Man analysiert ihn mit Eclipse MAT.</p></details>
+<details><summary>Wie bekommen Sie einen Heap Dump?</summary><p>Automatisch mit -XX:+HeapDumpOnOutOfMemoryError oder manuell mit jcmd &lt;pid&gt; GC.heap_dump datei.hprof.</p></details>
+<details><summary>Was ist der Unterschied zwischen Shallow und Retained Size?</summary><p>Shallow Size ist das Objekt allein. Retained Size ist alles, was frei würde, wenn das Objekt wegfällt.</p></details>
+<details><summary>Was zeigt der Dominator Tree?</summary><p>Welche Objekte den meisten Speicher exklusiv halten. Ganz oben steht meist der Leak, z. B. eine grosse Map.</p></details>
+<details><summary>Was ist „Path to GC Roots“?</summary><p>Die Referenzkette von einer GC Root zum Objekt. Sie zeigt, warum das Objekt noch lebt.</p></details>
+<details><summary>Wie erkennen Sie einen Leak im GC-Log?</summary><p>Die Heap-Grösse nach jedem GC steigt stetig. Am Ende befreien Full GCs fast nichts mehr.</p></details>
+<details><summary>Was ist der Unterschied zwischen Leak und zu kleinem Heap?</summary><p>Beim Leak steigt der Speicher nach GC immer weiter. Beim zu kleinen Heap ist er stabil, aber zu nah am Limit.</p></details>
+<details><summary>Warum ist ThreadLocal gefährlich in Thread-Pools?</summary><p>Pool-Threads leben ewig, also auch ihre ThreadLocal-Werte. Ohne remove() bleiben sie und können sogar einen Class Loader festhalten.</p></details>
+<details><summary>Was ist ein Class-Loader-Leak?</summary><p>Ein Objekt einer alten App-Version bleibt erreichbar. Dann bleiben ihr Class Loader und alle Klassen im Metaspace.</p></details>
+<details><summary>Sollte man OutOfMemoryError fangen?</summary><p>Nein. Danach ist der Zustand der Anwendung unklar. Besser mit ExitOnOutOfMemoryError beenden und neu starten.</p></details>
+<details><summary>Was machen ExitOnOutOfMemoryError und CrashOnOutOfMemoryError?</summary><p>Exit beendet die JVM beim ersten OOM. Crash bricht ab und schreibt ein hs_err-Log und einen Core Dump.</p></details>
+<details><summary>Hilft WeakHashMap gegen Leaks?</summary><p>Nur für Schlüssel ohne andere Referenzen. Hält der Wert den Schlüssel fest, leakt sie trotzdem. Für Caches besser Caffeine mit Grenze.</p></details>
+<details><summary>Wie finden Sie Leaks in der Produktion ohne Heap Dump?</summary><p>Mit JFR und dem Event jdk.OldObjectSample, mit Klassen-Histogrammen im Abstand und mit Metriken zum Heap nach GC.</p></details>
+<details><summary>Warum ist ein Heap Dump in der Produktion heikel?</summary><p>Er stoppt die JVM lange, ist so gross wie der Heap und enthält Passwörter und Kundendaten im Klartext.</p></details>
+<details><summary>Was ist der Unterschied zwischen Java-OOM und OOMKilled?</summary><p>Ein Java-OOM wirft die JVM, mit Meldung und Dump. OOMKilled ist der Linux-Kernel im Container, ohne Meldung und ohne Dump.</p></details>
+<details><summary>Szenario: Der Heap wächst über Tage, dann kommt „Java heap space“. Was tun Sie?</summary><p>Heap Dump vom OOM in MAT öffnen, Dominator Tree und Path to GC Roots prüfen. Meist ist es ein Cache oder eine statische Collection. Lösung: Grenze und Ablaufzeit, dann im GC-Log prüfen.</p></details>
+<details><summary>Szenario: Nach jedem Redeploy im Application Server steigt der Metaspace, bis „OutOfMemoryError: Metaspace“ kommt. Warum?</summary><p>Der alte Class Loader bleibt erreichbar, z. B. über ThreadLocal, JDBC-Treiber oder einen Thread. Mit VM.classloader_stats und MAT den Halter finden. Langfristig: Neustart statt Redeploy.</p></details>
+<details><summary>Szenario: Der Pod wird OOMKilled, aber der Heap ist nur halb voll. Wie gehen Sie vor?</summary><p>NMT einschalten und RSS mit NMT vergleichen. Wachsen Direct Memory, Threads oder Metaspace, Grenzen setzen und den Leak suchen. MaxRAMPercentage senken, damit Platz für nativen Speicher bleibt.</p></details>
+
+</body>
+</html>

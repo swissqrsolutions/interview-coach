@@ -1,0 +1,233 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DNS: Auflösung, Records, TTL</title>
+<style>
+  body { font: 17px/1.55 -apple-system, system-ui, sans-serif; max-width: 760px; margin: 0 auto; padding: 16px; color: #1d1d1f; }
+  h1 { font-size: 28px; margin: 8px 0 4px; }
+  h2 { font-size: 21px; margin: 32px 0 8px; padding-top: 12px; border-top: 2px solid #e5e5ea; }
+  .kern { background: #eef6ff; border-left: 4px solid #0a66c2; padding: 10px 14px; border-radius: 6px; }
+  .senior { background: #f0faf0; border-left: 4px solid #2e7d32; padding: 10px 14px; border-radius: 6px; }
+  .trap { background: #fff4f2; border-left: 4px solid #c62828; padding: 10px 14px; border-radius: 6px; }
+  code { background: #f2f2f7; padding: 1px 5px; border-radius: 4px; font-size: 15px; }
+  pre { background: #1e1e1e; color: #e6e6e6; padding: 12px; border-radius: 8px; overflow-x: auto; font-size: 13.5px; line-height: 1.45; }
+  svg { width: 100%; height: auto; display: block; margin: 10px 0; }
+  ol li, ul li { margin: 4px 0; }
+  details { border: 1px solid #e5e5ea; border-radius: 8px; padding: 8px 12px; margin: 6px 0; }
+  summary { font-weight: 600; cursor: pointer; }
+  details p { margin: 6px 0 2px; }
+  .small { color: #6e6e73; font-size: 14px; }
+</style>
+</head>
+<body>
+
+<h1>DNS: Auflösung, Records, TTL</h1>
+<p class="small">Networking · Tier 1 · Quellen: RFC 1034/1035 (DNS), RFC 2308 (Negative Caching), RFC 2782 (SRV), RFC 7505 (Null MX), Microsoft Learn (Private Endpoint DNS, Azure Private DNS), kubernetes.io (DNS for Services and Pods)</p>
+
+<div class="kern">
+<b>Kern:</b> <b>DNS</b> (Domain Name System) ist eine verteilte Datenbank, die Namen in Daten übersetzt, meist in IP-Adressen. Es löst das Problem, dass Clients feste IPs kennen müssten. Jede Antwort hat eine <b>TTL</b> (Time to Live), also wie lange man sie cachen darf.
+</div>
+
+<h2>1. Wo sitzt DNS? (Pod in AKS mit Private Endpoint)</h2>
+<svg viewBox="0 0 720 330" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="a" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="10" y="20" width="150" height="70" rx="8" fill="#fff" stroke="#555"/><text x="85" y="44" text-anchor="middle" font-weight="700">Pod / App</text><text x="85" y="64" text-anchor="middle" font-size="12">getaddrinfo()</text><text x="85" y="80" text-anchor="middle" font-size="12">/etc/resolv.conf</text>
+  <line x1="160" y1="55" x2="208" y2="55" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="210" y="20" width="150" height="70" rx="8" fill="#dbe9fb" stroke="#0a66c2"/><text x="285" y="44" text-anchor="middle" font-weight="700">CoreDNS</text><text x="285" y="64" text-anchor="middle" font-size="12">cluster.local selbst</text><text x="285" y="80" text-anchor="middle" font-size="12">Rest: forward</text>
+  <line x1="360" y1="55" x2="408" y2="55" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="410" y="20" width="300" height="70" rx="8" fill="#0a66c2" stroke="#0a66c2"/><text x="560" y="44" text-anchor="middle" fill="#fff" font-weight="700">Azure DNS 168.63.129.16</text><text x="560" y="64" text-anchor="middle" fill="#fff" font-size="12">rekursiver Resolver der VNet</text><text x="560" y="80" text-anchor="middle" fill="#fff" font-size="12">(oder eigener DNS / Private Resolver)</text>
+  <line x1="480" y1="90" x2="300" y2="168" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <line x1="640" y1="90" x2="600" y2="168" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="160" y="170" width="300" height="80" rx="8" fill="#e8f5e9" stroke="#2e7d32"/><text x="310" y="192" text-anchor="middle" font-weight="700">Private DNS Zone</text><text x="310" y="212" text-anchor="middle" font-size="12">privatelink.blob.core.windows.net</text><text x="310" y="230" text-anchor="middle" font-size="12">mit VNet verlinkt · A → 10.1.2.5</text>
+  <rect x="480" y="170" width="230" height="80" rx="8" fill="#fff" stroke="#555"/><text x="595" y="192" text-anchor="middle" font-weight="700">Öffentliches DNS</text><text x="595" y="212" text-anchor="middle" font-size="12">Root → TLD → autoritativ</text><text x="595" y="230" text-anchor="middle" font-size="12">liefert CNAME → privatelink</text>
+  <line x1="310" y1="250" x2="310" y2="278" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="160" y="280" width="300" height="40" rx="8" fill="#eee" stroke="#777"/><text x="310" y="305" text-anchor="middle">Private Endpoint 10.1.2.5 (Storage)</text>
+</svg>
+<ol>
+  <li><b>Stub Resolver:</b> Die Bibliothek im Pod (<code>getaddrinfo</code>) fragt den Server aus <code>/etc/resolv.conf</code>. Sie fragt nur, sie löst nicht selbst auf.</li>
+  <li><b>CoreDNS:</b> Der DNS-Server im Cluster beantwortet Namen unter <code>cluster.local</code> selbst. Alles andere leitet er weiter (<b>forward</b>).</li>
+  <li><b>Rekursiver Resolver:</b> In Azure ist das <b>Azure DNS</b> unter der festen IP <code>168.63.129.16</code>. Er löst Namen komplett auf und cacht die Antworten.</li>
+  <li><b>Private DNS Zone:</b> Eine Zone, die nur in verlinkten VNets sichtbar ist. Hier steht die <b>private IP</b> des Private Endpoints.</li>
+  <li><b>Öffentliches DNS:</b> Die Hierarchie aus Root, TLD und autoritativen Servern. Für Azure-Dienste liefert sie einen <b>CNAME</b> auf den <code>privatelink</code>-Namen.</li>
+</ol>
+
+<h2>2. Die Reise einer DNS-Anfrage (die Geschichte zum Merken)</h2>
+<svg viewBox="0 0 720 330" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="b" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker><marker id="g" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#2e7d32"/></marker></defs>
+  <rect x="10" y="130" width="120" height="60" rx="10" fill="#eee" stroke="#777"/><text x="70" y="156" text-anchor="middle" font-weight="700">Client</text><text x="70" y="174" text-anchor="middle" font-size="12">Stub + OS-Cache</text>
+  <line x1="130" y1="150" x2="208" y2="150" stroke="#555" stroke-width="2" marker-end="url(#b)"/><text x="170" y="142" text-anchor="middle" font-size="12">① RD=1</text>
+  <line x1="210" y1="172" x2="132" y2="172" stroke="#2e7d32" stroke-width="2" marker-end="url(#g)"/><text x="170" y="190" text-anchor="middle" font-size="12" fill="#2e7d32">⑤ Antwort</text>
+  <rect x="210" y="120" width="170" height="80" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="295" y="146" text-anchor="middle" font-weight="700">Rekursiver</text><text x="295" y="164" text-anchor="middle" font-weight="700">Resolver</text><text x="295" y="184" text-anchor="middle" font-size="12">Cache (TTL)</text>
+  <rect x="500" y="10" width="210" height="60" rx="10" fill="#fff" stroke="#555"/><text x="605" y="36" text-anchor="middle" font-weight="700">Root „.“</text><text x="605" y="54" text-anchor="middle" font-size="12">kennt .com-Server</text>
+  <rect x="500" y="130" width="210" height="60" rx="10" fill="#fff" stroke="#555"/><text x="605" y="156" text-anchor="middle" font-weight="700">TLD „.com“</text><text x="605" y="174" text-anchor="middle" font-size="12">kennt example.com-NS</text>
+  <rect x="500" y="250" width="210" height="60" rx="10" fill="#0a66c2" stroke="#0a66c2"/><text x="605" y="276" text-anchor="middle" fill="#fff" font-weight="700">Autoritativ</text><text x="605" y="294" text-anchor="middle" fill="#fff" font-size="12">example.com A, TTL 300</text>
+  <line x1="380" y1="130" x2="498" y2="45" stroke="#555" stroke-width="2" marker-end="url(#b)"/><text x="420" y="74" font-size="12">② Referral</text>
+  <line x1="380" y1="160" x2="498" y2="160" stroke="#555" stroke-width="2" marker-end="url(#b)"/><text x="440" y="152" text-anchor="middle" font-size="12">③ Referral</text>
+  <line x1="380" y1="190" x2="498" y2="275" stroke="#555" stroke-width="2" marker-end="url(#b)"/><text x="420" y="256" font-size="12">④ Antwort (AA)</text>
+</svg>
+<ol>
+  <li><b>Die App fragt:</b> <code>curl https://example.com</code> ruft <code>getaddrinfo("example.com")</code>. Der Stub prüft zuerst die <b>hosts-Datei</b> und den <b>OS-Cache</b>.</li>
+  <li><b>Frage an den Resolver ①:</b> Der Stub schickt eine Anfrage über <b>UDP Port 53</b> mit dem Flag <b>RD</b> (Recursion Desired). Er will eine fertige Antwort.</li>
+  <li><b>Cache-Treffer?</b> Hat der Resolver die Antwort im Cache und ist die TTL nicht abgelaufen, antwortet er sofort. Die TTL zählt dabei herunter.</li>
+  <li><b>Root ②:</b> Bei einem Miss fragt der Resolver einen <b>Root-Server</b>. Der antwortet mit einem <b>Referral</b>: „Frag die .com-Server.“</li>
+  <li><b>TLD ③:</b> Der <code>.com</code>-Server verweist auf die <b>NS-Records</b> von <code>example.com</code>. Er liefert oft gleich deren IPs mit (<b>Glue Records</b>).</li>
+  <li><b>Autoritativ ④:</b> Der zuständige Server antwortet mit dem A-Record. Das Flag <b>AA</b> (Authoritative Answer) ist gesetzt. Die TTL ist die volle Zonen-TTL, z. B. 300.</li>
+  <li><b>Zurück zum Client ⑤:</b> Der Resolver cacht die Antwort und gibt sie weiter. Ab jetzt baut der Client die TCP-Verbindung zur IP.</li>
+</ol>
+<p>Der Resolver arbeitet <b>iterativ</b>: Er fragt selbst nacheinander. Für den Client ist es <b>rekursiv</b>: Er stellt eine Frage und bekommt das Endergebnis.</p>
+
+<h2>3. Beispiel: DNS mit nslookup abfragen</h2>
+<pre>$ nslookup example.com 1.1.1.1
+Non-authoritative answer:
+Name:    example.com
+Addresses:  2606:4700:10::ac42:93f3
+	  2606:4700:10::6814:179a
+	  172.66.147.243
+	  104.20.23.154
+
+$ nslookup -debug -type=a example.com 1.1.1.1          # rekursiver Resolver, Cache
+	header flags:  response, want recursion, recursion avail.
+    ->  example.com
+	internet address = 172.66.147.243
+	ttl = 55 (55 secs)
+
+$ nslookup -debug -type=a example.com hera.ns.cloudflare.com   # autoritativer Server
+	header flags:  response, auth. answer, want recursion
+	internet address = 172.66.147.243
+	ttl = 300 (5 mins)
+
+$ nslookup -type=mx example.com 1.1.1.1
+example.com	MX preference = 0, mail exchanger = (root)
+
+$ nslookup -type=txt example.com 1.1.1.1
+example.com	text =
+	"v=spf1 -all"
+
+$ nslookup -type=ns example.com 1.1.1.1
+example.com	nameserver = hera.ns.cloudflare.com
+example.com	nameserver = elliott.ns.cloudflare.com
+
+$ nslookup gibtsnicht.invalid 1.1.1.1
+*** one.one.one.one can't find gibtsnicht.invalid: Non-existent domain</pre>
+<p class="small">Echte Ausgabe, curl/OpenSSL/Python unter Windows (nslookup, Resolver 1.1.1.1). Gekürzt: Kopfzeilen „Server/Address“ und Teile der Debug-Ausgabe.</p>
+<ol>
+  <li><b>A und AAAA:</b> <code>example.com</code> hat zwei IPv4- und zwei IPv6-Adressen. Der Client wählt eine davon.</li>
+  <li><b>Non-authoritative:</b> Die Antwort kommt aus dem Cache des Resolvers 1.1.1.1, nicht vom zuständigen Server.</li>
+  <li><b>TTL im Cache:</b> Der Resolver zeigt <code>ttl = 55</code>. Die volle TTL ist 300. Die Antwort liegt also seit 245 Sekunden im Cache.</li>
+  <li><b>Autoritativ:</b> Direkt beim Nameserver von <code>example.com</code> ist <code>auth. answer</code> gesetzt, und die TTL ist voll: 300.</li>
+  <li><b>Null MX:</b> <code>MX preference = 0, mail exchanger = (root)</code> heisst: Diese Domain nimmt keine Mails an (RFC 7505).</li>
+  <li><b>TXT:</b> <code>v=spf1 -all</code> ist ein <b>SPF</b>-Record. Er sagt: Kein Server darf Mails für diese Domain senden.</li>
+  <li><b>NXDOMAIN:</b> Für einen nicht existierenden Namen kommt „Non-existent domain“. Auch diese negative Antwort wird gecacht.</li>
+</ol>
+
+<h2>4. Details, die Interviewer fragen</h2>
+<ol>
+  <li><b>A / AAAA:</b> Name → IPv4-Adresse / IPv6-Adresse. Mehrere Records für einen Namen sind normal.</li>
+  <li><b>CNAME:</b> Ein <b>Alias</b>: Name → anderer Name. Der Resolver folgt der Kette. Ein CNAME darf keine anderen Records neben sich haben. Darum geht er nicht am Zonen-Apex (<code>example.com</code> selbst).</li>
+  <li><b>MX:</b> Mail-Server einer Domain mit <b>Priorität</b>. Kleinere Zahl = bevorzugt.</li>
+  <li><b>TXT:</b> Freier Text. Genutzt für SPF, DKIM, DMARC und Domain-Verifikation (z. B. für Zertifikate oder Entra ID).</li>
+  <li><b>SRV:</b> Dienst-Ort mit Port: <code>_dienst._proto.name</code> → Priorität, Gewicht, Port, Ziel (RFC 2782). Kubernetes nutzt SRV für benannte Ports.</li>
+  <li><b>NS und SOA:</b> <b>NS</b> nennt die autoritativen Server einer Zone. <b>SOA</b> (Start of Authority) enthält Verwaltungsdaten der Zone, auch die TTL für negative Antworten.</li>
+  <li><b>PTR:</b> Rückwärtsauflösung: IP → Name, unter <code>in-addr.arpa</code>.</li>
+  <li><b>TTL und Caching:</b> Es gibt viele Caches: Browser, Anwendung (z. B. JVM), OS, CoreDNS, Resolver. Eine Änderung wirkt erst, wenn alle Caches abgelaufen sind.</li>
+  <li><b>JVM-Cache:</b> Java cacht erfolgreiche Lookups standardmässig 30 Sekunden (<code>networkaddress.cache.ttl</code>), ohne Security Manager. Mit Security Manager früher für immer.</li>
+  <li><b>Negative Caching:</b> Auch „gibt es nicht“ wird gecacht (RFC 2308). Die Dauer kommt aus dem SOA-Record der Zone.</li>
+  <li><b>UDP und TCP:</b> Normal ist UDP 53. Ist die Antwort zu gross, setzt der Server das <b>TC-Bit</b> (truncated). Der Client wiederholt über TCP 53.</li>
+  <li><b>Private Endpoint DNS:</b> Der öffentliche Name <code>konto.blob.core.windows.net</code> hat einen CNAME auf <code>konto.privatelink.blob.core.windows.net</code>. In der VNet beantwortet die <b>Private DNS Zone</b> <code>privatelink.blob.core.windows.net</code> diesen Namen mit der privaten IP. Die App behält ihre URL.</li>
+  <li><b>Zone mit VNet verlinken:</b> Eine Private DNS Zone wirkt nur in VNets mit <b>Virtual Network Link</b>. Ohne Link löst die VNet öffentlich auf.</li>
+  <li><b>On-Premises:</b> Lokale DNS-Server brauchen einen <b>Conditional Forwarder</b> zum Azure DNS Private Resolver (Inbound Endpoint). Microsoft empfiehlt, die <b>öffentliche</b> Zone weiterzuleiten, z. B. <code>blob.core.windows.net</code>, nicht <code>privatelink…</code>.</li>
+  <li><b>Kubernetes-Namen:</b> Ein Service hat den A-Record <code>svc.namespace.svc.cluster.local</code> → ClusterIP. Ein <b>Headless Service</b> (<code>clusterIP: None</code>) liefert direkt die Pod-IPs.</li>
+  <li><b>ndots:5:</b> Pods haben <code>options ndots:5</code> und mehrere <b>Search Domains</b>. Ein Name mit weniger als 5 Punkten wird zuerst mit jeder Search Domain probiert. Ein externer Name erzeugt so mehrere unnötige Anfragen.</li>
+</ol>
+
+<h2>5. Vergleich</h2>
+<ul>
+  <li><b>Stub Resolver:</b> im Client, fragt nur, cacht wenig.</li>
+  <li><b>Rekursiver Resolver:</b> löst komplett auf, cacht viel (z. B. Azure DNS, 1.1.1.1, ISP).</li>
+  <li><b>Autoritativer Server:</b> besitzt die Zone und gibt die Wahrheit mit AA-Flag aus (z. B. Azure DNS Zones, Cloudflare).</li>
+  <li><b>Forwarder:</b> gibt Anfragen an einen anderen Resolver weiter (z. B. CoreDNS <code>forward</code>, Conditional Forwarder).</li>
+  <li><b>Öffentliche Zone vs Private Zone:</b> Die öffentliche ist im Internet sichtbar. Die private nur in verlinkten VNets.</li>
+  <li><b>CNAME vs Alias-Record:</b> CNAME zeigt auf einen Namen, nicht am Apex. Azure-Alias-Records und ALIAS bei anderen Anbietern zeigen auf eine Ressource und gehen auch am Apex.</li>
+  <li><b>ClusterIP-Service vs Headless:</b> ClusterIP liefert eine virtuelle IP. Headless liefert alle Pod-IPs, gut für StatefulSets.</li>
+</ul>
+
+<h2>6. In der Produktion</h2>
+<ol>
+  <li><b>Private Endpoint löst öffentlich auf:</b> Die Private DNS Zone fehlt oder ist nicht mit der VNet verlinkt. Die App geht über das Internet und bekommt 403 von der Firewall des Dienstes. Lösung: Zone anlegen, mit VNet verlinken, A-Record per <b>DNS Zone Group</b> automatisch pflegen.</li>
+  <li><b>Eigener DNS-Server ignoriert die Private Zone:</b> Die VNet nutzt einen eigenen DNS (z. B. Domain Controller). Lösung: Forwarder zu <code>168.63.129.16</code> oder zum DNS Private Resolver.</li>
+  <li><b>NXDOMAIN für fremde Ressourcen:</b> Mit einer Private Zone <code>privatelink.blob…</code> findet die VNet keine Konten, die woanders einen Private Endpoint haben. Lösung: <b>Fallback to Internet</b> am VNet-Link.</li>
+  <li><b>Alte IP nach Umzug:</b> Die TTL war hoch, Caches halten die alte IP. Lösung: TTL Tage vorher senken (z. B. auf 60 s), dann umziehen, dann wieder erhöhen.</li>
+  <li><b>DNS-Last in Kubernetes:</b> <code>ndots:5</code> vervielfacht Anfragen für externe Namen. Lösung: vollqualifizierte Namen mit Punkt am Ende (<code>api.example.com.</code>), <code>dnsConfig.options ndots</code> senken, <b>NodeLocal DNSCache</b>.</li>
+  <li><b>5 Sekunden Verzögerung:</b> Parallele A- und AAAA-Anfragen über UDP kollidieren in <b>conntrack</b> auf Linux. Eine Antwort geht verloren, der Client wartet 5 s Timeout. Lösung: NodeLocal DNSCache oder <code>single-request-reopen</code>.</li>
+  <li><b>DNS-Policy blockt TCP:</b> Network Policy erlaubt nur UDP 53. Grosse Antworten scheitern. Lösung: UDP und TCP 53 erlauben.</li>
+</ol>
+
+<h2>7. Diagnose: Werkzeuge und Befehle</h2>
+<ul>
+  <li><code>nslookup name</code> / <code>nslookup -debug -type=a name server</code>: Antwort, Flags und TTL (Windows und Linux).</li>
+  <li><code>dig name +noall +answer</code>: kurze Antwort mit TTL. <code>dig +trace name</code>: ganze Kette Root → TLD → autoritativ.</li>
+  <li><code>dig @168.63.129.16 konto.blob.core.windows.net</code>: Was sagt Azure DNS in dieser VNet? Erwartet: CNAME auf <code>privatelink</code> und eine 10.x-IP.</li>
+  <li><code>kubectl exec -it pod -- cat /etc/resolv.conf</code>: Nameserver, Search Domains, ndots.</li>
+  <li><code>kubectl run -it --rm dnstest --image=busybox:1.36 -- nslookup kubernetes.default</code>: DNS aus Sicht eines Pods testen.</li>
+  <li><code>kubectl -n kube-system logs -l k8s-app=kube-dns</code>: CoreDNS-Fehler, mit Plugin <code>log</code> auch einzelne Anfragen.</li>
+  <li><code>curl -w "%{time_namelookup}"</code>: Wie lange dauert die Auflösung im echten Client?</li>
+  <li><code>tcpdump -i any port 53</code> / Wireshark Filter <code>dns</code>: Anfragen, Search-Domain-Versuche, fehlende Antworten.</li>
+  <li><code>ipconfig /displaydns</code> und <code>ipconfig /flushdns</code> (Windows): lokalen Cache sehen und leeren.</li>
+</ul>
+
+<h2>8. Senior-Punkte</h2>
+<div class="senior">
+<ol>
+  <li><b>„It’s always DNS.“</b> Bei Fehlern nach Netzwerk-Änderungen zuerst prüfen: Welche IP sieht der Client wirklich, von wo aus?</li>
+  <li><b>DNS-Architektur ist Teil der Landing Zone.</b> Private DNS Zones zentral im Hub, mit allen Spokes verlinkt, per Azure Policy automatisch befüllt.</li>
+  <li><b>TTL ist ein Werkzeug für Migrationen.</b> Kurz vor Änderungen senken, danach erhöhen. Hohe TTL spart Last, niedrige gibt Flexibilität.</li>
+  <li><b>Viele Caches, eine Wahrheit:</b> Browser, JVM, OS, CoreDNS und Resolver cachen getrennt. Debuggen heisst: jede Schicht einzeln prüfen.</li>
+  <li><b>DNS-basiertes Load Balancing ist grob.</b> Clients cachen und halten IPs fest. Für schnelles Failover braucht es einen echten Load Balancer.</li>
+  <li><b>DNS-Erfolg heisst nicht Zugriff.</b> Die privatelink-CNAMEs sind öffentlich auflösbar. Zugriff steuern Netzwerk-Regeln und RBAC.</li>
+</ol>
+</div>
+
+<h2>9. Aus dem Projekt</h2>
+<p>„Bei DigiSanté liefen Azure-Dienste über Private Endpoints, und die Namen wurden über verlinkte Private DNS Zones auf private IPs aufgelöst.“ <span class="small">(Prüfen und durch dein echtes Beispiel ersetzen.)</span></p>
+
+<h2>10. Fallen</h2>
+<div class="trap">
+<ul>
+  <li>„Eine DNS-Änderung wirkt sofort.“ → <b>Falsch.</b> Erst wenn alle Caches ihre TTL abgelaufen haben.</li>
+  <li>„Für Private Endpoints ändere ich die Connection-URL auf privatelink.“ → <b>Falsch.</b> Die App behält den öffentlichen Namen. Der CNAME führt zur privaten Zone.</li>
+  <li>„DNS läuft nur über UDP.“ → <b>Falsch.</b> Grosse Antworten und Zonentransfers laufen über TCP.</li>
+  <li>„CNAME geht auch am Apex.“ → <b>Falsch.</b> Am Apex stehen SOA und NS. Ein CNAME darf nichts neben sich haben. Dafür gibt es Alias-Records.</li>
+  <li>„Conditional Forwarder auf privatelink.blob.core.windows.net.“ → <b>Falsch</b> laut Microsoft. Die öffentliche Zone <code>blob.core.windows.net</code> weiterleiten.</li>
+  <li>„NXDOMAIN wird nicht gecacht.“ → <b>Falsch.</b> Negative Antworten werden gecacht, gesteuert über den SOA-Record.</li>
+</ul>
+</div>
+
+<h2>11. Fragen</h2>
+<details><summary>Was ist DNS?</summary><p>Eine verteilte, hierarchische Datenbank. Sie übersetzt Namen in Daten, meist IP-Adressen. Antworten werden für die TTL gecacht.</p></details>
+<details><summary>Was passiert, wenn ich example.com im Browser eingebe?</summary><p>Browser- und OS-Cache prüfen, dann den rekursiven Resolver fragen. Bei Cache-Miss fragt er Root, dann .com, dann den autoritativen Server. Antwort mit TTL, cachen, dann TCP und TLS zur IP.</p></details>
+<details><summary>Rekursiv vs iterativ?</summary><p>Rekursiv: Der Client bekommt das fertige Ergebnis vom Resolver. Iterativ: Der Resolver fragt selbst Server für Server und folgt Referrals.</p></details>
+<details><summary>Was ist ein autoritativer Server?</summary><p>Der Server, der die Zone besitzt. Seine Antworten haben das AA-Flag und die volle TTL.</p></details>
+<details><summary>Was ist die TTL?</summary><p>Die Zeit in Sekunden, die ein Record gecacht werden darf. Im Cache zählt sie herunter.</p></details>
+<details><summary>A vs AAAA vs CNAME?</summary><p>A: IPv4-Adresse. AAAA: IPv6-Adresse. CNAME: Alias auf einen anderen Namen.</p></details>
+<details><summary>Warum geht CNAME nicht am Zonen-Apex?</summary><p>Am Apex müssen SOA und NS stehen. Ein CNAME darf keine anderen Records neben sich haben. Lösung: Alias-Record.</p></details>
+<details><summary>Wofür sind MX und TXT?</summary><p>MX nennt die Mail-Server mit Priorität. TXT trägt Text, z. B. SPF, DKIM, DMARC oder Domain-Verifikation.</p></details>
+<details><summary>Was ist ein SRV-Record?</summary><p>Er nennt für einen Dienst Ziel-Host, Port, Priorität und Gewicht. Format: _dienst._proto.name.</p></details>
+<details><summary>Läuft DNS über UDP oder TCP?</summary><p>Normal UDP 53. Bei zu grossen Antworten (TC-Bit) und Zonentransfers TCP 53.</p></details>
+<details><summary>Was ist Negative Caching?</summary><p>Auch NXDOMAIN wird gecacht. Die Dauer kommt aus dem SOA-Record der Zone.</p></details>
+<details><summary>Wie funktioniert DNS für Azure Private Endpoints?</summary><p>Der öffentliche Name hat einen CNAME auf den privatelink-Namen. Eine mit der VNet verlinkte Private DNS Zone beantwortet ihn mit der privaten IP. Die App-URL bleibt gleich.</p></details>
+<details><summary>Was ist 168.63.129.16?</summary><p>Die feste virtuelle IP von Azure DNS in jeder VNet. Sie kennt die verlinkten Private DNS Zones.</p></details>
+<details><summary>Wie lösen On-Premises-Clients Private Endpoints auf?</summary><p>Ein Conditional Forwarder für die öffentliche Zone (z. B. blob.core.windows.net) zeigt auf den Inbound Endpoint des Azure DNS Private Resolver.</p></details>
+<details><summary>Wie heisst ein Kubernetes-Service im DNS?</summary><p>svc.namespace.svc.cluster.local, A-Record auf die ClusterIP. Ein Headless Service liefert die Pod-IPs.</p></details>
+<details><summary>Was macht ndots:5 in Pods?</summary><p>Namen mit weniger als 5 Punkten werden zuerst mit allen Search Domains probiert. Externe Namen erzeugen so mehrere unnötige Anfragen. Lösung: Punkt am Ende oder ndots senken.</p></details>
+<details><summary>Was macht CoreDNS?</summary><p>Es beantwortet cluster.local aus der Kubernetes-API und leitet alles andere an den Upstream-Resolver weiter. Es cacht Antworten.</p></details>
+<details><summary>Wie lange cacht Java DNS-Antworten?</summary><p>Standard 30 Sekunden ohne Security Manager, steuerbar mit networkaddress.cache.ttl. Wichtig bei Failover über DNS.</p></details>
+<details><summary>Warum zeigt mein Resolver eine kleinere TTL als der autoritative Server?</summary><p>Die Antwort liegt schon im Cache. Der Resolver zeigt die Rest-TTL.</p></details>
+<details><summary>Wie bereiten Sie eine DNS-Migration vor?</summary><p>TTL Tage vorher senken, Änderung machen, prüfen, TTL wieder erhöhen.</p></details>
+<details><summary>Szenario: Eine App in AKS erreicht den Storage Account nicht, Fehler 403 „not authorized“. Public Access ist aus. Was prüfen Sie?</summary><p>DNS aus dem Pod: Löst der Name auf eine 10.x-IP auf? Wenn nicht, fehlt die Private DNS Zone oder der VNet-Link, oder der eigene DNS leitet nicht an 168.63.129.16 weiter. Die App geht dann öffentlich raus und wird blockiert.</p></details>
+<details><summary>Szenario: Nach einem Failover auf eine neue IP gehen manche Clients noch eine Stunde zum alten Server. Warum?</summary><p>Die TTL war hoch, Resolver und Anwendungen (z. B. JVM, Connection Pools) halten die alte IP. Lösung: niedrige TTL vor geplanten Wechseln, Clients mit begrenztem DNS-Cache, Pools erneuern.</p></details>
+<details><summary>Szenario: Pods haben sporadisch genau 5 Sekunden Verzögerung bei externen Calls. Woran denken Sie?</summary><p>An DNS: verlorene UDP-Antworten durch conntrack-Race bei parallelen A/AAAA-Anfragen, dazu ndots:5. Prüfen mit tcpdump auf Port 53. Lösung: NodeLocal DNSCache, ndots senken, FQDN mit Punkt.</p></details>
+
+</body>
+</html>

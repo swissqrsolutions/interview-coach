@@ -1,0 +1,238 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Caching: Strategien, Redis, Invalidierung</title>
+<style>
+  body { font: 17px/1.55 -apple-system, system-ui, sans-serif; max-width: 760px; margin: 0 auto; padding: 16px; color: #1d1d1f; }
+  h1 { font-size: 28px; margin: 8px 0 4px; }
+  h2 { font-size: 21px; margin: 32px 0 8px; padding-top: 12px; border-top: 2px solid #e5e5ea; }
+  .kern { background: #eef6ff; border-left: 4px solid #0a66c2; padding: 10px 14px; border-radius: 6px; }
+  .senior { background: #f0faf0; border-left: 4px solid #2e7d32; padding: 10px 14px; border-radius: 6px; }
+  .trap { background: #fff4f2; border-left: 4px solid #c62828; padding: 10px 14px; border-radius: 6px; }
+  code { background: #f2f2f7; padding: 1px 5px; border-radius: 4px; font-size: 15px; }
+  pre { background: #1e1e1e; color: #e6e6e6; padding: 12px; border-radius: 8px; overflow-x: auto; font-size: 13.5px; line-height: 1.45; }
+  svg { width: 100%; height: auto; display: block; margin: 10px 0; }
+  ol li, ul li { margin: 4px 0; }
+  details { border: 1px solid #e5e5ea; border-radius: 8px; padding: 8px 12px; margin: 6px 0; }
+  summary { font-weight: 600; cursor: pointer; }
+  details p { margin: 6px 0 2px; }
+  .small { color: #6e6e73; font-size: 14px; }
+</style>
+</head>
+<body>
+
+<h1>Caching: Strategien, Redis, Invalidierung</h1>
+<p class="small">System-Design-Grundlagen · Tier 1 · Quellen: Redis Docs (Key Eviction inkl. LRM-Policies ab Redis 8.6, EXPIRE, SET NX, Client-side Caching, Cluster Specification), Azure Architecture Center (Cache-Aside Pattern, Caching Best Practices), Microsoft Learn (Azure Cache for Redis Retirement FAQ, Azure Managed Redis), RFC 9111 (HTTP Caching), RFC 5861 (stale-while-revalidate), Kleppmann DDIA Kap. 5 und 11, Vattani et al. 2015 (Optimal Probabilistic Cache Stampede Prevention)</p>
+
+<div class="kern">
+<b>Kern:</b> Ein <b>Cache</b> ist ein schneller Zwischenspeicher für Daten, die teuer zu holen oder zu berechnen sind. Er senkt <b>Latenz</b> und entlastet die <b>Datenbank</b>. Der Preis ist <b>Veraltung</b>: Der Cache kann einen alten Wert liefern.
+</div>
+
+<h2>1. Wo sitzt der Cache?</h2>
+<svg viewBox="0 0 720 300" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="a" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="10" y="30" width="120" height="62" rx="8" fill="#fff" stroke="#555"/><text x="70" y="56" text-anchor="middle" font-weight="700">Browser</text><text x="70" y="76" text-anchor="middle" font-size="12">HTTP-Cache</text>
+  <line x1="130" y1="61" x2="168" y2="61" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="170" y="30" width="120" height="62" rx="8" fill="#fff" stroke="#555"/><text x="230" y="56" text-anchor="middle" font-weight="700">CDN</text><text x="230" y="76" text-anchor="middle" font-size="12">Edge-Cache</text>
+  <line x1="290" y1="61" x2="328" y2="61" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="330" y="20" width="200" height="82" rx="8" fill="#dbe9fb" stroke="#0a66c2"/><text x="430" y="44" text-anchor="middle" font-weight="700">App-Instanz</text><text x="430" y="64" text-anchor="middle" font-size="12">In-Process-Cache</text><text x="430" y="82" text-anchor="middle" font-size="12">(z. B. Caffeine)</text>
+  <line x1="430" y1="102" x2="430" y2="148" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="330" y="150" width="200" height="62" rx="8" fill="#0a66c2" stroke="#0a66c2"/><text x="430" y="176" text-anchor="middle" fill="#fff" font-weight="700">Redis</text><text x="430" y="196" text-anchor="middle" fill="#fff" font-size="12">verteilter Cache</text>
+  <line x1="530" y1="181" x2="568" y2="181" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="570" y="150" width="140" height="62" rx="8" fill="#fff" stroke="#555"/><text x="640" y="176" text-anchor="middle" font-weight="700">Datenbank</text><text x="640" y="196" text-anchor="middle" font-size="12">Buffer Pool</text>
+  <text x="360" y="250" text-anchor="middle" font-size="12">näher am Nutzer = schneller, aber schwerer zu invalidieren</text>
+  <line x1="640" y1="262" x2="80" y2="262" stroke="#999" stroke-width="1.5" marker-end="url(#a)"/>
+</svg>
+<ol>
+  <li><b>Browser-Cache:</b> speichert HTTP-Antworten nach <code>Cache-Control</code>. Kein Netz nötig.</li>
+  <li><b>CDN:</b> speichert statische und öffentliche Antworten an Edge-Standorten nahe beim Nutzer.</li>
+  <li><b>In-Process-Cache:</b> eine Map im Speicher der App, z. B. Caffeine. Am schnellsten, aber jede Instanz hat ihre eigene Kopie.</li>
+  <li><b>Verteilter Cache (Redis):</b> ein gemeinsamer Cache für alle Instanzen. Ein Netz-Hop, ca. 1 ms.</li>
+  <li><b>Datenbank:</b> hat einen eigenen <b>Buffer Pool</b> für Seiten im RAM. Den steuert man kaum direkt.</li>
+</ol>
+
+<h2>2. Die Reise eines Reads und eines Writes (Cache-Aside)</h2>
+<svg viewBox="0 0 720 330" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="b" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker><marker id="r" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#c62828"/></marker></defs>
+  <rect x="10" y="20" width="140" height="62" rx="10" fill="#eee" stroke="#777"/><text x="80" y="46" text-anchor="middle" font-weight="700">1. App</text><text x="80" y="66" text-anchor="middle" font-size="12">GET user:42</text>
+  <line x1="150" y1="51" x2="208" y2="51" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="210" y="20" width="150" height="62" rx="10" fill="#0a66c2" stroke="#0a66c2"/><text x="285" y="46" text-anchor="middle" fill="#fff" font-weight="700">2. Redis</text><text x="285" y="66" text-anchor="middle" fill="#fff" font-size="12">Hit → fertig</text>
+  <line x1="360" y1="51" x2="418" y2="51" stroke="#555" stroke-width="2" marker-end="url(#b)"/><text x="389" y="42" text-anchor="middle" font-size="12">Miss</text>
+  <rect x="420" y="20" width="140" height="62" rx="10" fill="#fff" stroke="#555"/><text x="490" y="46" text-anchor="middle" font-weight="700">3. Datenbank</text><text x="490" y="66" text-anchor="middle" font-size="12">SELECT …</text>
+  <line x1="560" y1="51" x2="598" y2="51" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="600" y="20" width="110" height="62" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="655" y="46" text-anchor="middle" font-weight="700">4. SET</text><text x="655" y="66" text-anchor="middle" font-size="12">mit TTL</text>
+  <text x="20" y="130" font-weight="700">Write-Pfad</text>
+  <rect x="10" y="145" width="140" height="62" rx="10" fill="#eee" stroke="#777"/><text x="80" y="171" text-anchor="middle" font-weight="700">5. App</text><text x="80" y="191" text-anchor="middle" font-size="12">Update</text>
+  <line x1="150" y1="176" x2="208" y2="176" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="210" y="145" width="150" height="62" rx="10" fill="#fff" stroke="#555"/><text x="285" y="171" text-anchor="middle" font-weight="700">6. Datenbank</text><text x="285" y="191" text-anchor="middle" font-size="12">UPDATE + Commit</text>
+  <line x1="360" y1="176" x2="418" y2="176" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="420" y="145" width="140" height="62" rx="10" fill="#e8f5e9" stroke="#2e7d32"/><text x="490" y="171" text-anchor="middle" font-weight="700">7. DEL key</text><text x="490" y="191" text-anchor="middle" font-size="12">nicht SET</text>
+  <rect x="210" y="240" width="500" height="66" rx="10" fill="#fff4f2" stroke="#c62828"/><text x="460" y="264" text-anchor="middle" fill="#c62828" font-weight="700">8. TTL läuft ab bei einem Hot Key</text><text x="460" y="284" text-anchor="middle" fill="#c62828" font-size="12">tausende Misses gleichzeitig → Stampede auf die DB</text>
+  <path d="M285,82 C285,120 150,230 208,270" fill="none" stroke="#c62828" stroke-width="2" stroke-dasharray="6 4" marker-end="url(#r)"/>
+</svg>
+<ol>
+  <li><b>App fragt zuerst den Cache:</b> <code>GET user:42</code>. Bei Cache-Aside steuert die App alles selbst.</li>
+  <li><b>Cache-Hit:</b> Redis liefert den Wert in ca. 1 ms. Die Datenbank bleibt unberührt.</li>
+  <li><b>Cache-Miss:</b> Die App liest aus der Datenbank. Das kostet viel mehr Zeit.</li>
+  <li><b>Befüllen:</b> Die App schreibt den Wert mit Ablaufzeit: <code>SET user:42 … EX 300</code>. Die <b>TTL</b> (Time to Live) begrenzt, wie alt ein Wert werden kann.</li>
+  <li><b>Write:</b> Ein Nutzer ändert sein Profil.</li>
+  <li><b>Datenbank zuerst:</b> Die App schreibt in die Datenbank. Die DB bleibt die <b>Source of Truth</b>.</li>
+  <li><b>Key löschen:</b> Danach löscht die App den Cache-Eintrag. Der nächste Read lädt frisch. Löschen ist sicherer als Überschreiben, weil zwei parallele Writes sonst in falscher Reihenfolge landen können.</li>
+  <li><b>Stampede:</b> Läuft die TTL eines sehr beliebten Keys ab, fragen alle gleichzeitig die DB. Das heisst <b>Cache Stampede</b> (auch Thundering Herd, Dogpile).</li>
+</ol>
+
+<h2>3. Beispiel: Hit Ratio, Scan und Stampede simuliert</h2>
+<pre>class LRU:                                  # OrderedDict = LRU in a few lines
+    def get(self, k, load):
+        if k in self.d:
+            self.d.move_to_end(k); self.hits += 1; return self.d[k]
+        self.miss += 1; v = load(k); self.d[k] = v
+        if len(self.d) &gt; self.cap:
+            self.d.popitem(last=False)     # evict least recently used
+        return v
+
+weights = [1 / (i + 1) for i in range(10_000)]          # Zipf-like popularity
+workload = random.choices(range(10_000), weights=weights, k=200_000)
+# + scan: a batch job reads all 10,000 keys once
+# + stampede: 2,000 req/s on one key, TTL ends, DB rebuild takes 200 ms
+# + jitter: 10,000 keys written at once with TTL 300 s</pre>
+<pre>$ python -I cache_sim.py
+== LRU, 10,000 keys, Zipf workload, 200,000 reads ==
+cache size  1% of keys -&gt; hit ratio 38.9%
+cache size  5% of keys -&gt; hit ratio 58.4%
+cache size 10% of keys -&gt; hit ratio 67.2%
+cache size 20% of keys -&gt; hit ratio 76.4%
+cache size 50% of keys -&gt; hit ratio 88.7%
+next 1,000 hot reads, cache 10%: no scan 68.1% | after full scan 50.5%
+== Stampede: 2,000 req/s on one key, DB rebuild 200 ms ==
+no protection            DB calls  400 | requests waiting 0
+lock / single flight     DB calls    1 | requests waiting 399
+serve stale + 1 refresh  DB calls    1 | requests waiting 0
+== 10,000 keys written at once, TTL 300 s ==
+no jitter   max expiries in one second: 10000
++/-10% jit  max expiries in one second: 196</pre>
+<p class="small">Echte Ausgabe, Python 3 (Simulation). Kein echtes Redis; die Zahlen zeigen nur die Mechanik.</p>
+<ol>
+  <li><b>Kleiner Cache, grosse Wirkung:</b> Bei schiefer Verteilung (wenige Keys sehr beliebt) bringen 10 % der Keys schon 67 % Hits.</li>
+  <li><b>Abnehmender Ertrag:</b> Von 20 % auf 50 % Grösse steigt die Hit Ratio nur noch um 12 Punkte.</li>
+  <li><b>Scan verdrängt heisse Keys:</b> Ein Batch-Job liest jeden Key einmal. Danach fällt die Hit Ratio von 68 % auf 51 %. Das heisst <b>Cache Pollution</b>. LFU ist dagegen robuster.</li>
+  <li><b>Stampede:</b> Ohne Schutz gehen 400 Requests gleichzeitig an die DB. Mit Lock nur einer, aber 399 warten. Mit „alten Wert liefern, einer lädt neu“ wartet niemand.</li>
+  <li><b>TTL-Jitter:</b> Gleiche TTL lässt alle 10 000 Keys in derselben Sekunde ablaufen. ±10 % Zufall senkt die Spitze auf ca. 200 pro Sekunde.</li>
+</ol>
+
+<h2>4. Details, die Interviewer fragen</h2>
+<ol>
+  <li><b>Cache-Aside (Lazy Loading):</b> Die App liest aus dem Cache, lädt bei Miss aus der DB und füllt den Cache. Nur gelesene Daten landen im Cache. Häufigstes Muster.</li>
+  <li><b>Read-Through:</b> Die App fragt nur den Cache. Der Cache lädt bei Miss selbst aus der DB. Die Ladelogik sitzt in der Cache-Bibliothek.</li>
+  <li><b>Write-Through:</b> Jeder Write geht synchron in Cache <b>und</b> DB. Der Cache ist immer aktuell, Writes werden langsamer.</li>
+  <li><b>Write-Back (Write-Behind):</b> Der Write geht nur in den Cache. Der Cache schreibt später gebündelt in die DB. Sehr schnell, aber Datenverlust bei Ausfall möglich.</li>
+  <li><b>Write-Around:</b> Writes gehen nur in die DB. Der Cache füllt sich erst beim Lesen. Gut für Daten, die selten gelesen werden.</li>
+  <li><b>Refresh-Ahead:</b> Der Cache lädt beliebte Keys neu, bevor die TTL abläuft. Weniger Misses, aber Arbeit für Keys, die keiner mehr braucht.</li>
+  <li><b>TTL:</b> Die <b>TTL</b> ist die maximale Lebensdauer eines Eintrags. Sie ist die einfachste Invalidierung und ein Sicherheitsnetz für vergessene Deletes.</li>
+  <li><b>Eviction:</b> <b>Eviction</b> entfernt Einträge, wenn der Speicher voll ist. Redis prüft dafür <code>maxmemory</code> und <code>maxmemory-policy</code>.</li>
+  <li><b>Redis-Policies:</b> <code>noeviction</code> (Writes schlagen fehl, Standard in Open-Source-Redis), <code>allkeys-lru</code>, <code>allkeys-lfu</code>, <code>allkeys-random</code>, <code>volatile-lru</code>, <code>volatile-lfu</code>, <code>volatile-random</code>, <code>volatile-ttl</code>. Seit Redis 8.6 auch <code>allkeys-lrm</code> und <code>volatile-lrm</code> (least recently modified). <code>volatile-*</code> betrifft nur Keys mit TTL.</li>
+  <li><b>LRU vs LFU:</b> <b>LRU</b> (Least Recently Used) wirft den am längsten nicht genutzten Key raus. <b>LFU</b> (Least Frequently Used) wirft den selten genutzten raus. LFU übersteht Scans besser. Redis rechnet beides <b>approximiert</b> über Stichproben (<code>maxmemory-samples</code>).</li>
+  <li><b>Stampede-Schutz:</b> Lock pro Key (<code>SET lock:key 1 NX EX 10</code>), Request-Bündelung in der App (<b>Single Flight</b>), alten Wert liefern und im Hintergrund neu laden (<b>stale-while-revalidate</b>), probabilistisch früh neu laden, TTL-Jitter.</li>
+  <li><b>Cache Penetration:</b> Requests für Keys, die es nicht gibt, gehen immer an die DB. Lösung: auch „nicht gefunden“ kurz cachen (<b>Negative Caching</b>) oder ein Bloom-Filter.</li>
+  <li><b>Hot Key:</b> Ein einzelner Key bekommt so viel Last, dass ein Redis-Knoten heiss läuft. Lösung: zusätzlicher In-Process-Cache, Key auf mehrere Kopien verteilen.</li>
+  <li><b>Konsistenz-Race:</b> Leser A liest alten Wert aus der DB. Schreiber B ändert DB und löscht den Key. A schreibt danach seinen alten Wert in den Cache. Lösung: kurze TTL, verzögertes zweites Löschen, Versionsnummer im Wert oder Invalidierung über CDC (Change Data Capture).</li>
+  <li><b>Redis Cluster:</b> Redis Cluster verteilt Keys auf <b>16 384 Hash Slots</b>. Mehr-Key-Befehle brauchen Keys im gleichen Slot. Das erzwingt man mit <b>Hash Tags</b> wie <code>{user:42}:profile</code>.</li>
+  <li><b>Replikation:</b> Redis repliziert asynchron. Bei Failover können die letzten Writes verloren gehen. Für einen Cache ist das meist ok, für einen Session-Store vielleicht nicht.</li>
+  <li><b>Azure:</b> Azure Cache for Redis wird abgelöst. Basic, Standard und Premium enden am 30.09.2028, Enterprise am 31.03.2027. Nachfolger ist <b>Azure Managed Redis</b>.</li>
+</ol>
+
+<h2>5. Vergleich: Schreib-Strategien</h2>
+<ul>
+  <li><b>Cache-Aside:</b> einfach, robust bei Cache-Ausfall. Erster Read ist langsam, Race möglich.</li>
+  <li><b>Read-Through:</b> wie Cache-Aside, aber Logik in der Bibliothek. Sauberer Code.</li>
+  <li><b>Write-Through:</b> Cache immer frisch. Writes langsamer, Cache voll mit nie gelesenen Daten.</li>
+  <li><b>Write-Back:</b> schnellste Writes, bündelt Last. Risiko: Datenverlust, komplexe Fehlerfälle.</li>
+  <li><b>Write-Around:</b> schützt den Cache vor Einmal-Writes. Erster Read nach Write ist ein Miss.</li>
+</ul>
+<table style="border-collapse: collapse; width: 100%; font-size: 15px;">
+  <tr><th style="text-align:left; border-bottom:1px solid #ccc;">Kriterium</th><th style="text-align:left; border-bottom:1px solid #ccc;">In-Process-Cache</th><th style="text-align:left; border-bottom:1px solid #ccc;">Redis</th></tr>
+  <tr><td>Latenz</td><td>Nanosekunden</td><td>ca. 1 ms (Netz)</td></tr>
+  <tr><td>Geteilt</td><td>nein, pro Instanz</td><td>ja, alle Instanzen</td></tr>
+  <tr><td>Invalidierung</td><td>schwer (jede Instanz)</td><td>ein DEL</td></tr>
+  <tr><td>Grösse</td><td>Heap der App</td><td>eigener Cluster</td></tr>
+</table>
+
+<h2>6. In der Produktion</h2>
+<ol>
+  <li><b>DB bricht nach Redis-Neustart ein:</b> Der Cache ist leer (<b>Cold Start</b>). Alle Reads gehen an die DB. Lösung: Cache vorwärmen, Rate Limit auf DB-Lasten, Replica statt Neustart.</li>
+  <li><b>Stampede um Mitternacht:</b> Ein Batch setzt alle Keys mit gleicher TTL. Lösung: TTL-Jitter, Lock pro Key, stale-while-revalidate.</li>
+  <li><b>OOM-Fehler bei Writes:</b> Redis meldet <code>OOM command not allowed</code>. Ursache: <code>noeviction</code> oder <code>volatile-*</code> ohne Keys mit TTL. Lösung: <code>allkeys-lru</code> oder <code>allkeys-lfu</code> für reine Caches.</li>
+  <li><b>Alte Daten nach Update:</b> Delete vergessen oder Race. Lösung: Löschen nach Commit, kurze TTL als Netz, Events für Invalidierung.</li>
+  <li><b>Latenz-Spitzen:</b> Grosse Keys (MB-Werte) oder <code>KEYS *</code> blockieren den Single-Thread-Ablauf von Redis. Lösung: Werte klein halten, <code>SCAN</code> statt <code>KEYS</code>.</li>
+  <li><b>Cache verdeckt Fehler:</b> Die App ist ohne Cache zu langsam, um zu funktionieren. Lösung: DB-Kapazität für den Cache-Ausfall planen, Circuit Breaker.</li>
+</ol>
+
+<h2>7. Diagnose: Werkzeuge und Befehle</h2>
+<ul>
+  <li><code>INFO stats</code>: <code>keyspace_hits</code>, <code>keyspace_misses</code> (Hit Ratio), <code>evicted_keys</code>, <code>expired_keys</code>.</li>
+  <li><code>INFO memory</code>: <code>used_memory</code>, <code>maxmemory</code>, <code>maxmemory_policy</code>, Fragmentierung.</li>
+  <li><code>SLOWLOG GET 10</code>: langsame Befehle. <code>LATENCY DOCTOR</code>: Ursachen für Latenz.</li>
+  <li><code>redis-cli --bigkeys</code> und <code>--hotkeys</code> (nur mit LFU-Policy): grosse und heisse Keys finden.</li>
+  <li><code>MEMORY USAGE &lt;key&gt;</code> und <code>TTL &lt;key&gt;</code>: Grösse und Restlaufzeit eines Keys.</li>
+  <li><b>Azure Monitor</b> für Azure Redis: Cache Hits, Cache Misses, Server Load, Used Memory, Evicted Keys.</li>
+  <li><b>Anwendungsmetrik:</b> Hit Ratio pro Key-Präfix. Eine Gesamt-Hit-Ratio versteckt schlechte Bereiche.</li>
+</ul>
+
+<h2>8. Senior-Punkte</h2>
+<div class="senior">
+<ol>
+  <li><b>Zuerst fragen: Wie alt darf der Wert sein?</b> Diese Antwort bestimmt TTL und Invalidierung, nicht die Technik.</li>
+  <li><b>Die Datenbank bleibt die Wahrheit.</b> Der Cache ist ein Optimierungs-Layer und darf jederzeit leer sein.</li>
+  <li><b>Löschen statt Überschreiben</b> beim Write. Dazu eine TTL als Sicherheitsnetz.</li>
+  <li><b>Stampede und Cold Start</b> plane ich ein, bevor sie passieren: Jitter, Lock, stale-while-revalidate.</li>
+  <li><b>Die DB muss einen Cache-Ausfall überleben,</b> zumindest gedrosselt. Sonst ist der Cache ein Single Point of Failure.</li>
+  <li><b>Hit Ratio messen,</b> pro Bereich. Ein Cache mit 20 % Hits kostet oft mehr, als er spart.</li>
+</ol>
+</div>
+
+<h2>9. Aus dem Projekt</h2>
+<p>„Bei MATCH auf AKS cachen wir Referenzdaten mit Cache-Aside und TTL, damit nicht jeder Request die Datenbank trifft.“ <span class="small">(Prüfen und durch dein echtes Beispiel ersetzen.)</span></p>
+
+<h2>10. Fallen</h2>
+<div class="trap">
+<ul>
+  <li>„Beim Update schreibe ich den neuen Wert in den Cache.“ → Riskant. Parallele Writes können in falscher Reihenfolge landen. <b>Löschen</b> ist sicherer.</li>
+  <li>„Erst Cache löschen, dann DB schreiben.“ → <b>Falsch.</b> Ein Leser lädt dazwischen den alten Wert neu in den Cache.</li>
+  <li>„Redis wirft automatisch alte Keys raus.“ → Nicht standardmässig. Open-Source-Redis nutzt <code>noeviction</code>.</li>
+  <li>„Mehr Cache bringt immer mehr.“ → <b>Falsch.</b> Der Ertrag nimmt stark ab, siehe Simulation.</li>
+  <li>„Ein Cache macht Writes schneller.“ → Meist nicht. Nur Write-Back tut das, mit Risiko.</li>
+  <li>„<code>volatile-lru</code> schützt mich vor OOM.“ → Nur, wenn genug Keys eine TTL haben.</li>
+</ul>
+</div>
+
+<h2>11. Fragen</h2>
+<details><summary>Was ist ein Cache und welches Problem löst er?</summary><p>Ein schneller Zwischenspeicher für teure Daten. Er senkt Latenz und entlastet die Datenbank. Preis: Werte können veraltet sein.</p></details>
+<details><summary>Wo kann man cachen?</summary><p>Browser, CDN, Reverse Proxy, In-Process in der App, verteilt in Redis und im Buffer Pool der Datenbank.</p></details>
+<details><summary>Was ist Cache-Aside?</summary><p>Die App liest zuerst den Cache. Bei Miss liest sie die DB und schreibt den Wert mit TTL in den Cache. Beim Write ändert sie die DB und löscht den Key.</p></details>
+<details><summary>Read-Through vs Cache-Aside?</summary><p>Bei Read-Through lädt der Cache selbst aus der DB. Bei Cache-Aside macht das die App. Das Verhalten ist ähnlich, der Code sitzt anders.</p></details>
+<details><summary>Write-Through vs Write-Back?</summary><p>Write-Through schreibt synchron in Cache und DB: konsistent, aber langsamer. Write-Back schreibt erst in den Cache und später gebündelt in die DB: schnell, aber Datenverlust möglich.</p></details>
+<details><summary>Was ist Write-Around?</summary><p>Writes gehen nur in die DB, nicht in den Cache. Gut für Daten, die nach dem Schreiben selten gelesen werden.</p></details>
+<details><summary>Warum den Key löschen statt aktualisieren?</summary><p>Zwei parallele Writes können den Cache in falscher Reihenfolge überschreiben. Nach dem Löschen lädt der nächste Read den aktuellen Wert.</p></details>
+<details><summary>Warum zuerst DB, dann Cache löschen?</summary><p>Löscht man zuerst, kann ein Leser in der Lücke den alten DB-Wert neu cachen. Er bleibt dann bis zur TTL falsch.</p></details>
+<details><summary>Was ist eine TTL und wie wählen Sie sie?</summary><p>Die maximale Lebensdauer eines Eintrags. Sie richtet sich danach, wie alt ein Wert sein darf. Dazu etwas Zufall gegen gleichzeitiges Ablaufen.</p></details>
+<details><summary>LRU vs LFU?</summary><p>LRU wirft den am längsten nicht genutzten Key raus. LFU wirft den selten genutzten raus. LFU ist robuster gegen Scans, LRU reagiert schneller auf neue Trends.</p></details>
+<details><summary>Welche Eviction Policies hat Redis?</summary><p>noeviction, allkeys- und volatile-Varianten von lru, lfu und random, dazu volatile-ttl. Seit Redis 8.6 auch allkeys-lrm und volatile-lrm. Standard in Open-Source-Redis: noeviction.</p></details>
+<details><summary>Ist Redis-LRU exakt?</summary><p>Nein. Redis nimmt Stichproben von Keys und wirft den ältesten davon raus. Die Grösse steuert maxmemory-samples.</p></details>
+<details><summary>Was ist eine Cache Stampede?</summary><p>Ein beliebter Key läuft ab, und viele Requests laden ihn gleichzeitig aus der DB. Die DB wird überlastet.</p></details>
+<details><summary>Wie verhindern Sie eine Stampede?</summary><p>Lock pro Key mit SET NX, Single Flight in der App, alten Wert liefern und im Hintergrund neu laden, früh probabilistisch neu laden, TTL-Jitter.</p></details>
+<details><summary>Was ist Cache Penetration?</summary><p>Requests für nicht existierende Keys gehen immer an die DB. Lösung: Negative Caching mit kurzer TTL oder Bloom-Filter.</p></details>
+<details><summary>Was ist ein Hot Key und was tun Sie?</summary><p>Ein Key mit so viel Last, dass ein Redis-Knoten überlastet ist. Lösung: lokaler In-Process-Cache davor oder den Key auf mehrere Kopien verteilen.</p></details>
+<details><summary>Wie bleibt der Cache konsistent mit der DB?</summary><p>Gar nicht perfekt. Man begrenzt die Veraltung: Delete nach Commit, TTL als Netz, Invalidierung über Events oder CDC, Versionen im Wert.</p></details>
+<details><summary>In-Process-Cache oder Redis?</summary><p>In-Process ist schneller, aber pro Instanz und schwer zu invalidieren. Redis ist geteilt und einfach zu löschen, kostet aber einen Netz-Hop. Oft beides: zwei Stufen.</p></details>
+<details><summary>Wie verteilt Redis Cluster die Keys?</summary><p>Über 16 384 Hash Slots, berechnet mit CRC16 des Keys. Hash Tags in geschweiften Klammern legen zusammengehörige Keys in denselben Slot.</p></details>
+<details><summary>Kann Redis Daten verlieren?</summary><p>Ja. Replikation ist asynchron, bei Failover fehlen die letzten Writes. Persistenz mit RDB oder AOF hilft, macht Redis aber nicht zur Datenbank.</p></details>
+<details><summary>Welches Azure-Produkt nutzen Sie heute für Redis?</summary><p>Azure Managed Redis. Azure Cache for Redis wird abgelöst: Basic, Standard, Premium bis 30.09.2028, Enterprise bis 31.03.2027.</p></details>
+<details><summary>Welche Metriken beobachten Sie?</summary><p>Hit Ratio, Evicted Keys, Speicher, Latenz, Server Load und langsame Befehle. Die Hit Ratio pro Key-Bereich, nicht nur gesamt.</p></details>
+<details><summary>Szenario: Nach einem Redis-Failover ist die Datenbank 10 Minuten überlastet. Was tun Sie?</summary><p>Cold Start: Der Cache ist leer. Kurzfristig DB-Last drosseln. Langfristig: Replica mit Daten statt leerer Neustart, Cache vorwärmen, Stampede-Schutz, DB-Kapazität für Cache-Ausfall planen.</p></details>
+<details><summary>Szenario: Nutzer sehen nach einer Profiländerung minutenlang alte Daten. Warum?</summary><p>Der Key wird nicht gelöscht, oder ein Race schreibt den alten Wert zurück. Prüfen: Delete nach Commit, alle Instanzen und Stufen (auch In-Process und CDN) invalidieren, kürzere TTL.</p></details>
+<details><summary>Szenario: Redis meldet OOM, obwohl Eviction eingeschaltet ist. Warum?</summary><p>Wahrscheinlich volatile-lru ohne genug Keys mit TTL, oder noeviction. Lösung: allkeys-lru oder allkeys-lfu für reine Caches, TTL auf alle Keys, maxmemory prüfen.</p></details>
+
+</body>
+</html>
