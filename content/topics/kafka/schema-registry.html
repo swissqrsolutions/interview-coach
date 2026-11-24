@@ -1,0 +1,213 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Schema Registry</title>
+<style>
+  body { font: 17px/1.55 -apple-system, system-ui, sans-serif; max-width: 760px; margin: 0 auto; padding: 16px; color: #1d1d1f; }
+  h1 { font-size: 28px; margin: 8px 0 4px; }
+  h2 { font-size: 21px; margin: 32px 0 8px; padding-top: 12px; border-top: 2px solid #e5e5ea; }
+  .kern { background: #eef6ff; border-left: 4px solid #0a66c2; padding: 10px 14px; border-radius: 6px; }
+  .senior { background: #f0faf0; border-left: 4px solid #2e7d32; padding: 10px 14px; border-radius: 6px; }
+  .trap { background: #fff4f2; border-left: 4px solid #c62828; padding: 10px 14px; border-radius: 6px; }
+  code { background: #f2f2f7; padding: 1px 5px; border-radius: 4px; font-size: 15px; }
+  pre { background: #1e1e1e; color: #e6e6e6; padding: 12px; border-radius: 8px; overflow-x: auto; font-size: 13.5px; line-height: 1.45; }
+  svg { width: 100%; height: auto; display: block; margin: 10px 0; }
+  ol li, ul li { margin: 4px 0; }
+  details { border: 1px solid #e5e5ea; border-radius: 8px; padding: 8px 12px; margin: 6px 0; }
+  summary { font-weight: 600; cursor: pointer; }
+  details p { margin: 6px 0 2px; }
+  .small { color: #6e6e73; font-size: 14px; }
+</style>
+</head>
+<body>
+
+<h1>Schema Registry, Avro, Kompatibilität</h1>
+<p class="small">Kafka · Tier 2 · Quellen: Confluent Platform Docs (Schema Evolution and Compatibility, Formats/Serializers/Deserializers mit Wire Format, Schema Registry Configuration Reference), Apache Avro Specification (Schema Resolution)</p>
+
+<div class="kern">
+<b>Kern:</b> Eine <b>Schema Registry</b> ist ein eigener Dienst, der Schemas für Kafka-Nachrichten speichert und jedem Schema eine <b>ID</b> gibt. Der Producer schickt nur diese ID plus kompakte Binärdaten. Die Registry prüft jede neue Version auf <b>Kompatibilität</b>, damit kein Producer die Consumer bricht.
+</div>
+
+<h2>1. Wo sitzt die Schema Registry?</h2>
+<svg viewBox="0 0 720 300" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="a" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="10" y="110" width="170" height="80" rx="10" fill="#0a66c2"/><text x="95" y="140" text-anchor="middle" fill="#fff" font-weight="700">Producer</text><text x="95" y="160" text-anchor="middle" fill="#fff" font-size="12">KafkaAvroSerializer</text><text x="95" y="176" text-anchor="middle" fill="#fff" font-size="12">+ Schema-Cache</text>
+  <rect x="275" y="10" width="170" height="80" rx="10" fill="#e8f5e9" stroke="#2e7d32"/><text x="360" y="40" text-anchor="middle" font-weight="700">Schema Registry</text><text x="360" y="60" text-anchor="middle" font-size="12">REST-API</text><text x="360" y="76" text-anchor="middle" font-size="12">prüft Kompatibilität</text>
+  <rect x="275" y="200" width="170" height="80" rx="10" fill="#fff" stroke="#555"/><text x="360" y="230" text-anchor="middle" font-weight="700">Kafka Topic</text><text x="360" y="250" text-anchor="middle" font-size="12">steuer-events</text><text x="360" y="266" text-anchor="middle" font-size="12">0 | ID | Avro-Bytes</text>
+  <rect x="540" y="110" width="170" height="80" rx="10" fill="#0a66c2"/><text x="625" y="140" text-anchor="middle" fill="#fff" font-weight="700">Consumer</text><text x="625" y="160" text-anchor="middle" fill="#fff" font-size="12">KafkaAvroDeserializer</text><text x="625" y="176" text-anchor="middle" fill="#fff" font-size="12">holt Schema per ID</text>
+  <rect x="540" y="10" width="170" height="80" rx="10" fill="#eee" stroke="#777"/><text x="625" y="40" text-anchor="middle">Topic _schemas</text><text x="625" y="60" text-anchor="middle" font-size="12">1 Partition</text><text x="625" y="76" text-anchor="middle" font-size="12">kompaktiert</text>
+  <line x1="180" y1="130" x2="273" y2="60" stroke="#555" stroke-width="2" marker-end="url(#a)"/><text x="200" y="85" font-size="12">registrieren / ID</text>
+  <line x1="180" y1="170" x2="273" y2="235" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <line x1="445" y1="235" x2="538" y2="170" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <line x1="538" y1="130" x2="447" y2="60" stroke="#555" stroke-width="2" marker-end="url(#a)"/><text x="470" y="110" font-size="12">Schema zu ID</text>
+  <line x1="445" y1="50" x2="538" y2="50" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+</svg>
+<ol>
+  <li>Die <b>Schema Registry</b> ist ein eigener Dienst neben Kafka, kein Teil des Brokers. Der Broker kennt keine Schemas.</li>
+  <li>Sie speichert alles im Topic <code>_schemas</code>. Es hat eine Partition und muss kompaktiert sein. Standard-RF: 3.</li>
+  <li>Ein <b>Subject</b> ist der Name, unter dem die Versionen eines Schemas liegen. Standard: <code>&lt;topic&gt;-value</code> und <code>&lt;topic&gt;-key</code>.</li>
+  <li>Der <b>Serializer</b> im Producer registriert oder sucht das Schema und schreibt die ID vor die Daten.</li>
+  <li>Der <b>Deserializer</b> im Consumer liest die ID, holt das Schema einmal und cached es.</li>
+  <li>Bei mehreren Instanzen gibt es einen <b>Primary</b>. Andere Instanzen leiten Schreibzugriffe an ihn weiter.</li>
+</ol>
+
+<h2>2. Die Reise eines Schemas (die Geschichte zum Merken)</h2>
+<svg viewBox="0 0 720 300" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="b" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker><marker id="r" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#c62828"/></marker></defs>
+  <rect x="10" y="20" width="160" height="70" rx="10" fill="#eee" stroke="#777"/><text x="90" y="48" text-anchor="middle" font-weight="700">1. Schema v2</text><text x="90" y="68" text-anchor="middle" font-size="12">neues Feld mit Default</text>
+  <line x1="170" y1="55" x2="198" y2="55" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="200" y="20" width="160" height="70" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="280" y="48" text-anchor="middle" font-weight="700">2. Prüfung</text><text x="280" y="68" text-anchor="middle" font-size="12">BACKWARD gegen v1</text>
+  <line x1="360" y1="55" x2="388" y2="55" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="390" y="20" width="150" height="70" rx="10" fill="#e8f5e9" stroke="#2e7d32"/><text x="465" y="48" text-anchor="middle" font-weight="700">3. ID 42</text><text x="465" y="68" text-anchor="middle" font-size="12">in _schemas</text>
+  <line x1="540" y1="55" x2="568" y2="55" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="570" y="20" width="140" height="70" rx="10" fill="#0a66c2"/><text x="640" y="48" text-anchor="middle" fill="#fff" font-weight="700">4. senden</text><text x="640" y="68" text-anchor="middle" fill="#fff" font-size="12">0 | 42 | Daten</text>
+  <line x1="640" y1="90" x2="640" y2="148" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="470" y="150" width="240" height="70" rx="10" fill="#fff" stroke="#555"/><text x="590" y="178" text-anchor="middle" font-weight="700">5. Consumer liest ID 42</text><text x="590" y="198" text-anchor="middle" font-size="12">Writer-Schema aus der Registry</text>
+  <line x1="470" y1="185" x2="352" y2="185" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="110" y="150" width="240" height="70" rx="10" fill="#fff" stroke="#555"/><text x="230" y="178" text-anchor="middle" font-weight="700">6. Schema Resolution</text><text x="230" y="198" text-anchor="middle" font-size="12">Writer v2 → Reader-Schema der App</text>
+  <path d="M280,90 C280,120 60,110 60,240 L60,262" fill="none" stroke="#c62828" stroke-width="2" stroke-dasharray="6 4" marker-end="url(#r)"/>
+  <text x="70" y="285" fill="#c62828" font-size="12" font-weight="700">inkompatibel → HTTP 409, nichts wird registriert</text>
+</svg>
+<ol>
+  <li><b>Neue Version:</b> Das Team fügt im Event <code>SteuerfallEingereicht</code> das Feld <code>kanton</code> mit Default <code>null</code> hinzu.</li>
+  <li><b>Prüfung:</b> Der Serializer oder die CI schickt das Schema an die Registry. Sie prüft es gegen die letzte Version im Subject. Standard ist <b>BACKWARD</b>.</li>
+  <li><b>Registrieren:</b> Das Schema ist kompatibel. Die Registry speichert es in <code>_schemas</code> und gibt eine global eindeutige <b>ID</b> zurück, hier 42.</li>
+  <li><b>Senden:</b> Der Producer schreibt Byte 0 (<b>Magic Byte</b>), dann 4 Bytes ID (Big Endian), dann die Avro-Binärdaten. Feldnamen stehen nicht in der Nachricht.</li>
+  <li><b>Lesen:</b> Der Consumer liest die ID und holt das <b>Writer-Schema</b> einmal aus der Registry.</li>
+  <li><b>Schema Resolution:</b> Avro übersetzt vom Writer-Schema ins <b>Reader-Schema</b> der App. Fehlt ein Feld, nimmt Avro den Default. Unbekannte Felder ignoriert es.</li>
+  <li><b>Inkompatibel:</b> Die Registry lehnt das Schema mit HTTP 409 ab. Der Producer kann dann nicht senden. Der Fehler kommt früh, nicht beim Consumer.</li>
+</ol>
+
+<h2>3. Beispiel: Kompatibilität prüfen und das Wire Format sehen</h2>
+<pre># v2: neues optionales Feld mit Default
+$ curl -s -X POST -H "Content-Type: application/vnd.schemaregistry.v1+json" \
+  --data '{"schema": "{\"type\":\"record\",\"name\":\"SteuerfallEingereicht\",\"fields\":[{\"name\":\"fallId\",\"type\":\"string\"},{\"name\":\"kanton\",\"type\":[\"null\",\"string\"],\"default\":null}]}"}' \
+  http://schema-registry:8081/compatibility/subjects/steuer-events-value/versions/latest
+{"is_compatible":true}
+
+# v3: Pflichtfeld ohne Default
+$ curl ... --data '{"schema": "... {\"name\":\"betrag\",\"type\":\"long\"} ..."}' \
+  ".../compatibility/subjects/steuer-events-value/versions/latest?verbose=true"
+{"is_compatible":false,"messages":["... READER_FIELD_MISSING_DEFAULT_VALUE ... betrag ..."]}</pre>
+<p class="small">Erwartetes Ergebnis (laut Confluent-Doku, nicht ausgeführt). Keine Registry hier. Meldungstext gekürzt.</p>
+<pre>Bytes   : 00 00 00 00 2a 0c 66 61 6c 6c 2d 37 02
+Magic   : 0
+SchemaID: 42
+Payload : b'\x0cfall-7\x02'
+JSON statt Avro -> erstes Byte: 123 (nicht 0 -> 'Unknown magic byte!')</pre>
+<p class="small">Echte Ausgabe, Python 3.12.10. Nachbau des dokumentierten Wire Formats mit <code>struct.pack("&gt;I", 42)</code>, keine Registry.</p>
+<ol>
+  <li>v2 ist <b>BACKWARD-kompatibel</b>: Ein Consumer mit v2 kann alte v1-Daten lesen. Für <code>kanton</code> nimmt er den Default <code>null</code>.</li>
+  <li>v3 ist <b>nicht</b> kompatibel: Ein Reader mit v3 braucht <code>betrag</code>, alte Daten haben es nicht, und es gibt keinen Default.</li>
+  <li>Byte 0 ist das Magic Byte <code>0</code>. Bytes 1–4 sind die ID 42 als <code>00 00 00 2a</code>.</li>
+  <li>Danach folgen nur Werte: Länge 6 (als ZigZag <code>0c</code>), Text, eine Zahl. Keine Feldnamen. Darum braucht der Leser das Schema.</li>
+  <li>Schickt jemand JSON ins Topic, ist das erste Byte <code>{</code> = 123. Der Avro-Deserializer meldet „Unknown magic byte!“.</li>
+</ol>
+
+<h2>4. Details, die Interviewer fragen</h2>
+<ol>
+  <li><b>Kompatibilitätsstufen:</b>
+    <ul>
+      <li><b>BACKWARD</b> (Standard): neues Schema liest alte Daten. Erlaubt: Felder löschen, optionale Felder hinzufügen. <b>Consumer zuerst</b> upgraden.</li>
+      <li><b>FORWARD</b>: altes Schema liest neue Daten. Erlaubt: Felder hinzufügen, optionale Felder löschen. <b>Producer zuerst</b>.</li>
+      <li><b>FULL</b>: beides. Nur optionale Felder hinzufügen oder löschen. Reihenfolge egal.</li>
+      <li><b>NONE</b>: keine Prüfung.</li>
+    </ul></li>
+  <li><b>Transitive Varianten:</b> <code>BACKWARD</code> prüft nur gegen die <b>letzte</b> Version. <code>BACKWARD_TRANSITIVE</code> prüft gegen <b>alle</b>. Wichtig, wenn Consumer von ganz vorne lesen.</li>
+  <li><b>Optional heisst in Avro:</b> ein Feld mit <code>default</code>, meist als Union <code>["null", "string"]</code> mit <code>"default": null</code>. <code>null</code> muss dann zuerst in der Union stehen.</li>
+  <li><b>Umbenennen:</b> Für Avro ein Löschen plus Hinzufügen. Mit <b>Aliases</b> im Reader-Schema geht es kompatibel.</li>
+  <li><b>Typänderung:</b> Avro erlaubt einige <b>Promotions</b>, z. B. <code>int</code> → <code>long</code>. <code>string</code> → <code>int</code> ist nicht kompatibel.</li>
+  <li><b>Subject Name Strategy:</b> <code>TopicNameStrategy</code> (Standard, ein Schema pro Topic), <code>RecordNameStrategy</code> (pro Record-Typ, Topic-übergreifend), <code>TopicRecordNameStrategy</code> (Topic plus Record). Mehrere Event-Typen in einem Topic brauchen eine der letzten zwei.</li>
+  <li><b>Auto-Registrierung:</b> Serializer registrieren Schemas standardmässig selbst (<code>auto.register.schemas</code>). In Produktion oft aus: Schemas kommen aus der CI. Dann <code>use.latest.version=true</code>.</li>
+  <li><b>Normalisierung:</b> <code>normalize.schemas=true</code> behandelt gleichwertige Schemas (andere Reihenfolge, Namen) als gleich. Standard aus.</li>
+  <li><b>Protobuf:</b> Felder haben <b>Nummern</b>. Eine Nummer nie wiederverwenden, gelöschte mit <code>reserved</code> sperren. Confluent empfiehlt <code>BACKWARD_TRANSITIVE</code>.</li>
+  <li><b>JSON Schema:</b> Regeln hängen vom <b>Content Model</b> ab: offen (<code>additionalProperties</code> erlaubt) oder geschlossen.</li>
+  <li><b>Header-Format:</b> Neuere Confluent-Serializer können die Schema-ID als 16-Byte-GUID im Header <code>__value_schema_id</code> schicken. Deserializer prüfen zuerst den Header, dann das Präfix.</li>
+  <li><b>Kafka Streams:</b> Confluent unterstützt dort nur BACKWARD- und FULL-Varianten. Streams-Apps zuerst upgraden.</li>
+</ol>
+
+<h2>5. Vergleich</h2>
+<ul>
+  <li><b>Avro:</b> kompakt, Schema nötig zum Lesen, sehr klare Evolutionsregeln. Standard im Kafka-Umfeld.</li>
+  <li><b>Protobuf:</b> kompakt, Feldnummern statt Namen, gut mit gRPC. Code-Generierung in vielen Sprachen.</li>
+  <li><b>JSON Schema:</b> lesbar, gross, langsamer. Evolution weniger klar.</li>
+  <li><b>JSON ohne Registry:</b> einfach, aber kein Vertrag. Brüche fallen erst beim Consumer auf.</li>
+  <li><b>Confluent Schema Registry:</b> Referenz, Confluent Community License. <b>Apicurio Registry:</b> Open Source, Confluent-kompatible API. <b>Azure Schema Registry</b> (in Event Hubs) und <b>AWS Glue Schema Registry</b>: Cloud-Varianten mit eigenen Serializern.</li>
+</ul>
+
+<h2>6. In der Produktion</h2>
+<ol>
+  <li><b>Producer kann nicht senden: HTTP 409:</b> Ein Entwickler hat ein Pflichtfeld ohne Default hinzugefügt. Lösung: Default setzen oder neues Topic. Kompatibilität schon in der CI prüfen (Maven-Plugin oder REST-Aufruf).</li>
+  <li><b>„Unknown magic byte!“ im Consumer:</b> Jemand schreibt JSON oder Text ins Avro-Topic, oft ein Test-Tool. Lösung: <code>ErrorHandlingDeserializer</code> plus DLT, Schreibrechte per ACL begrenzen.</li>
+  <li><b>Registry nicht erreichbar:</b> Neue Producer und Consumer starten nicht, weil sie Schemas nicht holen können. Laufende Clients arbeiten mit dem Cache weiter. Lösung: mehrere Instanzen, Monitoring.</li>
+  <li><b>Wildwuchs an Versionen:</b> Auto-Registrierung in jeder Umgebung. Lösung: <code>auto.register.schemas=false</code>, Schemas im Git, Registrierung nur aus der Pipeline.</li>
+  <li><b>Replay bricht:</b> Mit <code>BACKWARD</code> (nicht transitiv) ist v3 nur zu v2 kompatibel, nicht zu v1. Ein Replay von ganz vorne scheitert. Lösung: <code>BACKWARD_TRANSITIVE</code> für Topics mit langer Retention.</li>
+  <li><b><code>_schemas</code> verloren:</b> Ohne Compaction oder mit Retention gelöscht. Dann kennt niemand mehr die IDs. Lösung: Topic kompaktiert, RF 3, Backup.</li>
+</ol>
+
+<h2>7. Diagnose: Werkzeuge und Befehle</h2>
+<ul>
+  <li><code>GET /subjects</code> und <code>GET /subjects/X-value/versions</code>: welche Subjects und Versionen es gibt.</li>
+  <li><code>GET /schemas/ids/42</code>: Schema zu einer ID aus einer kaputten Nachricht.</li>
+  <li><code>GET /config</code> und <code>GET /config/X-value</code>: globale und Subject-Kompatibilität.</li>
+  <li><code>POST /compatibility/subjects/X-value/versions/latest?verbose=true</code>: Grund der Inkompatibilität.</li>
+  <li><code>kafka-avro-console-consumer</code> (Confluent): Avro-Nachrichten lesbar ausgeben.</li>
+  <li>Erste 5 Bytes einer Nachricht ansehen (z. B. mit <code>kcat</code> oder <code>kafka-console-consumer</code> und Hex): Magic Byte und ID.</li>
+</ul>
+
+<h2>8. Senior-Punkte</h2>
+<div class="senior">
+<ol>
+  <li><b>Das Schema ist ein Vertrag zwischen Teams.</b> Es gehört ins Git, mit Review und CI-Prüfung, nicht in den Producer-Code allein.</li>
+  <li><b>Kompatibilität nach Retention wählen.</b> Lange Retention oder Replay → transitiv. Kurzlebige Events → BACKWARD reicht.</li>
+  <li><b>Upgrade-Reihenfolge ist Teil des Releases.</b> BACKWARD heisst: Consumer zuerst. Das muss jeder im Team wissen.</li>
+  <li><b>Breaking Change = neues Topic</b> (z. B. <code>steuer-events.v2</code>) mit Übergangszeit, nicht <code>NONE</code> setzen.</li>
+  <li><b>Keine Logik in Defaults verstecken.</b> Ein Default ist ein fachlicher Wert. <code>null</code> ist oft ehrlicher als ein erfundener Wert.</li>
+  <li><b>Die Registry ist kritische Infrastruktur.</b> Hochverfügbar betreiben, <code>_schemas</code> sichern, Zugriff absichern.</li>
+</ol>
+</div>
+
+<h2>9. Aus dem Projekt</h2>
+<p>„Mit einer Schema Registry habe ich laut Profil nicht gearbeitet. Verträge zwischen Services kenne ich aus CARIAD mit gRPC und Protobuf und aus dem Event-Design in DAZiT. Die Regeln sind die gleichen: Felder nur optional hinzufügen, Nummern nie wiederverwenden.“ <span class="small">(Prüfen und durch dein echtes Beispiel ersetzen.)</span></p>
+
+<h2>10. Fallen</h2>
+<div class="trap">
+<ul>
+  <li>„Der Kafka-Broker prüft die Schemas.“ → <b>Falsch.</b> Der Broker sieht nur Bytes. Prüfen tun Registry und Serializer.</li>
+  <li>„BACKWARD heisst: alte Consumer lesen neue Daten.“ → <b>Falsch.</b> Das ist FORWARD. BACKWARD heisst: neue Consumer lesen alte Daten.</li>
+  <li>„BACKWARD schützt vor allen alten Versionen.“ → <b>Falsch.</b> Nur gegen die letzte. Für alle: <code>BACKWARD_TRANSITIVE</code>.</li>
+  <li>„Ein neues Feld ist immer kompatibel.“ → <b>Falsch.</b> Ohne Default ist es für BACKWARD ein Bruch.</li>
+  <li>„Die Nachricht enthält das Schema.“ → <b>Falsch.</b> Nur 5 Bytes Präfix mit der ID.</li>
+  <li>„Feld umbenennen ist harmlos.“ → <b>Falsch.</b> Für Avro ist es Löschen plus Hinzufügen, ausser mit Alias.</li>
+</ul>
+</div>
+
+<h2>11. Fragen</h2>
+<details><summary>Was ist eine Schema Registry?</summary><p>Ein eigener Dienst, der Schemas versioniert, IDs vergibt und neue Versionen auf Kompatibilität prüft. Producer und Consumer holen Schemas per REST.</p></details>
+<details><summary>Warum braucht Kafka eine Schema Registry?</summary><p>Kafka speichert nur Bytes. Ohne Vertrag bricht ein Producer leicht alle Consumer. Die Registry fängt das vor dem Senden ab und spart Platz.</p></details>
+<details><summary>Wie sieht das Wire Format aus?</summary><p>Byte 0 = Magic Byte 0, Bytes 1–4 = Schema-ID Big Endian, dann die Daten. Bei Protobuf kommen noch Message-Indizes davor.</p></details>
+<details><summary>Was ist ein Subject?</summary><p>Der Name, unter dem Schema-Versionen liegen. Standard: <code>&lt;topic&gt;-value</code> und <code>&lt;topic&gt;-key</code>.</p></details>
+<details><summary>Welche Subject Name Strategies gibt es?</summary><p>TopicNameStrategy (Standard), RecordNameStrategy, TopicRecordNameStrategy. Mehrere Event-Typen pro Topic brauchen eine Record-basierte Strategie.</p></details>
+<details><summary>Was ist der Standard-Kompatibilitätsmodus?</summary><p>BACKWARD, nicht transitiv. Neue Schemas müssen alte Daten der letzten Version lesen können.</p></details>
+<details><summary>Erklären Sie BACKWARD, FORWARD und FULL.</summary><p>BACKWARD: neuer Reader, alte Daten. FORWARD: alter Reader, neue Daten. FULL: beides.</p></details>
+<details><summary>Wer wird bei BACKWARD zuerst upgegradet?</summary><p>Die Consumer. Sie können dann alte und neue Daten lesen. Danach die Producer.</p></details>
+<details><summary>Was bedeutet TRANSITIVE?</summary><p>Prüfung gegen alle früheren Versionen statt nur gegen die letzte. Wichtig bei langer Retention und Replay.</p></details>
+<details><summary>Wie fügt man in Avro ein Feld kompatibel hinzu?</summary><p>Mit Default, meist <code>["null","string"]</code> und <code>"default": null</code>.</p></details>
+<details><summary>Wie benennt man ein Avro-Feld um?</summary><p>Mit einem Alias im Reader-Schema. Ohne Alias ist es Löschen plus Hinzufügen.</p></details>
+<details><summary>Was ist Writer- und Reader-Schema?</summary><p>Writer = Schema beim Schreiben, steht über die ID in der Nachricht. Reader = Schema der lesenden App. Avro übersetzt zwischen beiden.</p></details>
+<details><summary>Wo speichert die Registry ihre Daten?</summary><p>Im Kafka-Topic <code>_schemas</code>: eine Partition, kompaktiert, Standard-RF 3.</p></details>
+<details><summary>Was passiert, wenn die Registry ausfällt?</summary><p>Laufende Clients nutzen ihren Cache weiter. Neue Clients und neue Schemas scheitern.</p></details>
+<details><summary>Sollte auto.register.schemas in Produktion an sein?</summary><p>Meist nein. Schemas kommen geprüft aus der CI. Clients nutzen <code>use.latest.version</code>.</p></details>
+<details><summary>Was ist bei Protobuf zu beachten?</summary><p>Feldnummern nie wiederverwenden, gelöschte mit <code>reserved</code> sperren. Empfohlen: BACKWARD_TRANSITIVE.</p></details>
+<details><summary>Avro, Protobuf oder JSON Schema?</summary><p>Avro für Kafka-Standard und klare Evolution. Protobuf, wenn gRPC und viele Sprachen. JSON Schema, wenn Lesbarkeit wichtiger ist als Grösse.</p></details>
+<details><summary>Was bedeutet „Unknown magic byte!“?</summary><p>Die Nachricht beginnt nicht mit Byte 0. Sie wurde nicht mit dem Registry-Serializer geschrieben, z. B. reines JSON.</p></details>
+<details><summary>Wie behandeln Sie einen Breaking Change?</summary><p>Neues Topic oder neues Subject, beide Versionen eine Zeit parallel, Consumer migrieren, altes Topic auslaufen lassen.</p></details>
+<details><summary>Welche Alternativen zur Confluent Registry gibt es?</summary><p>Apicurio Registry, Azure Schema Registry in Event Hubs, AWS Glue Schema Registry.</p></details>
+<details><summary>Szenario: Nach einem Deploy schlagen alle Producer mit HTTP 409 fehl. Was tun Sie?</summary><p>Das neue Schema ist inkompatibel. Mit <code>?verbose=true</code> den Grund holen, z. B. Pflichtfeld ohne Default. Schema korrigieren und die Prüfung in die CI ziehen.</p></details>
+<details><summary>Szenario: Ein Consumer liest von Anfang an und scheitert bei alten Nachrichten. Warum?</summary><p>Wahrscheinlich nur BACKWARD, nicht transitiv. Die neue Version passt zur letzten, aber nicht zur ersten. Lösung: BACKWARD_TRANSITIVE und Schema korrigieren.</p></details>
+<details><summary>Szenario: Ein Team will Events als freies JSON ohne Registry. Was sagen Sie?</summary><p>Geht für ein Team, wird aber riskant bei vielen Consumern. Mindestens JSON Schema mit Registry und CI-Prüfung, sonst brechen Änderungen erst in Produktion.</p></details>
+
+</body>
+</html>

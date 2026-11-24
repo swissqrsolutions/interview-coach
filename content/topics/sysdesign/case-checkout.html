@@ -1,0 +1,273 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Fall: E-Commerce-Checkout</title>
+<style>
+  body { font: 17px/1.55 -apple-system, system-ui, sans-serif; max-width: 760px; margin: 0 auto; padding: 16px; color: #1d1d1f; }
+  h1 { font-size: 28px; margin: 8px 0 4px; }
+  h2 { font-size: 21px; margin: 32px 0 8px; padding-top: 12px; border-top: 2px solid #e5e5ea; }
+  .kern { background: #eef6ff; border-left: 4px solid #0a66c2; padding: 10px 14px; border-radius: 6px; }
+  .senior { background: #f0faf0; border-left: 4px solid #2e7d32; padding: 10px 14px; border-radius: 6px; }
+  .trap { background: #fff4f2; border-left: 4px solid #c62828; padding: 10px 14px; border-radius: 6px; }
+  code { background: #f2f2f7; padding: 1px 5px; border-radius: 4px; font-size: 15px; }
+  pre { background: #1e1e1e; color: #e6e6e6; padding: 12px; border-radius: 8px; overflow-x: auto; font-size: 13.5px; line-height: 1.45; }
+  svg { width: 100%; height: auto; display: block; margin: 10px 0; }
+  ol li, ul li { margin: 4px 0; }
+  details { border: 1px solid #e5e5ea; border-radius: 8px; padding: 8px 12px; margin: 6px 0; }
+  summary { font-weight: 600; cursor: pointer; }
+  details p { margin: 6px 0 2px; }
+  .small { color: #6e6e73; font-size: 14px; }
+</style>
+</head>
+<body>
+
+<h1>Fall: E-Commerce-Checkout</h1>
+<p class="small">System-Design-Fall · Tier 2 · Quellen: Stripe API Reference (Idempotent Requests: Schlüssel bis 255 Zeichen, frühestens nach 24 h entfernt, Parameter-Vergleich), PostgreSQL 17 Docs (Transaktionen, CHECK Constraints, INSERT … ON CONFLICT, UPDATE … RETURNING), microservices.io (Saga, Transactional Outbox), Kleppmann DDIA Kap. 7 und 9</p>
+
+<div class="kern">
+<b>Kern (die 1-Minuten-Antwort):</b> Der <b>Checkout</b> macht aus einem Warenkorb eine bezahlte Bestellung, ohne <b>doppelte Belastung</b> und ohne <b>Überverkauf</b>. Die Bestellung entsteht mit einem <b>Idempotenz-Schlüssel</b>; der Bestand wird mit einem <b>bedingten UPDATE</b> reserviert; Bestellung, Reservierung und ein <b>Outbox</b>-Event gehen in eine Transaktion. Die Zahlung läuft beim <b>Payment-Provider</b> mit eigenem Idempotenz-Schlüssel und wird per <b>Webhook</b> bestätigt. Fehler kompensiert eine <b>Saga</b>: Reservierung freigeben oder erstatten.
+</div>
+
+<h2>1. Wo sitzt was? (Architektur)</h2>
+<svg viewBox="0 0 720 330" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="a" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="10" y="130" width="100" height="60" rx="8" fill="#fff" stroke="#555"/><text x="60" y="156" text-anchor="middle" font-weight="700">Client</text><text x="60" y="175" text-anchor="middle" font-size="12">Shop</text>
+  <line x1="110" y1="160" x2="158" y2="160" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="160" y="120" width="160" height="80" rx="8" fill="#dbe9fb" stroke="#0a66c2"/><text x="240" y="146" text-anchor="middle" font-weight="700">Checkout-Service</text><text x="240" y="166" text-anchor="middle" font-size="12">Bestellung, Saga-</text><text x="240" y="184" text-anchor="middle" font-size="12">Koordinator</text>
+  <line x1="240" y1="120" x2="240" y2="88" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="160" y="30" width="160" height="56" rx="8" fill="#fff" stroke="#555"/><text x="240" y="55" text-anchor="middle" font-weight="700">Warenkorb + Preise</text><text x="240" y="73" text-anchor="middle" font-size="12">Snapshot</text>
+  <line x1="320" y1="160" x2="378" y2="160" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="380" y="115" width="160" height="90" rx="8" fill="#fff" stroke="#555"/><text x="460" y="141" text-anchor="middle" font-weight="700">PostgreSQL</text><text x="460" y="161" text-anchor="middle" font-size="12">orders · inventory</text><text x="460" y="179" text-anchor="middle" font-size="12">outbox</text>
+  <line x1="540" y1="140" x2="588" y2="80" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="590" y="40" width="120" height="56" rx="8" fill="#0a66c2" stroke="#0a66c2"/><text x="650" y="65" text-anchor="middle" fill="#fff" font-weight="700">Broker</text><text x="650" y="83" text-anchor="middle" fill="#fff" font-size="12">order.*</text>
+  <line x1="650" y1="96" x2="650" y2="128" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="590" y="130" width="120" height="56" rx="8" fill="#e8f5e9" stroke="#2e7d32"/><text x="650" y="155" text-anchor="middle" font-weight="700">Versand,</text><text x="650" y="173" text-anchor="middle" font-size="12">Mail, Buchhaltung</text>
+  <line x1="240" y1="200" x2="240" y2="238" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="160" y="240" width="160" height="62" rx="8" fill="#fff4f2" stroke="#c62828"/><text x="240" y="266" text-anchor="middle" font-weight="700">Payment-Provider</text><text x="240" y="285" text-anchor="middle" font-size="12">extern, Idempotency-Key</text>
+  <line x1="320" y1="271" x2="378" y2="271" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="380" y="240" width="160" height="62" rx="8" fill="#dbe9fb" stroke="#0a66c2"/><text x="460" y="266" text-anchor="middle" font-weight="700">Webhook-Endpoint</text><text x="460" y="285" text-anchor="middle" font-size="12">Signatur prüfen</text>
+  <line x1="460" y1="240" x2="460" y2="207" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+</svg>
+<ol>
+  <li><b>Warenkorb und Preise:</b> liefern einen <b>Snapshot</b>: Artikel, Preis, Rabatt, MWST zum Zeitpunkt des Checkouts. Spätere Preisänderungen ändern die Bestellung nicht.</li>
+  <li><b>Checkout-Service:</b> erzeugt die Bestellung, reserviert Bestand und steuert die Schritte der Saga.</li>
+  <li><b>PostgreSQL:</b> Bestellung, Positionen, Bestand und Outbox in einer DB. So geht der kritische Teil in eine Transaktion.</li>
+  <li><b>Payment-Provider:</b> belastet die Karte oder TWINT. Er ist extern und kann langsam sein oder doppelt antworten.</li>
+  <li><b>Webhook-Endpoint:</b> empfängt „Zahlung erfolgreich“ oder „fehlgeschlagen“. Er prüft die Signatur und ist idempotent.</li>
+  <li><b>Broker und Folge-Services:</b> Versand, Bestätigungs-Mail und Buchhaltung reagieren auf <code>order.paid</code> aus der Outbox.</li>
+</ol>
+
+<h2>2. Die Reise einer Bestellung (die Geschichte zum Merken)</h2>
+<svg viewBox="0 0 720 320" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="b" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker><marker id="r" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#c62828"/></marker></defs>
+  <rect x="10" y="20" width="160" height="62" rx="10" fill="#eee" stroke="#777"/><text x="90" y="45" text-anchor="middle" font-weight="700">1. „Kaufen“</text><text x="90" y="65" text-anchor="middle" font-size="12">Idempotency-Key</text>
+  <line x1="170" y1="51" x2="198" y2="51" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="200" y="20" width="160" height="62" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="280" y="45" text-anchor="middle" font-weight="700">2. Eine Transaktion</text><text x="280" y="65" text-anchor="middle" font-size="12">Order + Reserve + Outbox</text>
+  <line x1="360" y1="51" x2="388" y2="51" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="390" y="20" width="150" height="62" rx="10" fill="#fff4f2" stroke="#c62828"/><text x="465" y="45" text-anchor="middle" font-weight="700">3. Zahlung</text><text x="465" y="65" text-anchor="middle" font-size="12">PSP, eigener Key</text>
+  <line x1="540" y1="51" x2="568" y2="51" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="570" y="20" width="140" height="62" rx="10" fill="#fff" stroke="#555"/><text x="640" y="45" text-anchor="middle" font-weight="700">4. Webhook</text><text x="640" y="65" text-anchor="middle" font-size="12">succeeded</text>
+  <line x1="640" y1="82" x2="640" y2="128" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="520" y="130" width="190" height="62" rx="10" fill="#0a66c2" stroke="#0a66c2"/><text x="615" y="155" text-anchor="middle" fill="#fff" font-weight="700">5. paid (bedingt)</text><text x="615" y="175" text-anchor="middle" fill="#fff" font-size="12">nur aus pending_payment</text>
+  <line x1="520" y1="161" x2="432" y2="161" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="240" y="130" width="190" height="62" rx="10" fill="#e8f5e9" stroke="#2e7d32"/><text x="335" y="155" text-anchor="middle" font-weight="700">6. order.paid</text><text x="335" y="175" text-anchor="middle" font-size="12">Versand, Mail, Buchhaltung</text>
+  <rect x="10" y="235" width="700" height="62" rx="10" fill="#fff4f2" stroke="#c62828"/><text x="360" y="260" text-anchor="middle" fill="#c62828" font-weight="700">7. Kompensation: Zahlung scheitert oder Timeout (z. B. 15 min)</text><text x="360" y="280" text-anchor="middle" fill="#c62828" font-size="12">Bestellung cancelled, Reservierung zurück in available, bei Teilerfolg erstatten</text>
+  <path d="M465,82 C465,150 160,170 160,233" fill="none" stroke="#c62828" stroke-width="2" stroke-dasharray="6 4" marker-end="url(#r)"/>
+</svg>
+<ol>
+  <li><b>Kaufen:</b> Kundin 42 klickt „Kaufen“ für 2 × Parfum à 89.90 CHF. Die App sendet den Schlüssel <code>c42-cart-8f1e</code> mit. Ein Doppelklick schickt denselben Schlüssel.</li>
+  <li><b>Eine Transaktion:</b> Bestellung anlegen, Bestand bedingt reservieren, Position und Outbox-Event schreiben. Alles oder nichts.</li>
+  <li><b>Zahlung:</b> Der Service erzeugt beim Provider eine Zahlung mit eigenem Idempotenz-Schlüssel (z. B. <code>order-1</code>). Ein Retry belastet nicht doppelt.</li>
+  <li><b>Webhook:</b> Der Provider meldet „succeeded“, oft Sekunden später und manchmal mehrfach.</li>
+  <li><b>Bezahlt:</b> Ein bedingtes UPDATE setzt <code>paid</code> nur aus <code>pending_payment</code>. Der zweite Webhook ändert nichts.</li>
+  <li><b>Folgen:</b> Das Event <code>order.paid</code> geht über die Outbox an Versand, Mail und Buchhaltung.</li>
+  <li><b>Kompensation:</b> Scheitert die Zahlung oder kommt nach 15 Minuten nichts, storniert die Saga: Reservierung zurück, Bestellung <code>cancelled</code>. War schon Geld da, folgt eine Erstattung.</li>
+</ol>
+
+<h2>3. Beispiel: API, Datenmodell und die Queries laut gesagt</h2>
+<p><b>API:</b></p>
+<pre>POST /v1/checkout            {cartId, shippingAddressId, paymentMethod}
+     Idempotency-Key: c42-cart-8f1e
+     → 201 {orderId, status: "pending_payment", paymentRedirectUrl}
+GET  /v1/orders/{id}         → {status, items[], totalChf}
+POST /v1/webhooks/payments   (vom Provider, signiert) → 200
+POST /v1/orders/{id}:cancel  → 202</pre>
+<p><b>Datenmodell:</b></p>
+<pre>CREATE TABLE inventory (
+  sku       text PRIMARY KEY,
+  available int NOT NULL CHECK (available &gt;= 0),
+  reserved  int NOT NULL DEFAULT 0 CHECK (reserved &gt;= 0)
+);
+CREATE TABLE orders (
+  id              bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  customer_id     bigint NOT NULL,
+  idempotency_key text   NOT NULL UNIQUE,
+  status          text   NOT NULL DEFAULT 'pending_payment'
+                  CHECK (status IN ('pending_payment','paid','cancelled','shipped')),
+  total_chf       numeric(12,2) NOT NULL,
+  created_at      timestamptz NOT NULL DEFAULT now()
+);
+CREATE TABLE order_items (
+  order_id  bigint NOT NULL REFERENCES orders(id),
+  sku       text   NOT NULL REFERENCES inventory(sku),
+  qty       int    NOT NULL CHECK (qty &gt; 0),
+  price_chf numeric(10,2) NOT NULL,          -- Preis-Snapshot
+  PRIMARY KEY (order_id, sku)
+);
+CREATE TABLE outbox (
+  id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  topic text NOT NULL, payload jsonb NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now(), sent_at timestamptz
+);
+INSERT INTO inventory VALUES ('PARFUM-50ML', 3, 0), ('CREME-100', 50, 0);</pre>
+<p><b>Query 1, laut gesagt:</b> „In einer Transaktion: Bestellung mit Idempotenz-Schlüssel anlegen, dann den Bestand nur reservieren, wenn genug da ist, dann Position und Outbox-Event.“</p>
+<pre>BEGIN;
+INSERT INTO orders (customer_id, idempotency_key, total_chf)
+VALUES (42, 'c42-cart-8f1e', 179.80)
+ON CONFLICT (idempotency_key) DO NOTHING
+RETURNING id, status;
+ id |     status
+----+-----------------
+  1 | pending_payment
+UPDATE inventory SET available = available - 2, reserved = reserved + 2
+WHERE sku = 'PARFUM-50ML' AND available &gt;= 2
+RETURNING sku, available, reserved;
+     sku     | available | reserved
+-------------+-----------+----------
+ PARFUM-50ML |         1 |        2
+INSERT INTO order_items VALUES (1, 'PARFUM-50ML', 2, 89.90);
+INSERT INTO outbox (topic, payload)
+VALUES ('order.created', '{"order_id":1,"total_chf":179.80}') RETURNING id, topic;
+ id |     topic
+----+---------------
+  1 | order.created
+COMMIT;</pre>
+<p><b>Query 2, laut gesagt:</b> „Doppelklick: derselbe Schlüssel gibt 0 Zeilen, ich liefere die bestehende Bestellung. Eine zweite Kundin will 2 Stück, es ist nur 1 da: 0 Zeilen, also ‚ausverkauft‘. Und selbst ein fehlerhafter Code kann den Bestand nicht negativ machen.“</p>
+<pre>INSERT INTO orders (customer_id, idempotency_key, total_chf)
+VALUES (42, 'c42-cart-8f1e', 179.80)
+ON CONFLICT (idempotency_key) DO NOTHING RETURNING id;
+(0 rows)
+SELECT id, status FROM orders WHERE idempotency_key = 'c42-cart-8f1e';
+ id |     status
+----+-----------------
+  1 | pending_payment
+
+UPDATE inventory SET available = available - 2, reserved = reserved + 2
+WHERE sku = 'PARFUM-50ML' AND available &gt;= 2
+RETURNING sku, available, reserved;
+(0 rows)
+
+UPDATE inventory SET available = available - 2 WHERE sku = 'PARFUM-50ML';
+ERROR:  new row for relation "inventory" violates check constraint "inventory_available_check"
+DETAIL:  Failing row contains (PARFUM-50ML, -1, 2).</pre>
+<p><b>Query 3, laut gesagt:</b> „Der Webhook setzt <code>paid</code> nur aus <code>pending_payment</code>. Der doppelte Webhook ändert nichts.“</p>
+<pre>UPDATE orders SET status = 'paid'
+WHERE id = 1 AND status = 'pending_payment'
+RETURNING id, status;
+ id | status
+----+--------
+  1 | paid
+-- derselbe Webhook nochmals:
+(0 rows)</pre>
+<p class="small">Echte Ausgabe, PostgreSQL 17.12 (Schema <code>demo_checkout</code>, danach gelöscht). Kommandozeilen wie <code>INSERT 0 1</code> weggelassen.</p>
+<ol>
+  <li><b>Idempotenz:</b> Der Unique-Key auf <code>idempotency_key</code> macht Doppelklicks und Client-Retries harmlos.</li>
+  <li><b>Kein Überverkauf:</b> Das bedingte UPDATE prüft und ändert in einem Schritt. Kein „erst SELECT, dann UPDATE“ mit Lücke dazwischen.</li>
+  <li><b>Letzte Verteidigung:</b> Der CHECK-Constraint lässt keinen negativen Bestand zu, auch nicht bei einem Bug.</li>
+  <li><b>Zustandsautomat:</b> Übergänge nur mit Bedingung auf den alten Status. So werden doppelte Webhooks zu „0 Zeilen“.</li>
+</ol>
+
+<h2>4. Details, die Interviewer fragen</h2>
+<ol>
+  <li><b>Anforderungen:</b> Bestellung aus Warenkorb, Zahlung (Karte, TWINT, Rechnung), Bestandsreservierung, Bestätigung, Storno. Nicht-funktional: nie doppelt belasten, nie überverkaufen, auch bei Retries und Ausfällen.</li>
+  <li><b>Schätzung:</b> 1 Mio. Bestellungen pro Tag sind ca. <b>12/s</b>. Ein Flash Sale kann 1000 Bestellungen/s auf <b>einen</b> Artikel bringen. Das Problem ist die heisse Zeile, nicht der Durchschnitt.</li>
+  <li><b>Idempotenz beim Provider:</b> Stripe speichert Status und Body der ersten Anfrage pro Schlüssel und liefert bei Retries dieselbe Antwort, auch einen 500er. Schlüssel sind bis 255 Zeichen lang und werden frühestens nach 24 h entfernt.</li>
+  <li><b>Warum keine verteilte Transaktion:</b> Der Provider nimmt an keinem 2PC teil. Darum <b>Saga</b>: lokale Transaktionen plus Kompensation.</li>
+  <li><b>Orchestrierung vs Choreografie:</b> Orchestrierte Saga: ein Koordinator ruft die Schritte. Choreografie: Services reagieren auf Events. Für Checkout ist Orchestrierung meist übersichtlicher.</li>
+  <li><b>Transactional Outbox:</b> Event und Fachdaten in einer DB-Transaktion. Ein Relay sendet später. So gibt es kein „bezahlt, aber Versand weiss nichts“.</li>
+  <li><b>Reservierung mit Ablauf:</b> Reservierter Bestand verfällt nach z. B. 15 Minuten ohne Zahlung. Ein Job gibt ihn frei. Sonst blockieren abgebrochene Checkouts den Bestand.</li>
+  <li><b>Heisse Zeile beim Flash Sale:</b> 1000 UPDATEs/s auf dieselbe Zeile warten aufeinander. Lösungen: Bestand in Buckets aufteilen (10 Zeilen à 100), Reservierungen über eine Queue serialisieren, oder Token vorab in Redis verteilen und danach in der DB bestätigen.</li>
+  <li><b>Webhook-Sicherheit:</b> Signatur prüfen, Zeitstempel prüfen, idempotent verarbeiten, schnell 200 antworten und schwere Arbeit asynchron.</li>
+  <li><b>Unklarer Zahlungsstatus:</b> Timeout beim Provider heisst nicht „gescheitert“. Status beim Provider nachfragen (Reconciliation), nie blind neu belasten.</li>
+  <li><b>Geldbeträge:</b> <code>numeric</code> oder ganzzahlige Rappen, nie Float. Preis, Rabatt und MWST als Snapshot in der Bestellung speichern.</li>
+  <li><b>Sicherheit:</b> Kartendaten nie selbst speichern: Hosted Fields oder Redirect des Providers, damit der PCI-DSS-Umfang klein bleibt.</li>
+  <li><b>Lesen vs Schreiben:</b> Produktseiten und Warenkorb kommen aus Cache. Der Checkout liest den Bestand aus der DB, nicht aus dem Cache.</li>
+</ol>
+
+<h2>5. Vergleich: drei Design-Varianten</h2>
+<ul>
+  <li><b>A. Alles synchron in einem Request:</b> Bestellung, Zahlung und Bestand in einem Aufruf. Einfach, aber ein langsamer Provider blockiert, und Fehler mitten drin hinterlassen halbe Zustände.</li>
+  <li><b>B. Saga mit Outbox (wie oben):</b> lokale Transaktion, Zahlung asynchron, Kompensation bei Fehlern. Robust und nachvollziehbar; mehr Zustände und Jobs.</li>
+  <li><b>C. Reservierung vor dem Checkout (Ticketing-Stil):</b> Bestand wird schon beim „In den Warenkorb“ für Minuten reserviert. Fair bei Knappheit; aber viel blockierter Bestand und mehr Freigabe-Logik.</li>
+</ul>
+
+<h2>6. In der Produktion</h2>
+<ol>
+  <li><b>Doppelte Belastung:</b> Client-Retry nach Timeout ohne Schlüssel. Fix: Idempotency-Key am Checkout und beim Provider.</li>
+  <li><b>Überverkauf:</b> „SELECT available, dann UPDATE“ in zwei Schritten. Fix: bedingtes UPDATE und CHECK-Constraint.</li>
+  <li><b>Bezahlt, aber keine Versandmeldung:</b> Event nach dem Commit gesendet, Service stürzte dazwischen ab. Fix: Outbox.</li>
+  <li><b>Bestand blockiert:</b> Abgebrochene Checkouts halten Reservierungen. Fix: Ablaufzeit und Freigabe-Job.</li>
+  <li><b>Flash Sale legt die DB lahm:</b> Lock-Warteschlange auf einer Zeile. Fix: Bucket-Bestand, Queue, Rate Limit vor dem Checkout.</li>
+  <li><b>Webhook kommt vor der Bestellung an:</b> Reihenfolge nicht garantiert. Fix: Webhook speichern und später verarbeiten, Status beim Provider nachfragen.</li>
+</ol>
+
+<h2>7. Diagnose: Werkzeuge und Queries</h2>
+<ul>
+  <li><b>Hängende Bestellungen:</b> <code>SELECT count(*) FROM orders WHERE status = 'pending_payment' AND created_at &lt; now() - interval '15 minutes';</code></li>
+  <li><b>Reconciliation:</b> täglicher Abgleich unserer Bestellungen mit den Zahlungen des Providers. Jede Differenz ist ein Ticket.</li>
+  <li><b>Lock-Wartezeiten:</b> <code>pg_stat_activity</code> mit <code>wait_event_type = 'Lock'</code>, <code>pg_locks</code>.</li>
+  <li><b>Outbox-Lag:</b> Alter des ältesten nicht gesendeten Events.</li>
+  <li><b>Business-Metriken:</b> Checkout-Abbruchrate, Zahlungsfehler nach Grund, Bestellungen pro Minute. Ein plötzlicher Einbruch ist oft ein technischer Fehler.</li>
+</ul>
+
+<h2>8. Senior-Punkte</h2>
+<div class="senior">
+<ol>
+  <li><b>Geld und Bestand sind die zwei Invarianten.</b> Ich schütze sie in der DB (Unique, bedingtes UPDATE, CHECK), nicht nur im Code.</li>
+  <li><b>Idempotenz auf jeder Grenze:</b> Client → Checkout, Checkout → Provider, Provider → Webhook.</li>
+  <li><b>Saga statt 2PC,</b> weil externe Provider nicht mitmachen. Jeder Schritt hat eine Kompensation.</li>
+  <li><b>Timeout heisst „unbekannt“, nicht „gescheitert“.</b> Ich frage den Status nach, statt neu zu belasten.</li>
+  <li><b>Reconciliation ist Pflicht.</b> Kein verteiltes System ist ohne täglichen Abgleich wirklich konsistent.</li>
+  <li><b>Kartendaten bleiben beim Provider.</b> Das spart PCI-Aufwand und Risiko.</li>
+</ol>
+</div>
+
+<h2>9. Aus dem Projekt</h2>
+<p>„Bei Flaconi, einem grossen Online-Shop für Beauty-Produkte, habe ich am Spring-Boot-Backend und an SOAP-Anbindungen an Legacy-Systeme gearbeitet, nicht am Checkout selbst. Das Muster ‚Ergebnis idempotent schreiben‘ habe ich bei MATCH umgesetzt.“ <span class="small">(Prüfen und durch dein echtes Beispiel ersetzen.)</span></p>
+
+<h2>10. Fallen</h2>
+<div class="trap">
+<ul>
+  <li>„Erst Bestand lesen, dann abziehen.“ → <b>Race.</b> Zwei Käufer lesen beide „1 da“. Bedingtes UPDATE nutzen.</li>
+  <li>„Bei Timeout zahle ich einfach nochmals.“ → Doppelte Belastung. Erst Status nachfragen, mit gleichem Schlüssel wiederholen.</li>
+  <li>„Wir nutzen eine verteilte Transaktion über Shop und Provider.“ → Der Provider macht kein 2PC. Saga mit Kompensation.</li>
+  <li>„Event nach dem Commit senden reicht.“ → Absturz dazwischen verliert das Event. Outbox.</li>
+  <li>„Preise als double.“ → Rundungsfehler. <code>numeric</code> oder Rappen als Ganzzahl.</li>
+  <li>„Bestand kommt aus dem Cache.“ → Für die Anzeige ja, für die Reservierung nie.</li>
+</ul>
+</div>
+
+<h2>11. Fragen</h2>
+<details><summary>Skizzieren Sie den Checkout in einer Minute.</summary><p>Bestellung mit Idempotenz-Schlüssel, bedingte Reservierung, Outbox in einer Transaktion. Zahlung beim Provider mit eigenem Schlüssel, Bestätigung per Webhook, bedingter Statuswechsel. Fehler kompensiert eine Saga.</p></details>
+<details><summary>Wie verhindern Sie doppelte Belastung?</summary><p>Idempotency-Key vom Client bis zum Provider. Der Provider liefert bei Retries dieselbe Antwort. Webhooks setzen den Status nur aus dem erwarteten Vorzustand.</p></details>
+<details><summary>Wie verhindern Sie Überverkauf?</summary><p>UPDATE mit Bedingung available ≥ Menge, in einem Schritt. Dazu ein CHECK-Constraint gegen negativen Bestand.</p></details>
+<details><summary>Was ist eine Saga?</summary><p>Eine Folge lokaler Transaktionen mit je einer Kompensation. Scheitert ein Schritt, werden die vorherigen rückgängig gemacht, z. B. Reservierung freigeben oder erstatten.</p></details>
+<details><summary>Orchestrierung oder Choreografie?</summary><p>Orchestrierung hat einen Koordinator und ist übersichtlich. Choreografie koppelt lose über Events, ist aber schwerer zu verfolgen. Für Checkout meist Orchestrierung.</p></details>
+<details><summary>Warum eine Outbox?</summary><p>Fachdaten und Event gehen in einer Transaktion. So geht kein Event verloren, wenn der Service nach dem Commit abstürzt.</p></details>
+<details><summary>Was tun Sie bei einem Timeout beim Provider?</summary><p>Status beim Provider abfragen. Nur mit demselben Idempotenz-Schlüssel wiederholen. Nie neu belasten ohne Klarheit.</p></details>
+<details><summary>Wie sichern Sie Webhooks ab?</summary><p>Signatur und Zeitstempel prüfen, idempotent verarbeiten, schnell antworten und asynchron weiterarbeiten.</p></details>
+<details><summary>Wie lange bleibt Bestand reserviert?</summary><p>Eine fachlich gewählte Zeit, z. B. 15 Minuten. Ein Job gibt abgelaufene Reservierungen frei und storniert die Bestellung.</p></details>
+<details><summary>Wie überstehen Sie einen Flash Sale?</summary><p>Bestand in Buckets, Reservierungen über eine Queue, Rate Limit und Warteraum vor dem Checkout. Produktseiten aus dem Cache.</p></details>
+<details><summary>Wie speichern Sie Geldbeträge?</summary><p>Als numeric oder ganzzahlige Rappen. Preis, Rabatt und MWST als Snapshot in der Bestellung.</p></details>
+<details><summary>Was ist Reconciliation?</summary><p>Ein regelmässiger Abgleich unserer Bestellungen mit den Daten des Providers. Er findet Fälle, die Saga und Webhooks verpasst haben.</p></details>
+<details><summary>Speichern Sie Kartendaten?</summary><p>Nein. Hosted Fields oder Redirect des Providers. So bleibt der PCI-DSS-Umfang klein.</p></details>
+<details><summary>Wie lange hält Stripe Idempotenz-Schlüssel?</summary><p>Laut Doku können Schlüssel entfernt werden, wenn sie mindestens 24 Stunden alt sind. Danach erzeugt derselbe Schlüssel eine neue Anfrage.</p></details>
+<details><summary>Welche Statusübergänge erlauben Sie?</summary><p>pending_payment → paid oder cancelled, paid → shipped. Jeder Übergang als UPDATE mit Bedingung auf den alten Status.</p></details>
+<details><summary>Szenario: Eine Kundin wurde doppelt belastet. Wie untersuchen Sie das?</summary><p>Zahlungen beim Provider zur Bestellung suchen, Idempotenz-Schlüssel vergleichen. Typisch: Retry ohne Schlüssel oder mit neuem Schlüssel. Sofort erstatten, dann Schlüssel-Logik korrigieren.</p></details>
+<details><summary>Szenario: Im Flash Sale meldet die DB viele Lock-Wartezeiten. Was tun Sie?</summary><p>Die Bestandszeile ist heiss. Kurzfristig Rate Limit und Warteraum. Dann Bestand in Buckets aufteilen oder Reservierungen über eine Queue serialisieren.</p></details>
+<details><summary>Szenario: Bestellungen sind bezahlt, aber der Versand bekommt nichts. Wo suchen Sie?</summary><p>Outbox-Lag und Relay prüfen, Broker und Consumer-Lag. Falls ohne Outbox gebaut: Event ging zwischen Commit und Send verloren. Fix: Outbox und Nachversand.</p></details>
+
+</body>
+</html>

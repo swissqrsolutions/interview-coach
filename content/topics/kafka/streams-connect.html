@@ -1,0 +1,237 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Kafka Streams und Connect</title>
+<style>
+  body { font: 17px/1.55 -apple-system, system-ui, sans-serif; max-width: 760px; margin: 0 auto; padding: 16px; color: #1d1d1f; }
+  h1 { font-size: 28px; margin: 8px 0 4px; }
+  h2 { font-size: 21px; margin: 32px 0 8px; padding-top: 12px; border-top: 2px solid #e5e5ea; }
+  .kern { background: #eef6ff; border-left: 4px solid #0a66c2; padding: 10px 14px; border-radius: 6px; }
+  .senior { background: #f0faf0; border-left: 4px solid #2e7d32; padding: 10px 14px; border-radius: 6px; }
+  .trap { background: #fff4f2; border-left: 4px solid #c62828; padding: 10px 14px; border-radius: 6px; }
+  code { background: #f2f2f7; padding: 1px 5px; border-radius: 4px; font-size: 15px; }
+  pre { background: #1e1e1e; color: #e6e6e6; padding: 12px; border-radius: 8px; overflow-x: auto; font-size: 13.5px; line-height: 1.45; }
+  svg { width: 100%; height: auto; display: block; margin: 10px 0; }
+  ol li, ul li { margin: 4px 0; }
+  details { border: 1px solid #e5e5ea; border-radius: 8px; padding: 8px 12px; margin: 6px 0; }
+  summary { font-weight: 600; cursor: pointer; }
+  details p { margin: 6px 0 2px; }
+  .small { color: #6e6e73; font-size: 14px; }
+</style>
+</head>
+<body>
+
+<h1>Kafka Streams und Kafka Connect</h1>
+<p class="small">Kafka · Tier 2 · Quellen: Apache Kafka 4.4 Documentation (Streams: Core Concepts, Architecture, Developer Guide, Streams Rebalance Protocol; Kafka Streams Configs; Kafka Connect User Guide; Kafka Connect Configs), Debezium Documentation</p>
+
+<div class="kern">
+<b>Kern:</b> <b>Kafka Streams</b> ist eine Java-Bibliothek für Stream-Verarbeitung: lesen, umformen, aggregieren, joinen, zurück nach Kafka schreiben. <b>Kafka Connect</b> ist ein Framework mit eigenen Worker-Prozessen, das Daten <b>ohne eigenen Code</b> zwischen Kafka und anderen Systemen bewegt. Streams verarbeitet <b>in</b> Kafka, Connect bewegt <b>rein und raus</b>.
+</div>
+
+<h2>1. Wo sitzen Streams und Connect?</h2>
+<svg viewBox="0 0 720 300" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="a" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="10" y="30" width="130" height="60" rx="8" fill="#fff" stroke="#555"/><text x="75" y="58" text-anchor="middle">PostgreSQL</text><text x="75" y="76" text-anchor="middle" font-size="12">Quelle</text>
+  <rect x="170" y="20" width="160" height="80" rx="10" fill="#e8f5e9" stroke="#2e7d32"/><text x="250" y="46" text-anchor="middle" font-weight="700">Connect Worker</text><text x="250" y="66" text-anchor="middle" font-size="12">Source Connector</text><text x="250" y="82" text-anchor="middle" font-size="12">(z. B. Debezium)</text>
+  <rect x="360" y="110" width="160" height="80" rx="10" fill="#f7f7fa" stroke="#999"/><text x="440" y="140" text-anchor="middle" font-weight="700">Kafka Cluster</text><text x="440" y="160" text-anchor="middle" font-size="12">Topics</text>
+  <rect x="170" y="200" width="160" height="80" rx="10" fill="#0a66c2"/><text x="250" y="228" text-anchor="middle" fill="#fff" font-weight="700">Streams-App</text><text x="250" y="248" text-anchor="middle" fill="#fff" font-size="12">eigener Service</text><text x="250" y="264" text-anchor="middle" fill="#fff" font-size="12">+ RocksDB lokal</text>
+  <rect x="550" y="20" width="160" height="80" rx="10" fill="#e8f5e9" stroke="#2e7d32"/><text x="630" y="46" text-anchor="middle" font-weight="700">Connect Worker</text><text x="630" y="66" text-anchor="middle" font-size="12">Sink Connector</text><text x="630" y="82" text-anchor="middle" font-size="12">(z. B. JDBC, S3)</text>
+  <rect x="580" y="210" width="130" height="60" rx="8" fill="#fff" stroke="#555"/><text x="645" y="238" text-anchor="middle">Data Lake / DB</text><text x="645" y="256" text-anchor="middle" font-size="12">Ziel</text>
+  <line x1="140" y1="60" x2="168" y2="60" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <line x1="330" y1="70" x2="390" y2="108" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <line x1="380" y1="190" x2="320" y2="210" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <line x1="330" y1="250" x2="420" y2="192" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <line x1="500" y1="108" x2="560" y2="100" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <line x1="645" y1="100" x2="645" y2="208" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+</svg>
+<ol>
+  <li><b>Connect Worker:</b> ein JVM-Prozess, der Connectors ausführt. Beispiel: ein Cluster aus 3 Workern in Kubernetes.</li>
+  <li><b>Source Connector:</b> liest aus einem System und schreibt nach Kafka. Beispiel: Debezium liest das WAL von PostgreSQL.</li>
+  <li><b>Sink Connector:</b> liest aus Kafka und schreibt in ein System. Beispiel: JDBC-Sink in eine Datenbank.</li>
+  <li><b>Streams-App:</b> ein normaler Java-Service mit der Bibliothek <code>kafka-streams</code>. Kein eigener Cluster, nur Kafka.</li>
+  <li><b>State Store:</b> lokaler Speicher der Streams-App (Standard RocksDB). Er ist in einem kompaktierten <b>Changelog-Topic</b> gesichert.</li>
+</ol>
+
+<h2>2. Die Reise eines Datensatzes (die Geschichte zum Merken)</h2>
+<svg viewBox="0 0 720 290" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="b" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="10" y="20" width="160" height="70" rx="10" fill="#eee" stroke="#777"/><text x="90" y="48" text-anchor="middle" font-weight="700">1. DB-Zeile</text><text x="90" y="68" text-anchor="middle" font-size="12">UPDATE fall</text>
+  <line x1="170" y1="55" x2="198" y2="55" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="200" y="20" width="160" height="70" rx="10" fill="#e8f5e9" stroke="#2e7d32"/><text x="280" y="44" text-anchor="middle" font-weight="700">2. Source Task</text><text x="280" y="62" text-anchor="middle" font-size="12">SMT → Converter</text><text x="280" y="78" text-anchor="middle" font-size="12">→ Topic faelle</text>
+  <line x1="360" y1="55" x2="388" y2="55" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="390" y="20" width="320" height="70" rx="10" fill="#0a66c2"/><text x="550" y="44" text-anchor="middle" fill="#fff" font-weight="700">3. Streams Task (pro Partition)</text><text x="550" y="64" text-anchor="middle" fill="#fff" font-size="12">groupByKey → count pro Kanton</text><text x="550" y="80" text-anchor="middle" fill="#fff" font-size="12">Repartition-Topic, wenn Key wechselt</text>
+  <line x1="550" y1="90" x2="550" y2="138" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="390" y="140" width="320" height="64" rx="10" fill="#fff" stroke="#555"/><text x="550" y="166" text-anchor="middle" font-weight="700">4. State Store + Changelog</text><text x="550" y="186" text-anchor="middle" font-size="12">RocksDB lokal, Kopie in Kafka</text>
+  <line x1="390" y1="172" x2="362" y2="172" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="200" y="140" width="160" height="64" rx="10" fill="#fff" stroke="#555"/><text x="280" y="166" text-anchor="middle" font-weight="700">5. Ausgabe-Topic</text><text x="280" y="186" text-anchor="middle" font-size="12">faelle-pro-kanton</text>
+  <line x1="200" y1="172" x2="172" y2="172" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="10" y="140" width="160" height="64" rx="10" fill="#e8f5e9" stroke="#2e7d32"/><text x="90" y="166" text-anchor="middle" font-weight="700">6. Sink Task</text><text x="90" y="186" text-anchor="middle" font-size="12">→ Reporting-DB</text>
+  <text x="360" y="245" text-anchor="middle" font-size="13">Fehler im Sink: errors.tolerance=all → Dead Letter Queue Topic</text>
+  <text x="360" y="268" text-anchor="middle" font-size="13">Fehler in Streams: Exception Handler (Standard: LogAndFail)</text>
+</svg>
+<ol>
+  <li><b>Quelle:</b> In PostgreSQL ändert sich ein Steuerfall. Die Änderung steht im Write-Ahead-Log.</li>
+  <li><b>Source Task:</b> Der Debezium-Task liest das WAL. Eine <b>SMT</b> (Single Message Transform) formt den Datensatz leicht um. Der <b>Converter</b> serialisiert ihn, z. B. als Avro. Der Worker schreibt ins Topic <code>faelle</code> und merkt sich seine Position im Offset-Topic.</li>
+  <li><b>Streams Task:</b> Die Streams-App hat pro Eingangs-Partition einen <b>Task</b>. Sie gruppiert nach Kanton. Weil sich der Key ändert, schreibt sie zuerst in ein internes <b>Repartition-Topic</b>.</li>
+  <li><b>State Store:</b> Der Zähler pro Kanton liegt in RocksDB. Jede Änderung geht auch ins <b>Changelog-Topic</b>. Stirbt der Pod, baut ein anderer den Store daraus neu auf.</li>
+  <li><b>Ausgabe:</b> Die App schreibt den neuen Zählerstand ins Topic <code>faelle-pro-kanton</code>. Mit <code>exactly_once_v2</code> passiert das in einer Transaktion mit den Offsets.</li>
+  <li><b>Sink Task:</b> Ein JDBC-Sink schreibt den Stand per Upsert in eine Reporting-DB. Kaputte Datensätze gehen mit <code>errors.tolerance=all</code> in ein Dead Letter Topic.</li>
+</ol>
+
+<h2>3. Beispiel: eine Streams-Topologie und ein Connector</h2>
+<pre>StreamsBuilder b = new StreamsBuilder();
+KStream&lt;String, Fall&gt; faelle = b.stream("faelle");
+KTable&lt;String, Long&gt; proKanton = faelle
+    .groupBy((fallId, fall) -&gt; fall.kanton())          // neuer Key → Repartition
+    .count(Materialized.as("count-pro-kanton"));         // State Store
+proKanton.toStream().to("faelle-pro-kanton");
+
+Properties p = new Properties();
+p.put("application.id", "vsp-statistik");                // = Group-ID + Präfix interner Topics
+p.put("processing.guarantee", "exactly_once_v2");
+p.put("num.standby.replicas", "1");
+p.put("state.dir", "/var/lib/kafka-streams");            // Volume, nicht /tmp
+System.out.println(b.build().describe());</pre>
+<pre>Topologies:
+   Sub-topology: 0
+    Source: KSTREAM-SOURCE-0000000000 (topics: [faelle])
+      --&gt; KSTREAM-KEY-SELECT-0000000001
+    ...
+    Sink: KSTREAM-SINK-0000000004 (topic: count-pro-kanton-repartition)
+   Sub-topology: 1
+    Source: KSTREAM-SOURCE-0000000005 (topics: [count-pro-kanton-repartition])
+      --&gt; KSTREAM-AGGREGATE-0000000002
+    Processor: KSTREAM-AGGREGATE-0000000002 (stores: [count-pro-kanton])
+    ...</pre>
+<p class="small">Erwartetes Ergebnis (laut Streams-Doku, nicht ausgeführt). Kafka ist hier nicht installiert. Gekürzt; die Nummern hängen von der Topologie ab.</p>
+<pre>$ curl -X PUT -H "Content-Type: application/json" http://connect:8083/connectors/reporting-sink/config -d '{
+  "connector.class": "io.confluent.connect.jdbc.JdbcSinkConnector",
+  "topics": "faelle-pro-kanton",
+  "tasks.max": "3",
+  "insert.mode": "upsert", "pk.mode": "record_key",
+  "errors.tolerance": "all",
+  "errors.deadletterqueue.topic.name": "dlq-reporting-sink",
+  "errors.deadletterqueue.context.headers.enable": "true",
+  "errors.log.enable": "true"
+}'
+$ curl -s http://connect:8083/connectors/reporting-sink/status
+{"name":"reporting-sink","connector":{"state":"RUNNING","worker_id":"10.0.1.7:8083"},
+ "tasks":[{"id":0,"state":"RUNNING",...},{"id":1,"state":"RUNNING",...},{"id":2,"state":"RUNNING",...}],"type":"sink"}</pre>
+<p class="small">Erwartetes Ergebnis (laut Connect-Doku, nicht ausgeführt). Der JDBC-Connector ist ein Plugin und nicht Teil von Apache Kafka.</p>
+<ol>
+  <li><code>groupBy</code> ändert den Key. Darum teilt Streams die Topologie in <b>zwei Sub-Topologien</b> mit einem Repartition-Topic dazwischen.</li>
+  <li><code>count</code> erzeugt den Store <code>count-pro-kanton</code> und ein Changelog-Topic <code>vsp-statistik-count-pro-kanton-changelog</code>.</li>
+  <li><code>application.id</code> ist Gruppen-ID und Präfix aller internen Topics. Wer sie ändert, startet mit leerem Zustand.</li>
+  <li>Der Connector braucht nur JSON per REST, keinen Code. <code>tasks.max=3</code> ist eine Obergrenze für parallele Tasks.</li>
+  <li>Mit <code>errors.tolerance=all</code> stoppt ein kaputter Datensatz den Connector nicht. Er landet im DLQ-Topic mit Fehler-Headern.</li>
+</ol>
+
+<h2>4. Details, die Interviewer fragen</h2>
+<ol>
+  <li><b>KStream:</b> jeder Datensatz ist ein Ereignis. <b>KTable:</b> jeder Datensatz ist ein Update für einen Key, der letzte Wert zählt. <b>GlobalKTable:</b> eine Tabelle, die jede Instanz <b>vollständig</b> hat. Gut für kleine Stammdaten.</li>
+  <li><b>Stream-Table-Dualität:</b> Ein Stream von Updates ergibt eine Tabelle. Die Änderungen einer Tabelle ergeben einen Stream.</li>
+  <li><b>Tasks und Parallelität:</b> Anzahl Tasks = Anzahl Partitionen der Eingangs-Topics. Mehr Instanzen als Tasks bringen nichts. <code>num.stream.threads</code> Standard 1.</li>
+  <li><b>Co-Partitioning:</b> Ein Join von zwei Streams oder Tabellen braucht gleich viele Partitionen und gleichen Key. Sonst repartitioniert Streams oder wirft einen Fehler. GlobalKTable braucht das nicht.</li>
+  <li><b>Fenster:</b> Tumbling (fest, ohne Überlappung), Hopping (fest, überlappend), Sliding (an Zeitdifferenz gebunden), Session (durch Pausen getrennt). Die <b>Grace Period</b> erlaubt verspätete Daten.</li>
+  <li><b>Zeit:</b> Streams nutzt <b>Event-Zeit</b> aus dem Zeitstempel der Nachricht, nicht die Uhr des Servers.</li>
+  <li><b>Wichtige Defaults:</b> <code>processing.guarantee=at_least_once</code>, <code>commit.interval.ms=30000</code> (100 bei <code>exactly_once_v2</code>), <code>num.standby.replicas=0</code>, Cache 10 MiB, <code>state.dir</code> = Temp-Verzeichnis.</li>
+  <li><b>Standby Replicas:</b> Warme Kopien des Stores auf anderen Instanzen. Failover dauert Sekunden statt Minuten.</li>
+  <li><b>Neues Rebalance-Protokoll (KIP-1071):</b> Der Broker berechnet die Zuweisung. Client: <code>group.protocol=streams</code> (Standard noch <code>classic</code>). Auf neuen Clustern ab 4.2 serverseitig aktiv. Einschränkungen laut Doku: keine Warmup-Tasks, keine Regex-Subscription, Migration nur mit Wartungsfenster.</li>
+  <li><b>Interactive Queries:</b> Die App kann ihren State Store per eigener REST-API abfragbar machen.</li>
+  <li><b>Connect Standalone vs Distributed:</b> Standalone = ein Prozess, keine Ausfallsicherheit. Distributed = mehrere Worker, Arbeit wird verteilt, Konfiguration nur per REST.</li>
+  <li><b>Drei interne Topics</b> im Distributed Mode: <code>config.storage.topic</code> (1 Partition), <code>offset.storage.topic</code> (Standard 25 Partitionen), <code>status.storage.topic</code> (Standard 5). Alle kompaktiert. Besser selbst anlegen.</li>
+  <li><b>Converter und SMT:</b> Converter = Format (JSON, Avro, Protobuf). SMT = kleine Änderung pro Datensatz, z. B. <code>InsertField</code>, <code>MaskField</code>, <code>RegexRouter</code>, <code>Filter</code> mit Predicate. Keine Joins, keine Aggregation.</li>
+  <li><b>Fehler in Connect:</b> Standard <code>errors.tolerance=none</code>: ein Fehler stoppt den Task. Mit <code>all</code> plus DLQ-Topic läuft er weiter. Das DLQ-Topic gibt es für Sink Connectors.</li>
+  <li><b>Exactly-once in Connect:</b> Source seit 3.3 mit <code>exactly.once.source.support=enabled</code> (nur Distributed). Sink über Upsert oder Offsets im Ziel, je nach Connector.</li>
+  <li><b>Offsets eines Connectors:</b> per REST <code>GET/PATCH/DELETE /connectors/X/offsets</code>. Ändern geht nur, wenn der Connector gestoppt ist.</li>
+</ol>
+
+<h2>5. Vergleich</h2>
+<ul>
+  <li><b>Kafka Streams:</b> Bibliothek, läuft in deinem Service, nur Kafka als Quelle und Ziel. Gut für Microservices mit Zustand.</li>
+  <li><b>Apache Flink:</b> eigener Cluster, viele Quellen, sehr grosse Zustände, SQL. Mehr Betrieb.</li>
+  <li><b>Spark Structured Streaming:</b> Micro-Batches, stark für Analytics und Lakehouse. Latenz meist Sekunden.</li>
+  <li><b>Normaler Consumer:</b> genügt für zustandslose Verarbeitung. Ab Joins, Fenstern und Aggregationen lohnt Streams.</li>
+  <li><b>Kafka Connect:</b> fertige Connectors, Offsets und Verteilung inklusive. Für Standard-Integrationen.</li>
+  <li><b>Eigener Producer/Consumer:</b> wenn Logik komplex ist oder kein Connector passt.</li>
+  <li><b>Debezium (CDC):</b> Connect-Plugin, liest das Transaktionslog der DB. Gut für das Outbox-Pattern ohne Polling.</li>
+</ul>
+
+<h2>6. In der Produktion</h2>
+<ol>
+  <li><b>Lange Neustarts der Streams-App:</b> Der Store liegt in <code>/tmp</code> im Container und ist nach jedem Neustart weg. Die App liest das ganze Changelog neu. Lösung: <code>state.dir</code> auf ein Persistent Volume (StatefulSet), Standby Replicas.</li>
+  <li><b>App stoppt bei einer kaputten Nachricht:</b> Der Standard-Handler <code>LogAndFail</code> beendet den Stream-Thread. Lösung: eigener Deserialization- und Processing-Handler oder <code>LogAndContinue</code> mit DLQ.</li>
+  <li><b>Repartition-Topics explodieren:</b> Viele <code>groupBy</code> mit neuem Key. Lösung: Key früh richtig wählen, Topologie mit <code>describe()</code> prüfen.</li>
+  <li><b>Topologie-Änderung bricht Zustand:</b> Automatische Namen wie <code>KSTREAM-AGGREGATE-0000000002</code> verschieben sich. Lösung: Stores und Operatoren explizit benennen.</li>
+  <li><b>Connector FAILED, keiner merkt es:</b> Der Worker läuft, der Task ist tot. Lösung: Status per REST oder Metriken überwachen, <code>POST /connectors/X/restart?includeTasks=true&amp;onlyFailed=true</code>.</li>
+  <li><b>Interne Connect-Topics falsch angelegt:</b> automatisch mit Standardwerten, z. B. ohne Compaction oder mit RF 1. Lösung: vorher selbst anlegen.</li>
+  <li><b>Debezium und WAL wächst:</b> Ist der Connector gestoppt, hält PostgreSQL den Replication Slot und das WAL wächst. Lösung: Slot-Lag überwachen.</li>
+</ol>
+
+<h2>7. Diagnose: Werkzeuge und Befehle</h2>
+<ul>
+  <li><code>topology.describe()</code>: Sub-Topologien, Stores, interne Topics.</li>
+  <li><code>kafka-streams-groups.sh</code> (für das neue Protokoll) und <code>kafka-consumer-groups.sh --describe --group &lt;application.id&gt;</code>: Lag pro Task.</li>
+  <li><code>KafkaStreams.state()</code> und ein State-Listener: <code>RUNNING</code>, <code>REBALANCING</code>, <code>ERROR</code> als Health-Check.</li>
+  <li>Streams-Metriken: Restore-Rate der Stores, Process-Rate, Commit-Latenz.</li>
+  <li>Connect-REST: <code>GET /connectors?expand=status</code>, <code>GET /connectors/X/status</code>, <code>GET /connector-plugins</code>.</li>
+  <li>Log-Level zur Laufzeit ändern: <code>PUT /admin/loggers/&lt;name&gt;</code>.</li>
+  <li><code>kafka-streams-application-reset.sh</code>: eine Streams-App auf Anfang setzen (Offsets und interne Topics).</li>
+</ul>
+
+<h2>8. Senior-Punkte</h2>
+<div class="senior">
+<ol>
+  <li><b>Nicht jeder Datenfluss braucht Streaming.</b> Kommen Daten als Dateien zu festen Terminen, ist Batch einfacher und leichter idempotent.</li>
+  <li><b>Streams-Apps sind zustandsbehaftet.</b> In Kubernetes heisst das: StatefulSet, Volume, Standby Replicas, langsames Rolling Update.</li>
+  <li><b>Connect vor eigenem Code,</b> wenn ein reifer Connector existiert. Eigene Integrationen kosten Wartung.</li>
+  <li><b>SMTs klein halten.</b> Fachlogik gehört in einen Service oder in Streams, nicht in eine Kette von Transforms.</li>
+  <li><b>Namen sind API.</b> <code>application.id</code>, Store-Namen und Topic-Namen nie nebenbei ändern.</li>
+  <li><b>Flink oder Streams?</b> Streams für Service-nahe Logik im Java-Team. Flink für grosse, zentrale Pipelines mit vielen Quellen.</li>
+</ol>
+</div>
+
+<h2>9. Aus dem Projekt</h2>
+<p>„Bei MATCH haben wir bewusst Batch statt Streaming gewählt: Die Berichte kommen als Dateien zu Fristen, Minuten-Latenz reicht, und Batch ist viel einfacher idempotent und crash-sicher. Kafka Streams oder Connect habe ich laut Profil nicht produktiv betrieben.“ <span class="small">(Prüfen und durch dein echtes Beispiel ersetzen.)</span></p>
+
+<h2>10. Fallen</h2>
+<div class="trap">
+<ul>
+  <li>„Kafka Streams ist ein Cluster wie Flink.“ → <b>Falsch.</b> Es ist eine Bibliothek in deiner App.</li>
+  <li>„Mehr Instanzen machen Streams immer schneller.“ → <b>Falsch.</b> Höchstens so viele aktive Tasks wie Partitionen.</li>
+  <li>„Der State Store ist nur lokal und geht verloren.“ → <b>Falsch.</b> Er ist im Changelog-Topic gesichert. Verloren ist nur die Zeit zum Wiederaufbau.</li>
+  <li>„Connect ist ein Teil des Brokers.“ → <b>Falsch.</b> Eigene Worker-Prozesse, nur die Daten liegen in Kafka.</li>
+  <li>„Mit einer SMT kann ich zwei Topics joinen.“ → <b>Falsch.</b> SMTs sehen nur einen Datensatz.</li>
+  <li>„<code>tasks.max=10</code> heisst 10 Tasks.“ → <b>Falsch.</b> Es ist eine Obergrenze. Der Connector entscheidet.</li>
+</ul>
+</div>
+
+<h2>11. Fragen</h2>
+<details><summary>Was ist Kafka Streams?</summary><p>Eine Java-Bibliothek für Stream-Verarbeitung mit Zustand. Liest aus Kafka, schreibt nach Kafka, läuft in deinem Service.</p></details>
+<details><summary>Was ist Kafka Connect?</summary><p>Ein Framework mit Worker-Prozessen, das Daten per Konfiguration zwischen Kafka und anderen Systemen bewegt. Source rein, Sink raus.</p></details>
+<details><summary>KStream vs KTable?</summary><p>KStream: jeder Datensatz ist ein Ereignis. KTable: jeder Datensatz ist ein Update, pro Key zählt der letzte Wert.</p></details>
+<details><summary>Wann eine GlobalKTable?</summary><p>Für kleine Stammdaten, die jede Instanz ganz braucht. Joins damit brauchen kein Co-Partitioning.</p></details>
+<details><summary>Was ist ein State Store?</summary><p>Lokaler Speicher für Zustand, Standard RocksDB. Gesichert in einem kompaktierten Changelog-Topic.</p></details>
+<details><summary>Was ist ein Repartition-Topic?</summary><p>Ein internes Topic, das Streams anlegt, wenn sich der Key vor einer Aggregation oder einem Join ändert.</p></details>
+<details><summary>Wie skaliert Kafka Streams?</summary><p>Über Tasks, einer pro Eingangs-Partition. Tasks verteilen sich auf Threads und Instanzen derselben <code>application.id</code>.</p></details>
+<details><summary>Was ist Co-Partitioning?</summary><p>Beide Seiten eines Joins haben gleichen Key und gleich viele Partitionen. Nur dann liegen zusammengehörige Daten im selben Task.</p></details>
+<details><summary>Welche Fenster kennt Streams?</summary><p>Tumbling, Hopping, Sliding und Session. Mit Grace Period für verspätete Daten.</p></details>
+<details><summary>Wie macht Streams exactly-once?</summary><p>Mit <code>processing.guarantee=exactly_once_v2</code>. Ausgabe, Changelog und Offsets gehen in einer Kafka-Transaktion. Commit-Intervall dann 100 ms.</p></details>
+<details><summary>Was sind Standby Replicas?</summary><p>Warme Kopien der State Stores auf anderen Instanzen. Standard 0. Mit 1 geht Failover schnell.</p></details>
+<details><summary>Was ist das neue Streams-Rebalance-Protokoll?</summary><p>KIP-1071: Der Broker berechnet die Zuweisung, die App ist eine „Streams Group“. Aktiv mit <code>group.protocol=streams</code>.</p></details>
+<details><summary>Standalone vs Distributed Connect?</summary><p>Standalone: ein Prozess, kein Failover. Distributed: mehrere Worker, verteilte Tasks, Konfiguration per REST, Zustand in drei internen Topics.</p></details>
+<details><summary>Welche internen Topics hat Connect?</summary><p>Config (1 Partition), Offsets (Standard 25), Status (Standard 5). Alle kompaktiert und repliziert.</p></details>
+<details><summary>Converter vs SMT?</summary><p>Converter bestimmt das Format (Avro, JSON). SMT ändert einzelne Datensätze leicht, z. B. Feld maskieren oder Topic umbenennen.</p></details>
+<details><summary>Wie behandelt Connect Fehler?</summary><p>Standard <code>errors.tolerance=none</code>: Task stoppt. Mit <code>all</code> plus <code>errors.deadletterqueue.topic.name</code> gehen kaputte Datensätze eines Sinks ins DLQ-Topic.</p></details>
+<details><summary>Kann Connect exactly-once?</summary><p>Source seit Kafka 3.3 im Distributed Mode mit <code>exactly.once.source.support=enabled</code>, wenn der Connector es unterstützt. Sink meist über Upsert im Ziel.</p></details>
+<details><summary>Was ist Debezium?</summary><p>Eine Sammlung von Source Connectors für Change Data Capture. Sie lesen das Transaktionslog der DB und schreiben jede Änderung nach Kafka.</p></details>
+<details><summary>Wann Streams, wann Flink?</summary><p>Streams für Logik nah am Service und nur Kafka. Flink für grosse zentrale Pipelines, viele Quellen, SQL und sehr grossen Zustand.</p></details>
+<details><summary>Warum ist application.id so wichtig?</summary><p>Sie ist Gruppen-ID und Präfix aller internen Topics. Eine neue ID heisst neuer, leerer Zustand.</p></details>
+<details><summary>Szenario: Nach jedem Deployment braucht die Streams-App 20 Minuten bis sie arbeitet. Warum?</summary><p>Der State Store wird aus dem Changelog neu gebaut, weil er in <code>/tmp</code> lag. Lösung: StatefulSet mit Volume für <code>state.dir</code>, Standby Replicas.</p></details>
+<details><summary>Szenario: Der JDBC-Sink steht seit Stunden, der Worker-Pod ist grün. Was tun Sie?</summary><p><code>GET /connectors/X/status</code> zeigt einen FAILED-Task mit Stacktrace. Ursache beheben, Task neu starten, und künftig den Task-Status überwachen, nicht nur den Pod.</p></details>
+<details><summary>Szenario: Ein Team will mit Kafka Streams Tagesberichte aus Dateien rechnen. Was sagen Sie?</summary><p>Dateien zu festen Terminen passen besser zu Batch, z. B. Spark. Streams lohnt sich für laufende Ereignisse mit niedriger Latenz.</p></details>
+
+</body>
+</html>

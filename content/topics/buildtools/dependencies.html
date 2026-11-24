@@ -1,0 +1,250 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Abhängigkeiten: Scopes, Konflikte, BOM</title>
+<style>
+  body { font: 17px/1.55 -apple-system, system-ui, sans-serif; max-width: 760px; margin: 0 auto; padding: 16px; color: #1d1d1f; }
+  h1 { font-size: 28px; margin: 8px 0 4px; }
+  h2 { font-size: 21px; margin: 32px 0 8px; padding-top: 12px; border-top: 2px solid #e5e5ea; }
+  .kern { background: #eef6ff; border-left: 4px solid #0a66c2; padding: 10px 14px; border-radius: 6px; }
+  .senior { background: #f0faf0; border-left: 4px solid #2e7d32; padding: 10px 14px; border-radius: 6px; }
+  .trap { background: #fff4f2; border-left: 4px solid #c62828; padding: 10px 14px; border-radius: 6px; }
+  code { background: #f2f2f7; padding: 1px 5px; border-radius: 4px; font-size: 15px; }
+  pre { background: #1e1e1e; color: #e6e6e6; padding: 12px; border-radius: 8px; overflow-x: auto; font-size: 13.5px; line-height: 1.45; }
+  svg { width: 100%; height: auto; display: block; margin: 10px 0; }
+  ol li, ul li { margin: 4px 0; }
+  details { border: 1px solid #e5e5ea; border-radius: 8px; padding: 8px 12px; margin: 6px 0; }
+  summary { font-weight: 600; cursor: pointer; }
+  details p { margin: 6px 0 2px; }
+  .small { color: #6e6e73; font-size: 14px; }
+</style>
+</head>
+<body>
+
+<h1>Abhängigkeiten: Scopes, Konflikte, BOM</h1>
+<p class="small">Build-Tools · Tier 1 · Quellen: maven.apache.org „Introduction to the Dependency Mechanism“, maven-dependency-plugin 3.11 (<code>dependency:tree</code>, <code>analyze</code>), Maven Enforcer (<code>dependencyConvergence</code>), Gradle User Guide „Graph Resolution“, OWASP Dependency-Check, Spring Boot Reference (Dependency Management)</p>
+
+<div class="kern">
+<b>Kern:</b> <b>Dependency Management</b> ist die Verwaltung der Bibliotheken, die ein Projekt braucht. Maven lädt auch die Abhängigkeiten der Abhängigkeiten (<b>transitive Dependencies</b>). Wenn zwei Wege verschiedene Versionen bringen, entscheidet <b>Nearest wins</b>. <b>Scopes</b> steuern, wo eine Abhängigkeit gilt, und <b>BOMs</b> legen zusammenpassende Versionen zentral fest.
+</div>
+
+<h2>1. Wo sitzen die Abhängigkeiten?</h2>
+<svg viewBox="0 0 720 320" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="a" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="270" y="10" width="180" height="50" rx="8" fill="#0a66c2"/><text x="360" y="32" text-anchor="middle" fill="#fff" font-weight="700">app (Ihr POM)</text><text x="360" y="50" text-anchor="middle" fill="#fff" font-size="12">Tiefe 0</text>
+  <line x1="320" y1="60" x2="150" y2="108" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <line x1="400" y1="60" x2="560" y2="108" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="60" y="110" width="180" height="50" rx="8" fill="#fff" stroke="#555"/><text x="150" y="132" text-anchor="middle">lib-a 1.0</text><text x="150" y="150" text-anchor="middle" font-size="12">direkt (Tiefe 1)</text>
+  <rect x="470" y="110" width="180" height="50" rx="8" fill="#fff" stroke="#555"/><text x="560" y="132" text-anchor="middle">lib-b 2.0</text><text x="560" y="150" text-anchor="middle" font-size="12">direkt (Tiefe 1)</text>
+  <line x1="150" y1="160" x2="150" y2="198" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <line x1="560" y1="160" x2="560" y2="198" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="60" y="200" width="180" height="50" rx="8" fill="#e8f5e9" stroke="#2e7d32"/><text x="150" y="222" text-anchor="middle" font-weight="700">jackson 2.17</text><text x="150" y="240" text-anchor="middle" font-size="12">Tiefe 2 → gewinnt</text>
+  <rect x="470" y="200" width="180" height="50" rx="8" fill="#fff" stroke="#555"/><text x="560" y="222" text-anchor="middle">lib-c 1.4</text><text x="560" y="240" text-anchor="middle" font-size="12">Tiefe 2</text>
+  <line x1="560" y1="250" x2="560" y2="268" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="470" y="270" width="180" height="44" rx="8" fill="#fdecea" stroke="#c62828"/><text x="560" y="290" text-anchor="middle">jackson 2.19</text><text x="560" y="306" text-anchor="middle" font-size="11">Tiefe 3 → verworfen</text>
+  <rect x="270" y="270" width="160" height="44" rx="8" fill="#fff" stroke="#999" stroke-dasharray="5 4"/><text x="350" y="290" text-anchor="middle" font-size="12">dependencyManagement</text><text x="350" y="306" text-anchor="middle" font-size="11">überstimmt beides</text>
+</svg>
+<ol>
+  <li><b>Direkte Abhängigkeit:</b> steht in Ihrem POM. Beispiel: <code>lib-a</code>, <code>lib-b</code>.</li>
+  <li><b>Transitive Abhängigkeit:</b> kommt über eine andere Bibliothek mit. Beispiel: <code>jackson</code> über <code>lib-a</code>.</li>
+  <li><b>Konflikt:</b> Dasselbe Artefakt (<code>groupId:artifactId</code>) kommt in zwei Versionen. Auf dem Classpath darf nur eine liegen.</li>
+  <li><b>Nearest wins:</b> Die Version mit dem <b>kürzesten Weg</b> zur Wurzel gewinnt. Bei gleicher Tiefe gewinnt die <b>zuerst deklarierte</b>.</li>
+  <li><b>dependencyManagement:</b> legt Versionen zentral fest. Es hat Vorrang vor der Mediation bei transitiven Abhängigkeiten.</li>
+</ol>
+
+<h2>2. Die Reise einer Abhängigkeit bis zum Classpath</h2>
+<svg viewBox="0 0 720 300" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="b" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="10" y="20" width="130" height="62" rx="10" fill="#eee" stroke="#777"/><text x="75" y="46" text-anchor="middle" font-weight="700">1. Deklaration</text><text x="75" y="66" text-anchor="middle" font-size="12">pom.xml</text>
+  <line x1="140" y1="51" x2="168" y2="51" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="170" y="20" width="130" height="62" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="235" y="46" text-anchor="middle" font-weight="700">2. Graph</text><text x="235" y="66" text-anchor="middle" font-size="12">POMs rekursiv</text>
+  <line x1="300" y1="51" x2="328" y2="51" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="330" y="20" width="130" height="62" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="395" y="46" text-anchor="middle" font-weight="700">3. Management</text><text x="395" y="66" text-anchor="middle" font-size="12">BOM-Versionen</text>
+  <line x1="460" y1="51" x2="488" y2="51" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="490" y="20" width="220" height="62" rx="10" fill="#0a66c2"/><text x="600" y="46" text-anchor="middle" fill="#fff" font-weight="700">4. Mediation</text><text x="600" y="66" text-anchor="middle" fill="#fff" font-size="12">nearest wins, Exclusions</text>
+  <line x1="600" y1="82" x2="600" y2="128" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="470" y="130" width="240" height="62" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="590" y="156" text-anchor="middle" font-weight="700">5. Scope-Filter</text><text x="590" y="176" text-anchor="middle" font-size="12">test/provided nicht transitiv</text>
+  <line x1="470" y1="161" x2="398" y2="161" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="230" y="130" width="166" height="62" rx="10" fill="#e8f5e9" stroke="#2e7d32"/><text x="313" y="156" text-anchor="middle" font-weight="700">6. Download</text><text x="313" y="176" text-anchor="middle" font-size="12">~/.m2/repository</text>
+  <line x1="230" y1="161" x2="158" y2="161" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="10" y="130" width="146" height="62" rx="10" fill="#2e7d32"/><text x="83" y="156" text-anchor="middle" fill="#fff" font-weight="700">7. Classpath</text><text x="83" y="176" text-anchor="middle" fill="#fff" font-size="12">compile/test/run</text>
+</svg>
+<ol>
+  <li><b>Deklaration:</b> Sie schreiben <code>spring-boot-starter-web</code> ins POM, oft ohne Version.</li>
+  <li><b>Graph bauen:</b> Maven liest das POM jeder Abhängigkeit und deren Abhängigkeiten. So entsteht ein Baum mit Dutzenden Knoten.</li>
+  <li><b>Management anwenden:</b> Versionen aus <code>dependencyManagement</code> und importierten <b>BOMs</b> werden eingesetzt. Hier kommt z. B. die Jackson-Version aus dem Spring-Boot-BOM.</li>
+  <li><b>Mediation:</b> Bleiben Konflikte, gewinnt die nächste Version. <b>Exclusions</b> schneiden Äste ab.</li>
+  <li><b>Scope-Filter:</b> Abhängigkeiten mit Scope <code>test</code> oder <code>provided</code> gehen nicht weiter an Konsumenten.</li>
+  <li><b>Download:</b> Fehlende JARs kommen aus dem Remote-Repo in den lokalen Cache.</li>
+  <li><b>Classpath:</b> Je nach Scope landen sie auf dem Compile-, Test- oder Runtime-Classpath.</li>
+</ol>
+
+<h2>3. Beispiel: Baum lesen, Konflikt lösen, BOM nutzen</h2>
+<pre>&lt;dependencyManagement&gt;
+  &lt;dependencies&gt;
+    &lt;dependency&gt;                                  &lt;!-- BOM importieren --&gt;
+      &lt;groupId&gt;org.springframework.boot&lt;/groupId&gt;
+      &lt;artifactId&gt;spring-boot-dependencies&lt;/artifactId&gt;
+      &lt;version&gt;${spring-boot.version}&lt;/version&gt;
+      &lt;type&gt;pom&lt;/type&gt;
+      &lt;scope&gt;import&lt;/scope&gt;
+    &lt;/dependency&gt;
+  &lt;/dependencies&gt;
+&lt;/dependencyManagement&gt;
+&lt;dependencies&gt;
+  &lt;dependency&gt;
+    &lt;groupId&gt;org.springframework.boot&lt;/groupId&gt;
+    &lt;artifactId&gt;spring-boot-starter-web&lt;/artifactId&gt;   &lt;!-- keine Version nötig --&gt;
+  &lt;/dependency&gt;
+  &lt;dependency&gt;
+    &lt;groupId&gt;com.example&lt;/groupId&gt;
+    &lt;artifactId&gt;legacy-client&lt;/artifactId&gt;
+    &lt;version&gt;3.2.0&lt;/version&gt;
+    &lt;exclusions&gt;&lt;exclusion&gt;                    &lt;!-- alten Logger abschneiden --&gt;
+      &lt;groupId&gt;commons-logging&lt;/groupId&gt;
+      &lt;artifactId&gt;commons-logging&lt;/artifactId&gt;
+    &lt;/exclusion&gt;&lt;/exclusions&gt;
+  &lt;/dependency&gt;
+  &lt;dependency&gt;
+    &lt;groupId&gt;org.postgresql&lt;/groupId&gt;
+    &lt;artifactId&gt;postgresql&lt;/artifactId&gt;
+    &lt;scope&gt;runtime&lt;/scope&gt;                       &lt;!-- nur zur Laufzeit --&gt;
+  &lt;/dependency&gt;
+&lt;/dependencies&gt;</pre>
+<pre>$ mvn dependency:tree -Dverbose -Dincludes=com.fasterxml.jackson.core
+[INFO] com.example:shop:jar:1.0.0
+[INFO] +- org.springframework.boot:spring-boot-starter-web:jar:4.x:compile
+[INFO] |  \- org.springframework.boot:spring-boot-starter-json:jar:4.x:compile
+[INFO] |     \- com.fasterxml.jackson.core:jackson-databind:jar:2.x.2:compile
+[INFO] \- com.example:legacy-client:jar:3.2.0:compile
+[INFO]    \- (com.fasterxml.jackson.core:jackson-databind:jar:2.x.1:compile - version managed from 2.9.10; omitted for duplicate)
+
+$ mvn dependency:analyze
+[WARNING] Used undeclared dependencies found:
+[WARNING]    com.fasterxml.jackson.core:jackson-databind:jar:2.x.2:compile
+[WARNING] Unused declared dependencies found:
+[WARNING]    org.apache.commons:commons-lang3:jar:3.x:compile</pre>
+<p class="small">Erwartetes Ergebnis (laut Doku, nicht ausgeführt). Maven ist hier nicht installiert. Versionen als <code>x</code> abgekürzt; Format der Verbose-Zeilen sinngemäss.</p>
+<ol>
+  <li>Mit dem importierten BOM braucht <code>spring-boot-starter-web</code> keine Version. Alle Spring-Boot-Module passen zusammen.</li>
+  <li><code>-Dverbose</code> zeigt auch <b>verworfene</b> Knoten in Klammern. <code>-Dincludes</code> filtert auf ein Artefakt.</li>
+  <li>„version managed from 2.9.10“ heisst: <code>legacy-client</code> wollte 2.9.10, aber <code>dependencyManagement</code> (das BOM) hat die Version überstimmt.</li>
+  <li>Die <b>Exclusion</b> entfernt <code>commons-logging</code> nur auf diesem Ast.</li>
+  <li><code>scope runtime</code>: Der JDBC-Treiber ist zur Laufzeit da, aber der Code kann nicht direkt gegen ihn kompilieren.</li>
+  <li><code>dependency:analyze</code> findet „used undeclared“ (Sie nutzen etwas nur transitiv) und „unused declared“ (Ballast).</li>
+</ol>
+
+<h2>4. Details, die Interviewer fragen</h2>
+<ol>
+  <li><b>Scopes:</b>
+    <ul>
+      <li><b>compile</b> (Standard): überall verfügbar und transitiv. Beispiel: Spring.</li>
+      <li><b>provided</b>: zum Kompilieren und Testen, zur Laufzeit liefert sie die Umgebung. Nicht transitiv. Beispiel: Servlet-API im Application Server, Lombok.</li>
+      <li><b>runtime</b>: nicht zum Kompilieren, aber zur Laufzeit und im Test. Transitiv. Beispiel: JDBC-Treiber.</li>
+      <li><b>test</b>: nur für Testcode. Nicht transitiv. Beispiel: JUnit, Mockito.</li>
+      <li><b>system</b>: wie provided, aber aus einem lokalen Pfad. Veraltet, vermeiden.</li>
+      <li><b>import</b>: nur in <code>dependencyManagement</code> mit <code>type pom</code>. Importiert ein BOM.</li>
+    </ul></li>
+  <li><b>Transitivität:</b> Eine transitive Abhängigkeit im Scope compile bekommt den Scope der direkten Abhängigkeit. Ist die direkte <code>test</code>, wird die transitive auch <code>test</code>. Transitive <code>provided</code>- und <code>test</code>-Abhängigkeiten fallen immer weg.</li>
+  <li><b>Nearest wins genau:</b> kürzester Pfad zur Wurzel, bei Gleichstand die zuerst deklarierte. Die <b>höhere</b> Version gewinnt nicht automatisch. Darum kann ein Upgrade einer Bibliothek eine ältere transitive Version bringen.</li>
+  <li><b>Direkt deklarieren schlägt alles</b> ausser dependencyManagement: Eine Version direkt im POM hat Tiefe 1 und gewinnt die Mediation.</li>
+  <li><b>dependencyManagement vs dependencies:</b> <code>dependencyManagement</code> legt nur Versionen, Scopes und Exclusions fest. Es fügt keine Abhängigkeit hinzu. <code>dependencies</code> fügt sie hinzu.</li>
+  <li><b>BOM:</b> Ein <b>Bill of Materials</b> ist ein POM, das in <code>dependencyManagement</code> passende Versionen einer Bibliotheksfamilie festlegt. Beispiele: <code>spring-boot-dependencies</code>, <code>jackson-bom</code>, <code>junit-bom</code>, <code>testcontainers-bom</code>. Importiert man mehrere BOMs, gewinnt bei Überschneidung das zuerst importierte.</li>
+  <li><b>Parent vs BOM:</b> Ein Projekt hat nur <b>einen</b> Parent. BOMs kann man <b>mehrere</b> importieren. Darum sind BOMs flexibler.</li>
+  <li><b>optional:</b> <code>&lt;optional&gt;true&lt;/optional&gt;</code> heisst: Meine Konsumenten bekommen diese Abhängigkeit nicht automatisch. Sinnvoll für Bibliotheken mit Zusatz-Features.</li>
+  <li><b>Exclusions:</b> schneiden einen transitiven Ast ab. Typisch: alter Logger, doppelte Implementierungen, Konflikt-Bibliotheken.</li>
+  <li><b>Dependency Convergence:</b> Die Enforcer-Regel <code>dependencyConvergence</code> lässt den Build scheitern, wenn dasselbe Artefakt in verschiedenen Versionen im Baum vorkommt. So entscheidet man Konflikte bewusst.</li>
+  <li><b>Symptome eines Konflikts:</b> <code>NoSuchMethodError</code>, <code>ClassNotFoundException</code>, <code>NoClassDefFoundError</code>, <code>AbstractMethodError</code> zur Laufzeit. Kompiliert hat es, weil der Compile-Classpath anders war oder die Version erst zur Laufzeit wechselte.</li>
+  <li><b>CVE-Scanning:</b> Eine <b>CVE</b> ist eine öffentlich bekannte Sicherheitslücke mit Kennung. Werkzeuge vergleichen den ganzen Baum mit Datenbanken: OWASP Dependency-Check (Maven-Plugin), Trivy (auch Images), Snyk, GitHub Dependabot, Renovate für Updates. Transitive Lücken behebt man über <code>dependencyManagement</code>, nicht über Exclusions.</li>
+  <li><b>SBOM:</b> Eine <b>Software Bill of Materials</b> listet alle Komponenten eines Artefakts, z. B. im Format CycloneDX. Sie hilft bei der Frage: „Sind wir von der neuen Lücke betroffen?“</li>
+</ol>
+
+<h2>5. Vergleich</h2>
+<ul>
+  <li><b>Maven:</b> Nearest wins, Scopes, BOM über <code>import</code>.</li>
+  <li><b>Gradle:</b> standardmässig höchste Version. Konfigurationen statt Scopes: <code>implementation</code>, <code>api</code>, <code>compileOnly</code>, <code>runtimeOnly</code>, <code>testImplementation</code>. BOMs über <code>platform(...)</code>. Lock-Dateien möglich.</li>
+  <li><b>provided vs optional:</b> Umgebung liefert zur Laufzeit vs Konsument entscheidet selbst.</li>
+  <li><b>Exclusion vs dependencyManagement:</b> Ast entfernen vs Version erzwingen.</li>
+  <li><b>Parent-POM vs BOM:</b> einer, vererbt auch Plugins und Properties vs mehrere, nur Versionen.</li>
+  <li><b>Dependency-Check vs Trivy:</b> Java-Abhängigkeiten im Build vs Abhängigkeiten und OS-Pakete im fertigen Image.</li>
+</ul>
+
+<h2>6. In der Produktion</h2>
+<ol>
+  <li><b>NoSuchMethodError nach Upgrade:</b> Zwei Bibliotheken brauchen verschiedene Versionen von z. B. Jackson. Nearest wins wählte die alte. Lösung: <code>dependency:tree -Dverbose</code>, Version im <code>dependencyManagement</code> festlegen, Enforcer-Regel.</li>
+  <li><b>Kritische CVE in transitiver Abhängigkeit:</b> Lösung: Version in <code>dependencyManagement</code> anheben, testen, deployen. Langfristig: direkte Bibliothek aktualisieren.</li>
+  <li><b>Doppelte Logger-Bindings:</b> „Multiple SLF4J providers“. Lösung: Exclusion der zweiten Implementierung.</li>
+  <li><b>Fat JAR zu gross:</b> Test- oder Build-Bibliotheken mit falschem Scope landen im Artefakt. Lösung: Scopes korrigieren, <code>dependency:analyze</code>.</li>
+  <li><b>Build bricht ohne Code-Änderung:</b> Version-Ranges oder SNAPSHOTs ziehen neue Versionen. Lösung: feste Versionen, keine Ranges.</li>
+  <li><b>Supply-Chain-Risiko:</b> Abhängigkeiten aus unbekannten Repos. Lösung: ein internes Repository als Proxy (Nexus, Artifactory, Azure Artifacts), Checksums, Scanning in der Pipeline.</li>
+</ol>
+
+<h2>7. Diagnose: Werkzeuge und Befehle</h2>
+<ul>
+  <li><code>mvn dependency:tree</code>, mit <code>-Dverbose</code> (verworfene Knoten) und <code>-Dincludes=groupId:artifactId</code> (Filter).</li>
+  <li><code>mvn dependency:tree -DoutputType=json</code> (seit Plugin 3.7.0) für Werkzeuge.</li>
+  <li><code>mvn dependency:analyze</code>: benutzt-aber-nicht-deklariert und deklariert-aber-unbenutzt.</li>
+  <li><code>mvn help:effective-pom</code>: welche Version kommt aus welchem Management.</li>
+  <li><code>mvn versions:display-dependency-updates</code>: verfügbare Updates.</li>
+  <li><code>maven-enforcer-plugin</code> mit <code>dependencyConvergence</code>, <code>banDuplicatePomDependencyVersions</code>.</li>
+  <li><code>mvn org.owasp:dependency-check-maven:check</code>, <code>trivy fs .</code> oder <code>trivy image app:1.0</code>.</li>
+  <li>Gradle: <code>./gradlew dependencies</code>, <code>./gradlew dependencyInsight --dependency jackson-databind</code>.</li>
+  <li>Laufzeit: <code>java -verbose:class</code> zeigt, aus welchem JAR eine Klasse geladen wird.</li>
+</ul>
+
+<h2>8. Senior-Punkte</h2>
+<div class="senior">
+<ol>
+  <li><b>Versionen zentral, nie verstreut.</b> Ein BOM oder Parent für alle Services. Module deklarieren keine Versionen.</li>
+  <li><b>Konflikte bewusst entscheiden.</b> Enforcer mit <code>dependencyConvergence</code> macht stille Mediation sichtbar.</li>
+  <li><b>Was ich nutze, deklariere ich direkt.</b> Sich auf transitive Abhängigkeiten zu verlassen bricht beim nächsten Upgrade.</li>
+  <li><b>Scanning ist Teil der Pipeline,</b> mit klaren Regeln: Kritisch blockiert den Build, Ausnahmen werden dokumentiert und laufen ab.</li>
+  <li><b>Weniger Abhängigkeiten = weniger Risiko.</b> Jede Bibliothek bringt Lücken, Konflikte und Upgrade-Arbeit.</li>
+  <li><b>Automatische Updates</b> (Renovate, Dependabot) mit guter Testabdeckung. Kleine, häufige Upgrades sind billiger als ein grosser Sprung.</li>
+</ol>
+</div>
+
+<h2>9. Aus dem Projekt</h2>
+<p>„Bei NABODAT habe ich mit Maven und SonarQube gearbeitet. Für SonarQube-Funde bei MATCH habe ich Unterdrückungen begründet und dokumentiert, statt Regeln pauschal abzuschalten.“ <span class="small">(Prüfen und durch dein echtes Beispiel ersetzen. Eigene CVE-Scanning-Erfahrung ist im Profil nicht belegt; ehrlich sagen und den SonarQube-Umgang als nächstes Beispiel nennen.)</span></p>
+
+<h2>10. Fallen</h2>
+<div class="trap">
+<ul>
+  <li>„Maven nimmt die neueste Version.“ → <b>Falsch.</b> Maven nimmt die <b>nächste</b>. Gradle nimmt standardmässig die höchste.</li>
+  <li>„dependencyManagement fügt Abhängigkeiten hinzu.“ → <b>Falsch.</b> Es legt nur Versionen fest.</li>
+  <li>„test-Abhängigkeiten meiner Bibliothek kommen bei Konsumenten an.“ → <b>Falsch.</b> test und provided sind nicht transitiv.</li>
+  <li>„Eine CVE in einer transitiven Abhängigkeit kann ich nicht beheben.“ → <b>Falsch.</b> Version im dependencyManagement anheben.</li>
+  <li>„Exclusion ist die Lösung für jeden Konflikt.“ → Nur wenn die Klasse wirklich nicht gebraucht wird. Sonst Version festlegen.</li>
+  <li>„Kompiliert, also passen die Versionen.“ → <b>Falsch.</b> Konflikte zeigen sich oft erst zur Laufzeit als NoSuchMethodError.</li>
+</ul>
+</div>
+
+<h2>11. Fragen</h2>
+<details><summary>Was ist eine transitive Abhängigkeit?</summary><p>Eine Abhängigkeit, die über eine andere Bibliothek mitkommt, ohne dass Sie sie selbst deklarieren.</p></details>
+<details><summary>Welche Scopes gibt es in Maven?</summary><p>compile, provided, runtime, test, system und import.</p></details>
+<details><summary>Was ist der Unterschied zwischen provided und runtime?</summary><p>provided: zum Kompilieren da, zur Laufzeit liefert die Umgebung. runtime: nicht zum Kompilieren, aber zur Laufzeit da.</p></details>
+<details><summary>Welche Scopes sind nicht transitiv?</summary><p>provided und test.</p></details>
+<details><summary>Wie löst Maven Versionskonflikte?</summary><p>Nearest wins: die Version mit dem kürzesten Pfad. Bei gleicher Tiefe die zuerst deklarierte.</p></details>
+<details><summary>Gewinnt in Maven die höhere Version?</summary><p>Nein, nur die nähere. Darum kann eine ältere Version gewinnen.</p></details>
+<details><summary>Wie erzwingen Sie eine Version?</summary><p>Im dependencyManagement festlegen oder direkt deklarieren. Management hat Vorrang bei transitiven Abhängigkeiten.</p></details>
+<details><summary>Was ist der Unterschied zwischen dependencyManagement und dependencies?</summary><p>dependencyManagement legt nur Versionen und Scopes fest. dependencies fügt Abhängigkeiten tatsächlich hinzu.</p></details>
+<details><summary>Was ist ein BOM?</summary><p>Ein POM mit passenden Versionen einer Bibliotheksfamilie im dependencyManagement. Man importiert es mit type pom und scope import.</p></details>
+<details><summary>Warum BOM statt Parent?</summary><p>Man hat nur einen Parent, kann aber mehrere BOMs importieren.</p></details>
+<details><summary>Was passiert, wenn zwei BOMs dieselbe Bibliothek verwalten?</summary><p>Das zuerst importierte BOM gewinnt. Die Reihenfolge ist also wichtig.</p></details>
+<details><summary>Was macht eine Exclusion?</summary><p>Sie entfernt einen transitiven Ast unter einer bestimmten Abhängigkeit.</p></details>
+<details><summary>Was bedeutet optional true?</summary><p>Konsumenten meiner Bibliothek bekommen diese Abhängigkeit nicht automatisch. Sie fügen sie bei Bedarf selbst hinzu.</p></details>
+<details><summary>Wie finden Sie heraus, woher eine Version kommt?</summary><p>mvn dependency:tree -Dverbose -Dincludes=gruppe:artefakt. In Gradle dependencyInsight.</p></details>
+<details><summary>Was zeigt dependency:analyze?</summary><p>Genutzte, aber nicht deklarierte Abhängigkeiten und deklarierte, aber ungenutzte.</p></details>
+<details><summary>Welche Fehler deuten auf einen Versionskonflikt?</summary><p>NoSuchMethodError, NoClassDefFoundError, ClassNotFoundException oder AbstractMethodError zur Laufzeit.</p></details>
+<details><summary>Was macht die Enforcer-Regel dependencyConvergence?</summary><p>Sie lässt den Build scheitern, wenn ein Artefakt in mehreren Versionen im Baum vorkommt.</p></details>
+<details><summary>Wie scannen Sie Abhängigkeiten auf Sicherheitslücken?</summary><p>OWASP Dependency-Check im Build, Trivy für Images, Snyk oder Dependabot. Kritische Funde blockieren die Pipeline.</p></details>
+<details><summary>Was ist eine SBOM?</summary><p>Eine Liste aller Komponenten eines Artefakts, z. B. als CycloneDX. Sie beantwortet schnell, ob man von einer neuen Lücke betroffen ist.</p></details>
+<details><summary>Wie unterscheiden sich api und implementation in Gradle?</summary><p>api gibt die Abhängigkeit an Konsumenten weiter. implementation hält sie intern. Das reduziert Kopplung und Neukompilierung.</p></details>
+<details><summary>Szenario: Nach einem Library-Upgrade wirft Produktion NoSuchMethodError in Jackson. Wie gehen Sie vor?</summary><p>dependency:tree -Dverbose zeigt, welche Jackson-Version gewann. Ich setze die passende Version über das BOM im dependencyManagement und sichere es mit dependencyConvergence ab.</p></details>
+<details><summary>Szenario: Der Scanner meldet eine kritische CVE in einer transitiven Abhängigkeit. Was tun Sie?</summary><p>Prüfen, ob der betroffene Code genutzt wird. Version im dependencyManagement anheben, testen, deployen. Dann die direkte Bibliothek aktualisieren und die Übersteuerung entfernen.</p></details>
+<details><summary>Szenario: Das Fat JAR enthält JUnit und Mockito. Was ist falsch?</summary><p>Die Test-Bibliotheken haben nicht den Scope test. Ich korrigiere den Scope und prüfe mit dependency:tree.</p></details>
+
+</body>
+</html>

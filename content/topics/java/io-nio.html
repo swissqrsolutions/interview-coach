@@ -1,0 +1,216 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>IO und NIO</title>
+<style>
+  body { font: 17px/1.55 -apple-system, system-ui, sans-serif; max-width: 760px; margin: 0 auto; padding: 16px; color: #1d1d1f; }
+  h1 { font-size: 28px; margin: 8px 0 4px; }
+  h2 { font-size: 21px; margin: 32px 0 8px; padding-top: 12px; border-top: 2px solid #e5e5ea; }
+  .kern { background: #eef6ff; border-left: 4px solid #0a66c2; padding: 10px 14px; border-radius: 6px; }
+  .senior { background: #f0faf0; border-left: 4px solid #2e7d32; padding: 10px 14px; border-radius: 6px; }
+  .trap { background: #fff4f2; border-left: 4px solid #c62828; padding: 10px 14px; border-radius: 6px; }
+  code { background: #f2f2f7; padding: 1px 5px; border-radius: 4px; font-size: 15px; }
+  pre { background: #1e1e1e; color: #e6e6e6; padding: 12px; border-radius: 8px; overflow-x: auto; font-size: 13.5px; line-height: 1.45; }
+  svg { width: 100%; height: auto; display: block; margin: 10px 0; }
+  ol li, ul li { margin: 4px 0; }
+  details { border: 1px solid #e5e5ea; border-radius: 8px; padding: 8px 12px; margin: 6px 0; }
+  summary { font-weight: 600; cursor: pointer; }
+  details p { margin: 6px 0 2px; }
+  .small { color: #6e6e73; font-size: 14px; }
+</style>
+</head>
+<body>
+
+<h1>IO vs NIO: Streams, Buffers, Channels, Files API</h1>
+<p class="small">Java · Tier 3 · Quellen: Java SE 25 API-Doku (<code>java.io</code>, <code>java.nio</code> <code>ByteBuffer</code>, <code>java.nio.channels</code> <code>FileChannel</code>/<code>Selector</code>, <code>java.nio.file.Files</code>/<code>Path</code>), JEP 400 (UTF-8 by Default, Java 18), JEP 444 (Virtual Threads)</p>
+
+<div class="kern">
+<b>Kern:</b> <b>java.io</b> ist die klassische, <b>stream-orientierte</b> und <b>blockierende</b> Ein-/Ausgabe: Man liest Byte für Byte oder Zeichen für Zeichen aus einem <code>InputStream</code>. <b>java.nio</b> ist <b>buffer-orientiert</b>: Daten gehen über <b>Channels</b> in <b>Buffers</b>, und Netzwerk-Channels können <b>nicht-blockierend</b> mit einem <b>Selector</b> arbeiten. <b>NIO.2</b> (<code>java.nio.file</code>) ist die moderne API für Dateien: <code>Path</code> und <code>Files</code>.
+</div>
+
+<h2>1. Wo sitzen IO und NIO?</h2>
+<svg viewBox="0 0 720 300" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="a" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="10" y="20" width="220" height="90" rx="8" fill="#fff" stroke="#555"/><text x="120" y="44" text-anchor="middle" font-weight="700">java.io</text><text x="120" y="66" text-anchor="middle" font-size="12">InputStream / Reader</text><text x="120" y="84" text-anchor="middle" font-size="12">Decorator: Buffered…</text><text x="120" y="102" text-anchor="middle" font-size="12">blockierend</text>
+  <rect x="250" y="20" width="220" height="90" rx="8" fill="#dbe9fb" stroke="#0a66c2"/><text x="360" y="44" text-anchor="middle" font-weight="700">java.nio</text><text x="360" y="66" text-anchor="middle" font-size="12">Channel + ByteBuffer</text><text x="360" y="84" text-anchor="middle" font-size="12">Selector (nicht-blockierend)</text><text x="360" y="102" text-anchor="middle" font-size="12">Direct Buffer, mmap</text>
+  <rect x="490" y="20" width="220" height="90" rx="8" fill="#e8f5e9" stroke="#2e7d32"/><text x="600" y="44" text-anchor="middle" font-weight="700">java.nio.file (NIO.2)</text><text x="600" y="66" text-anchor="middle" font-size="12">Path, Files</text><text x="600" y="84" text-anchor="middle" font-size="12">walk, lines, copy</text><text x="600" y="102" text-anchor="middle" font-size="12">klare Exceptions</text>
+  <line x1="120" y1="110" x2="300" y2="168" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <line x1="360" y1="110" x2="360" y2="168" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <line x1="600" y1="110" x2="420" y2="168" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="190" y="170" width="340" height="50" rx="8" fill="#0a66c2"/><text x="360" y="192" text-anchor="middle" fill="#fff" font-weight="700">JVM native Code</text><text x="360" y="210" text-anchor="middle" fill="#fff" font-size="12">System Calls: read, write, epoll, sendfile</text>
+  <line x1="360" y1="220" x2="360" y2="248" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="190" y="250" width="340" height="40" rx="8" fill="#eee" stroke="#777"/><text x="360" y="275" text-anchor="middle">Betriebssystem: Dateisystem, Sockets</text>
+</svg>
+<ol>
+  <li><b>java.io:</b> Streams für Bytes (<code>InputStream</code>/<code>OutputStream</code>) und Reader/Writer für Zeichen. Man stapelt sie als <b>Decorator</b>, z. B. <code>new BufferedReader(new InputStreamReader(in, UTF_8))</code>.</li>
+  <li><b>java.nio:</b> Ein <b>Channel</b> ist eine Verbindung zu Datei oder Socket. Ein <b>ByteBuffer</b> ist ein Speicherblock mit Positionszeigern. Ein <b>Selector</b> überwacht viele Channels mit einem Thread.</li>
+  <li><b>NIO.2:</b> <code>Path</code> ersetzt <code>File</code>. <code>Files</code> bietet fertige Methoden: lesen, schreiben, kopieren, durchsuchen.</li>
+  <li><b>Native Ebene:</b> Am Ende werden alle zu System Calls. NIO nutzt dabei zusätzlich Mechanismen wie <code>epoll</code> (Linux) oder Zero-Copy.</li>
+</ol>
+
+<h2>2. Die Reise einer Netzwerk-Anfrage durch einen Selector (die Geschichte zum Merken)</h2>
+<svg viewBox="0 0 720 280" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="b" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="10" y="30" width="140" height="50" rx="8" fill="#fff" stroke="#555"/><text x="80" y="60" text-anchor="middle">Client A</text>
+  <rect x="10" y="100" width="140" height="50" rx="8" fill="#fff" stroke="#555"/><text x="80" y="130" text-anchor="middle">Client B</text>
+  <rect x="10" y="170" width="140" height="50" rx="8" fill="#fff" stroke="#555"/><text x="80" y="200" text-anchor="middle">… 10 000 Clients</text>
+  <line x1="150" y1="55" x2="228" y2="110" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <line x1="150" y1="125" x2="228" y2="125" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <line x1="150" y1="195" x2="228" y2="140" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="230" y="90" width="160" height="70" rx="10" fill="#0a66c2"/><text x="310" y="118" text-anchor="middle" fill="#fff" font-weight="700">Selector</text><text x="310" y="140" text-anchor="middle" fill="#fff" font-size="12">select(): wer ist bereit?</text>
+  <line x1="390" y1="125" x2="438" y2="125" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="440" y="90" width="130" height="70" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="505" y="118" text-anchor="middle" font-weight="700">1 Event-Loop-</text><text x="505" y="138" text-anchor="middle" font-weight="700">Thread</text>
+  <line x1="570" y1="125" x2="608" y2="125" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="610" y="90" width="100" height="70" rx="10" fill="#e8f5e9" stroke="#2e7d32"/><text x="660" y="118" text-anchor="middle" font-weight="700">Buffer</text><text x="660" y="138" text-anchor="middle" font-size="12">read/write</text>
+  <text x="360" y="250" text-anchor="middle" font-size="12">java.io dagegen: ein blockierter Thread pro Verbindung</text>
+</svg>
+<ol>
+  <li><b>Registrieren:</b> Der Server setzt jeden <code>SocketChannel</code> auf <code>configureBlocking(false)</code> und registriert ihn am <b>Selector</b>, z. B. für <code>OP_READ</code>.</li>
+  <li><b>Warten:</b> Ein Thread ruft <code>selector.select()</code>. Das Betriebssystem meldet, welche Verbindungen Daten haben. Auf Linux nutzt die JVM dafür <code>epoll</code>.</li>
+  <li><b>Verarbeiten:</b> Der Thread liest nur aus bereiten Channels in einen <b>ByteBuffer</b>. Er blockiert nie auf einer langsamen Verbindung.</li>
+  <li><b>Antworten:</b> Er schreibt die Antwort aus einem Buffer zurück. Ist der Socket voll, registriert er <code>OP_WRITE</code> und macht später weiter.</li>
+  <li><b>Ergebnis:</b> Wenige Threads bedienen tausende Verbindungen. Das ist die Basis von <b>Netty</b>, und damit von Spring WebFlux, gRPC-Java und Kafka-Clients.</li>
+</ol>
+
+<h2>3. Beispiel: Puffern, Kopieren, ByteBuffer, Zeichensätze, Files</h2>
+<pre>20 MB Zufallsdaten nach data.bin schreiben                                  // 1)
+5 MB per read() lesen: FileInputStream vs BufferedInputStream               // 2)
+Files.copy vs FileChannel.transferTo, dann Files.mismatch                   // 3)
+ByteBuffer.allocate(8): put×3, flip, get, compact; allocateDirect           // 4)
+Files.writeString("Zürich\nBern\nGenève", UTF_8); lesen als UTF-8 und ISO-8859-1;
+Latin-1-Datei als UTF-8 lesen                                               // 5)
+try (Stream&lt;String&gt; lines = Files.lines(txt)) { … }                         // 6)
+try (Stream&lt;Path&gt; s = Files.walk(dir)) { … }                                // 7)
+Files.readString(fehlt) vs new File(fehlt).delete()                         // 8)
+Path.normalize / relativize                                                 // 9)</pre>
+<pre>1) file size MB: 20
+2) read() 5 MB byte by byte: unbuffered 8020 ms, BufferedInputStream 51 ms
+3) copy 20 MB: Files.copy 50 ms, FileChannel.transferTo 20 ms, equal=true
+4) new:        java.nio.HeapByteBuffer[pos=0 lim=8 cap=8]
+4) after put3: java.nio.HeapByteBuffer[pos=3 lim=8 cap=8]
+4) after flip: java.nio.HeapByteBuffer[pos=0 lim=3 cap=8]
+4) after get1: java.nio.HeapByteBuffer[pos=1 lim=3 cap=8] remaining=2
+4) compact:    java.nio.HeapByteBuffer[pos=2 lim=8 cap=8]
+4) direct=true, heap=false
+5) read as UTF-8:      [Zürich, Bern, Genève]
+5) read as ISO-8859-1: [ZÃ¼rich, Bern, GenÃ¨ve]
+5) Latin-1 file read as UTF-8: MalformedInputException
+6) Files.lines filter: [Bern]
+7) Files.walk *.bin: [c1.bin, c2.bin, data.bin]
+8) NIO error: NoSuchFileException fehlt.txt
+8) old IO File.delete(): false (no reason given)
+9) normalize: \data\out\report.csv, relativize: out\x.csv</pre>
+<p class="small">Echte Ausgabe, Oracle JDK 17.0.3 auf Windows, gestartet mit <code>-Dfile.encoding=UTF-8</code>. Zeiten ändern sich pro Lauf und hängen von Platte und OS-Cache ab. Auf Linux zeigt 9) <code>/</code> statt <code>\</code>.</p>
+<ol>
+  <li>Eine Testdatei mit 20 MB.</li>
+  <li>Ungepuffertes <code>read()</code> macht pro Byte einen System Call: 8 Sekunden für 5 MB. Mit <code>BufferedInputStream</code> (8 KB Puffer) sind es 51 ms, also ca. 150-mal schneller.</li>
+  <li><code>transferTo</code> kann im Kernel kopieren (<b>Zero-Copy</b>, z. B. <code>sendfile</code>), ohne Daten in den Java-Heap zu holen.</li>
+  <li><b>ByteBuffer-Zeiger:</b> <code>position</code> = nächste Stelle, <code>limit</code> = Ende der gültigen Daten, <code>capacity</code> = Grösse. <code>flip()</code> wechselt von Schreiben zu Lesen. <code>compact()</code> schiebt ungelesene Daten nach vorne.</li>
+  <li>Falscher Zeichensatz: UTF-8 als ISO-8859-1 gelesen ergibt „ZÃ¼rich“ (<b>Mojibake</b>). Latin-1 als UTF-8 gelesen wirft bei <code>Files.readAllLines</code> eine <code>MalformedInputException</code>.</li>
+  <li><code>Files.lines</code> liest lazy. Der Stream hält die Datei offen, darum try-with-resources.</li>
+  <li><code>Files.walk</code> durchsucht Verzeichnisse rekursiv. Auch er muss geschlossen werden.</li>
+  <li>NIO.2 wirft eine klare <code>NoSuchFileException</code>. Das alte <code>File.delete()</code> liefert nur <code>false</code> ohne Grund.</li>
+  <li><code>Path</code> rechnet mit Pfaden, ohne Strings zu basteln.</li>
+</ol>
+
+<h2>4. Details, die Interviewer fragen</h2>
+<ol>
+  <li><b>Byte- vs Zeichen-Streams:</b> <code>InputStream</code>/<code>OutputStream</code> für Bytes. <code>Reader</code>/<code>Writer</code> für Text; sie brauchen einen <b>Charset</b>. <code>InputStreamReader</code> ist die Brücke.</li>
+  <li><b>Decorator-Muster:</b> <code>BufferedInputStream</code>, <code>DataInputStream</code>, <code>GZIPInputStream</code> umhüllen einen anderen Stream und fügen Funktion hinzu. Schliessen des äusseren schliesst den inneren.</li>
+  <li><b>Blockierend:</b> <code>read()</code> wartet, bis Daten da sind. Klassisch heisst das: ein Thread pro Verbindung.</li>
+  <li><b>ByteBuffer:</b> <code>allocate</code> (im Heap) oder <code>allocateDirect</code> (ausserhalb des Heaps). Direct Buffers spart das Kopieren bei I/O, sind aber teurer anzulegen. Grenze: <code>-XX:MaxDirectMemorySize</code>.</li>
+  <li><b>Channels:</b> <code>FileChannel</code> (Dateien, <code>transferTo</code>, <code>map</code> für Memory-Mapped Files, <code>lock</code>), <code>SocketChannel</code>, <code>ServerSocketChannel</code>, <code>DatagramChannel</code>. Channels sind bidirektional möglich, Streams nur eine Richtung.</li>
+  <li><b>Selector:</b> nur für Netzwerk-Channels. <code>FileChannel</code> ist nicht selektierbar.</li>
+  <li><b>Memory-Mapped Files:</b> <code>FileChannel.map</code> blendet eine Datei in den Speicher ein. Sehr schnell für grosse Dateien. Der Speicher wird erst freigegeben, wenn der GC den Buffer einsammelt.</li>
+  <li><b>NIO.2-Highlights:</b> <code>Files.readString</code>/<code>writeString</code> (Java 11), <code>Files.lines</code>, <code>Files.walk</code>, <code>Files.copy</code>/<code>move</code> mit Optionen wie <code>ATOMIC_MOVE</code>, <code>Files.mismatch</code> (Java 12), <code>WatchService</code> für Änderungen, Datei-Attribute und Rechte.</li>
+  <li><b>Standard-Zeichensatz:</b> <code>Files</code>-Methoden nutzen ohne Angabe immer UTF-8. Ältere APIs wie <code>FileReader</code> und <code>new String(bytes)</code> nutzten vor Java 18 den Plattform-Zeichensatz. Seit Java 18 ist der Standard überall UTF-8 (JEP 400).</li>
+  <li><b>Atomares Schreiben:</b> In eine temporäre Datei schreiben, dann <code>Files.move(tmp, ziel, ATOMIC_MOVE)</code>. Leser sehen nie eine halbe Datei.</li>
+  <li><b>Virtual Threads (Java 21):</b> Blockierendes <code>java.io</code> mit Virtual Threads skaliert ähnlich wie NIO, mit einfachem Code. Die JVM parkt den Virtual Thread statt den OS-Thread zu blockieren.</li>
+</ol>
+
+<h2>5. Vergleich</h2>
+<ul>
+  <li><b>java.io:</b> einfach, blockierend, stream-orientiert. Gut für Dateien und wenige Verbindungen.</li>
+  <li><b>java.nio (Channels, Buffers, Selector):</b> buffer-orientiert, nicht-blockierend im Netzwerk. Komplex; meist nutzt man es über Netty.</li>
+  <li><b>NIO.2 (Path, Files):</b> der heutige Standard für Dateien. Klare Exceptions, Streams, Attribute.</li>
+  <li><b>AsynchronousFileChannel / AsynchronousSocketChannel:</b> Callback- oder Future-basiert. Selten direkt genutzt.</li>
+  <li><b>Virtual Threads + java.io:</b> einfacher blockierender Code mit hoher Parallelität. Oft die einfachste Wahl ab Java 21.</li>
+  <li><b>File vs Path:</b> <code>File</code> ist alt, mit schwachen Fehlern. <code>Path</code> ist modern. Umwandeln mit <code>file.toPath()</code>.</li>
+</ul>
+
+<h2>6. In der Produktion</h2>
+<ol>
+  <li><b>Too many open files:</b> Streams, <code>Files.lines</code> oder <code>Files.walk</code> ohne try-with-resources. Lösung: immer try-with-resources; <code>ulimit -n</code> und offene Handles prüfen.</li>
+  <li><b>Kaputte Umlaute:</b> Text ohne Zeichensatz gelesen, auf dem Server ist der Standard ein anderer als lokal. Lösung: Charset immer explizit, ab Java 18 ist UTF-8 Standard.</li>
+  <li><b>Langsamer Import:</b> Ungepuffertes Lesen oder Schreiben. Lösung: Buffered-Klassen oder <code>Files.newBufferedReader</code>.</li>
+  <li><b>OutOfMemoryError beim Einlesen:</b> <code>Files.readAllBytes</code> auf einer GB-Datei. Lösung: streamen (<code>Files.lines</code>, <code>InputStream</code> in Blöcken).</li>
+  <li><b>OOM: Direct buffer memory:</b> Netty oder eigene Direct Buffers über dem Limit. Lösung: <code>MaxDirectMemorySize</code> passend setzen, Leaks suchen, Container-Limit inklusive Off-Heap planen.</li>
+  <li><b>Halbe Dateien beim Konsumenten:</b> Ein anderer Prozess liest, während man schreibt. Lösung: temporäre Datei plus atomares Move.</li>
+  <li><b>Event-Loop blockiert:</b> In Netty oder WebFlux läuft ein blockierender Aufruf (JDBC, Datei) im Event-Loop-Thread. Alle Verbindungen stehen. Lösung: blockierende Arbeit auf einen eigenen Pool.</li>
+</ol>
+
+<h2>7. Diagnose: Werkzeuge und Befehle</h2>
+<ul>
+  <li><code>lsof -p &lt;pid&gt;</code> oder <code>ls /proc/&lt;pid&gt;/fd | wc -l</code>: Anzahl offener Dateien und Sockets.</li>
+  <li><b>JFR-Events</b> <code>jdk.FileRead</code>, <code>jdk.FileWrite</code>, <code>jdk.SocketRead</code>, <code>jdk.SocketWrite</code>: langsame I/O mit Stack Trace.</li>
+  <li><code>jcmd &lt;pid&gt; VM.native_memory summary</code> (mit <code>-XX:NativeMemoryTracking=summary</code>): Direct-Buffer-Verbrauch.</li>
+  <li><b>JMX/Micrometer:</b> <code>BufferPoolMXBean</code> zeigt <code>direct</code>- und <code>mapped</code>-Pools.</li>
+  <li><b>Thread Dump:</b> viele Threads in <code>socketRead0</code> zeigen blockierende Netzwerk-I/O ohne Timeout.</li>
+  <li><code>java -XshowSettings:properties -version</code>: zeigt <code>file.encoding</code> und andere Standard-Einstellungen.</li>
+</ul>
+
+<h2>8. Senior-Punkte</h2>
+<div class="senior">
+<ol>
+  <li><b>Für Dateien NIO.2,</b> für Netzwerk ein Framework (Netty, HTTP-Client). Selbst geschriebene Selector-Loops lohnen sich selten.</li>
+  <li><b>Charset immer explizit.</b> Das spart die häufigsten Fehler beim Wechsel zwischen Windows, Linux und Container.</li>
+  <li><b>Streamen statt laden.</b> Grosse Dateien nie ganz in den Speicher.</li>
+  <li><b>Jede Ressource hat einen Besitzer,</b> der sie schliesst: try-with-resources.</li>
+  <li><b>Virtual Threads ändern die Abwägung.</b> Blockierender Code skaliert wieder; nicht-blockierend lohnt sich vor allem bei Streaming und Backpressure.</li>
+  <li><b>Off-Heap-Speicher planen.</b> Direct Buffers und Mapped Files zählen zum Container-Limit, nicht zum Heap.</li>
+</ol>
+</div>
+
+<h2>9. Aus dem Projekt</h2>
+<p>„Bei MATCH entpackten die ETL-Pipelines passwortgeschützte ZIP-Archive und parsten Order- und Trade-XML; das passiert in PySpark, das gleiche Prinzip gilt in Java: streamen statt alles laden, Zeichensatz explizit.“ <span class="small">(Prüfen und durch dein echtes Beispiel ersetzen. Ein Java-IO/NIO-Fall ist im Profil nicht belegt.)</span></p>
+
+<h2>10. Fallen</h2>
+<div class="trap">
+<ul>
+  <li>„NIO ist immer schneller als IO.“ → <b>Falsch.</b> Für einfaches Datei-Lesen sind gepuffertes IO und NIO ähnlich. Der Vorteil liegt bei vielen Verbindungen und Zero-Copy.</li>
+  <li>„FileChannel ist nicht-blockierend.“ → <b>Falsch.</b> Nur Netzwerk-Channels sind selektierbar.</li>
+  <li>„Nach put() kann ich sofort aus dem Buffer lesen.“ → <b>Falsch.</b> Erst <code>flip()</code>.</li>
+  <li>„Files.lines muss man nicht schliessen.“ → <b>Falsch.</b> Der Stream hält die Datei offen.</li>
+  <li>„Ohne Charset-Angabe ist es immer UTF-8.“ → <b>Erst seit Java 18</b> für alle APIs. Vorher galt bei FileReader und Co. der Plattform-Standard.</li>
+  <li>„Direct Buffers zählen zum Heap.“ → <b>Falsch.</b> Sie liegen ausserhalb, mit eigenem Limit.</li>
+</ul>
+</div>
+
+<h2>11. Fragen</h2>
+<details><summary>Was ist der Hauptunterschied zwischen IO und NIO?</summary><p>IO ist stream-orientiert und blockierend. NIO ist buffer-orientiert, nutzt Channels und kann im Netzwerk mit einem Selector nicht-blockierend arbeiten.</p></details>
+<details><summary>Byte-Stream vs Character-Stream?</summary><p>InputStream/OutputStream für Bytes. Reader/Writer für Text mit Zeichensatz. InputStreamReader verbindet beide.</p></details>
+<details><summary>Warum BufferedInputStream?</summary><p>Ohne Puffer macht jedes read() einen System Call. Der Puffer liest grosse Blöcke und spart so viel Zeit.</p></details>
+<details><summary>Was ist ein Channel?</summary><p>Eine Verbindung zu einer Datei oder einem Socket, über die man Buffers liest und schreibt.</p></details>
+<details><summary>Was sind position, limit und capacity?</summary><p>position: nächste Stelle. limit: Ende der gültigen Daten. capacity: Grösse des Buffers.</p></details>
+<details><summary>Was macht flip()?</summary><p>Es setzt limit auf die aktuelle position und position auf 0. So wechselt man vom Schreiben zum Lesen.</p></details>
+<details><summary>Heap Buffer vs Direct Buffer?</summary><p>Heap Buffer liegt im Java-Heap. Direct Buffer liegt ausserhalb und spart Kopien bei I/O, ist aber teurer anzulegen und hat ein eigenes Limit.</p></details>
+<details><summary>Was ist ein Selector?</summary><p>Ein Objekt, das viele nicht-blockierende Netzwerk-Channels überwacht. Ein Thread bedient so viele Verbindungen.</p></details>
+<details><summary>Kann man FileChannel mit einem Selector nutzen?</summary><p>Nein. FileChannel ist nicht selektierbar und immer blockierend.</p></details>
+<details><summary>Was ist Zero-Copy?</summary><p>Daten gehen im Kernel direkt von Datei zu Socket oder Datei, ohne in den Java-Heap kopiert zu werden. In Java: FileChannel.transferTo.</p></details>
+<details><summary>Was ist ein Memory-Mapped File?</summary><p>Eine Datei, die per FileChannel.map in den Speicher eingeblendet ist. Sehr schneller Zugriff, Freigabe erst durch den GC.</p></details>
+<details><summary>Warum Path statt File?</summary><p>Path und Files geben klare Exceptions, unterstützen Symlinks, Attribute und Streams. File liefert oft nur false ohne Grund.</p></details>
+<details><summary>Wie lesen Sie eine grosse Textdatei speicherschonend?</summary><p>Mit Files.lines oder Files.newBufferedReader im try-with-resources, Zeile für Zeile.</p></details>
+<details><summary>Warum muss Files.lines geschlossen werden?</summary><p>Der Stream hält einen offenen Datei-Handle. Ohne Schliessen gibt es ein Leak bis „Too many open files“.</p></details>
+<details><summary>Welcher Zeichensatz gilt ohne Angabe?</summary><p>Files-Methoden: immer UTF-8. Andere APIs: vor Java 18 der Plattform-Standard, seit Java 18 UTF-8 (JEP 400).</p></details>
+<details><summary>Wie schreiben Sie eine Datei atomar?</summary><p>In eine temporäre Datei im gleichen Verzeichnis schreiben, dann Files.move mit ATOMIC_MOVE.</p></details>
+<details><summary>Welche Frameworks nutzen NIO?</summary><p>Netty, und damit Spring WebFlux, gRPC-Java, viele HTTP-Clients. Auch Tomcat nutzt NIO-Connectoren.</p></details>
+<details><summary>Brauche ich mit Virtual Threads noch NIO?</summary><p>Für viele Fälle nicht direkt. Blockierender Code skaliert mit Virtual Threads. NIO bleibt die Basis darunter und für Streaming mit Backpressure.</p></details>
+<details><summary>Was beobachtet ein WatchService?</summary><p>Änderungen in einem Verzeichnis: Erstellen, Ändern, Löschen von Dateien.</p></details>
+<details><summary>Szenario: Ein Service stirbt nach Tagen mit „Too many open files“. Wie gehen Sie vor?</summary><p>Mit lsof die offenen Handles zählen und nach Typ ordnen. Code nach Streams, Files.lines, Files.walk ohne try-with-resources durchsuchen und schliessen.</p></details>
+<details><summary>Szenario: Lokal sind Umlaute korrekt, im Container kaputt. Was ist los?</summary><p>Text wird ohne Charset gelesen oder geschrieben, und der Container hat einen anderen Standard. Lösung: Charset explizit, ab Java 18 ist UTF-8 Standard.</p></details>
+<details><summary>Szenario: Ein Pod wird OOM-gekillt, obwohl der Heap nur halb voll ist. Woran denken Sie?</summary><p>An Off-Heap-Speicher: Direct Buffers (Netty), Mapped Files, Metaspace, Thread-Stacks. Mit Native Memory Tracking und BufferPoolMXBean prüfen, MaxDirectMemorySize und Container-Limit anpassen.</p></details>
+
+</body>
+</html>

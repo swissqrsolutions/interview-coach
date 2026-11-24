@@ -2,7 +2,7 @@
 
 Generated from content/syllabus.json. Priority 1 = asked in almost every interview. Mark: **Projekt** = shown in CV/Gmail · **— kein Projekt** = no project experience · **? prüfen** = unclear, you decide.
 
-415 topics · P1 243 · P2 132 · P3 40 · written 267
+415 topics · P1 243 · P2 132 · P3 40 · written 290
 
 ## Java 21 (core + advanced) (40)
 Sources: Java SE 21/25 docs (docs.oracle.com) · JVM Specification · OpenJDK source + JEPs (openjdk.org) · Oracle Java SE 21 Developer exam 1Z0-830 topics
@@ -45,9 +45,9 @@ Sources: Java SE 21/25 docs (docs.oracle.com) · JVM Specification · OpenJDK so
 | 2 | Optional | Projekt | ✓ |
 | 2 | static, final, finally, finalize | Projekt | ✓ |
 | 2 | Autoboxing und Integer-Cache | Projekt | ✓ |
-| 2 | Reflection und Annotations: Funktion, Kosten, Nutzung in Frameworks | ? prüfen |  |
-| 3 | Serialisierung: Serializable, Risiken, Alternativen (JSON) | ? prüfen |  |
-| 3 | IO vs NIO: Streams, Buffers, Channels, Files API | ? prüfen |  |
+| 2 | Reflection und Annotations | ? prüfen | ✓ |
+| 3 | Java-Serialisierung | ? prüfen | ✓ |
+| 3 | IO und NIO | ? prüfen | ✓ |
 | 3 | Java-Module (JPMS) | — kein Projekt |  |
 
 ## Spring Boot + Spring family (23)
@@ -74,9 +74,9 @@ Sources: Spring Framework reference · Spring Boot 3 reference · Spring Securit
 | 2 | Method Security | ? prüfen | ✓ |
 | 2 | Actuator und Micrometer | Projekt | ✓ |
 | 2 | Spring WebFlux | — kein Projekt | ✓ |
-| 2 | Spring Cloud: Config, Gateway, Resilience4j | — kein Projekt |  |
-| 2 | @Scheduled, @Async, Events | ? prüfen |  |
-| 2 | Spring Cache: @Cacheable, Cache-Provider | ? prüfen |  |
+| 2 | Spring Cloud | — kein Projekt | ✓ |
+| 2 | Scheduling, Async, Events | ? prüfen | ✓ |
+| 2 | Spring Cache | ? prüfen | ✓ |
 | 3 | Spring Batch: Job, Step, Chunk | — kein Projekt |  |
 
 ## REST, JSON, OpenAPI (11)
@@ -135,10 +135,10 @@ Sources: Apache Kafka documentation · Confluent developer docs · Confluent CCD
 | 1 | Kafka vs RabbitMQ vs Event Hub vs Solace | Projekt | ✓ |
 | 2 | Retention und Log Compaction | ? prüfen | ✓ |
 | 2 | Kafka-Transaktionen | — kein Projekt | ✓ |
-| 2 | Schema Registry, Avro, Kompatibilität | ? prüfen |  |
-| 2 | Kafka Streams und Kafka Connect | — kein Projekt |  |
-| 2 | Performance und Tuning | ? prüfen |  |
-| 2 | Monitoring und Consumer Lag | ? prüfen |  |
+| 2 | Schema Registry | ? prüfen | ✓ |
+| 2 | Kafka Streams und Connect | — kein Projekt | ✓ |
+| 2 | Kafka Performance | ? prüfen | ✓ |
+| 2 | Kafka Monitoring und Lag | ? prüfen | ✓ |
 
 ## SOAP, WSDL, XSD (8)
 Sources: Jakarta XML Web Services / JAXB specs · W3C SOAP 1.2 and WSDL · Spring Web Services reference
@@ -249,8 +249,8 @@ Sources: PostgreSQL 16/17 documentation · Use The Index, Luke (Markus Winand)
 | 2 | JSONB und Indizes darauf | ? prüfen | ✓ |
 | 2 | Tabellen-Partitionierung | — kein Projekt | ✓ |
 | 2 | Replikation und Hochverfügbarkeit | — kein Projekt | ✓ |
-| 2 | Backup und Point-in-Time Recovery | — kein Projekt |  |
-| 2 | Volltextsuche in PostgreSQL | — kein Projekt |  |
+| 2 | Backup und Point-in-Time Recovery | — kein Projekt | ✓ |
+| 2 | Volltextsuche in PostgreSQL | — kein Projekt | ✓ |
 
 ## Oracle + PL/SQL (2)
 Sources: Oracle Database SQL and PL/SQL docs
@@ -317,8 +317,8 @@ Sources: Apache Iceberg spec and docs (iceberg.apache.org)
 | 1 | Wartung: Compaction, expire_snapshots, Orphan Files | Projekt | ✓ |
 | 1 | Kataloge: Nessie, REST, Hive, Glue | Projekt | ✓ |
 | 1 | Iceberg vs Delta Lake vs Hudi | Projekt | ✓ |
-| 2 | Gleichzeitige Writes und optimistisches Commit | ? prüfen |  |
-| 2 | Branches und Tags | ? prüfen |  |
+| 2 | Gleichzeitige Writes | ? prüfen | ✓ |
+| 2 | Branches und Tags | ? prüfen | ✓ |
 
 ## Lakehouse + medallion + ETL (14)
 Sources: Designing Data-Intensive Applications (Kleppmann) · Fundamentals of Data Engineering (Reis/Housley)
@@ -347,8 +347,8 @@ Sources: Dremio docs · Apache Arrow docs · Project Nessie docs · MinIO docs �
 |---|---|---|---|
 | 1 | Project Nessie: Git für Daten | Projekt | ✓ |
 | 1 | Parquet intern: Row Groups, Column Chunks, Encoding, Predicate Pushdown | Projekt | ✓ |
-| 2 | Dremio: Architektur und Reflections | Projekt |  |
-| 2 | Apache Arrow und Arrow Flight SQL | Projekt |  |
+| 2 | Dremio und Reflections | Projekt | ✓ |
+| 2 | Arrow und Flight SQL | Projekt | ✓ |
 | 2 | MinIO und S3-API | Projekt |  |
 
 ## Data modelling (star, SCD2, Data Vault) (6)
@@ -478,7 +478,7 @@ Sources: Prometheus docs · OpenTelemetry docs · Google SRE book (SLOs)
 
 | P | Topic | Project | Written |
 |---|---|---|---|
-| 1 | Logs, Metriken, Traces | Projekt |  |
+| 1 | Logs, Metriken, Traces | Projekt | ✓ |
 | 2 | Prometheus: Pull-Modell, Metrik-Typen, PromQL | Projekt |  |
 | 2 | OpenTelemetry | Projekt |  |
 | 2 | Alerting, SLI, SLO, SLA | ? prüfen |  |
@@ -642,9 +642,9 @@ Sources: Designing Data-Intensive Applications (Kleppmann) · System Design Inte
 | 2 | Consistent Hashing | — kein Projekt | ✓ |
 | 2 | Fall: News-Feed | — kein Projekt | ✓ |
 | 2 | Fall: Verteilter Job-Scheduler | — kein Projekt | ✓ |
-| 2 | Fall: Verteilter Cache | — kein Projekt |  |
-| 2 | Fall: E-Commerce-Checkout | — kein Projekt |  |
-| 2 | Fall: Dokumentensystem einer Behörde | — kein Projekt |  |
+| 2 | Fall: Verteilter Cache | — kein Projekt | ✓ |
+| 2 | Fall: E-Commerce-Checkout | — kein Projekt | ✓ |
+| 2 | Fall: Dokumentensystem einer Behörde | — kein Projekt | ✓ |
 
 ## Algorithmen und Datenstrukturen (14)
 Sources: NeetCode 150 / LeetCode pattern lists · Introduction to Algorithms (CLRS) for definitions
@@ -682,8 +682,8 @@ Sources: Apache Maven docs · Gradle docs
 
 | P | Topic | Project | Written |
 |---|---|---|---|
-| 1 | Maven: Lifecycle, Phasen, Plugins | Projekt |  |
-| 1 | Abhängigkeiten: Scopes, Konflikte, BOM | Projekt |  |
+| 1 | Maven: Lifecycle, Phasen, Plugins | Projekt | ✓ |
+| 1 | Abhängigkeiten: Scopes, Konflikte, BOM | Projekt | ✓ |
 | 2 | Gradle-Grundlagen und Maven vs Gradle | Projekt |  |
 
 ## Linux / Bash (4)
@@ -712,7 +712,7 @@ Sources: redis.io documentation
 
 | P | Topic | Project | Written |
 |---|---|---|---|
-| 1 | Cache-Muster: Cache-Aside, Write-Through, Invalidierung | — kein Projekt |  |
+| 1 | Cache-Muster | — kein Projekt | ✓ |
 | 2 | Redis-Datentypen und Einsatz | — kein Projekt |  |
 | 2 | Eviction, TTL und Persistenz | — kein Projekt |  |
 

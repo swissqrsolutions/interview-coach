@@ -1,0 +1,203 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Dremio und Reflections</title>
+<style>
+  body { font: 17px/1.55 -apple-system, system-ui, sans-serif; max-width: 760px; margin: 0 auto; padding: 16px; color: #1d1d1f; }
+  h1 { font-size: 28px; margin: 8px 0 4px; }
+  h2 { font-size: 21px; margin: 32px 0 8px; padding-top: 12px; border-top: 2px solid #e5e5ea; }
+  .kern { background: #eef6ff; border-left: 4px solid #0a66c2; padding: 10px 14px; border-radius: 6px; }
+  .senior { background: #f0faf0; border-left: 4px solid #2e7d32; padding: 10px 14px; border-radius: 6px; }
+  .trap { background: #fff4f2; border-left: 4px solid #c62828; padding: 10px 14px; border-radius: 6px; }
+  code { background: #f2f2f7; padding: 1px 5px; border-radius: 4px; font-size: 15px; }
+  pre { background: #1e1e1e; color: #e6e6e6; padding: 12px; border-radius: 8px; overflow-x: auto; font-size: 13.5px; line-height: 1.45; }
+  svg { width: 100%; height: auto; display: block; margin: 10px 0; }
+  ol li, ul li { margin: 4px 0; }
+  details { border: 1px solid #e5e5ea; border-radius: 8px; padding: 8px 12px; margin: 6px 0; }
+  summary { font-weight: 600; cursor: pointer; }
+  details p { margin: 6px 0 2px; }
+  .small { color: #6e6e73; font-size: 14px; }
+</style>
+</head>
+<body>
+
+<h1>Dremio: Architektur und Reflections</h1>
+<p class="small">Dremio · Tier 2 · Quellen: Dremio Enterprise 26.x Docs (Architecture, Accelerating Queries with Reflections, Autonomous Reflections, System Requirements, Arrow Flight), Apache Arrow Docs</p>
+
+<div class="kern">
+<b>Kern:</b> <b>Dremio</b> ist eine verteilte SQL-Engine für das Lakehouse. Sie liest Iceberg- und Parquet-Tabellen direkt aus dem Object Storage, rechnet intern mit <b>Apache Arrow</b> und liefert Ergebnisse per JDBC, ODBC oder <b>Arrow Flight</b>. <b>Reflections</b> sind vorberechnete, optimierte Kopien von Tabellen oder Aggregaten; der Planner nutzt sie automatisch, wenn sie eine Abfrage billiger machen.
+</div>
+
+<h2>1. Wo sitzt Dremio?</h2>
+<svg viewBox="0 0 720 320" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="dra" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="10" y="20" width="140" height="56" rx="8" fill="#fff" stroke="#555"/><text x="80" y="44" text-anchor="middle" font-weight="700">Clients</text><text x="80" y="62" text-anchor="middle" font-size="12">BI, UI, Python</text>
+  <line x1="150" y1="48" x2="198" y2="48" stroke="#555" stroke-width="2" marker-end="url(#dra)"/><text x="174" y="40" text-anchor="middle" font-size="11">Flight</text>
+  <rect x="200" y="20" width="180" height="56" rx="8" fill="#0a66c2"/><text x="290" y="44" text-anchor="middle" fill="#fff" font-weight="700">Coordinator</text><text x="290" y="62" text-anchor="middle" fill="#fff" font-size="12">Parsen, Planen, Jobs</text>
+  <line x1="290" y1="76" x2="290" y2="118" stroke="#555" stroke-width="2" marker-end="url(#dra)"/>
+  <rect x="160" y="120" width="260" height="76" rx="10" fill="#f7f7fa" stroke="#999" stroke-dasharray="5 4"/><text x="290" y="138" text-anchor="middle" font-weight="700" font-size="13">Engine</text>
+  <rect x="172" y="148" width="74" height="38" rx="6" fill="#dbe9fb" stroke="#0a66c2"/><text x="209" y="171" text-anchor="middle" font-size="12">Executor</text>
+  <rect x="253" y="148" width="74" height="38" rx="6" fill="#dbe9fb" stroke="#0a66c2"/><text x="290" y="171" text-anchor="middle" font-size="12">Executor</text>
+  <rect x="334" y="148" width="74" height="38" rx="6" fill="#dbe9fb" stroke="#0a66c2"/><text x="371" y="171" text-anchor="middle" font-size="12">+ C3</text>
+  <line x1="290" y1="196" x2="290" y2="238" stroke="#555" stroke-width="2" marker-end="url(#dra)"/>
+  <rect x="160" y="240" width="260" height="56" rx="8" fill="#fff" stroke="#555"/><text x="290" y="264" text-anchor="middle" font-weight="700">Object Storage</text><text x="290" y="282" text-anchor="middle" font-size="12">Iceberg / Parquet (MinIO, S3, ADLS)</text>
+  <rect x="460" y="20" width="250" height="56" rx="8" fill="#e8f5e9" stroke="#2e7d32"/><text x="585" y="44" text-anchor="middle" font-weight="700">Katalog</text><text x="585" y="62" text-anchor="middle" font-size="12">Nessie, REST, Open Catalog</text>
+  <line x1="380" y1="48" x2="458" y2="48" stroke="#555" stroke-width="2" marker-end="url(#dra)"/>
+  <rect x="460" y="130" width="250" height="56" rx="8" fill="#fff3cd" stroke="#c9a227"/><text x="585" y="154" text-anchor="middle" font-weight="700">Reflections</text><text x="585" y="172" text-anchor="middle" font-size="12">als Iceberg im Distributed Store</text>
+  <line x1="420" y1="165" x2="458" y2="160" stroke="#c9a227" stroke-width="2" marker-end="url(#dra)"/>
+  <rect x="460" y="240" width="250" height="56" rx="8" fill="#fff" stroke="#555"/><text x="585" y="264" text-anchor="middle" font-weight="700">Andere Quellen</text><text x="585" y="282" text-anchor="middle" font-size="12">PostgreSQL, SQL Server …</text>
+  <line x1="420" y1="186" x2="500" y2="238" stroke="#999" stroke-width="1.5" marker-end="url(#dra)"/>
+</svg>
+<ol>
+  <li><b>Clients:</b> BI-Tools, eine Web-App oder Python verbinden sich über <b>Arrow Flight</b> (Port 32010), JDBC/ODBC (Port 31010) oder REST. Die Web-UI läuft auf Port 9047.</li>
+  <li><b>Coordinator:</b> Er parst SQL, plant die Abfrage, wählt Reflections und verteilt die Arbeit.</li>
+  <li><b>Engine:</b> eine Gruppe von <b>Executors</b>, die Abfragen ausführen. Mehrere Engines trennen Workloads, z. B. BI und Ad-hoc.</li>
+  <li><b>C3</b> (Cloud Columnar Cache): ein lokaler Disk-Cache pro Executor. Er hält oft gelesene Daten aus dem Object Storage, mit LRU-Verdrängung.</li>
+  <li><b>Katalog:</b> Er sagt Dremio, wo die aktuelle Iceberg-Metadaten-Datei liegt, z. B. Nessie.</li>
+  <li><b>Reflections:</b> vorberechnete Kopien, als Iceberg-Tabellen im <b>Distributed Store</b> von Dremio gespeichert.</li>
+  <li><b>Andere Quellen:</b> Dremio kann auch Datenbanken direkt abfragen (<b>Federation</b>) und mit Lakehouse-Daten joinen.</li>
+</ol>
+
+<h2>2. Die Reise einer Abfrage</h2>
+<svg viewBox="0 0 720 290" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="drb" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="10" y="20" width="130" height="60" rx="10" fill="#eee" stroke="#777"/><text x="75" y="44" text-anchor="middle" font-weight="700">1. SQL</text><text x="75" y="64" text-anchor="middle" font-size="12">Summe pro Tag</text>
+  <line x1="140" y1="50" x2="178" y2="50" stroke="#555" stroke-width="2" marker-end="url(#drb)"/>
+  <rect x="180" y="20" width="150" height="60" rx="10" fill="#0a66c2"/><text x="255" y="44" text-anchor="middle" fill="#fff" font-weight="700">2. Planen</text><text x="255" y="64" text-anchor="middle" fill="#fff" font-size="12">Katalog + Statistik</text>
+  <line x1="330" y1="50" x2="368" y2="50" stroke="#555" stroke-width="2" marker-end="url(#drb)"/>
+  <rect x="370" y="20" width="160" height="60" rx="10" fill="#fff3cd" stroke="#c9a227"/><text x="450" y="44" text-anchor="middle" font-weight="700">3. Reflection?</text><text x="450" y="64" text-anchor="middle" font-size="12">Kosten vergleichen</text>
+  <line x1="530" y1="50" x2="568" y2="50" stroke="#555" stroke-width="2" marker-end="url(#drb)"/>
+  <rect x="570" y="20" width="140" height="60" rx="10" fill="#fff" stroke="#555"/><text x="640" y="44" text-anchor="middle" font-weight="700">4. Fragmente</text><text x="640" y="64" text-anchor="middle" font-size="12">an Executors</text>
+  <line x1="640" y1="80" x2="640" y2="128" stroke="#555" stroke-width="2" marker-end="url(#drb)"/>
+  <rect x="540" y="130" width="170" height="60" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="625" y="154" text-anchor="middle" font-weight="700">5. Lesen</text><text x="625" y="174" text-anchor="middle" font-size="12">Pruning, C3, Arrow</text>
+  <line x1="540" y1="160" x2="402" y2="160" stroke="#555" stroke-width="2" marker-end="url(#drb)"/>
+  <rect x="230" y="130" width="170" height="60" rx="10" fill="#fff" stroke="#555"/><text x="315" y="154" text-anchor="middle" font-weight="700">6. Rechnen</text><text x="315" y="174" text-anchor="middle" font-size="12">vektorisiert</text>
+  <line x1="230" y1="160" x2="162" y2="160" stroke="#555" stroke-width="2" marker-end="url(#drb)"/>
+  <rect x="10" y="130" width="150" height="60" rx="10" fill="#e8f5e9" stroke="#2e7d32"/><text x="85" y="154" text-anchor="middle" font-weight="700">7. Ergebnis</text><text x="85" y="174" text-anchor="middle" font-size="12">Arrow-Batches</text>
+  <text x="360" y="240" text-anchor="middle" font-size="12">Der Client nennt nie eine Reflection. Der Planner entscheidet allein.</text>
+</svg>
+<ol>
+  <li><b>SQL:</b> Die UI fragt: Summe des Volumens pro Tag für November.</li>
+  <li><b>Planen:</b> Der Coordinator holt die Iceberg-Metadaten über den Katalog. Er kennt Partitionen und Datei-Statistiken.</li>
+  <li><b>Reflection-Wahl:</b> Der Planner sucht Reflections, die eine Tabelle der Abfrage enthalten. Er prüft, ob sie die Abfrage beantworten können, und vergleicht die Kosten mit dem Plan auf den Rohdaten. Er nimmt den billigeren.</li>
+  <li><b>Fragmente:</b> Der Plan wird in Teile zerlegt und auf die Executors verteilt.</li>
+  <li><b>Lesen:</b> Executors lesen nur passende Dateien (<b>Partition Pruning</b> und Min/Max-Statistiken), möglichst aus C3.</li>
+  <li><b>Rechnen:</b> Filter, Joins und Aggregate laufen spaltenweise auf Arrow-Puffern.</li>
+  <li><b>Ergebnis:</b> Es geht als Arrow-Batches zurück. Über Arrow Flight muss der Client nichts umwandeln.</li>
+</ol>
+
+<h2>3. Beispiel: eine Aggregation Reflection</h2>
+<pre>-- View, die die UI abfragt
+CREATE VIEW analytics.trade_daily AS
+SELECT trade_date, schema_type, volume_mwh FROM lake.silver.trade;
+
+-- Aggregation Reflection auf die View
+ALTER VIEW analytics.trade_daily
+  CREATE AGGREGATE REFLECTION agg_daily
+  USING DIMENSIONS (trade_date, schema_type)
+        MEASURES (volume_mwh (SUM, COUNT))
+  PARTITION BY (trade_date);
+
+-- Abfrage der UI (nennt die Reflection nicht)
+SELECT trade_date, SUM(volume_mwh) FROM analytics.trade_daily
+WHERE trade_date BETWEEN DATE '2026-11-01' AND DATE '2026-11-30'
+GROUP BY trade_date;</pre>
+<pre>-- Erwartet im Job-Profil der Abfrage:
+-- Acceleration: "Accelerated"
+-- Reflections used: agg_daily
+-- Gelesen: wenige tausend vorab aggregierte Zeilen statt aller Trade-Zeilen</pre>
+<p class="small">Erwartetes Ergebnis (laut Doku, nicht ausgeführt). Dremio läuft hier nicht.</p>
+<ol>
+  <li>Die View trennt Nutzer vom physischen Layout. Die Reflection hängt an der View.</li>
+  <li>Die <b>Aggregation Reflection</b> rechnet <code>SUM</code> und <code>COUNT</code> pro Tag und Typ vor.</li>
+  <li>Die Abfrage gruppiert nur nach <code>trade_date</code>. Der Planner kann die Reflection trotzdem nutzen und über <code>schema_type</code> weiter aufsummieren.</li>
+  <li>Das Job-Profil zeigt, ob und welche Reflection genutzt wurde. Das ist der wichtigste Diagnose-Schritt.</li>
+</ol>
+
+<h2>4. Details, die Interviewer fragen</h2>
+<ol>
+  <li><b>Raw Reflection:</b> gleiche Zeilenzahl wie die Quelle, evtl. weniger Spalten, eigene Partitionierung und Sortierung. Gut, um eine teure View vorzuberechnen oder ein anderes Layout anzubieten.</li>
+  <li><b>Aggregation Reflection:</b> vorberechnete <code>GROUP BY</code>-Ergebnisse mit Dimensionen und Measures. Gut für BI-Dashboards.</li>
+  <li><b>Automatische Ersetzung:</b> Der Client schreibt normales SQL. Der Planner ersetzt Teile des Plans durch Reflections, wenn das billiger ist. Das ist wie eine Materialized View mit automatischem Query Rewrite.</li>
+  <li><b>Refresh:</b> Reflections müssen aktuell gehalten werden. Für Iceberg-Quellen gibt es <b>inkrementelle</b> Refreshes; seit Dremio 25.1 auch <b>Live Reflections</b>, die bei Änderungen der Iceberg-Tabelle aktualisieren.</li>
+  <li><b>Autonomous Reflections:</b> In Dremio 26 kann Dremio Reflections anhand der Abfrage-Historie selbst anlegen und verwalten.</li>
+  <li><b>Veraltete Daten:</b> Ist eine Reflection älter als erlaubt, nutzt der Planner sie nicht mehr oder liefert alte Werte, je nach Einstellung. Freshness ist eine Fachfrage.</li>
+  <li><b>Arrow intern:</b> Dremio rechnet spaltenweise in Arrow-Puffern. Darum kann es Ergebnisse ohne Umwandlung per Flight senden.</li>
+  <li><b>Iceberg schreiben:</b> Dremio kann auch DML (INSERT, MERGE, DELETE) auf Iceberg ausführen und Tabellen optimieren (<code>OPTIMIZE TABLE</code>).</li>
+  <li><b>Workload-Trennung:</b> Mehrere Engines und Queues verhindern, dass eine grosse Ad-hoc-Abfrage die Dashboards blockiert.</li>
+</ol>
+
+<h2>5. Vergleich</h2>
+<ul>
+  <li><b>Trino:</b> sehr verbreitete verteilte SQL-Engine, viele Konnektoren. Keine eingebauten Reflections; Beschleunigung über Materialized Views oder Caches.</li>
+  <li><b>Spark Thrift Server / Spark SQL:</b> nutzt den Spark-Cluster auch für BI. Start und kleine Abfragen sind langsamer, für interaktive Dashboards oft zu schwer.</li>
+  <li><b>Cloud-Warehouse</b> (Snowflake, BigQuery): kaum Betrieb, starke Performance. Aber Daten oft im eigenen Format und Kosten pro Abfrage.</li>
+  <li><b>Dremio:</b> offene Formate, Reflections und Arrow Flight für schnelle Dashboards. Preis: ein weiterer Dienst zu betreiben, Reflections brauchen Pflege und Speicher.</li>
+</ul>
+
+<h2>6. In der Produktion</h2>
+<ol>
+  <li><b>Dashboard langsam, Reflection wird nicht genutzt:</b> Abfrage passt nicht (andere Spalte, Funktion auf der Dimension). Lösung: Job-Profil lesen, Reflection oder View anpassen.</li>
+  <li><b>Dashboard zeigt alte Zahlen:</b> Reflection-Refresh läuft zu selten oder ist gescheitert. Lösung: Refresh-Policy prüfen, Refresh nach dem Gold-Job auslösen.</li>
+  <li><b>Executor OOM bei grossen Joins:</b> zu wenig Speicher pro Executor oder Join ohne Filter. Lösung: Engine grösser, Abfrage begrenzen, Queues.</li>
+  <li><b>Dremio sieht neue Tabellen nicht:</b> Katalog-Metadaten gecacht oder Katalog falsch verbunden. Lösung: Metadaten-Refresh der Quelle, Katalog-Verbindung prüfen.</li>
+  <li><b>Speicher für Reflections wächst:</b> viele ähnliche Reflections. Lösung: aufräumen, wenige breite statt viele schmale.</li>
+</ol>
+
+<h2>7. Diagnose</h2>
+<ul>
+  <li><b>Job-Profil</b> in der UI: Planungszeit, genutzte Reflections, gelesene Zeilen und Dateien pro Operator.</li>
+  <li><code>SELECT * FROM sys.reflections</code>: Status und letzte Aktualisierung jeder Reflection.</li>
+  <li><b>Jobs-Liste</b> in der UI: langsame Abfragen filtern und prüfen, ob sie beschleunigt waren.</li>
+  <li><b>Executor-Metriken:</b> Speicher, C3-Trefferquote, Queue-Wartezeiten.</li>
+</ul>
+
+<h2>8. Senior-Punkte</h2>
+<div class="senior">
+<ol>
+  <li><b>Reflections sind ein Cache mit Konsistenzfrage.</b> Freshness und Refresh-Zeitpunkt mit der Fachseite festlegen.</li>
+  <li><b>Gold zuerst, Reflections danach.</b> Gute Gold-Tabellen brauchen oft keine Reflection.</li>
+  <li><b>Views als Vertrag:</b> Nutzer fragen Views ab, nicht physische Tabellen. Dann kann man Layout und Reflections ändern, ohne Clients zu brechen.</li>
+  <li><b>Serving und Verarbeitung trennen:</b> Spark schreibt, Dremio liest. So stört ein grosser ETL-Job die Dashboards nicht.</li>
+  <li><b>Arrow Flight lohnt sich</b> bei grossen Ergebnissen. Bei kleinen ist der Unterschied zu JDBC gering.</li>
+</ol>
+</div>
+
+<h2>9. Aus dem Projekt</h2>
+<p>„Bei ElCom MATCH liest Dremio die Iceberg-Tabellen über Nessie und liefert Records und Charts per Arrow Flight SQL an die neue WebUI; Dremio hat dort den Spark Thrift Server als Serving-Schicht abgelöst.“ <span class="small">(Prüfen und durch dein echtes Beispiel ersetzen.)</span></p>
+
+<h2>10. Fallen</h2>
+<div class="trap">
+<ul>
+  <li>„Man muss die Reflection im SQL angeben.“ → <b>Falsch.</b> Der Planner wählt sie automatisch.</li>
+  <li>„Reflections sind immer aktuell.“ → <b>Falsch.</b> Sie sind so aktuell wie ihr letzter Refresh.</li>
+  <li>„Dremio speichert die Daten.“ → <b>Falsch.</b> Die Daten bleiben im Object Storage. Dremio speichert nur Reflections, Caches und Metadaten.</li>
+  <li>„Dremio ersetzt Spark.“ → <b>Falsch.</b> Dremio ist für interaktive Abfragen. Schwere ETL bleibt meist in Spark.</li>
+  <li>„Mehr Reflections sind immer besser.“ → <b>Falsch.</b> Jede kostet Speicher und Refresh-Zeit.</li>
+</ul>
+</div>
+
+<h2>11. Fragen</h2>
+<details><summary>Was ist Dremio?</summary><p>Eine verteilte SQL-Engine, die Iceberg und Parquet direkt im Object Storage liest. Sie rechnet mit Apache Arrow und beschleunigt Abfragen mit Reflections.</p></details>
+<details><summary>Welche Rollen haben Coordinator und Executor?</summary><p>Der Coordinator plant Abfragen und verwaltet Jobs. Executors in Engines führen die Fragmente aus.</p></details>
+<details><summary>Was ist eine Reflection?</summary><p>Eine vorberechnete, optimierte Kopie einer Tabelle, View oder eines Aggregats. Der Planner nutzt sie automatisch, wenn sie billiger ist.</p></details>
+<details><summary>Raw oder Aggregation Reflection?</summary><p>Raw hält alle Zeilen in anderem Layout, gut für teure Views. Aggregation hält GROUP-BY-Ergebnisse, gut für Dashboards.</p></details>
+<details><summary>Wie entscheidet der Planner, ob er eine Reflection nutzt?</summary><p>Er sucht passende Reflections, prüft, ob sie die Abfrage abdecken, und vergleicht die Kosten mit dem Plan auf Rohdaten.</p></details>
+<details><summary>Reflection vs Materialized View?</summary><p>Ähnliche Idee. Aber die Reflection wird automatisch für passende Abfragen genutzt, ohne dass der Client sie nennt.</p></details>
+<details><summary>Wie bleiben Reflections aktuell?</summary><p>Durch Refresh: voll oder inkrementell. Für Iceberg gibt es seit Dremio 25.1 Live Reflections, die Änderungen folgen.</p></details>
+<details><summary>Was ist C3?</summary><p>Der Cloud Columnar Cache: ein lokaler Disk-Cache pro Executor für oft gelesene Daten aus dem Object Storage, mit LRU.</p></details>
+<details><summary>Welche Ports nutzt Dremio?</summary><p>9047 für UI und REST, 31010 für JDBC/ODBC, 32010 für Arrow Flight. Intern 45678 zwischen den Knoten.</p></details>
+<details><summary>Warum Arrow Flight statt JDBC?</summary><p>Flight überträgt Arrow-Batches spaltenweise und parallel, ohne Zeile-für-Zeile-Umwandlung. Bei grossen Ergebnissen ist das deutlich schneller.</p></details>
+<details><summary>Wie verbindet sich Dremio mit Iceberg?</summary><p>Über einen Katalog wie Nessie, einen REST-Katalog oder das eigene Open Catalog. Der Katalog liefert die aktuelle Metadaten-Datei.</p></details>
+<details><summary>Was ist Federation?</summary><p>Dremio fragt auch externe Datenbanken ab und kann sie mit Lakehouse-Tabellen joinen. Praktisch, aber die Quelle bekommt Last.</p></details>
+<details><summary>Dremio oder Trino?</summary><p>Beide sind verteilte SQL-Engines. Dremio bringt Reflections und Arrow Flight mit, Trino hat mehr Konnektoren und eine grosse Community.</p></details>
+<details><summary>Wie trennen Sie Workloads?</summary><p>Mit mehreren Engines und Queues, z. B. eine Engine für Dashboards und eine für Ad-hoc-Abfragen.</p></details>
+<details><summary>Warum nicht Spark für das Dashboard?</summary><p>Spark ist für schwere Batch-Jobs gebaut. Für viele kleine interaktive Abfragen sind Start und Planung zu langsam.</p></details>
+<details><summary>Szenario: Ein Dashboard war schnell und ist seit gestern langsam. Was prüfen Sie?</summary><p>Im Job-Profil, ob die Reflection noch genutzt wird. Oft ist sie nach einer Schema-Änderung ungültig oder der Refresh ist gescheitert.</p></details>
+<details><summary>Szenario: Die Fachseite sieht im Dashboard andere Zahlen als in Spark. Warum?</summary><p>Meist eine veraltete Reflection. Refresh-Zeit prüfen und den Refresh nach dem Gold-Job auslösen.</p></details>
+<details><summary>Szenario: Nach einem Spark-Write sieht Dremio die neuen Daten nicht. Was tun Sie?</summary><p>Prüfen, ob beide denselben Katalog und Branch nutzen und ob Dremio Metadaten cacht. Metadaten-Refresh auslösen.</p></details>
+
+</body>
+</html>

@@ -1,0 +1,199 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Kafka Performance</title>
+<style>
+  body { font: 17px/1.55 -apple-system, system-ui, sans-serif; max-width: 760px; margin: 0 auto; padding: 16px; color: #1d1d1f; }
+  h1 { font-size: 28px; margin: 8px 0 4px; }
+  h2 { font-size: 21px; margin: 32px 0 8px; padding-top: 12px; border-top: 2px solid #e5e5ea; }
+  .kern { background: #eef6ff; border-left: 4px solid #0a66c2; padding: 10px 14px; border-radius: 6px; }
+  .senior { background: #f0faf0; border-left: 4px solid #2e7d32; padding: 10px 14px; border-radius: 6px; }
+  .trap { background: #fff4f2; border-left: 4px solid #c62828; padding: 10px 14px; border-radius: 6px; }
+  code { background: #f2f2f7; padding: 1px 5px; border-radius: 4px; font-size: 15px; }
+  pre { background: #1e1e1e; color: #e6e6e6; padding: 12px; border-radius: 8px; overflow-x: auto; font-size: 13.5px; line-height: 1.45; }
+  svg { width: 100%; height: auto; display: block; margin: 10px 0; }
+  ol li, ul li { margin: 4px 0; }
+  details { border: 1px solid #e5e5ea; border-radius: 8px; padding: 8px 12px; margin: 6px 0; }
+  summary { font-weight: 600; cursor: pointer; }
+  details p { margin: 6px 0 2px; }
+  .small { color: #6e6e73; font-size: 14px; }
+</style>
+</head>
+<body>
+
+<h1>Performance und Tuning</h1>
+<p class="small">Kafka · Tier 2 · Quellen: Apache Kafka 4.4 Documentation (Design: Persistence, Efficiency; Producer/Consumer/Broker Configs; Operations: Hardware and OS, Monitoring; Upgrade Notes 4.0), KIP-1030. Producer-Interna im Detail: Seite „Producer“.</p>
+
+<div class="kern">
+<b>Kern:</b> Kafka-Performance ist ein Abwägen zwischen <b>Durchsatz</b>, <b>Latenz</b> und <b>Haltbarkeit</b>. Kafka ist schnell durch <b>Batching</b>, <b>sequentielles Schreiben</b>, den <b>Page Cache</b> des Betriebssystems und <b>Zero-Copy</b>. Tuning heisst: den Engpass messen, dann genau eine Stelle ändern.
+</div>
+
+<h2>1. Wo entsteht Performance?</h2>
+<svg viewBox="0 0 720 300" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="a" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="10" y="40" width="170" height="110" rx="10" fill="#0a66c2"/><text x="95" y="66" text-anchor="middle" fill="#fff" font-weight="700">Producer</text><text x="95" y="88" text-anchor="middle" fill="#fff" font-size="12">batch.size · linger.ms</text><text x="95" y="106" text-anchor="middle" fill="#fff" font-size="12">compression.type</text><text x="95" y="124" text-anchor="middle" fill="#fff" font-size="12">acks · buffer.memory</text>
+  <rect x="270" y="10" width="180" height="230" rx="12" fill="#f7f7fa" stroke="#999" stroke-dasharray="5 4"/><text x="360" y="30" text-anchor="middle" font-weight="700">Broker</text>
+  <rect x="285" y="44" width="150" height="44" rx="8" fill="#fff" stroke="#555"/><text x="360" y="64" text-anchor="middle" font-size="13">Network Threads (3)</text><text x="360" y="80" text-anchor="middle" font-size="11">Request-Queue</text>
+  <rect x="285" y="98" width="150" height="44" rx="8" fill="#fff" stroke="#555"/><text x="360" y="118" text-anchor="middle" font-size="13">I/O Threads (8)</text><text x="360" y="134" text-anchor="middle" font-size="11">schreiben ins Log</text>
+  <rect x="285" y="152" width="150" height="44" rx="8" fill="#dbe9fb" stroke="#0a66c2"/><text x="360" y="172" text-anchor="middle" font-size="13">Page Cache (OS)</text><text x="360" y="188" text-anchor="middle" font-size="11">nicht JVM-Heap</text>
+  <rect x="285" y="204" width="150" height="30" rx="6" fill="#eee" stroke="#777"/><text x="360" y="224" text-anchor="middle" font-size="12">Disk: sequentiell</text>
+  <rect x="540" y="40" width="170" height="110" rx="10" fill="#0a66c2"/><text x="625" y="66" text-anchor="middle" fill="#fff" font-weight="700">Consumer</text><text x="625" y="88" text-anchor="middle" fill="#fff" font-size="12">fetch.min.bytes</text><text x="625" y="106" text-anchor="middle" fill="#fff" font-size="12">max.poll.records</text><text x="625" y="124" text-anchor="middle" fill="#fff" font-size="12">Verarbeitung (!)</text>
+  <line x1="180" y1="70" x2="283" y2="66" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <line x1="435" y1="174" x2="538" y2="110" stroke="#555" stroke-width="2" marker-end="url(#a)"/><text x="490" y="160" font-size="12">sendfile</text>
+  <text x="360" y="270" text-anchor="middle" font-size="13">Partitionen = Einheit der Parallelität (Producer, Broker, Consumer)</text>
+</svg>
+<ol>
+  <li><b>Producer:</b> sammelt Nachrichten pro Partition in <b>Batches</b> und komprimiert sie. Grosse Batches = wenige Requests.</li>
+  <li><b>Network Threads:</b> nehmen Requests an und schicken Antworten. Standard <code>num.network.threads=3</code>.</li>
+  <li><b>I/O Threads:</b> verarbeiten die Requests und schreiben ins Log. Standard <code>num.io.threads=8</code>.</li>
+  <li><b>Page Cache:</b> Kafka schreibt in den Cache des Betriebssystems, nicht direkt auf die Disk. Gelesen wird meist auch aus dem Cache.</li>
+  <li><b>Zero-Copy:</b> Für Consumer kopiert der Kernel Daten mit <code>sendfile</code> direkt vom Cache ins Netz. Nicht mit TLS.</li>
+  <li><b>Consumer:</b> holt Daten in grossen Fetches. Der Engpass ist meist die <b>eigene Verarbeitung</b>, nicht Kafka.</li>
+</ol>
+
+<h2>2. Die Reise eines Batches (die Geschichte zum Merken)</h2>
+<svg viewBox="0 0 720 280" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="b" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="10" y="20" width="160" height="70" rx="10" fill="#eee" stroke="#777"/><text x="90" y="46" text-anchor="middle" font-weight="700">1. Batch füllen</text><text x="90" y="66" text-anchor="middle" font-size="12">16 KiB oder 5 ms</text>
+  <line x1="170" y1="55" x2="198" y2="55" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="200" y="20" width="150" height="70" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="275" y="46" text-anchor="middle" font-weight="700">2. komprimieren</text><text x="275" y="66" text-anchor="middle" font-size="12">ganzer Batch</text>
+  <line x1="350" y1="55" x2="378" y2="55" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="380" y="20" width="150" height="70" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="455" y="46" text-anchor="middle" font-weight="700">3. Request</text><text x="455" y="66" text-anchor="middle" font-size="12">Queue → I/O Thread</text>
+  <line x1="530" y1="55" x2="558" y2="55" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="560" y="20" width="150" height="70" rx="10" fill="#fff" stroke="#555"/><text x="635" y="46" text-anchor="middle" font-weight="700">4. Page Cache</text><text x="635" y="66" text-anchor="middle" font-size="12">append, kein fsync</text>
+  <line x1="635" y1="90" x2="635" y2="138" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="480" y="140" width="230" height="70" rx="10" fill="#fff" stroke="#555"/><text x="595" y="166" text-anchor="middle" font-weight="700">5. Follower holen ab</text><text x="595" y="186" text-anchor="middle" font-size="12">acks=all wartet auf ISR</text>
+  <line x1="480" y1="175" x2="402" y2="175" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="170" y="140" width="230" height="70" rx="10" fill="#e8f5e9" stroke="#2e7d32"/><text x="285" y="166" text-anchor="middle" font-weight="700">6. Consumer Fetch</text><text x="285" y="186" text-anchor="middle" font-size="12">Batch bleibt komprimiert</text>
+  <text x="360" y="250" text-anchor="middle" font-size="13">Latenz = Warten im Batch + Netz + Replikation + Warten im Fetch</text>
+</svg>
+<ol>
+  <li><b>Batch füllen:</b> Der Producer sammelt Nachrichten pro Partition. Er sendet, wenn der Batch 16 KiB (<code>batch.size</code>) voll ist oder 5 ms (<code>linger.ms</code>, Standard seit Kafka 4.0) vorbei sind.</li>
+  <li><b>Komprimieren:</b> Der ganze Batch wird komprimiert. Ähnliche JSON-Nachrichten schrumpfen stark. Standard: <code>compression.type=none</code>.</li>
+  <li><b>Request:</b> Ein Network Thread legt den Request in die Queue. Ein I/O Thread prüft ihn und hängt den Batch ans Log.</li>
+  <li><b>Page Cache:</b> Der Batch landet im RAM des Betriebssystems. Kafka ruft kein <code>fsync</code> pro Nachricht auf. Haltbarkeit kommt aus der <b>Replikation</b>.</li>
+  <li><b>Replikation:</b> Follower holen den Batch ab. Mit <code>acks=all</code> antwortet der Leader erst, wenn die ISR ihn hat. Das kostet Latenz.</li>
+  <li><b>Fetch:</b> Der Consumer holt den Batch. Der Broker schickt ihn <b>unverändert komprimiert</b>, meist direkt aus dem Page Cache. Entpacken macht der Consumer.</li>
+</ol>
+
+<h2>3. Beispiel: messen statt raten</h2>
+<pre>$ kafka-producer-perf-test.sh --topic perf --num-records 1000000 --record-size 1000 \
+    --throughput -1 --producer-props bootstrap.servers=kafka:9092 acks=all
+
+$ kafka-producer-perf-test.sh --topic perf --num-records 1000000 --record-size 1000 \
+    --throughput -1 --producer-props bootstrap.servers=kafka:9092 acks=all \
+    linger.ms=20 batch.size=131072 compression.type=zstd
+
+$ kafka-consumer-perf-test.sh --bootstrap-server kafka:9092 --topic perf --messages 1000000</pre>
+<pre>1000000 records sent, 61500.6 records/sec (58.65 MB/sec), 480.21 ms avg latency, 1210.00 ms max latency, 455 ms 50th, 902 ms 95th, 1105 ms 99th, 1190 ms 99.9th.
+1000000 records sent, 185000.0 records/sec (176.43 MB/sec), 95.40 ms avg latency, 410.00 ms max latency, 81 ms 50th, 210 ms 95th, 330 ms 99th, 401 ms 99.9th.</pre>
+<p class="small">Erwartetes Ergebnis (Ausgabeformat laut Kafka-Tools, Zahlen nur zur Erklärung erfunden, nicht ausgeführt). Kafka ist hier nicht installiert. Echte Werte hängen von Hardware, Netz und Daten ab.</p>
+<ol>
+  <li>Lauf 1 nutzt die Standard-Batches. Bei Volllast (<code>--throughput -1</code>) staut sich der Producer-Puffer, die Latenz steigt.</li>
+  <li>Lauf 2 macht grössere Batches und komprimiert mit zstd. Weniger Requests, weniger Bytes, also mehr Durchsatz <b>und</b> unter Last oft weniger Latenz.</li>
+  <li>Das Format zeigt Durchschnitt <b>und</b> Perzentile. Für SLAs zählt das 99. Perzentil.</li>
+  <li><code>--record-size</code> erzeugt Zufallsdaten. Die komprimieren schlecht. Für echte Aussagen <code>--payload-file</code> mit echten Daten nutzen.</li>
+  <li>Immer nur einen Parameter pro Lauf ändern. Sonst weiss man nicht, was geholfen hat.</li>
+</ol>
+
+<h2>4. Details, die Interviewer fragen</h2>
+<ol>
+  <li><b>Warum ist Kafka schnell?</b> Sequentielles Schreiben, Page Cache statt eigener Cache, Batching überall, komprimierte Batches von Producer bis Consumer, Zero-Copy mit <code>sendfile</code>.</li>
+  <li><b>Sequentiell vs zufällig:</b> Die Doku nennt für eine alte RAID-Konfiguration ca. 600 MB/s linear gegen ca. 100 kB/s zufällig. Darum ist ein Append-only-Log so schnell.</li>
+  <li><b>Heap klein, RAM gross:</b> Der Broker braucht wenig JVM-Heap. Den Rest des RAMs nutzt das OS als Page Cache. Faustregel der Doku: Schreibdurchsatz × 30 Sekunden.</li>
+  <li><b>TLS kostet:</b> Mit TLS gibt es kein Zero-Copy, weil Kafka verschlüsseln muss. Mehr CPU, mehr Kopien.</li>
+  <li><b>Kompression:</b> Codecs <code>gzip</code>, <code>snappy</code>, <code>lz4</code>, <code>zstd</code>. Topic-Standard <code>compression.type=producer</code>: der Broker behält den Codec des Producers. Setzt man am Topic einen anderen, muss der Broker neu komprimieren.</li>
+  <li><b>Kompressions-Level:</b> einstellbar pro Codec, z. B. <code>compression.zstd.level</code> (Standard 3).</li>
+  <li><b>Producer-Puffer:</b> <code>buffer.memory</code> (32 MiB). Ist er voll, blockiert <code>send()</code> bis <code>max.block.ms</code> (60 s).</li>
+  <li><b>Consumer-Fetch:</b> <code>fetch.min.bytes=1</code> und <code>fetch.max.wait.ms=500</code>. Höheres <code>fetch.min.bytes</code> = weniger Requests, etwas mehr Latenz. <code>max.partition.fetch.bytes</code> 1 MiB pro Partition.</li>
+  <li><b>Partitionen:</b> mehr Partitionen = mehr Parallelität. Aber mehr Dateien, mehr Replikation, längere Failover. Nicht „auf Vorrat“ tausende anlegen.</li>
+  <li><b>Replikation tunen:</b> <code>num.replica.fetchers</code> (Standard 1) erhöhen, wenn Follower hinterherhinken.</li>
+  <li><b>Alte Formate weg:</b> Kafka 4.0 hat <code>message.format.version</code> und alte Protokoll-Versionen entfernt. Clients müssen mindestens 2.1 sein. Alte Tuning-Tipps zu Format-Umwandlung gelten nicht mehr.</li>
+  <li><b>OS:</b> Mindestens 100 000 File Descriptors, genug <code>vm.max_map_count</code> (pro Partition mindestens 2 Maps), XFS, <code>noatime</code>, kein RAID nötig.</li>
+</ol>
+
+<h2>5. Vergleich</h2>
+<ul>
+  <li><b>Für Durchsatz:</b> <code>linger.ms</code> 10–100, <code>batch.size</code> 64–256 KiB, <code>compression.type=zstd</code> oder <code>lz4</code>, <code>fetch.min.bytes</code> höher.</li>
+  <li><b>Für Latenz:</b> <code>linger.ms</code> klein, keine grossen Fetch-Wartezeiten, schnelles Netz, Leader nah am Client.</li>
+  <li><b>Für Haltbarkeit:</b> <code>acks=all</code>, RF 3, <code>min.insync.replicas=2</code>. Kostet etwas Latenz, fast keinen Durchsatz bei guten Batches.</li>
+  <li><b>lz4:</b> sehr schnell, mittlere Rate. <b>zstd:</b> beste Rate, etwas mehr CPU. <b>gzip:</b> langsam. <b>snappy:</b> schnell, schwächere Rate.</li>
+  <li><b>Mehr Partitionen</b> vs <b>schnellere Verarbeitung pro Nachricht:</b> Erst den Consumer-Code optimieren, dann Partitionen erhöhen.</li>
+</ul>
+
+<h2>6. In der Produktion</h2>
+<ol>
+  <li><b>Lag wächst, Broker gelangweilt:</b> Der Consumer ist langsam, z. B. ein DB-Aufruf pro Nachricht. Lösung: Batch-Verarbeitung, Bulk-Insert, Parallelität bis zur Partitionszahl.</li>
+  <li><b>Producer meldet Timeouts:</b> <code>buffer.memory</code> voll oder Broker überlastet. Prüfen: <code>bufferpool-wait-ratio</code>, <code>record-queue-time-avg</code>, Broker-<code>RequestHandlerAvgIdlePercent</code>.</li>
+  <li><b>Broker-CPU hoch nach Topic-Änderung:</b> Topic auf anderen Codec als der Producer gesetzt, der Broker komprimiert alles neu. Lösung: <code>compression.type=producer</code>.</li>
+  <li><b>Broker im Container mit kleinem RAM-Limit:</b> Kein Platz für Page Cache, jeder Fetch geht auf die Disk. Lösung: Memory-Limit deutlich über dem Heap.</li>
+  <li><b>CPU-Throttling in Kubernetes:</b> Network- und I/O-Threads warten, die Latenz springt. Lösung: CPU-Limits für Broker grosszügig oder weglassen, Requests korrekt.</li>
+  <li><b>Ein Consumer, der von ganz vorne liest, bremst alle:</b> Alte Daten sind nicht im Page Cache, die Disk wird belastet. Lösung: Replays planen, Quotas setzen.</li>
+  <li><b>Zu viele kleine Requests:</b> <code>linger.ms=0</code> und viele Producer-Instanzen. Lösung: Batching zulassen, Producer pro Prozess teilen (er ist thread-sicher).</li>
+</ol>
+
+<h2>7. Diagnose: Werkzeuge und Metriken</h2>
+<ul>
+  <li><code>kafka-producer-perf-test.sh</code> und <code>kafka-consumer-perf-test.sh</code>: Basislinie messen.</li>
+  <li>Broker: <code>RequestHandlerAvgIdlePercent</code> und <code>NetworkProcessorAvgIdlePercent</code> (ideal über 0.3).</li>
+  <li>Broker: <code>RequestMetrics TotalTimeMs</code> für <code>Produce</code> und <code>FetchConsumer</code>, aufgeteilt in Queue-, Local-, Remote- und Response-Zeit. Zeigt, wo die Zeit hängt.</li>
+  <li>Broker: <code>BytesInPerSec</code>, <code>MessagesInPerSec</code>, <code>UnderReplicatedPartitions</code>.</li>
+  <li>Producer: <code>batch-size-avg</code>, <code>compression-rate-avg</code>, <code>record-queue-time-avg</code>, <code>request-latency-avg</code>, <code>bufferpool-wait-ratio</code>.</li>
+  <li>Consumer: <code>records-lag-max</code>, <code>fetch-latency-avg</code>, Verarbeitungszeit pro Batch im eigenen Code.</li>
+  <li>OS: <code>iostat</code> (Disk-Auslastung), <code>vmstat</code>/<code>free</code> (Page Cache), <code>sar -n DEV</code> (Netz).</li>
+</ul>
+
+<h2>8. Senior-Punkte</h2>
+<div class="senior">
+<ol>
+  <li><b>Erst das Ziel festlegen:</b> MB/s, Nachrichten pro Sekunde, P99-Latenz, Haltbarkeit. Ohne Ziel ist Tuning Raten.</li>
+  <li><b>Haltbarkeit nicht für Durchsatz opfern.</b> <code>acks=1</code> spart wenig, wenn Batches gut sind. Datenverlust kostet mehr.</li>
+  <li><b>Der Engpass ist meist ausserhalb von Kafka:</b> Consumer-Code, Datenbank, Netz, Serialisierung.</li>
+  <li><b>Batching ist der grösste Hebel</b> und kostet nur ein paar Millisekunden Latenz.</li>
+  <li><b>Kapazität planen mit Reserve:</b> Ein Broker muss ausfallen können, ohne dass die anderen überlaufen.</li>
+  <li><b>Defaults sind gut.</b> Viele „Tuning-Guides“ ändern Werte, die seit Kafka 3.x und 4.0 schon sinnvoll sind (Idempotenz, <code>acks=all</code>, <code>linger.ms=5</code>).</li>
+</ol>
+</div>
+
+<h2>9. Aus dem Projekt</h2>
+<p>„Kafka-Tuning habe ich laut Profil nicht verantwortet. Den Ansatz kenne ich aus MATCH: erst messen, dann gezielt ändern, z. B. Iceberg-Partitionierung für Partition Pruning und Merge-on-Read für schnelle Writes.“ <span class="small">(Prüfen und durch dein echtes Beispiel ersetzen.)</span></p>
+
+<h2>10. Fallen</h2>
+<div class="trap">
+<ul>
+  <li>„Mehr Heap macht den Broker schneller.“ → <b>Falsch.</b> Der Page Cache braucht das RAM. Zu viel Heap nimmt es ihm weg.</li>
+  <li>„Kafka schreibt jede Nachricht mit fsync auf die Disk.“ → <b>Falsch.</b> Es schreibt in den Page Cache. Haltbarkeit kommt aus der Replikation.</li>
+  <li>„linger.ms=0 ist immer am schnellsten.“ → <b>Falsch.</b> Unter Last führen kleine Batches zu mehr Requests und oft mehr Latenz.</li>
+  <li>„Zero-Copy gilt immer.“ → <b>Falsch.</b> Nicht mit TLS.</li>
+  <li>„Mehr Partitionen lösen jedes Lag-Problem.“ → <b>Falsch.</b> Ist der Consumer-Code langsam, braucht es schnellere Verarbeitung.</li>
+  <li>„acks=all halbiert den Durchsatz.“ → <b>Falsch.</b> Mit gutem Batching ist der Unterschied klein. Es kostet vor allem Latenz.</li>
+</ul>
+</div>
+
+<h2>11. Fragen</h2>
+<details><summary>Warum ist Kafka so schnell?</summary><p>Append-only-Log mit sequentiellem Schreiben, Page Cache, Batching, komprimierte Batches und Zero-Copy beim Lesen.</p></details>
+<details><summary>Welche Producer-Werte bestimmen den Durchsatz?</summary><p><code>batch.size</code> (16 KiB), <code>linger.ms</code> (5 ms), <code>compression.type</code> (none), <code>buffer.memory</code> (32 MiB), <code>max.in.flight.requests.per.connection</code> (5).</p></details>
+<details><summary>Was hat Kafka 4.0 an linger.ms geändert?</summary><p>Der Standard ist von 0 auf 5 ms gestiegen (KIP-1030). Das gibt grössere Batches bei kaum mehr Latenz.</p></details>
+<details><summary>Welchen Kompressions-Codec wählen Sie?</summary><p>Meist zstd für gute Rate oder lz4 für wenig CPU. Gemessen mit echten Daten.</p></details>
+<details><summary>Warum compression.type=producer am Topic?</summary><p>Der Broker übernimmt den Codec des Producers und muss nicht neu komprimieren. Das spart Broker-CPU.</p></details>
+<details><summary>Was ist Zero-Copy?</summary><p><code>sendfile</code> schickt Daten direkt vom Page Cache ins Netz, ohne Umweg über die JVM. Funktioniert nicht mit TLS.</p></details>
+<details><summary>Warum braucht ein Broker viel RAM, aber wenig Heap?</summary><p>Das RAM dient dem Page Cache. Consumer, die aktuell sind, lesen dann nur aus dem RAM.</p></details>
+<details><summary>Was macht fetch.min.bytes?</summary><p>Der Broker antwortet erst, wenn so viele Bytes da sind oder <code>fetch.max.wait.ms</code> (500 ms) vorbei ist. Höher = weniger Requests.</p></details>
+<details><summary>Wie viele Partitionen braucht ein Topic?</summary><p>Grob: Ziel-Durchsatz geteilt durch Durchsatz pro Consumer, plus Reserve für Wachstum. Nicht beliebig viele, weil jede Partition Ressourcen kostet.</p></details>
+<details><summary>Was sind Network und I/O Threads?</summary><p>Network Threads nehmen Requests an und senden Antworten (3). I/O Threads verarbeiten sie (8). Ihre Idle-Metriken zeigen Überlast.</p></details>
+<details><summary>Welche Broker-Metrik zeigt Überlast zuerst?</summary><p><code>RequestHandlerAvgIdlePercent</code>. Unter 0.3 wird es eng.</p></details>
+<details><summary>Wie finden Sie heraus, wo die Request-Zeit hängt?</summary><p>Mit <code>TotalTimeMs</code> und seinen Teilen: Queue-, Local-, Remote- und Response-Zeit pro Request-Typ.</p></details>
+<details><summary>Wann blockiert producer.send()?</summary><p>Wenn <code>buffer.memory</code> voll ist oder Metadaten fehlen. Höchstens <code>max.block.ms</code> (60 s), dann Exception.</p></details>
+<details><summary>Kostet acks=all viel?</summary><p>Vor allem Latenz, weil auf die ISR gewartet wird. Mit guten Batches bleibt der Durchsatz fast gleich.</p></details>
+<details><summary>Welche OS-Einstellungen sind wichtig?</summary><p>Viele File Descriptors (ab 100 000), genug <code>vm.max_map_count</code>, XFS, <code>noatime</code>. Nicht die Default-Flush-Einstellungen ändern.</p></details>
+<details><summary>Warum kein RAID für Kafka?</summary><p>Kafka repliziert selbst. RAID kostet Schreibleistung und Platz, und ein Rebuild kann den Broker lahmlegen.</p></details>
+<details><summary>Wie testen Sie Kafka-Performance?</summary><p>Mit <code>kafka-producer-perf-test.sh</code> und <code>kafka-consumer-perf-test.sh</code>, mit echten Nachrichtengrössen und Daten, ein Parameter pro Lauf.</p></details>
+<details><summary>Was ist bei Kafka in Kubernetes für Performance wichtig?</summary><p>Schnelle lokale oder Premium-Disks, Memory-Limit mit Platz für Page Cache, keine knappen CPU-Limits, Anti-Affinity über Nodes.</p></details>
+<details><summary>Szenario: Der Lag wächst, aber die Broker sind fast idle. Was tun Sie?</summary><p>Der Consumer ist der Engpass. Verarbeitungszeit pro Batch messen, DB-Aufrufe bündeln, dann bis zur Partitionszahl skalieren.</p></details>
+<details><summary>Szenario: Nach dem Aktivieren von TLS steigt die Broker-CPU stark. Warum?</summary><p>Zero-Copy fällt weg, und Verschlüsselung kostet CPU. Lösung: mehr CPU einplanen, moderne Cipher, eventuell mehr Broker.</p></details>
+<details><summary>Szenario: Der Producer schafft nur 5 MB/s, das Ziel ist 50 MB/s. Wie gehen Sie vor?</summary><p>Erst messen: <code>batch-size-avg</code>, <code>record-queue-time-avg</code>, Netz. Dann <code>linger.ms</code> und <code>batch.size</code> erhöhen, Kompression an, Partitionen prüfen. Jede Änderung einzeln testen.</p></details>
+
+</body>
+</html>

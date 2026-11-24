@@ -1,0 +1,245 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cache-Muster</title>
+<style>
+  body { font: 17px/1.55 -apple-system, system-ui, sans-serif; max-width: 760px; margin: 0 auto; padding: 16px; color: #1d1d1f; }
+  h1 { font-size: 28px; margin: 8px 0 4px; }
+  h2 { font-size: 21px; margin: 32px 0 8px; padding-top: 12px; border-top: 2px solid #e5e5ea; }
+  .kern { background: #eef6ff; border-left: 4px solid #0a66c2; padding: 10px 14px; border-radius: 6px; }
+  .senior { background: #f0faf0; border-left: 4px solid #2e7d32; padding: 10px 14px; border-radius: 6px; }
+  .trap { background: #fff4f2; border-left: 4px solid #c62828; padding: 10px 14px; border-radius: 6px; }
+  code { background: #f2f2f7; padding: 1px 5px; border-radius: 4px; font-size: 15px; }
+  pre { background: #1e1e1e; color: #e6e6e6; padding: 12px; border-radius: 8px; overflow-x: auto; font-size: 13.5px; line-height: 1.45; }
+  svg { width: 100%; height: auto; display: block; margin: 10px 0; }
+  ol li, ul li { margin: 4px 0; }
+  details { border: 1px solid #e5e5ea; border-radius: 8px; padding: 8px 12px; margin: 6px 0; }
+  summary { font-weight: 600; cursor: pointer; }
+  details p { margin: 6px 0 2px; }
+  .small { color: #6e6e73; font-size: 14px; }
+</style>
+</head>
+<body>
+
+<h1>Cache-Muster</h1>
+<p class="small">Redis · Tier 1 · Quellen: redis.io Docs „Key eviction“, Befehle <code>EXPIRE</code>, <code>SET</code>, <code>INFO</code>; <code>redis.conf</code> (Defaults); Spring Framework Reference „Cache Abstraction“</p>
+
+<div class="kern">
+<b>Kern:</b> Ein <b>Cache</b> ist eine schnelle Kopie von Daten, die eigentlich in einer langsameren Quelle liegen, z. B. in PostgreSQL. <b>Cache-Muster</b> legen fest, wer den Cache füllt, wann er aktualisiert wird und wie veraltete Daten verschwinden. Die schwierigsten Fragen sind <b>Invalidierung</b> und <b>Stampedes</b>, nicht das Speichern.
+</div>
+
+<h2>1. Wo sitzt der Cache?</h2>
+<svg viewBox="0 0 720 300" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="a" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="10" y="110" width="120" height="60" rx="8" fill="#fff" stroke="#555"/><text x="70" y="136" text-anchor="middle">Client</text><text x="70" y="154" text-anchor="middle" font-size="12">Browser / App</text>
+  <line x1="130" y1="140" x2="178" y2="140" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="180" y="90" width="180" height="100" rx="10" fill="#f7f7fa" stroke="#999" stroke-dasharray="5 4"/><text x="270" y="110" text-anchor="middle" font-weight="700">Service-Pods (×3)</text>
+  <rect x="196" y="122" width="148" height="52" rx="6" fill="#dbe9fb" stroke="#0a66c2"/><text x="270" y="144" text-anchor="middle" font-size="13">L1: lokaler Cache</text><text x="270" y="162" text-anchor="middle" font-size="11">Caffeine, pro Pod</text>
+  <line x1="360" y1="125" x2="418" y2="70" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <line x1="360" y1="160" x2="418" y2="215" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="420" y="30" width="180" height="70" rx="10" fill="#c62828"/><text x="510" y="58" text-anchor="middle" fill="#fff" font-weight="700">Redis</text><text x="510" y="78" text-anchor="middle" fill="#fff" font-size="12">L2: geteilt, im RAM, TTL</text>
+  <rect x="420" y="180" width="180" height="70" rx="10" fill="#e8f5e9" stroke="#2e7d32"/><text x="510" y="208" text-anchor="middle" font-weight="700">PostgreSQL</text><text x="510" y="228" text-anchor="middle" font-size="12">Source of Truth</text>
+  <text x="640" y="70" font-size="12">~&lt;1 ms</text>
+  <text x="640" y="220" font-size="12">ms bis s</text>
+  <text x="270" y="220" text-anchor="middle" font-size="12">~ns–µs</text>
+</svg>
+<ol>
+  <li><b>Source of Truth:</b> die Datenbank. Nur sie ist verbindlich. Der Cache darf jederzeit leer sein.</li>
+  <li><b>L2: verteilter Cache</b> wie <b>Redis</b>: ein In-Memory-Key-Value-Store, den alle Pods teilen. Ein Netzwerk-Hop, aber kein Plattenzugriff.</li>
+  <li><b>L1: lokaler Cache</b> wie Caffeine: im Heap jedes Pods. Am schnellsten, aber jede Instanz hat ihre eigene Kopie.</li>
+  <li><b>TTL</b> (Time To Live): Ablaufzeit eines Eintrags. Danach löscht Redis den Schlüssel.</li>
+  <li><b>Eviction:</b> Ist der Speicher voll, entfernt Redis Schlüssel nach einer <b>Policy</b>, z. B. die am längsten nicht genutzten.</li>
+</ol>
+
+<h2>2. Die Reise eines Reads mit Cache-Aside (und ein Stampede)</h2>
+<svg viewBox="0 0 720 300" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="b" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker><marker id="r" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#c62828"/></marker></defs>
+  <rect x="10" y="20" width="140" height="62" rx="10" fill="#eee" stroke="#777"/><text x="80" y="46" text-anchor="middle" font-weight="700">1. GET key</text><text x="80" y="66" text-anchor="middle" font-size="12">an Redis</text>
+  <line x1="150" y1="51" x2="188" y2="51" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="190" y="20" width="150" height="62" rx="10" fill="#2e7d32"/><text x="265" y="46" text-anchor="middle" fill="#fff" font-weight="700">Hit</text><text x="265" y="66" text-anchor="middle" fill="#fff" font-size="12">Wert zurück, fertig</text>
+  <line x1="80" y1="82" x2="80" y2="128" stroke="#555" stroke-width="2" marker-end="url(#b)"/><text x="95" y="110" font-size="12">Miss</text>
+  <rect x="10" y="130" width="150" height="62" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="85" y="156" text-anchor="middle" font-weight="700">2. DB lesen</text><text x="85" y="176" text-anchor="middle" font-size="12">SELECT …</text>
+  <line x1="160" y1="161" x2="198" y2="161" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="200" y="130" width="170" height="62" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="285" y="156" text-anchor="middle" font-weight="700">3. SET key EX 600</text><text x="285" y="176" text-anchor="middle" font-size="12">Cache füllen</text>
+  <line x1="370" y1="161" x2="408" y2="161" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="410" y="130" width="120" height="62" rx="10" fill="#2e7d32"/><text x="470" y="166" text-anchor="middle" fill="#fff" font-weight="700">4. Antwort</text>
+  <rect x="440" y="10" width="270" height="90" rx="10" fill="#fdecea" stroke="#c62828"/><text x="575" y="34" text-anchor="middle" font-weight="700" fill="#c62828">Stampede</text><text x="575" y="56" text-anchor="middle" font-size="12">TTL eines heissen Keys läuft ab</text><text x="575" y="74" text-anchor="middle" font-size="12">100 Requests: alle Miss</text><text x="575" y="92" text-anchor="middle" font-size="12">100 × dieselbe teure DB-Abfrage</text>
+  <path d="M575,100 C575,220 140,240 85,194" fill="none" stroke="#c62828" stroke-width="2" stroke-dasharray="6 4" marker-end="url(#r)"/>
+  <text x="380" y="262" text-anchor="middle" font-size="13">Schutz: Lock (SET NX), frühzeitiges Neu-Laden, TTL-Jitter, Stale-Wert ausliefern</text>
+</svg>
+<ol>
+  <li><b>Lesen aus dem Cache:</b> Die App fragt Redis mit <code>GET produkt:42</code>. Ist der Wert da (<b>Hit</b>), ist sie nach unter einer Millisekunde fertig.</li>
+  <li><b>Miss:</b> Der Wert fehlt. Die App liest aus der Datenbank.</li>
+  <li><b>Füllen:</b> Die App schreibt den Wert mit TTL: <code>SET produkt:42 {...} EX 600</code>.</li>
+  <li><b>Antwort:</b> Der nächste Request bekommt einen Hit.</li>
+  <li><b>Stampede:</b> Läuft die TTL eines sehr gefragten Schlüssels ab, gibt es viele Misses gleichzeitig. Alle fragen die DB. Die DB bricht unter der Last ein. Das heisst auch <b>Thundering Herd</b> oder <b>Dogpile</b>.</li>
+  <li><b>Schutz:</b> Nur ein Request lädt neu (Lock), die anderen warten kurz oder bekommen den alten Wert.</li>
+</ol>
+
+<h2>3. Beispiel: Stampede messen und mit SET NX verhindern</h2>
+<pre># stampede.py (gekürzt): Redis-Ersatz im Speicher, gleiche Logik
+def naive(cache, k):                       # Cache-Aside ohne Schutz
+    v = cache.get(k)
+    if v is None:
+        v = db_load(k); cache.set(k, v)    # db_load dauert 200 ms
+    return v
+
+def mit_lock(cache, k):                    # nur einer lädt
+    while True:
+        v = cache.get(k)
+        if v is not None: return v
+        if cache.set_nx(k):                # wie: SET lock:k 1 NX EX 10
+            try:   v = db_load(k); cache.set(k, v); return v
+            finally: cache.delete_lock(k)
+        time.sleep(0.01)                   # kurz warten, erneut lesen
+
+# 100 Threads fragen gleichzeitig "produkt:42" bei leerem Cache</pre>
+<pre>$ python -I stampede.py
+ohne Schutz        100 gleichzeitige Requests -&gt; 100 DB-Abfragen, 238 ms
+mit Lock (SET NX)  100 gleichzeitige Requests -&gt;   1 DB-Abfragen, 212 ms</pre>
+<p class="small">Echte Ausgabe, Python 3.12.10. Simulation mit Threads und einem Dictionary, kein echtes Redis.</p>
+<pre>127.0.0.1:6379&gt; SET produkt:42 "{\"preis\":19.90}" EX 600
+OK
+127.0.0.1:6379&gt; TTL produkt:42
+(integer) 600
+127.0.0.1:6379&gt; SET produkt:42 "{\"preis\":17.90}"
+OK
+127.0.0.1:6379&gt; TTL produkt:42
+(integer) -1
+127.0.0.1:6379&gt; SET lock:produkt:42 "pod-a-7f3c" NX EX 10
+OK
+127.0.0.1:6379&gt; SET lock:produkt:42 "pod-b-91d2" NX EX 10
+(nil)
+127.0.0.1:6379&gt; CONFIG GET maxmemory-policy
+1) "maxmemory-policy"
+2) "noeviction"
+127.0.0.1:6379&gt; INFO stats
+keyspace_hits:982341
+keyspace_misses:17659
+evicted_keys:0
+expired_keys:48211</pre>
+<p class="small">Erwartetes Ergebnis (laut Doku, nicht ausgeführt). Redis ist hier nicht installiert. Zahlen in <code>INFO</code> beispielhaft; <code>TTL -1</code> nach <code>SET</code> und <code>noeviction</code> als Default laut redis.io und <code>redis.conf</code>.</p>
+<ol>
+  <li>Ohne Schutz laden <b>100</b> Requests denselben Wert aus der DB. Mit Lock lädt <b>einer</b>. Die Gesamtzeit ist fast gleich, aber die DB-Last fällt um Faktor 100.</li>
+  <li><code>SET ... NX EX 10</code> setzt den Lock nur, wenn er fehlt, und mit Ablauf. Stirbt der Halter, verschwindet der Lock nach 10 s von selbst.</li>
+  <li>Der Lock-Wert ist eine eindeutige ID. Nur der Halter darf ihn löschen. Sonst löscht ein langsamer Pod den Lock eines anderen.</li>
+  <li><b>Achtung:</b> Ein <code>SET</code> ohne <code>EX</code> oder <code>KEEPTTL</code> löscht die TTL. Danach ist <code>TTL</code> = <b>-1</b>: Der Schlüssel lebt für immer.</li>
+  <li>Default ist <code>maxmemory-policy noeviction</code>. Voll heisst dann: Schreibbefehle bekommen einen Fehler. Für einen Cache muss man eine Eviction-Policy wählen.</li>
+  <li><b>Hit Rate</b> = hits / (hits + misses) = 98,2 %. Ein Abfall zeigt falsche TTLs, falsche Policy oder Invalidierungs-Stürme.</li>
+</ol>
+
+<h2>4. Details, die Interviewer fragen</h2>
+<ol>
+  <li><b>Cache-Aside (Lazy Loading):</b> Die App liest zuerst den Cache, bei Miss die DB, dann füllt sie den Cache. Beim Schreiben schreibt sie die DB und <b>löscht</b> den Cache-Eintrag. Das häufigste Muster. Spring <code>@Cacheable</code> und <code>@CacheEvict</code> setzen es um.</li>
+  <li><b>Read-Through:</b> Die App fragt nur den Cache. Der Cache selbst lädt bei Miss aus der DB über einen Loader. Beispiel: Caffeine <code>LoadingCache</code>. Code wird einfacher, der Cache braucht DB-Wissen.</li>
+  <li><b>Write-Through:</b> Jeder Write geht durch den Cache synchron in die DB. Cache und DB sind direkt konsistent. Preis: langsamere Writes, und selten gelesene Daten füllen den Cache.</li>
+  <li><b>Write-Behind (Write-Back):</b> Writes gehen in den Cache, die DB wird später asynchron und gebündelt aktualisiert. Sehr schnelle Writes. Risiko: <b>Datenverlust</b>, wenn der Cache vor dem Schreiben ausfällt, und schwierige Reihenfolge.</li>
+  <li><b>Refresh-Ahead:</b> Häufig gelesene Einträge werden vor Ablauf im Hintergrund neu geladen. Gut gegen Stampedes bei heissen Schlüsseln.</li>
+  <li><b>TTL:</b> begrenzt, wie alt ein Wert sein darf. Kurze TTL = frischer, aber mehr Misses. Lange TTL = mehr Hits, aber älter. TTL ist das Sicherheitsnetz, falls eine Invalidierung verloren geht.</li>
+  <li><b>Ablauf in Redis:</b> passiv (beim Zugriff wird ein abgelaufener Schlüssel gelöscht) und aktiv (Redis prüft regelmässig zufällige Schlüssel mit TTL). Abgelaufene Schlüssel sind nie sichtbar, belegen aber kurz Speicher.</li>
+  <li><b>Eviction-Policies:</b> <code>noeviction</code> (Default: Fehler beim Schreiben), <code>allkeys-lru</code> (Standardwahl für Caches), <code>allkeys-lfu</code> (selten genutzte zuerst), <code>allkeys-random</code>, <code>volatile-lru</code>/<code>-lfu</code>/<code>-random</code>/<code>-ttl</code> (nur Schlüssel mit TTL). Seit Redis 8.6 gibt es <code>allkeys-lrm</code> und <code>volatile-lrm</code> (zuletzt geändert).</li>
+  <li><b>LRU ist angenähert:</b> Redis prüft eine Stichprobe von Schlüsseln (<code>maxmemory-samples</code>, Default 5) und entfernt den ältesten davon. Das spart Speicher und ist praktisch fast so gut wie echtes LRU.</li>
+  <li><b>volatile-* ohne TTL:</b> Haben keine Schlüssel eine TTL, verhalten sich <code>volatile-*</code>-Policies wie <code>noeviction</code>.</li>
+  <li><b>Stampede-Schutz:</b>
+    <ul>
+      <li><b>Lock / Single Flight:</b> Nur einer lädt (<code>SET NX EX</code> verteilt, oder lokal z. B. Caffeine, das pro Schlüssel nur einmal lädt).</li>
+      <li><b>TTL-Jitter:</b> TTL zufällig streuen (z. B. 600 s ± 10 %), damit nicht alle Schlüssel gleichzeitig ablaufen.</li>
+      <li><b>Frühzeitiges Neu-Laden:</b> Kurz vor Ablauf lädt ein Request mit wachsender Wahrscheinlichkeit neu (probabilistic early expiration).</li>
+      <li><b>Stale-While-Revalidate:</b> Den alten Wert ausliefern und im Hintergrund neu laden.</li>
+    </ul></li>
+  <li><b>Invalidierung:</b> Nach einem Write den Eintrag <b>löschen</b>, nicht neu schreiben. Grund: Zwei parallele Writes können den Cache sonst mit dem älteren Wert überschreiben. Reihenfolge: zuerst DB committen, dann löschen.</li>
+  <li><b>Race beim Cache-Aside:</b> Leser A liest alten Wert aus der DB. Schreiber B schreibt DB und löscht Cache. A schreibt danach den alten Wert in den Cache. Gegenmittel: kurze TTL, verzögertes zweites Löschen, oder Versionsnummern im Wert.</li>
+  <li><b>Invalidierung über Events:</b> Ein Service publiziert „produkt.geändert“ (z. B. Kafka, CDC mit Debezium). Alle Pods löschen ihren L1-Eintrag. Redis Pub/Sub geht auch, verliert aber Nachrichten bei Verbindungsabbruch.</li>
+  <li><b>Cache Penetration:</b> Anfragen nach Schlüsseln, die es nicht gibt, gehen immer an die DB. Lösung: auch „nicht gefunden“ kurz cachen (Negative Caching) oder Bloom-Filter.</li>
+</ol>
+
+<h2>5. Vergleich</h2>
+<ul>
+  <li><b>Cache-Aside:</b> App steuert alles, robust bei Cache-Ausfall. Erster Read ist immer ein Miss.</li>
+  <li><b>Read-Through:</b> wie Cache-Aside, aber die Ladelogik sitzt im Cache. Sauberer Code.</li>
+  <li><b>Write-Through:</b> Cache immer aktuell, Writes langsamer, Cache füllt sich mit Ungelesenem.</li>
+  <li><b>Write-Behind:</b> schnellste Writes, Risiko Datenverlust. Nur für tolerante Daten wie Zähler.</li>
+  <li><b>Lokal (Caffeine) vs verteilt (Redis):</b> Nanosekunden, aber pro Pod unterschiedlich vs geteilt, ein Netzwerk-Hop, eigener Betrieb.</li>
+  <li><b>Redis vs Memcached:</b> Datentypen, Persistenz, Replikation, Lua vs nur Strings, einfacher, multithreaded.</li>
+  <li><b>Löschen vs Aktualisieren bei Writes:</b> sicher gegen Races vs ein Miss weniger, aber Race-anfällig.</li>
+</ul>
+
+<h2>6. In der Produktion</h2>
+<ol>
+  <li><b>DB bricht nach Cache-Flush oder Redis-Neustart ein:</b> Kalter Cache, alle Requests sind Misses. Lösung: Warm-up, Lock pro Schlüssel, Rate-Limit vor der DB, Redis-Replikation.</li>
+  <li><b>Viele Schlüssel laufen gleichzeitig ab:</b> Ein Batch hat alles mit derselben TTL geschrieben. Lösung: TTL-Jitter.</li>
+  <li><b>Redis voll, Writes scheitern:</b> „OOM command not allowed when used memory &gt; 'maxmemory'“. Ursache: <code>noeviction</code> oder keine TTLs bei <code>volatile-*</code>. Lösung: <code>allkeys-lru</code> oder <code>-lfu</code>, TTLs setzen, <code>maxmemory</code> passend.</li>
+  <li><b>Veraltete Daten nach Update:</b> Invalidierung vergessen, Race oder L1-Cache in anderen Pods. Lösung: Löschen nach Commit, kurze L1-TTL, Invalidierungs-Events.</li>
+  <li><b>Hot Key:</b> Ein Schlüssel bekommt einen Grossteil der Last, ein Redis-Knoten glüht. Lösung: L1-Cache davor, Schlüssel replizieren.</li>
+  <li><b>Big Key:</b> Ein Wert mit vielen MB blockiert Redis beim Lesen oder Löschen. Lösung: aufteilen, <code>UNLINK</code> statt <code>DEL</code>.</li>
+  <li><b>Personendaten im Cache:</b> Auch ein Cache ist ein Datenspeicher. Lösung: Verschlüsselung in Transit, ACLs, kurze TTL, nur nötige Felder.</li>
+</ol>
+
+<h2>7. Diagnose: Werkzeuge und Befehle</h2>
+<ul>
+  <li><code>INFO stats</code>: <code>keyspace_hits</code>, <code>keyspace_misses</code>, <code>evicted_keys</code>, <code>expired_keys</code>.</li>
+  <li><code>INFO memory</code>: <code>used_memory</code>, <code>maxmemory</code>, <code>mem_fragmentation_ratio</code>.</li>
+  <li><code>TTL key</code> (-1 = keine TTL, -2 = existiert nicht), <code>OBJECT FREQ key</code> (bei LFU), <code>MEMORY USAGE key</code>.</li>
+  <li><code>redis-cli --bigkeys</code>, <code>redis-cli --hotkeys</code> (braucht LFU-Policy), <code>redis-cli --latency</code>.</li>
+  <li><code>SLOWLOG GET 10</code>: langsame Befehle, z. B. <code>KEYS *</code>.</li>
+  <li><code>SCAN 0 MATCH produkt:* COUNT 100</code> statt <code>KEYS</code> in Produktion.</li>
+  <li>Spring Boot Actuator: <code>/actuator/caches</code>, Micrometer-Metriken <code>cache.gets{result=hit|miss}</code>.</li>
+</ul>
+
+<h2>8. Senior-Punkte</h2>
+<div class="senior">
+<ol>
+  <li><b>Erst messen, dann cachen.</b> Ein Cache bringt Konsistenz-Probleme. Oft hilft vorher ein Index oder eine bessere Abfrage.</li>
+  <li><b>Akzeptierte Veraltung festlegen.</b> „Wie alt darf der Wert sein?“ ist eine fachliche Frage. Daraus folgt die TTL.</li>
+  <li><b>Der Cache ist kein Speicher der Wahrheit.</b> Das System muss mit leerem Cache funktionieren, nur langsamer.</li>
+  <li><b>Löschen statt Aktualisieren</b>, nach dem Commit, plus TTL als Sicherheitsnetz.</li>
+  <li><b>Stampede-Schutz für heisse Schlüssel</b> gehört ins Design, nicht in den Postmortem.</li>
+  <li><b>Write-Behind nur, wenn Datenverlust akzeptabel ist.</b> Für Geld oder Anträge nie.</li>
+</ol>
+</div>
+
+<h2>9. Aus dem Projekt</h2>
+<p>„Mit Redis habe ich keine Produktionserfahrung. Am nächsten kommt MATCH: Dremio ersetzte den Spark Thrift Server als Serving-Layer und beschleunigt Abfragen mit Reflections, also vorberechneten Ergebnissen.“ <span class="small">(Prüfen und durch dein echtes Beispiel ersetzen. Ehrlich sagen, dass Redis Lernstoff ist.)</span></p>
+
+<h2>10. Fallen</h2>
+<div class="trap">
+<ul>
+  <li>„Nach einem Update schreibe ich den neuen Wert in den Cache.“ → Race-anfällig. Besser <b>löschen</b> nach dem Commit.</li>
+  <li>„Redis entfernt bei vollem Speicher automatisch alte Schlüssel.“ → <b>Falsch.</b> Default ist <code>noeviction</code>: Writes scheitern.</li>
+  <li>„<code>SET</code> behält die TTL.“ → <b>Falsch.</b> <code>SET</code> ohne <code>EX</code>/<code>KEEPTTL</code> löscht sie.</li>
+  <li>„Redis LRU ist exakt.“ → <b>Falsch.</b> Es ist eine Stichproben-Annäherung.</li>
+  <li>„Write-Behind ist einfach schneller.“ → Schneller, aber mit Risiko für Datenverlust und Reihenfolge-Fehler.</li>
+  <li>„<code>KEYS *</code> zum Invalidieren.“ → Blockiert Redis. <code>SCAN</code> oder Schlüssel-Versionen nutzen.</li>
+</ul>
+</div>
+
+<h2>11. Fragen</h2>
+<details><summary>Was ist Cache-Aside?</summary><p>Die App liest zuerst den Cache, bei Miss die DB und füllt dann den Cache. Beim Schreiben ändert sie die DB und löscht den Eintrag.</p></details>
+<details><summary>Was ist der Unterschied zwischen Cache-Aside und Read-Through?</summary><p>Bei Cache-Aside lädt die App. Bei Read-Through lädt der Cache selbst über einen Loader.</p></details>
+<details><summary>Was ist Write-Through?</summary><p>Jeder Write geht synchron durch den Cache in die DB. Der Cache ist immer aktuell, Writes sind langsamer.</p></details>
+<details><summary>Was ist Write-Behind?</summary><p>Writes gehen in den Cache, die DB wird später asynchron aktualisiert. Sehr schnell, aber Datenverlust ist möglich.</p></details>
+<details><summary>Was ist Refresh-Ahead?</summary><p>Heisse Einträge werden vor ihrem Ablauf im Hintergrund neu geladen. So gibt es für sie keinen Miss.</p></details>
+<details><summary>Wie wählen Sie eine TTL?</summary><p>Nach der fachlich erlaubten Veraltung und der Änderungsrate. Plus Jitter, damit nicht alles gleichzeitig abläuft.</p></details>
+<details><summary>Wie läuft eine TTL in Redis ab?</summary><p>Passiv beim Zugriff und aktiv durch regelmässige Stichproben unter Schlüsseln mit TTL.</p></details>
+<details><summary>Was bedeutet TTL -1 und -2?</summary><p>-1: Schlüssel existiert ohne Ablaufzeit. -2: Schlüssel existiert nicht.</p></details>
+<details><summary>Welche Eviction-Policies gibt es?</summary><p>noeviction, allkeys-lru, allkeys-lfu, allkeys-random, volatile-lru, volatile-lfu, volatile-random, volatile-ttl, und seit 8.6 allkeys-lrm und volatile-lrm.</p></details>
+<details><summary>Was ist die Default-Policy und warum ist sie für Caches gefährlich?</summary><p>noeviction. Bei vollem Speicher scheitern Writes, statt alte Einträge zu entfernen.</p></details>
+<details><summary>Welche Policy nehmen Sie für einen reinen Cache?</summary><p>Meist allkeys-lru, bei klaren Hot-Spots allkeys-lfu.</p></details>
+<details><summary>LRU oder LFU?</summary><p>LRU entfernt lange nicht Genutztes. LFU entfernt selten Genutztes und schützt dauerhaft beliebte Schlüssel besser.</p></details>
+<details><summary>Ist das LRU in Redis exakt?</summary><p>Nein. Redis nimmt eine Stichprobe (maxmemory-samples, Default 5) und entfernt den ältesten Schlüssel daraus.</p></details>
+<details><summary>Was ist ein Cache Stampede?</summary><p>Ein heisser Schlüssel läuft ab und viele Requests laden ihn gleichzeitig aus der DB. Die DB wird überlastet.</p></details>
+<details><summary>Wie verhindern Sie einen Stampede?</summary><p>Lock pro Schlüssel (SET NX EX), TTL-Jitter, frühzeitiges Neu-Laden oder alten Wert ausliefern und im Hintergrund laden.</p></details>
+<details><summary>Warum löschen statt aktualisieren nach einem Write?</summary><p>Parallele Writes können den Cache sonst mit einem älteren Wert überschreiben. Löschen ist idempotent und sicher.</p></details>
+<details><summary>In welcher Reihenfolge: DB schreiben oder Cache löschen?</summary><p>Erst DB committen, dann Cache löschen. Sonst kann ein Leser den alten Wert neu in den Cache laden.</p></details>
+<details><summary>Wie invalidieren Sie lokale Caches in mehreren Pods?</summary><p>Mit Events (z. B. Kafka oder CDC), auf die jeder Pod reagiert, plus kurze lokale TTL als Netz.</p></details>
+<details><summary>Was ist Cache Penetration?</summary><p>Anfragen nach nicht existierenden Schlüsseln gehen immer an die DB. Lösung: Negative Caching oder Bloom-Filter.</p></details>
+<details><summary>Wie messen Sie den Erfolg eines Caches?</summary><p>Hit Rate aus keyspace_hits und keyspace_misses, dazu evicted_keys und die Latenz der DB.</p></details>
+<details><summary>Lokaler Cache oder Redis?</summary><p>Lokal ist am schnellsten, aber pro Pod verschieden. Redis ist geteilt und konsistenter, kostet einen Netzwerk-Hop und Betrieb. Oft beides: L1 kurz, L2 länger.</p></details>
+<details><summary>Szenario: Nach einem Redis-Neustart fällt die Datenbank aus. Was ist passiert und was tun Sie?</summary><p>Kalter Cache: Alle Requests sind Misses und treffen die DB. Lösung: Lock pro Schlüssel, Warm-up, Rate-Limit vor der DB und Redis mit Replikation.</p></details>
+<details><summary>Szenario: Benutzer sehen nach einer Preisänderung noch minutenlang den alten Preis. Wo suchen Sie?</summary><p>Fehlende oder falsche Invalidierung, Race beim Cache-Aside oder lokale Caches in anderen Pods. Lösung: Löschen nach Commit, Events an alle Pods, kürzere TTL.</p></details>
+<details><summary>Szenario: Redis meldet „OOM command not allowed“. Was tun Sie?</summary><p>maxmemory-policy prüfen: Wahrscheinlich noeviction oder volatile ohne TTLs. Auf allkeys-lru umstellen, TTLs setzen und grosse Schlüssel suchen.</p></details>
+
+</body>
+</html>

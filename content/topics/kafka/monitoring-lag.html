@@ -1,0 +1,202 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Kafka Monitoring und Lag</title>
+<style>
+  body { font: 17px/1.55 -apple-system, system-ui, sans-serif; max-width: 760px; margin: 0 auto; padding: 16px; color: #1d1d1f; }
+  h1 { font-size: 28px; margin: 8px 0 4px; }
+  h2 { font-size: 21px; margin: 32px 0 8px; padding-top: 12px; border-top: 2px solid #e5e5ea; }
+  .kern { background: #eef6ff; border-left: 4px solid #0a66c2; padding: 10px 14px; border-radius: 6px; }
+  .senior { background: #f0faf0; border-left: 4px solid #2e7d32; padding: 10px 14px; border-radius: 6px; }
+  .trap { background: #fff4f2; border-left: 4px solid #c62828; padding: 10px 14px; border-radius: 6px; }
+  code { background: #f2f2f7; padding: 1px 5px; border-radius: 4px; font-size: 15px; }
+  pre { background: #1e1e1e; color: #e6e6e6; padding: 12px; border-radius: 8px; overflow-x: auto; font-size: 13.5px; line-height: 1.45; }
+  svg { width: 100%; height: auto; display: block; margin: 10px 0; }
+  ol li, ul li { margin: 4px 0; }
+  details { border: 1px solid #e5e5ea; border-radius: 8px; padding: 8px 12px; margin: 6px 0; }
+  summary { font-weight: 600; cursor: pointer; }
+  details p { margin: 6px 0 2px; }
+  .small { color: #6e6e73; font-size: 14px; }
+</style>
+</head>
+<body>
+
+<h1>Monitoring und Consumer Lag</h1>
+<p class="small">Kafka · Tier 2 · Quellen: Apache Kafka 4.4 Documentation (Operations: Monitoring, Basic Kafka Operations; Consumer Configs), KIP-714, KEDA Docs (Apache Kafka Scaler), Prometheus JMX Exporter. Grundbegriffe zu Gruppen: Seite „Consumer Groups“.</p>
+
+<div class="kern">
+<b>Kern:</b> <b>Consumer Lag</b> ist der Abstand zwischen der neuesten Nachricht einer Partition und dem Fortschritt einer Consumer Group. Er sagt, ob die Verarbeitung mit dem Zufluss mithält. Gutes Kafka-Monitoring beobachtet <b>drei Ebenen</b>: Broker-Gesundheit, Client-Metriken und Lag pro Gruppe, am besten auch als <b>Zeit</b>.
+</div>
+
+<h2>1. Wo entsteht und wo misst man Lag?</h2>
+<svg viewBox="0 0 720 300" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="a" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="10" y="20" width="700" height="70" rx="10" fill="#f7f7fa" stroke="#999"/><text x="30" y="44" font-weight="700">Partition steuer-events-3</text>
+  <rect x="30" y="54" width="300" height="26" fill="#e8f5e9" stroke="#2e7d32"/><text x="180" y="72" text-anchor="middle" font-size="12">verarbeitet + committet</text>
+  <rect x="330" y="54" width="120" height="26" fill="#fff4e0" stroke="#b26a00"/><text x="390" y="72" text-anchor="middle" font-size="12">gelesen, offen</text>
+  <rect x="450" y="54" width="240" height="26" fill="#fff4f2" stroke="#c62828"/><text x="570" y="72" text-anchor="middle" font-size="12">noch nicht gelesen</text>
+  <text x="330" y="108" text-anchor="middle" font-size="12">Committed Offset</text><text x="450" y="108" text-anchor="middle" font-size="12">Position</text><text x="690" y="108" text-anchor="end" font-size="12">Log-End-Offset</text>
+  <rect x="10" y="140" width="210" height="80" rx="10" fill="#0a66c2"/><text x="115" y="168" text-anchor="middle" fill="#fff" font-weight="700">Consumer (Client)</text><text x="115" y="188" text-anchor="middle" fill="#fff" font-size="12">records-lag-max</text><text x="115" y="204" text-anchor="middle" fill="#fff" font-size="12">misst ab Position</text>
+  <rect x="255" y="140" width="210" height="80" rx="10" fill="#fff" stroke="#555"/><text x="360" y="168" text-anchor="middle" font-weight="700">Exporter / CLI</text><text x="360" y="188" text-anchor="middle" font-size="12">LEO − Committed</text><text x="360" y="204" text-anchor="middle" font-size="12">über Admin-API</text>
+  <rect x="500" y="140" width="210" height="80" rx="10" fill="#fff" stroke="#555"/><text x="605" y="168" text-anchor="middle" font-weight="700">Broker (JMX)</text><text x="605" y="188" text-anchor="middle" font-size="12">URP, ISR, Idle %</text><text x="605" y="204" text-anchor="middle" font-size="12">Bytes in/out</text>
+  <line x1="115" y1="220" x2="320" y2="262" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <line x1="360" y1="220" x2="360" y2="258" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <line x1="605" y1="220" x2="400" y2="262" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="250" y="260" width="220" height="34" rx="8" fill="#e8f5e9" stroke="#2e7d32"/><text x="360" y="282" text-anchor="middle">Prometheus → Grafana → Alarm</text>
+</svg>
+<ol>
+  <li><b>Log-End-Offset (LEO):</b> der Offset der nächsten Nachricht, die geschrieben wird.</li>
+  <li><b>Position:</b> der nächste Offset, den der Consumer lesen wird. Er liegt im Speicher des Clients.</li>
+  <li><b>Committed Offset:</b> der Fortschritt, den die Gruppe in <code>__consumer_offsets</code> gespeichert hat.</li>
+  <li><b>Client-Lag:</b> Der Consumer misst <code>records-lag</code> ab seiner <b>Position</b>. Laut Doku nicht ab dem Commit.</li>
+  <li><b>Gruppen-Lag:</b> CLI und Exporter rechnen <b>LEO − Committed Offset</b> über die Admin-API. Das geht auch, wenn kein Consumer läuft.</li>
+  <li><b>Broker-Metriken</b> per JMX zeigen die Gesundheit des Clusters selbst.</li>
+</ol>
+
+<h2>2. Die Reise einer Lag-Spitze (die Geschichte zum Merken)</h2>
+<svg viewBox="0 0 720 290" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="b" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="10" y="20" width="160" height="70" rx="10" fill="#eee" stroke="#777"/><text x="90" y="46" text-anchor="middle" font-weight="700">1. Fristende</text><text x="90" y="66" text-anchor="middle" font-size="12">10× mehr Events</text>
+  <line x1="170" y1="55" x2="198" y2="55" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="200" y="20" width="160" height="70" rx="10" fill="#fff4e0" stroke="#b26a00"/><text x="280" y="46" text-anchor="middle" font-weight="700">2. Lag steigt</text><text x="280" y="66" text-anchor="middle" font-size="12">Zufluss &gt; Abfluss</text>
+  <line x1="360" y1="55" x2="388" y2="55" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="390" y="20" width="160" height="70" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="470" y="46" text-anchor="middle" font-weight="700">3. Exporter</text><text x="470" y="66" text-anchor="middle" font-size="12">alle 30 s messen</text>
+  <line x1="550" y1="55" x2="578" y2="55" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="580" y="20" width="130" height="70" rx="10" fill="#fff4f2" stroke="#c62828"/><text x="645" y="46" text-anchor="middle" font-weight="700">4. Alarm?</text><text x="645" y="66" text-anchor="middle" font-size="12">Trend + Zeit</text>
+  <line x1="645" y1="90" x2="645" y2="138" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="440" y="140" width="270" height="70" rx="10" fill="#fff" stroke="#555"/><text x="575" y="166" text-anchor="middle" font-weight="700">5. Ursache eingrenzen</text><text x="575" y="186" text-anchor="middle" font-size="12">alle Partitionen oder eine?</text>
+  <line x1="440" y1="175" x2="352" y2="175" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="90" y="140" width="260" height="70" rx="10" fill="#e8f5e9" stroke="#2e7d32"/><text x="220" y="166" text-anchor="middle" font-weight="700">6. Reaktion</text><text x="220" y="186" text-anchor="middle" font-size="12">skalieren (KEDA) oder Fehler fixen</text>
+  <text x="360" y="250" text-anchor="middle" font-size="13">Lag ist ein Symptom. Die Ursache liegt im Consumer, im Ziel oder im Zufluss.</text>
+</svg>
+<ol>
+  <li><b>Fristende:</b> Viele Steuerfälle kommen gleichzeitig. Der Producer schreibt zehnmal mehr Events als sonst.</li>
+  <li><b>Lag steigt:</b> Die Consumer verarbeiten gleich schnell wie vorher. Der Abstand zum LEO wächst auf allen Partitionen.</li>
+  <li><b>Messen:</b> Ein Exporter fragt die Gruppen-Offsets und die LEOs regelmässig ab und schreibt Metriken für Prometheus.</li>
+  <li><b>Alarm:</b> Ein kurzer Anstieg ist normal. Kritisch wird es, wenn der Lag <b>stetig wächst</b> oder die <b>Zeit-Verzögerung</b> ein Ziel überschreitet, z. B. 10 Minuten.</li>
+  <li><b>Eingrenzen:</b> Lag auf <b>allen</b> Partitionen heisst: zu wenig Kapazität. Lag auf <b>einer</b> Partition heisst: Hot Key, hängender Consumer oder Poison Message.</li>
+  <li><b>Reaktion:</b> Mehr Consumer bis zur Partitionszahl, z. B. automatisch mit KEDA. Oder den Fehler beheben. Danach muss der Lag wieder sinken.</li>
+</ol>
+
+<h2>3. Beispiel: Lag lesen und alarmieren</h2>
+<pre>$ kafka-consumer-groups.sh --bootstrap-server kafka:9092 --describe --group vsp-steuer-consumer
+
+GROUP                TOPIC          PARTITION  CURRENT-OFFSET  LOG-END-OFFSET  LAG     CONSUMER-ID       HOST        CLIENT-ID
+vsp-steuer-consumer  steuer-events  0          184220          184250          30      consumer-1-ab12   /10.0.1.4   consumer-1
+vsp-steuer-consumer  steuer-events  1          179900          179940          40      consumer-1-ab12   /10.0.1.4   consumer-1
+vsp-steuer-consumer  steuer-events  2          120005          362118          242113  consumer-2-cd34   /10.0.1.5   consumer-2</pre>
+<p class="small">Erwartetes Ergebnis (Spalten laut Doku „Basic Kafka Operations“, Zahlen erfunden zur Erklärung, nicht ausgeführt). Kafka ist hier nicht installiert.</p>
+<pre># Prometheus-Regel mit kafka_exporter-Metrik: Lag wächst seit 15 Minuten
+- alert: KafkaConsumerLagGrowing
+  expr: sum by (consumergroup, topic) (kafka_consumergroup_lag) &gt; 10000
+        and deriv(sum by (consumergroup, topic) (kafka_consumergroup_lag)[15m:1m]) &gt; 0
+  for: 15m</pre>
+<ol>
+  <li>Partitionen 0 und 1 haben kleinen Lag. Das ist normaler Betrieb: Commits kommen etwas nach dem Lesen.</li>
+  <li>Partition 2 hat 242 113 Lag. Nur eine Partition betroffen: an Hot Key, Poison Message oder langsamen <code>consumer-2</code> denken.</li>
+  <li><code>CURRENT-OFFSET</code> ist der <b>committete</b> Offset. Steht er über Minuten still, verarbeitet der Consumer nichts mehr.</li>
+  <li>Fehlt <code>CONSUMER-ID</code>, ist die Gruppe leer. Der Lag wächst dann nur, weil niemand liest.</li>
+  <li>Die Regel alarmiert nicht auf eine Zahl allein, sondern auf <b>Zahl plus Wachstum</b>. Das vermeidet Alarme bei kurzen Spitzen.</li>
+</ol>
+
+<h2>4. Details, die Interviewer fragen</h2>
+<ol>
+  <li><b>Offset-Lag vs Zeit-Lag:</b> 10 000 Nachrichten Lag können 1 Sekunde oder 1 Stunde sein. <b>Zeit-Lag</b> (Alter der ältesten unverarbeiteten Nachricht) ist für SLAs aussagekräftiger. Man rechnet ihn aus Zeitstempeln oder aus Lag geteilt durch Verarbeitungsrate.</li>
+  <li><b>Client-Metriken:</b> <code>records-lag-max</code> (pro Client) und <code>records-lag</code> (pro Partition) im MBean <code>consumer-fetch-manager-metrics</code>. Sie gibt es nur, solange der Consumer läuft.</li>
+  <li><b><code>records-lead-min</code>:</b> Abstand zum <b>Anfang</b> des Logs. Wird er klein, löscht die Retention bald Daten, die der Consumer noch nicht gelesen hat.</li>
+  <li><b>Lag mit Transaktionen:</b> Bei <code>read_committed</code> zählt der Abstand zum <b>Last Stable Offset</b>. Exporter rechnen oft gegen den LEO. Dann sieht man Lag, den der Consumer nie aufholen kann, solange Transaktionen offen sind.</li>
+  <li><b>Lag nie ganz 0:</b> Marker und kompaktierte Lücken belegen Offsets. Ein kleiner Rest-Lag ist darum normal.</li>
+  <li><b>Wichtigste Broker-Metriken:</b> <code>UnderReplicatedPartitions</code> (Soll 0), <code>UnderMinIsrPartitionCount</code> (Soll 0), <code>OfflinePartitionsCount</code> (Soll 0), <code>ActiveControllerCount</code> (genau ein Knoten mit 1), <code>UncleanLeaderElectionsPerSec</code> (Soll 0).</li>
+  <li><b>Auslastung:</b> <code>RequestHandlerAvgIdlePercent</code> und <code>NetworkProcessorAvgIdlePercent</code>, ideal über 0.3. <code>IsrShrinksPerSec</code> sollte ausser bei Broker-Ausfällen 0 sein.</li>
+  <li><b>KRaft:</b> <code>LastAppliedRecordLagMs</code> und <code>MetadataErrorCount</code> zeigen, ob Controller und Broker die Metadaten sauber nachführen.</li>
+  <li><b>JMX:</b> Kafka liefert Metriken per JMX. Remote-JMX ist standardmässig aus. In Kubernetes nutzt man meist den <b>Prometheus JMX Exporter</b> als Java-Agent.</li>
+  <li><b>Client-Metriken zum Broker (KIP-714):</b> Clients können Metriken an den Broker pushen (<code>enable.metrics.push</code>, Standard <code>true</code>). Der Broker braucht dafür ein Plugin, das sie weiterleitet.</li>
+  <li><b>Lag-Exporter:</b> z. B. <code>kafka_exporter</code> (Metrik <code>kafka_consumergroup_lag</code>) oder Burrow. Sie lesen Offsets über die Admin-API, unabhängig vom Client.</li>
+  <li><b>Autoscaling auf Lag:</b> Der KEDA-Kafka-Scaler skaliert Consumer-Pods nach dem Gesamt-Lag (<code>lagThreshold</code>, Standard 10). Standardmässig nie über die Partitionszahl (<code>allowIdleConsumers: false</code>).</li>
+</ol>
+
+<h2>5. Vergleich</h2>
+<ul>
+  <li><b>Client-Metrik <code>records-lag-max</code>:</b> sofort und genau pro Client. Fehlt, wenn der Consumer tot ist. Gerade dann braucht man sie.</li>
+  <li><b>Exporter (Admin-API):</b> misst auch leere Gruppen. Etwas verzögert, basiert auf Commits.</li>
+  <li><b>CLI <code>kafka-consumer-groups.sh</code>:</b> für Diagnose von Hand, nicht für Alarme.</li>
+  <li><b>Offset-Lag:</b> einfach zu messen. <b>Zeit-Lag:</b> passt zu fachlichen Zielen („höchstens 5 Minuten alt“).</li>
+  <li><b>Kafka-Monitoring vs App-Monitoring:</b> Lag zeigt, dass es hängt. Traces und Logs zeigen, warum.</li>
+  <li><b>Azure Event Hubs:</b> Metriken kommen aus Azure Monitor. Der Kafka-Lag wird je nach Client ähnlich über Offsets gerechnet.</li>
+</ul>
+
+<h2>6. In der Produktion</h2>
+<ol>
+  <li><b>Lag-Alarm schweigt, obwohl nichts verarbeitet wird:</b> Der Alarm hängt an der Client-Metrik, und der Consumer ist abgestürzt. Lösung: Lag aus einem Exporter, zusätzlich Alarm „Gruppe hat keine Mitglieder“.</li>
+  <li><b>Ständige Fehlalarme bei Spitzen:</b> Feste Schwelle auf eine Zahl. Lösung: Wachstum über Zeit oder Zeit-Lag alarmieren.</li>
+  <li><b>Lag auf einer Partition, Offset steht:</b> Poison Message mit endlosen Retries. Lösung: Fehlerbehandlung mit DLT, Alarm auf „Committed Offset bewegt sich nicht“.</li>
+  <li><b>Daten verloren trotz Monitoring:</b> Der Consumer lag so weit zurück, dass die Retention Daten gelöscht hat. Lösung: Alarm auf <code>records-lead-min</code> oder auf Zeit-Lag nahe der Retention.</li>
+  <li><b>KEDA skaliert nicht über 6 Pods, obwohl <code>maxReplicaCount: 30</code>:</b> Das Topic hat 6 Partitionen. KEDA stoppt standardmässig bei der Partitionszahl (<code>allowIdleConsumers: false</code>). Das ist richtig so. Lösung: mehr Partitionen oder schnellere Verarbeitung, nicht <code>allowIdleConsumers: true</code>.</li>
+  <li><b>URP &gt; 0 nach Wartung bleibt hängen:</b> Ein Broker holt nicht auf (Disk, Netz). Lösung: Follower-Lag und Disk prüfen, <code>num.replica.fetchers</code> erhöhen.</li>
+</ol>
+
+<h2>7. Diagnose: Werkzeuge und Befehle</h2>
+<ul>
+  <li><code>kafka-consumer-groups.sh --describe --group G</code>: Lag pro Partition und Mitglied.</li>
+  <li><code>kafka-consumer-groups.sh --describe --group G --members --verbose</code>: welcher Consumer welche Partition hat.</li>
+  <li><code>kafka-consumer-groups.sh --describe --group G --state</code>: Zustand der Gruppe (Stable, Empty, Rebalancing).</li>
+  <li><code>kafka-get-offsets.sh --topic T --time -1</code>: LEO pro Partition.</li>
+  <li>Broker-JMX: <code>kafka.server:type=ReplicaManager,name=UnderReplicatedPartitions</code>, <code>kafka.controller:type=KafkaController,name=ActiveControllerCount</code>.</li>
+  <li>Prometheus JMX Exporter, <code>kafka_exporter</code>, Grafana-Dashboards.</li>
+  <li>Traces (OpenTelemetry) mit Kafka-Headern: zeigen, wie lange eine Nachricht vom Producer bis zur Verarbeitung braucht.</li>
+</ul>
+
+<h2>8. Senior-Punkte</h2>
+<div class="senior">
+<ol>
+  <li><b>Alarme an fachlichen Zielen ausrichten.</b> „Steuerfälle sind höchstens 5 Minuten alt“ ist besser als „Lag &gt; 1000“.</li>
+  <li><b>Lag aus zwei Quellen messen:</b> Client und Exporter. Gerade der Ausfall eines Clients muss sichtbar sein.</li>
+  <li><b>Wenige, klare Broker-Alarme:</b> Offline Partitions, Under-Min-ISR, kein aktiver Controller, Disk voll. Der Rest gehört ins Dashboard.</li>
+  <li><b>Lag ist ein Symptom.</b> Ein Runbook pro Alarm: alle Partitionen, eine Partition, Gruppe leer.</li>
+  <li><b>Kapazität aus dem Lag lernen:</b> Wie schnell wird ein Rückstau nach einer Spitze abgebaut? Das ist die echte Reserve.</li>
+  <li><b>Autoscaling braucht Grenzen:</b> Partitionen als Maximum, Cooldown, und das Ziel-System muss die Last aushalten.</li>
+</ol>
+</div>
+
+<h2>9. Aus dem Projekt</h2>
+<p>„Bei MATCH überwachen Grafana und Prometheus Job-Dauer, den Rückstau an Pending-Nachrichten und Pod-Restarts. Der Rückstau ist dort das, was in Kafka der Lag ist. In DAZiT hatten alle Services OpenTelemetry-Tracing und Health Checks.“ <span class="small">(Prüfen und durch dein echtes Beispiel ersetzen.)</span></p>
+
+<h2>10. Fallen</h2>
+<div class="trap">
+<ul>
+  <li>„Lag 0 heisst, alles ist gut.“ → <b>Falsch.</b> Eine leere Gruppe ohne neue Daten hat auch Lag 0. Und kleiner Rest-Lag ist normal.</li>
+  <li>„records-lag-max reicht als Alarm.“ → <b>Falsch.</b> Stirbt der Consumer, verschwindet die Metrik.</li>
+  <li>„Hoher Lag heisst: mehr Pods.“ → <b>Falsch.</b> Nur bis zur Partitionszahl. Und bei einer Poison Message hilft Skalieren nicht.</li>
+  <li>„Lag in Nachrichten ist ein gutes SLA.“ → <b>Falsch.</b> Zeit-Lag passt besser zu fachlichen Zielen.</li>
+  <li>„CURRENT-OFFSET ist die Position des Consumers.“ → <b>Falsch.</b> Es ist der committete Offset. Die Position kann weiter sein.</li>
+  <li>„Der Broker kennt den Lag aller Consumer als Metrik.“ → <b>Falsch.</b> Den Lag rechnen Clients, Tools oder Exporter.</li>
+</ul>
+</div>
+
+<h2>11. Fragen</h2>
+<details><summary>Was ist Consumer Lag genau?</summary><p>Abstand zwischen Log-End-Offset und Fortschritt der Gruppe, pro Partition. CLI und Exporter nutzen den committeten Offset, der Client seine Position.</p></details>
+<details><summary>Warum ist Zeit-Lag oft besser als Offset-Lag?</summary><p>Er sagt, wie alt die älteste unverarbeitete Nachricht ist. Das passt direkt zu fachlichen Zielen.</p></details>
+<details><summary>Welche Client-Metriken zeigen Lag?</summary><p><code>records-lag-max</code> und <code>records-lag</code> pro Partition im Consumer. Sie messen ab der Position.</p></details>
+<details><summary>Was ist records-lead-min?</summary><p>Der Abstand zum Anfang des Logs. Wird er klein, löscht die Retention bald ungelesene Daten.</p></details>
+<details><summary>Wie messen Sie Lag, wenn kein Consumer läuft?</summary><p>Über die Admin-API: <code>kafka-consumer-groups.sh</code> oder ein Exporter rechnen LEO minus committeten Offset.</p></details>
+<details><summary>Welche Broker-Metriken alarmieren Sie?</summary><p>OfflinePartitionsCount, UnderMinIsrPartitionCount, UnderReplicatedPartitions, ActiveControllerCount, Disk-Füllstand.</p></details>
+<details><summary>Was bedeutet UnderReplicatedPartitions &gt; 0?</summary><p>Mindestens eine Partition hat weniger aktuelle Replikas als geplant. Ein Broker ist weg oder hinkt hinterher.</p></details>
+<details><summary>Was zeigt RequestHandlerAvgIdlePercent?</summary><p>Wie viel Zeit die I/O-Threads frei haben. Unter 0.3 ist der Broker ausgelastet.</p></details>
+<details><summary>Wie sollte ActiveControllerCount aussehen?</summary><p>Genau ein Knoten meldet 1. Null oder mehrere sind ein Problem.</p></details>
+<details><summary>Wie kommen Kafka-Metriken nach Prometheus?</summary><p>Prometheus JMX Exporter als Java-Agent im Broker, dazu ein Lag-Exporter für Consumer Groups.</p></details>
+<details><summary>Was ist KIP-714?</summary><p>Clients pushen ihre Metriken an den Broker. Der Broker leitet sie mit einem Plugin an ein Monitoring-System weiter.</p></details>
+<details><summary>Warum ist ein kleiner Rest-Lag normal?</summary><p>Commits kommen nach dem Lesen, und Transaktions-Marker oder Lücken belegen Offsets.</p></details>
+<details><summary>Wie beeinflussen Transaktionen den Lag?</summary><p><code>read_committed</code>-Consumer lesen nur bis zum LSO. Ein Exporter, der gegen den LEO rechnet, zeigt dann mehr Lag, solange Transaktionen offen sind.</p></details>
+<details><summary>Wie alarmieren Sie sinnvoll auf Lag?</summary><p>Auf Wachstum über Zeit oder auf Zeit-Lag, nicht auf eine feste Zahl. Plus Alarm, wenn sich der Committed Offset nicht bewegt.</p></details>
+<details><summary>Wie skaliert KEDA nach Lag?</summary><p>Der Kafka-Scaler liest den Lag der Gruppe und gibt ihn an den HPA. <code>lagThreshold</code> ist das Ziel. Standardmässig stoppt er bei der Partitionszahl.</p></details>
+<details><summary>Lag auf allen Partitionen vs auf einer: was heisst das?</summary><p>Alle: zu wenig Kapazität oder langsames Ziel. Eine: Hot Key, Poison Message oder ein hängender Consumer.</p></details>
+<details><summary>Was ist der Unterschied zwischen Position und Committed Offset?</summary><p>Position = nächster Offset, den der Client liest. Committed = gespeicherter Fortschritt für den Neustart.</p></details>
+<details><summary>Wie zeigt man End-to-End-Latenz?</summary><p>Mit Tracing über Kafka-Header (OpenTelemetry) oder mit dem Zeitstempel der Nachricht im Consumer.</p></details>
+<details><summary>Szenario: Der Lag-Alarm kommt jeden Montag um 8 Uhr und verschwindet um 8:20. Was tun Sie?</summary><p>Eine bekannte Spitze, die abgebaut wird. Alarm auf Zeit-Lag oder Wachstum umstellen, oder Kapazität vor der Spitze erhöhen.</p></details>
+<details><summary>Szenario: Eine Gruppe zeigt keinen Lag-Wert mehr im Dashboard. Was prüfen Sie?</summary><p>Ob die Consumer laufen. Die Client-Metrik verschwindet mit dem Pod. Mit <code>kafka-consumer-groups.sh --describe --state</code> prüfen, ob die Gruppe leer ist.</p></details>
+<details><summary>Szenario: Der Lag steigt seit Tagen langsam, keine Fehler. Was tun Sie?</summary><p>Der Zufluss wächst schneller als die Verarbeitung. Durchsatz pro Consumer messen, Engpass im Ziel suchen, dann skalieren oder Partitionen erhöhen. Retention im Blick behalten.</p></details>
+
+</body>
+</html>

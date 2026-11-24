@@ -1,0 +1,249 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Backup und Point-in-Time Recovery</title>
+<style>
+  body { font: 17px/1.55 -apple-system, system-ui, sans-serif; max-width: 760px; margin: 0 auto; padding: 16px; color: #1d1d1f; }
+  h1 { font-size: 28px; margin: 8px 0 4px; }
+  h2 { font-size: 21px; margin: 32px 0 8px; padding-top: 12px; border-top: 2px solid #e5e5ea; }
+  .kern { background: #eef6ff; border-left: 4px solid #0a66c2; padding: 10px 14px; border-radius: 6px; }
+  .senior { background: #f0faf0; border-left: 4px solid #2e7d32; padding: 10px 14px; border-radius: 6px; }
+  .trap { background: #fff4f2; border-left: 4px solid #c62828; padding: 10px 14px; border-radius: 6px; }
+  code { background: #f2f2f7; padding: 1px 5px; border-radius: 4px; font-size: 15px; }
+  pre { background: #1e1e1e; color: #e6e6e6; padding: 12px; border-radius: 8px; overflow-x: auto; font-size: 13.5px; line-height: 1.45; }
+  svg { width: 100%; height: auto; display: block; margin: 10px 0; }
+  ol li, ul li { margin: 4px 0; }
+  details { border: 1px solid #e5e5ea; border-radius: 8px; padding: 8px 12px; margin: 6px 0; }
+  summary { font-weight: 600; cursor: pointer; }
+  details p { margin: 6px 0 2px; }
+  .small { color: #6e6e73; font-size: 14px; }
+</style>
+</head>
+<body>
+
+<h1>Backup und Point-in-Time Recovery</h1>
+<p class="small">PostgreSQL 19 (aktuell seit 19.11.2026; Beispiele auf 17.12 ausgeführt) · Quellen: PostgreSQL 19 Doku, Kapitel 25 „Backup and Restore“ (SQL Dump, File System Level Backup, Continuous Archiving and PITR inkl. Incremental Backup, Timelines, Caveats), Kapitel 19.5 „Write Ahead Log“ (Archiving, Recovery Target, <code>summarize_wal</code>), Programme <code>pg_dump</code>, <code>pg_dumpall</code>, <code>pg_restore</code>, <code>pg_basebackup</code>, <code>pg_combinebackup</code>, <code>pg_verifybackup</code>; Release Notes 17 (inkrementelle Backups), 18 (<code>pg_dump --statistics</code>/<code>--no-data</code>, Checksums standardmässig an, <code>pg_verifybackup</code> für tar), 19 (<code>standard_conforming_strings</code> immer an, <code>pg_dump</code> mit erweiterten Statistiken)</p>
+
+<div class="kern">
+<b>Kern:</b> Ein <b>Backup</b> ist eine Kopie der Datenbank, aus der man nach Fehlern, Löschungen oder Ausfällen wiederherstellen kann. <b>Point-in-Time Recovery</b> (PITR) kombiniert ein physisches <b>Basis-Backup</b> mit dem archivierten <b>WAL</b>. So lässt sich die Datenbank auf jeden Zeitpunkt zurücksetzen, z. B. eine Sekunde vor einem falschen <code>DELETE</code>.
+</div>
+
+<h2>1. Wo sitzt das Backup?</h2>
+<svg viewBox="0 0 720 300" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="a" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="10" y="14" width="260" height="170" rx="10" fill="#f7f7fa" stroke="#999" stroke-dasharray="5 4"/><text x="140" y="34" text-anchor="middle" font-weight="700">Server</text>
+  <rect x="25" y="46" width="110" height="50" rx="8" fill="#fff" stroke="#555"/><text x="80" y="68" text-anchor="middle" font-weight="700">Datenfiles</text><text x="80" y="86" text-anchor="middle" font-size="11">base/, global/</text>
+  <rect x="150" y="46" width="105" height="50" rx="8" fill="#dbe9fb" stroke="#0a66c2"/><text x="202" y="68" text-anchor="middle" font-weight="700">pg_wal</text><text x="202" y="86" text-anchor="middle" font-size="11">16-MB-Segmente</text>
+  <rect x="25" y="116" width="230" height="54" rx="8" fill="#fff" stroke="#555"/><text x="140" y="138" text-anchor="middle" font-weight="700">SQL-Ebene</text><text x="140" y="156" text-anchor="middle" font-size="11">Snapshot einer Datenbank</text>
+  <line x1="270" y1="70" x2="418" y2="40" stroke="#555" stroke-width="2" marker-end="url(#a)"/><text x="340" y="44" font-size="12">pg_basebackup</text>
+  <line x1="255" y1="80" x2="418" y2="110" stroke="#555" stroke-width="2" marker-end="url(#a)"/><text x="330" y="112" font-size="12">archive_command</text>
+  <line x1="255" y1="143" x2="418" y2="180" stroke="#555" stroke-width="2" marker-end="url(#a)"/><text x="330" y="176" font-size="12">pg_dump</text>
+  <rect x="420" y="14" width="290" height="50" rx="8" fill="#e8f5e9" stroke="#2e7d32"/><text x="565" y="36" text-anchor="middle" font-weight="700">Basis-Backups (physisch)</text><text x="565" y="54" text-anchor="middle" font-size="12">ganzer Cluster, voll oder inkrementell</text>
+  <rect x="420" y="84" width="290" height="50" rx="8" fill="#e8f5e9" stroke="#2e7d32"/><text x="565" y="106" text-anchor="middle" font-weight="700">WAL-Archiv</text><text x="565" y="124" text-anchor="middle" font-size="12">lückenlos seit dem Basis-Backup</text>
+  <rect x="420" y="154" width="290" height="50" rx="8" fill="#fff" stroke="#555"/><text x="565" y="176" text-anchor="middle" font-weight="700">Dump-Dateien (logisch)</text><text x="565" y="194" text-anchor="middle" font-size="12">SQL oder custom/directory-Format</text>
+  <rect x="10" y="230" width="700" height="56" rx="8" fill="#fff4f2" stroke="#c62828"/><text x="360" y="254" text-anchor="middle" font-weight="700">Anderer Ort, andere Zone, unveränderbar (Object Storage, Immutability)</text><text x="360" y="272" text-anchor="middle" font-size="12">Werkzeuge: pgBackRest · Barman · WAL-G · Cloud-Backup des Managed Service</text>
+</svg>
+<ol>
+  <li><b>Logisches Backup:</b> <code>pg_dump</code> schreibt den Inhalt einer Datenbank als SQL oder Archiv-Datei. Es liest unter einem Snapshot, ist also konsistent, ohne Schreiber zu blockieren.</li>
+  <li><b>pg_dumpall:</b> Es sichert alle Datenbanken plus <b>globale Objekte</b>: Rollen und Tablespaces. <code>pg_dump</code> allein sichert keine Rollen.</li>
+  <li><b>Physisches Basis-Backup:</b> <code>pg_basebackup</code> kopiert die Datendateien des ganzen Clusters über das Replikationsprotokoll, im laufenden Betrieb.</li>
+  <li><b>WAL-Archiv:</b> <code>archive_command</code> oder <code>archive_library</code> kopiert jedes fertige WAL-Segment weg. Die Kette darf keine Lücke haben.</li>
+  <li><b>Konfiguration:</b> <code>postgresql.conf</code>, <code>pg_hba.conf</code> und <code>pg_ident.conf</code> stehen nicht im WAL. Sie brauchen eine eigene Sicherung.</li>
+  <li><b>Speicherort:</b> Backups gehören auf ein anderes System, ideal unveränderbar. Ein Backup auf derselben Platte ist keins.</li>
+</ol>
+
+<h2>2. Die Reise einer Wiederherstellung auf 14:31:59 (die Geschichte zum Merken)</h2>
+<svg viewBox="0 0 720 320" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="b" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="10" y="20" width="200" height="60" rx="10" fill="#eee" stroke="#777"/><text x="110" y="44" text-anchor="middle" font-weight="700">1. Unfall 14:32</text><text x="110" y="64" text-anchor="middle" font-size="12">DELETE ohne WHERE</text>
+  <line x1="210" y1="50" x2="248" y2="50" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="250" y="20" width="210" height="60" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="355" y="44" text-anchor="middle" font-weight="700">2. Basis-Backup holen</text><text x="355" y="64" text-anchor="middle" font-size="12">von 02:00, ins neue PGDATA</text>
+  <line x1="460" y1="50" x2="498" y2="50" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="500" y="20" width="210" height="60" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="605" y="44" text-anchor="middle" font-weight="700">3. Konfigurieren</text><text x="605" y="64" text-anchor="middle" font-size="12">restore_command, Ziel-Zeit</text>
+  <line x1="605" y1="80" x2="605" y2="128" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="500" y="130" width="210" height="60" rx="10" fill="#e8f5e9" stroke="#2e7d32"/><text x="605" y="154" text-anchor="middle" font-weight="700">4. recovery.signal</text><text x="605" y="174" text-anchor="middle" font-size="12">Server starten</text>
+  <line x1="500" y1="160" x2="462" y2="160" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="250" y="130" width="210" height="60" rx="10" fill="#fff" stroke="#555"/><text x="355" y="154" text-anchor="middle" font-weight="700">5. WAL einspielen</text><text x="355" y="174" text-anchor="middle" font-size="12">02:00 → 14:31:59, Stopp</text>
+  <line x1="355" y1="190" x2="355" y2="238" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="130" y="240" width="460" height="64" rx="10" fill="#0a66c2" stroke="#0a66c2"/><text x="360" y="264" text-anchor="middle" fill="#fff" font-weight="700">6. Pause, prüfen, pg_wal_replay_resume()</text><text x="360" y="284" text-anchor="middle" fill="#fff" font-size="12">neue Timeline 2 · Daten zurückkopieren oder umschalten</text>
+</svg>
+<ol>
+  <li><b>Unfall:</b> Um 14:32 löscht ein Skript alle Konten. Die Replikas haben den Fehler sofort übernommen (Seite Replikation).</li>
+  <li><b>Basis-Backup:</b> Das letzte Basis-Backup von 02:00 wird in ein leeres Datenverzeichnis auf einem <b>anderen</b> Server kopiert. Das alte bleibt als Beweis und Rückfall.</li>
+  <li><b>Konfigurieren:</b> <code>restore_command = 'cp /archiv/%f %p'</code> holt WAL aus dem Archiv. <code>recovery_target_time = '2026-11-24 14:31:59+01'</code> setzt den Stopp.</li>
+  <li><b>Starten:</b> Eine leere Datei <code>recovery.signal</code> im Datenverzeichnis sagt: Archiv-Recovery. Dann startet der Server.</li>
+  <li><b>WAL einspielen:</b> PostgreSQL spielt jedes Segment von 02:00 an ein. Beim ersten Commit nach 14:31:59 hält es an.</li>
+  <li><b>Prüfen und öffnen:</b> Standard ist <code>recovery_target_action = pause</code>. Man prüft die Daten lesend. <code>pg_wal_replay_resume()</code> beendet die Recovery; es entsteht <b>Timeline 2</b>. Dann Daten zurückkopieren oder auf diesen Server umschalten.</li>
+</ol>
+
+<h2>3. Beispiel: pg_dump/pg_restore, Basis-Backup, Verify, Inkrementell, Restore Point</h2>
+<pre># im Container pg17, als Benutzer postgres
+psql -c "CREATE SCHEMA demo_backup_pitr;
+         CREATE TABLE demo_backup_pitr.konto (id int PRIMARY KEY, saldo numeric NOT NULL);
+         INSERT INTO demo_backup_pitr.konto SELECT g, 100 FROM generate_series(1, 10000) g;"
+# 1) Logisches Backup im custom format, Inhalt auflisten
+pg_dump -Fc -n demo_backup_pitr -f /tmp/demo_backup_pitr.dump postgres
+pg_restore -l /tmp/demo_backup_pitr.dump | grep -v '^;'
+# 2) Unfall, dann Restore in eine NEUE Datenbank (2 parallele Jobs)
+psql -c "DELETE FROM demo_backup_pitr.konto WHERE id &gt; 10"
+createdb demo_backup_pitr_restore
+pg_restore -d demo_backup_pitr_restore -j 2 /tmp/demo_backup_pitr.dump
+psql -d demo_backup_pitr_restore -c "SELECT count(*) AS zeilen_im_restore FROM demo_backup_pitr.konto"
+# 3) Physisches Basis-Backup mit WAL-Stream, dann prüfen
+pg_basebackup -D /tmp/demo_base -Fp -Xs -c fast
+du -sh /tmp/demo_base; ls /tmp/demo_base
+pg_verifybackup /tmp/demo_base
+# 4) Inkrementelles Backup (summarize_wal = off)
+pg_basebackup -D /tmp/demo_incr --incremental=/tmp/demo_base/backup_manifest -c fast
+# 5) Benannter Restore Point und aktuelle WAL-Datei
+psql -c "SELECT pg_create_restore_point('vor_migration') AS lsn,
+                pg_walfile_name(pg_current_wal_lsn()) AS aktuelle_wal_datei"
+# Aufräumen: Dateien, Datenbank und Schema löschen</pre>
+<pre>--- 1) Logisches Backup (custom format)
+25175 /tmp/demo_backup_pitr.dump
+6; 2615 18574 SCHEMA - demo_backup_pitr postgres
+218; 1259 18575 TABLE demo_backup_pitr konto postgres
+3421; 0 18575 TABLE DATA demo_backup_pitr konto postgres
+3275; 2606 18581 CONSTRAINT demo_backup_pitr konto konto_pkey postgres
+--- 2) Unfall und Restore in eine neue Datenbank
+DELETE 9990
+ zeilen_im_restore
+-------------------
+             10000
+(1 row)
+--- 3) Physisches Basis-Backup
+49M
+backup_label backup_manifest base global pg_commit_ts pg_dynshmem pg_hba.conf pg_ident.conf
+pg_logical pg_multixact pg_notify pg_replslot pg_serial pg_snapshots pg_stat pg_stat_tmp
+pg_subtrans pg_tblspc pg_twophase PG_VERSION pg_wal pg_xact postgresql.auto.conf postgresql.conf
+backup successfully verified
+--- 4) Inkrementelles Backup ohne WAL-Summaries
+pg_basebackup: error: could not initiate base backup: ERROR:  incremental backups cannot be
+taken unless WAL summarization is enabled
+pg_basebackup: removing data directory "/tmp/demo_incr"
+--- 5) Restore Point und WAL-Datei
+    lsn     |    aktuelle_wal_datei
+------------+--------------------------
+ 0/65000090 | 000000010000000000000065
+(1 row)</pre>
+<p class="small">Echte Ausgabe, PostgreSQL 17.12 (Programme im Container <code>pg17</code>). Lange Zeilen umbrochen. Eine echte PITR braucht <code>archive_mode = on</code> und einen Neustart; das lief hier nicht.</p>
+<ol>
+  <li><b>Custom Format:</b> <code>-Fc</code> erzeugt ein komprimiertes Archiv. <code>pg_restore -l</code> zeigt das Inhaltsverzeichnis: Schema, Tabelle, Daten, Constraint. Man kann einzelne Einträge auswählen.</li>
+  <li><b>Restore in neue DB:</b> Die Produktion bleibt unberührt. Alle 10 000 Zeilen sind im Restore. Von dort kopiert man gezielt zurück.</li>
+  <li><b>Basis-Backup:</b> 49 MB für den ganzen Cluster, mit allen Datenbanken. <code>-Xs</code> streamt das WAL während des Backups mit, darum ist es allein startfähig.</li>
+  <li><b>Manifest und Verify:</b> <code>backup_manifest</code> listet jede Datei mit Prüfsumme. <code>pg_verifybackup</code> prüft sie und das nötige WAL.</li>
+  <li><b>Inkrementell:</b> Es scheitert, weil <code>summarize_wal</code> aus ist. Mit <code>summarize_wal = on</code> kopiert <code>--incremental</code> nur geänderte Blöcke seit dem Manifest.</li>
+  <li><b>Restore Point:</b> <code>pg_create_restore_point('vor_migration')</code> setzt eine Marke im WAL. Später reicht <code>recovery_target_name = 'vor_migration'</code>. Der WAL-Dateiname enthält die Timeline (<code>00000001</code>).</li>
+</ol>
+
+<h2>4. Details, die Interviewer fragen</h2>
+<ol>
+  <li><b>pg_dump-Formate:</b> <code>-Fp</code> Klartext-SQL für <code>psql</code>. <code>-Fc</code> custom, komprimiert, selektiver Restore. <code>-Fd</code> directory, eine Datei pro Tabelle, einziges Format für paralleles <code>pg_dump -j</code>. <code>-Ft</code> tar.</li>
+  <li><b>Konsistenz:</b> <code>pg_dump</code> nutzt eine Transaktion mit einem Snapshot. Er blockiert Schreiber nicht, hält aber lange einen Snapshot und blockiert so VACUUM-Aufräumen (Seite VACUUM).</li>
+  <li><b>Locks von pg_dump:</b> Er nimmt <code>ACCESS SHARE</code> auf jede Tabelle. Ein <code>ALTER TABLE</code> wartet dann, und hinter ihm stauen sich alle anderen (Seite Locking).</li>
+  <li><b>Dump zwischen Versionen:</b> Man nutzt das <code>pg_dump</code> der <b>neuen</b> Version. Seit 19 ist <code>standard_conforming_strings</code> immer an; alte Dumps mit <code>off</code> laden nicht mehr.</li>
+  <li><b>Statistiken im Dump:</b> Seit 18 kann <code>pg_dump --statistics</code> Planner-Statistiken mitnehmen; seit 19 auch erweiterte Statistiken. Sonst nach dem Restore immer <code>ANALYZE</code>.</li>
+  <li><b>Basis-Backup:</b> <code>pg_basebackup</code> nutzt eine Replikationsverbindung. <code>-Xs</code> streamt WAL parallel, <code>-Ft -z</code> schreibt komprimiertes tar. Manuell geht es mit <code>pg_backup_start()</code> und <code>pg_backup_stop()</code>.</li>
+  <li><b>archive_command-Regeln:</b> Exit-Code 0 nur bei echtem Erfolg. Bestehende Dateien nicht überschreiben. Bei Fehlern versucht PostgreSQL es erneut, und <code>pg_wal</code> wächst bis zur vollen Platte.</li>
+  <li><b>Recovery-Ziele:</b> <code>recovery_target_time</code>, <code>recovery_target_name</code>, <code>recovery_target_lsn</code>, <code>recovery_target_xid</code> oder <code>recovery_target = 'immediate'</code> (nur bis konsistent). Das Ziel muss nach dem Ende des Basis-Backups liegen.</li>
+  <li><b>recovery_target_inclusive:</b> Standard <code>true</code>: Die Ziel-Transaktion ist noch dabei. <code>false</code> hält direkt davor an.</li>
+  <li><b>Timeline:</b> Nach jeder PITR beginnt eine neue Timeline mit einer History-Datei im Archiv. So kann man mehrmals zu verschiedenen Zeitpunkten zurück, ohne alte WAL-Dateien zu überschreiben.</li>
+  <li><b>Inkrementelle Backups (seit 17):</b> <code>summarize_wal = on</code> schreibt WAL-Zusammenfassungen. <code>pg_basebackup --incremental=&lt;manifest&gt;</code> kopiert nur geänderte Blöcke. <code>pg_combinebackup</code> baut daraus ein volles Backup für den Restore.</li>
+  <li><b>Kette verwalten:</b> PostgreSQL merkt sich nicht, welche Backups ein inkrementelles braucht. Das muss das Backup-Werkzeug oder der Betrieb tun.</li>
+  <li><b>Data Checksums:</b> Seit 18 schaltet <code>initdb</code> sie standardmässig ein. Sie erkennen kaputte Seiten beim Lesen, und Werkzeuge prüfen sie beim Backup.</li>
+  <li><b>Snapshot des Dateisystems:</b> Ein konsistenter Snapshot (z. B. Cloud-Disk-Snapshot) aller Volumes gleichzeitig ist auch ein gültiges Backup. Er ist dann wie ein Crash-Zustand und braucht beim Start WAL-Recovery.</li>
+</ol>
+
+<h2>5. Vergleich</h2>
+<ul>
+  <li><b>Logisch (pg_dump):</b> Eine Datenbank oder Tabelle, versionsübergreifend, lesbar. Kein PITR, Restore bei grossen Daten langsam, weil Indizes neu gebaut werden.</li>
+  <li><b>Physisch (pg_basebackup + WAL):</b> Ganzer Cluster, gleiche Hauptversion, schneller Restore, PITR möglich. Keine einzelnen Tabellen zurückholen.</li>
+  <li><b>pgBackRest:</b> Voll, differentiell, inkrementell, parallel, Verschlüsselung, S3/Azure Blob, Prüfung und Retention. Für Produktion meist die erste Wahl.</li>
+  <li><b>Barman:</b> Zentraler Backup-Server für viele PostgreSQL-Instanzen, mit WAL-Streaming.</li>
+  <li><b>WAL-G:</b> Schlank, auf Object Storage ausgelegt, beliebt in Kubernetes.</li>
+  <li><b>Managed Service:</b> Azure Database for PostgreSQL oder AWS RDS machen Basis-Backups und WAL-Archiv automatisch, PITR per Klick innerhalb der Aufbewahrungszeit. Restore erzeugt einen neuen Server.</li>
+  <li><b>Backup vs Replikation:</b> Replikation schützt vor Hardware-Ausfall. Nur Backups schützen vor Fehlern, Löschungen und Ransomware.</li>
+</ul>
+
+<h2>6. In der Produktion</h2>
+<ol>
+  <li><b>Backup da, Restore scheitert:</b> Nie getestet, WAL-Lücke oder falsches Passwort zum Schlüssel. Lösung: automatischer Restore-Test, z. B. wöchentlich, mit Zeitmessung.</li>
+  <li><b><code>pg_wal</code> läuft voll:</b> <code>archive_command</code> scheitert, z. B. Storage-Credentials abgelaufen. Lösung: <code>pg_stat_archiver.failed_count</code> und <code>last_failed_time</code> alarmieren.</li>
+  <li><b>pg_dump dauert Stunden und erzeugt Bloat:</b> Der lange Snapshot hält VACUUM auf. Lösung: physisches Backup oder Dump vom Standby.</li>
+  <li><b>Restore eines Dumps braucht einen Tag:</b> Indizes und Constraints werden neu gebaut. Lösung: <code>-Fd</code> und <code>pg_restore -j</code>, oder für grosse Datenbanken physische Backups.</li>
+  <li><b>Rollen fehlen nach Restore:</b> Nur <code>pg_dump</code> wurde gesichert. Lösung: <code>pg_dumpall --globals-only</code> zusätzlich.</li>
+  <li><b>Ransomware löscht auch die Backups:</b> Backups waren vom selben Account schreibbar. Lösung: unveränderbarer Storage, eigener Account, Kopie in anderer Region.</li>
+  <li><b>RTO verfehlt:</b> Das letzte Voll-Backup ist eine Woche alt, das Einspielen von WAL dauert Stunden. Lösung: häufigere Basis-Backups oder inkrementelle Backups.</li>
+</ol>
+
+<h2>7. Diagnose: Werkzeuge und Abfragen</h2>
+<ul>
+  <li><b>Archivierung:</b> <code>SELECT archived_count, last_archived_wal, failed_count, last_failed_wal, last_failed_time FROM pg_stat_archiver;</code></li>
+  <li><b>Backup-Fortschritt:</b> <code>pg_stat_progress_basebackup</code>; seit 19 mit Spalte <code>backup_type</code> (full oder incremental).</li>
+  <li><b>Backup prüfen:</b> <code>pg_verifybackup &lt;dir&gt;</code> prüft Manifest, Prüfsummen und WAL. Seit 18 auch für tar-Backups.</li>
+  <li><b>WAL-Summaries:</b> <code>pg_available_wal_summaries()</code>, <code>pg_get_wal_summarizer_state()</code>.</li>
+  <li><b>Recovery beobachten:</b> <code>pg_is_in_recovery()</code>, <code>pg_last_wal_replay_lsn()</code>, <code>pg_is_wal_replay_paused()</code>, Server-Log mit „recovery stopping before …“.</li>
+  <li><b>WAL-Datei zur LSN:</b> <code>pg_walfile_name(lsn)</code>; Inhalt mit <code>pg_waldump</code>, z. B. um den Zeitpunkt eines falschen DELETE zu finden.</li>
+  <li><b>pgBackRest:</b> <code>pgbackrest info</code> zeigt Backups, WAL-Bereich und Grösse; <code>pgbackrest check</code> testet die Archivierung.</li>
+</ul>
+
+<h2>8. Senior-Punkte</h2>
+<div class="senior">
+<ol>
+  <li><b>Ein Backup existiert erst, wenn der Restore getestet ist.</b> Ich automatisiere den Test und messe die Dauer gegen das RTO.</li>
+  <li><b>RPO bestimmt die Methode:</b> Täglicher Dump heisst bis zu 24 Stunden Verlust. PITR mit WAL-Archiv heisst Sekunden bis Minuten.</li>
+  <li><b>3-2-1-Regel:</b> drei Kopien, zwei Medien, eine ausser Haus. Dazu unveränderbar gegen Ransomware.</li>
+  <li><b>Physisch für Katastrophen, logisch für Einzelfälle.</b> Ein Dump hilft, eine einzelne Tabelle zurückzuholen oder Daten zu migrieren.</li>
+  <li><b>Fertige Werkzeuge statt eigener Skripte.</b> pgBackRest oder der Managed Service lösen Retention, Verschlüsselung und Prüfung.</li>
+  <li><b>PITR auf einen Neben-Server,</b> nicht auf die Produktion. Dann Daten gezielt zurückkopieren und den Rest des Tages behalten.</li>
+  <li><b>Restore Points vor riskanten Änderungen</b> setzen, z. B. vor Migrationen. Das macht das Recovery-Ziel eindeutig.</li>
+</ol>
+</div>
+
+<h2>9. Aus dem Projekt</h2>
+<p>„Bei MATCH ist die Statistik ‚replace instead of add‘: Ich kann jeden Tag aus der Wahrheit neu berechnen und überschreiben. Darum ist die Gold-Schicht wiederherstellbar ohne eigenes Backup; das Backup muss die Rohdaten und den Nessie-Katalog schützen, den ich auf PostgreSQL umgestellt habe.“ <span class="small">(Prüfen und durch dein echtes Beispiel ersetzen. Wie das PostgreSQL von Nessie oder die Mandanten-Datenbanken bei BAG DigiSanté gesichert wurden, steht nicht im Profil.)</span></p>
+
+<h2>10. Fallen</h2>
+<div class="trap">
+<ul>
+  <li>„pg_dump sichert alles.“ → <b>Falsch.</b> Keine Rollen und Tablespaces. Dafür <code>pg_dumpall --globals-only</code>.</li>
+  <li>„Mit pg_dump kann ich auf 14:31 zurück.“ → <b>Falsch.</b> Nur auf den Zeitpunkt des Dumps. PITR braucht Basis-Backup plus WAL-Archiv.</li>
+  <li>„Ein Basis-Backup reicht für PITR.“ → <b>Falsch.</b> Es braucht das lückenlose WAL ab dem Backup bis zum Ziel.</li>
+  <li>„Kopieren des Datenverzeichnisses im Betrieb ist ein Backup.“ → <b>Falsch.</b> Nur mit <code>pg_backup_start/stop</code>, <code>pg_basebackup</code> oder einem atomaren Snapshot aller Volumes.</li>
+  <li>„Inkrementelle Backups gehen einfach so.“ → <b>Falsch.</b> Erst ab 17 und nur mit <code>summarize_wal = on</code>, plus <code>pg_combinebackup</code> beim Restore.</li>
+  <li>„Ein physisches Backup kann ich in eine neuere Hauptversion einspielen.“ → <b>Falsch.</b> Nur gleiche Hauptversion. Für Upgrades: <code>pg_upgrade</code>, Dump oder logische Replikation.</li>
+  <li>„archive_command darf Fehler ignorieren.“ → <b>Falsch.</b> Exit 0 heisst für PostgreSQL „gesichert“, und es löscht die Datei.</li>
+</ul>
+</div>
+
+<h2>11. Fragen</h2>
+<details><summary>Welche Backup-Arten gibt es in PostgreSQL?</summary><p>Logisch mit pg_dump/pg_dumpall, physisch mit pg_basebackup oder Dateisystem-Snapshot, und kontinuierliche WAL-Archivierung für PITR.</p></details>
+<details><summary>Was ist PITR?</summary><p>Wiederherstellung auf einen beliebigen Zeitpunkt: Basis-Backup einspielen, dann archiviertes WAL bis zum Ziel abspielen.</p></details>
+<details><summary>Was braucht man für PITR?</summary><p>wal_level replica oder höher, archive_mode on, eine funktionierende Archivierung, ein Basis-Backup und das lückenlose WAL danach.</p></details>
+<details><summary>Wie startet man eine PITR?</summary><p>Basis-Backup in leeres PGDATA, restore_command und Recovery-Ziel setzen, recovery.signal anlegen, Server starten.</p></details>
+<details><summary>Welche Recovery-Ziele gibt es?</summary><p>Zeit, Name eines Restore Points, LSN, Transaktions-ID oder immediate.</p></details>
+<details><summary>Was passiert am Recovery-Ziel?</summary><p>Standardmässig pausiert der Server. Man prüft und beendet mit pg_wal_replay_resume(). Dann entsteht eine neue Timeline.</p></details>
+<details><summary>Was ist eine Timeline?</summary><p>Ein Zweig der WAL-Geschichte. Jede beendete Archiv-Recovery startet eine neue, mit History-Datei im Archiv.</p></details>
+<details><summary>Was muss ein archive_command erfüllen?</summary><p>Exit 0 nur bei echtem Erfolg, nie bestehende Dateien überschreiben, und die Datei dauerhaft speichern.</p></details>
+<details><summary>Was passiert, wenn die Archivierung scheitert?</summary><p>PostgreSQL versucht es weiter, pg_wal wächst. Ist die Platte voll, stoppt der Server mit PANIC.</p></details>
+<details><summary>Welche pg_dump-Formate gibt es?</summary><p>plain, custom, directory und tar. Custom und directory erlauben selektiven und parallelen Restore.</p></details>
+<details><summary>Wie mache ich pg_dump parallel?</summary><p>Mit -Fd und -j n. Der Restore mit pg_restore -j geht für custom und directory.</p></details>
+<details><summary>Blockiert pg_dump die Datenbank?</summary><p>Nicht für normale Lese- und Schreibzugriffe. Er hält aber ACCESS SHARE auf allen Tabellen und einen langen Snapshot.</p></details>
+<details><summary>Was sichert pg_dumpall zusätzlich?</summary><p>Globale Objekte wie Rollen und Tablespaces, und alle Datenbanken.</p></details>
+<details><summary>Was macht pg_basebackup -Xs?</summary><p>Es streamt das WAL während des Backups mit. Das Backup ist damit allein startfähig.</p></details>
+<details><summary>Was ist das backup_manifest?</summary><p>Eine Liste aller Dateien mit Prüfsummen. pg_verifybackup prüft das Backup dagegen, und inkrementelle Backups bauen darauf auf.</p></details>
+<details><summary>Wie funktionieren inkrementelle Backups?</summary><p>Seit 17: summarize_wal erfasst geänderte Blöcke. pg_basebackup --incremental kopiert nur diese, pg_combinebackup baut ein volles Backup daraus.</p></details>
+<details><summary>Was ist ein Restore Point?</summary><p>Eine benannte Marke im WAL, gesetzt mit pg_create_restore_point(). Ziel für recovery_target_name.</p></details>
+<details><summary>Logisches oder physisches Backup?</summary><p>Physisch für den ganzen Cluster, schnellen Restore und PITR. Logisch für einzelne Tabellen, Migrationen und Versionswechsel.</p></details>
+<details><summary>Was sind RPO und RTO beim Backup?</summary><p>RPO: wie viel Datenverlust erlaubt ist, bestimmt durch Archiv-Frequenz. RTO: wie lange der Restore dauern darf, bestimmt durch Backup-Grösse und WAL-Menge.</p></details>
+<details><summary>Welche Werkzeuge nutzt man in Produktion?</summary><p>pgBackRest, Barman oder WAL-G, oder die Backups des Managed Service.</p></details>
+<details><summary>Wie prüfe ich, ob die Archivierung läuft?</summary><p>pg_stat_archiver: last_archived_wal, failed_count und last_failed_time.</p></details>
+<details><summary>Warum nach einem Restore ANALYZE?</summary><p>Ein Dump enthält standardmässig keine Planner-Statistiken. Ohne ANALYZE plant der Planner blind. Seit 18 kann pg_dump Statistiken mitnehmen.</p></details>
+<details><summary>Szenario: Jemand hat um 14:32 eine Tabelle gelöscht. Wie holen Sie sie zurück?</summary><p>PITR auf einen Neben-Server bis 14:31:59 oder bis vor die Transaktion, dort prüfen, dann die Tabelle mit pg_dump/pg_restore in die Produktion kopieren.</p></details>
+<details><summary>Szenario: pg_wal wächst und die Platte ist zu 90 % voll. Was prüfen Sie zuerst?</summary><p>pg_stat_archiver auf Fehler, dann pg_replication_slots auf alte Slots. Ursache beheben, nie WAL-Dateien von Hand löschen.</p></details>
+<details><summary>Szenario: Die Datenbank hat 3 TB, der nächtliche pg_dump passt nicht mehr ins Zeitfenster. Was schlagen Sie vor?</summary><p>Physische Backups mit pgBackRest: wöchentlich voll, täglich inkrementell oder differentiell, dazu WAL-Archiv für PITR. pg_dump nur noch für einzelne Schemas.</p></details>
+
+</body>
+</html>

@@ -1,0 +1,307 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Fall: Dokumentensystem einer Behörde</title>
+<style>
+  body { font: 17px/1.55 -apple-system, system-ui, sans-serif; max-width: 760px; margin: 0 auto; padding: 16px; color: #1d1d1f; }
+  h1 { font-size: 28px; margin: 8px 0 4px; }
+  h2 { font-size: 21px; margin: 32px 0 8px; padding-top: 12px; border-top: 2px solid #e5e5ea; }
+  .kern { background: #eef6ff; border-left: 4px solid #0a66c2; padding: 10px 14px; border-radius: 6px; }
+  .senior { background: #f0faf0; border-left: 4px solid #2e7d32; padding: 10px 14px; border-radius: 6px; }
+  .trap { background: #fff4f2; border-left: 4px solid #c62828; padding: 10px 14px; border-radius: 6px; }
+  code { background: #f2f2f7; padding: 1px 5px; border-radius: 4px; font-size: 15px; }
+  pre { background: #1e1e1e; color: #e6e6e6; padding: 12px; border-radius: 8px; overflow-x: auto; font-size: 13.5px; line-height: 1.45; }
+  svg { width: 100%; height: auto; display: block; margin: 10px 0; }
+  ol li, ul li { margin: 4px 0; }
+  details { border: 1px solid #e5e5ea; border-radius: 8px; padding: 8px 12px; margin: 6px 0; }
+  summary { font-weight: 600; cursor: pointer; }
+  details p { margin: 6px 0 2px; }
+  .small { color: #6e6e73; font-size: 14px; }
+</style>
+</head>
+<body>
+
+<h1>Fall: Dokumentensystem einer Behörde</h1>
+<p class="small">System-Design-Fall · Tier 2 · Quellen: Informationssicherheitsgesetz ISG, SR 128 (Art. 13 Klassifizierungsstufen; in Kraft seit 1.1.2024), Datenschutzgesetz DSG, Archivierungsgesetz BGA, PostgreSQL 17 Docs (Full Text Search, Generated Columns, GIN, Triggers, EXPLAIN), Microsoft Learn (Defender for Storage Malware Scanning), Kleppmann DDIA Kap. 3 und 11</p>
+
+<div class="kern">
+<b>Kern (die 1-Minuten-Antwort):</b> Ein <b>Dokumentensystem einer Behörde</b> speichert Dokumente in <b>Dossiers</b> mit <b>Versionen</b>, <b>Klassifizierung</b> und <b>Aufbewahrungsfrist</b>. Bytes liegen verschlüsselt im <b>Object Storage</b>, Metadaten, Rechte und Versionen in <b>PostgreSQL</b>, die Volltextsuche filtert immer nach <b>Rechten</b>. Jede Aktion landet in einem <b>append-only Audit-Log</b>. Am Ende der Frist wird ein Dossier dem <b>Archiv angeboten</b> und erst dann vernichtet. Last ist klein; schwer sind <b>Sicherheit, Nachvollziehbarkeit und Langzeit</b>.
+</div>
+
+<h2>1. Wo sitzt was? (Architektur)</h2>
+<svg viewBox="0 0 720 340" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="a" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="10" y="140" width="110" height="60" rx="8" fill="#fff" stroke="#555"/><text x="65" y="166" text-anchor="middle" font-weight="700">Mitarbeitende</text><text x="65" y="185" text-anchor="middle" font-size="12">Browser, SSO</text>
+  <line x1="120" y1="170" x2="158" y2="170" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="160" y="130" width="150" height="80" rx="8" fill="#dbe9fb" stroke="#0a66c2"/><text x="235" y="156" text-anchor="middle" font-weight="700">Dokument-API</text><text x="235" y="176" text-anchor="middle" font-size="12">AuthZ, Versionen,</text><text x="235" y="194" text-anchor="middle" font-size="12">Audit-Aufruf</text>
+  <line x1="235" y1="130" x2="235" y2="98" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="160" y="40" width="150" height="56" rx="8" fill="#fff" stroke="#555"/><text x="235" y="65" text-anchor="middle" font-weight="700">IAM (Keycloak/AD)</text><text x="235" y="83" text-anchor="middle" font-size="12">Rollen, Org-Einheit</text>
+  <line x1="310" y1="150" x2="368" y2="95" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="370" y="50" width="160" height="70" rx="8" fill="#fff" stroke="#555"/><text x="450" y="76" text-anchor="middle" font-weight="700">PostgreSQL</text><text x="450" y="95" text-anchor="middle" font-size="12">Dossiers, ACL, Versionen,</text><text x="450" y="111" text-anchor="middle" font-size="12">Volltext, Audit</text>
+  <line x1="310" y1="190" x2="368" y2="235" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="370" y="210" width="160" height="62" rx="8" fill="#fff4f2" stroke="#c62828"/><text x="450" y="236" text-anchor="middle" font-weight="700">Object Storage</text><text x="450" y="255" text-anchor="middle" font-size="12">Quarantäne → WORM</text>
+  <line x1="530" y1="241" x2="568" y2="241" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="570" y="210" width="140" height="62" rx="8" fill="#0a66c2" stroke="#0a66c2"/><text x="640" y="236" text-anchor="middle" fill="#fff" font-weight="700">Verarbeitung</text><text x="640" y="255" text-anchor="middle" fill="#fff" font-size="12">Scan, OCR, PDF/A</text>
+  <line x1="640" y1="210" x2="535" y2="110" stroke="#555" stroke-width="2" marker-end="url(#a)"/><text x="600" y="160" font-size="11">Text</text>
+  <rect x="570" y="40" width="140" height="62" rx="8" fill="#e8f5e9" stroke="#2e7d32"/><text x="640" y="66" text-anchor="middle" font-weight="700">Archiv-Export</text><text x="640" y="85" text-anchor="middle" font-size="12">Fristablauf</text>
+  <line x1="530" y1="75" x2="568" y2="72" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="160" y="290" width="550" height="40" rx="8" fill="#f7f7fa" stroke="#999" stroke-dasharray="5 4"/><text x="435" y="315" text-anchor="middle" font-size="12">alles im privaten Netz · Private Endpoints · Schlüssel im Key Vault · Daten in der Schweiz</text>
+</svg>
+<ol>
+  <li><b>IAM:</b> liefert Identität, Rollen und Organisationseinheit per SSO. Beispiel: <code>user:mueller</code> in <code>org:Abteilung B</code>.</li>
+  <li><b>Dokument-API:</b> prüft jede Aktion gegen Dossier-Rechte und Klassifizierung und schreibt einen Audit-Eintrag.</li>
+  <li><b>PostgreSQL:</b> Dossiers, ACL, Dokumente, Versionen, Volltext-Index und Audit-Log. Die Wahrheit über alles ausser den Bytes.</li>
+  <li><b>Object Storage:</b> Neue Dateien landen in Quarantäne. Nach dem Scan liegen sie unveränderbar (<b>WORM</b>, Write Once Read Many) und verschlüsselt.</li>
+  <li><b>Verarbeitung:</b> Malware-Scan, Texterkennung (<b>OCR</b>) für Scans, Umwandlung in <b>PDF/A</b> für die Langzeit-Lesbarkeit.</li>
+  <li><b>Archiv-Export:</b> Bei Fristablauf wird das Dossier dem Archiv angeboten. Erst nach dessen Entscheid wird vernichtet.</li>
+</ol>
+
+<h2>2. Die Reise eines Dokuments (die Geschichte zum Merken)</h2>
+<svg viewBox="0 0 720 320" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="b" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker><marker id="r" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#c62828"/></marker></defs>
+  <rect x="10" y="20" width="160" height="62" rx="10" fill="#eee" stroke="#777"/><text x="90" y="45" text-anchor="middle" font-weight="700">1. Hochladen</text><text x="90" y="65" text-anchor="middle" font-size="12">Recht auf Dossier?</text>
+  <line x1="170" y1="51" x2="198" y2="51" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="200" y="20" width="150" height="62" rx="10" fill="#fff4f2" stroke="#c62828"/><text x="275" y="45" text-anchor="middle" font-weight="700">2. Quarantäne</text><text x="275" y="65" text-anchor="middle" font-size="12">Scan, Typ prüfen</text>
+  <line x1="350" y1="51" x2="378" y2="51" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="380" y="20" width="150" height="62" rx="10" fill="#0a66c2" stroke="#0a66c2"/><text x="455" y="45" text-anchor="middle" fill="#fff" font-weight="700">3. Aufbereiten</text><text x="455" y="65" text-anchor="middle" fill="#fff" font-size="12">OCR, PDF/A, Hash</text>
+  <line x1="530" y1="51" x2="558" y2="51" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="560" y="20" width="150" height="62" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="635" y="45" text-anchor="middle" font-weight="700">4. Version 2</text><text x="635" y="65" text-anchor="middle" font-size="12">+ Audit, 1 Tx</text>
+  <line x1="635" y1="82" x2="635" y2="128" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="490" y="130" width="220" height="62" rx="10" fill="#e8f5e9" stroke="#2e7d32"/><text x="600" y="155" text-anchor="middle" font-weight="700">5. Suche „Lärmschutzwände“</text><text x="600" y="175" text-anchor="middle" font-size="12">Volltext UND Rechte</text>
+  <line x1="490" y1="161" x2="402" y2="161" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="200" y="130" width="200" height="62" rx="10" fill="#fff" stroke="#555"/><text x="300" y="155" text-anchor="middle" font-weight="700">6. Lesen</text><text x="300" y="175" text-anchor="middle" font-size="12">kurzer Download-Link + Audit</text>
+  <line x1="200" y1="161" x2="172" y2="161" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="10" y="130" width="160" height="62" rx="10" fill="#fff" stroke="#555"/><text x="90" y="155" text-anchor="middle" font-weight="700">7. Dossier zu</text><text x="90" y="175" text-anchor="middle" font-size="12">Frist startet</text>
+  <line x1="90" y1="192" x2="90" y2="238" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="10" y="240" width="700" height="56" rx="10" fill="#fff4f2" stroke="#c62828"/><text x="360" y="264" text-anchor="middle" fill="#c62828" font-weight="700">8. Fristablauf: dem Archiv anbieten → archivieren oder vernichten (mit Protokoll)</text><text x="360" y="284" text-anchor="middle" fill="#c62828" font-size="12">Legal Hold stoppt die Vernichtung</text>
+</svg>
+<ol>
+  <li><b>Hochladen:</b> Frau Müller lädt eine überarbeitete Verfügung in Dossier 7. Die API prüft: Hat sie Schreibrecht auf Dossier 7?</li>
+  <li><b>Quarantäne:</b> Die Datei wird gescannt, der echte Typ über Magic Bytes geprüft. Erst danach ist sie nutzbar.</li>
+  <li><b>Aufbereiten:</b> OCR liefert Text für die Suche. Eine PDF/A-Kopie sichert die Lesbarkeit in 20 Jahren. Ein SHA-256 belegt die Unverändertheit.</li>
+  <li><b>Neue Version:</b> Version 2 entsteht nur, wenn niemand zwischenzeitlich eine Version 2 angelegt hat (<b>Optimistic Locking</b>). Version und Audit-Eintrag gehen in eine Transaktion.</li>
+  <li><b>Suche:</b> Ein Kollege sucht „Lärmschutzwände Verfügung“. Er sieht nur Treffer aus Dossiers, auf die er Rechte hat.</li>
+  <li><b>Lesen:</b> Er bekommt einen kurzlebigen Download-Link. Auch das Lesen wird protokolliert.</li>
+  <li><b>Abschluss:</b> Das Dossier wird geschlossen. Ab jetzt läuft die Aufbewahrungsfrist, z. B. 10 Jahre.</li>
+  <li><b>Fristablauf:</b> Ein Job findet fällige Dossiers. Sie werden dem Archiv angeboten. Was nicht archivwürdig ist, wird protokolliert vernichtet. Ein <b>Legal Hold</b> (laufendes Verfahren) stoppt das.</li>
+</ol>
+
+<h2>3. Beispiel: API, Datenmodell und die Queries laut gesagt</h2>
+<p><b>API:</b></p>
+<pre>POST /v1/dossiers/{id}/documents              {title, file}         → 201 {docId, version: 1}
+POST /v1/documents/{id}/versions              If-Match: "1"         → 201 {version: 2} | 412
+GET  /v1/documents/{id}/versions/{v}/content  → 302 kurzlebige URL (audit: READ)
+GET  /v1/search?q=Lärmschutzwände+Verfügung&amp;cursor=…               (nur berechtigte Treffer)
+POST /v1/dossiers/{id}:close                  → Frist startet
+GET  /v1/audit?object=document:4711           (nur Rolle Revision)</pre>
+<p><b>Datenmodell:</b></p>
+<pre>CREATE TABLE dossiers (
+  id              bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  title           text NOT NULL,
+  org_unit        text NOT NULL,
+  classification  text NOT NULL DEFAULT 'intern'
+                  CHECK (classification IN ('intern','vertraulich','geheim')),
+  closed_at       date,
+  retention_years int NOT NULL DEFAULT 10
+);
+CREATE TABLE dossier_acl (
+  dossier_id bigint NOT NULL REFERENCES dossiers(id),
+  principal  text   NOT NULL,                 -- 'user:…' oder 'org:…'
+  PRIMARY KEY (dossier_id, principal)
+);
+CREATE TABLE documents (
+  id              bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  dossier_id      bigint NOT NULL REFERENCES dossiers(id),
+  title           text   NOT NULL,
+  body_text       text   NOT NULL,            -- aus OCR / Textextraktion
+  current_version int    NOT NULL DEFAULT 1,
+  tsv tsvector GENERATED ALWAYS AS
+      (to_tsvector('german', title || ' ' || body_text)) STORED
+);
+CREATE INDEX documents_tsv_idx ON documents USING gin (tsv);
+CREATE TABLE document_versions (
+  document_id bigint NOT NULL REFERENCES documents(id),
+  version     int    NOT NULL,
+  blob_key    text   NOT NULL,
+  sha256      text   NOT NULL,
+  created_by  text   NOT NULL,
+  created_at  timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (document_id, version)
+);
+CREATE TABLE audit_log (
+  id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  at timestamptz NOT NULL DEFAULT now(),
+  actor text NOT NULL, action text NOT NULL, object_ref text NOT NULL
+);
+CREATE FUNCTION audit_append_only() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN RAISE EXCEPTION 'audit_log ist append-only (% verboten)', TG_OP; END $$;
+CREATE TRIGGER audit_no_change BEFORE UPDATE OR DELETE ON audit_log
+  FOR EACH ROW EXECUTE FUNCTION audit_append_only();</pre>
+<p><b>Deutsche Wortstämme, laut gesagt:</b> „Die Suche arbeitet mit Wortstämmen. Aus ‚Gesuche um Baubewilligungen für Häuser‘ werden drei Stämme, ‚um‘ und ‚für‘ fallen weg.“</p>
+<pre>SELECT to_tsvector('german', 'Gesuche um Baubewilligungen für Häuser') AS tsv;
+                tsv
+-----------------------------------
+ 'baubewill':3 'gesuch':1 'haus':5</pre>
+<p><b>Query 1, laut gesagt:</b> „Volltext-Treffer, aber nur aus Dossiers, auf die Frau Müller selbst oder ihre Abteilung Rechte hat. Sortiert nach Relevanz.“</p>
+<pre>EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY ON)
+SELECT d.id, d.title, ts_rank(d.tsv, q) AS rank
+FROM documents d, plainto_tsquery('german', 'Lärmschutzwände Verfügung') q
+WHERE d.tsv @@ q
+  AND EXISTS (SELECT 1 FROM dossier_acl a
+              WHERE a.dossier_id = d.dossier_id
+                AND a.principal IN ('user:mueller', 'org:Abteilung B'))
+ORDER BY rank DESC, d.id
+LIMIT 10;
+ Limit (actual rows=10 loops=1)
+   -&gt;  Sort (actual rows=10 loops=1)
+         Sort Key: (ts_rank(d.tsv, '''larmschutzwand'' &amp; ''verfug'''::tsquery)) DESC, d.id
+         -&gt;  Hash Semi Join (actual rows=6650 loops=1)
+               -&gt;  Seq Scan on documents d (actual rows=20000 loops=1)
+                     Filter: (tsv @@ '''larmschutzwand'' &amp; ''verfug'''::tsquery)
+                     Rows Removed by Filter: 80000
+               -&gt;  Hash (actual rows=668 loops=1)
+                     -&gt;  Seq Scan on dossier_acl a (actual rows=668 loops=1)
+ Execution Time: 29.877 ms
+
+SELECT count(*) AS treffer_ohne_acl FROM documents
+WHERE tsv @@ plainto_tsquery('german', 'Lärmschutzwände Verfügung');
+ treffer_ohne_acl
+------------------
+            20000</pre>
+<p><b>Query 2, laut gesagt:</b> „Neue Version nur, wenn die aktuelle Version noch 1 ist. Version, Metadaten und Audit in einer Transaktion. Ein zweiter Bearbeiter mit veraltetem Stand bekommt 0 Zeilen, also HTTP 412.“</p>
+<pre>BEGIN;
+UPDATE documents SET current_version = current_version + 1
+WHERE id = 4711 AND current_version = 1
+RETURNING id, current_version;
+  id  | current_version
+------+-----------------
+ 4711 |               2
+INSERT INTO document_versions VALUES (4711, 2, 'docs/4711/v2', 'e3b0c442…', 'user:mueller');
+INSERT INTO audit_log (actor, action, object_ref)
+VALUES ('user:mueller', 'NEW_VERSION', 'document:4711/v2');
+COMMIT;
+-- zweiter Bearbeiter, gleicher Ausgangsstand:
+UPDATE documents SET current_version = current_version + 1
+WHERE id = 4711 AND current_version = 1 RETURNING id, current_version;
+(0 rows)</pre>
+<p><b>Query 3, laut gesagt:</b> „Das Audit-Log lässt sich nicht ändern. Und ein Job findet Dossiers, deren Frist abgelaufen ist.“</p>
+<pre>UPDATE audit_log SET actor = 'user:jemand' WHERE id = 1;
+ERROR:  audit_log ist append-only (UPDATE verboten)
+CONTEXT:  PL/pgSQL function audit_append_only() line 3 at RAISE
+
+SELECT id, title, closed_at, closed_at + make_interval(years =&gt; retention_years) AS loeschen_ab
+FROM dossiers
+WHERE closed_at IS NOT NULL
+  AND closed_at + make_interval(years =&gt; retention_years) &lt; current_date
+ORDER BY closed_at LIMIT 3;
+ id |   title    | closed_at  |     loeschen_ab
+----+------------+------------+---------------------
+  4 | Dossier 4  | 2014-01-05 | 2024-01-05 00:00:00
+  8 | Dossier 8  | 2014-01-09 | 2024-01-09 00:00:00
+ 12 | Dossier 12 | 2014-01-13 | 2024-01-13 00:00:00</pre>
+<p class="small">Echte Ausgabe, PostgreSQL 17.12 (Schema <code>demo_authority_documents</code>, 2000 Dossiers, 100 000 Dokumente aus 5 Textvorlagen, danach gelöscht). Plan gekürzt.</p>
+<ol>
+  <li><b>Stemming:</b> „Lärmschutzwände“ wird zu <code>larmschutzwand</code>, „Verfügung“ zu <code>verfug</code>. Der Stemmer entfernt auch Umlaute. Französisch und Italienisch brauchen eigene Konfigurationen.</li>
+  <li><b>Rechte in der Query:</b> 20 000 Treffer gesamt, nur 6650 berechtigt. Ein Filter erst nach der Suche würde Seiten und Zahlen verfälschen.</li>
+  <li><b>Seq Scan trotz GIN-Index:</b> 20 % aller Dokumente passen. Der Planer liest dann lieber alles. Bei seltenen Wörtern nimmt er den GIN-Index.</li>
+  <li><b>Optimistic Locking:</b> Die Bedingung <code>current_version = 1</code> verhindert, dass ein Bearbeiter die Änderung eines anderen überschreibt.</li>
+  <li><b>Append-only:</b> Der Trigger blockt UPDATE und DELETE. Zusätzlich gehört das Log in ein getrenntes System mit eigenen Rechten.</li>
+</ol>
+
+<h2>4. Details, die Interviewer fragen</h2>
+<ol>
+  <li><b>Anforderungen:</b> Dossiers und Dokumente, Versionen, Rechte nach Organisation und Person, Volltextsuche in de/fr/it, Klassifizierung, Aufbewahrung und Archivierung, lückenloses Audit, Betrieb in der Schweiz.</li>
+  <li><b>Schätzung:</b> 30 000 Mitarbeitende, 1 Mio. neue Dokumente pro Jahr à 2 MB = 2 TB pro Jahr. Bei 10 Jahren Frist und Versionen ca. 30 TB. Suche: 600 000 pro Tag ≈ 7/s, Spitze ca. 50/s. Last ist klein.</li>
+  <li><b>Klassifizierung:</b> Das ISG kennt die Stufen <b>intern</b>, <b>vertraulich</b> und <b>geheim</b>. Höhere Stufen brauchen strengere Kontrollen: engere Rechte, Verschlüsselung, eventuell getrennte Systeme. „Geheim“ gehört meist nicht in ein normales Dokumentensystem.</li>
+  <li><b>Rechte-Modell:</b> <b>RBAC</b> (Rollen) für Funktionen, <b>ACL pro Dossier</b> für Inhalte, <b>Need-to-know</b> als Prinzip. Rechte erben vom Dossier auf Dokumente, Ausnahmen explizit.</li>
+  <li><b>Audit:</b> Wer hat wann was gelesen, geändert, gelöscht, exportiert. Append-only, in einem getrennten Speicher, mit Zeitstempel und Korrelations-ID. Personendaten im Log selbst schützen (DSG).</li>
+  <li><b>Versionierung:</b> Nie überschreiben. Jede Version hat Hash, Autor und Zeit. Optimistic Locking mit <code>If-Match</code> und HTTP 412.</li>
+  <li><b>Unveränderbarkeit:</b> WORM-Storage oder Immutability-Policies am Storage verhindern Änderung und Löschen vor Fristende, auch durch Admins.</li>
+  <li><b>Langzeit-Format:</b> <b>PDF/A</b> ist ein PDF-Profil für Langzeitarchivierung: Schriften eingebettet, keine externen Abhängigkeiten. Original zusätzlich behalten.</li>
+  <li><b>Aufbewahrung und Archiv:</b> Nach Fristablauf werden Unterlagen dem zuständigen Archiv angeboten (im Bund nach Archivierungsgesetz). Vernichten nur, was nicht archivwürdig ist, und mit Protokoll.</li>
+  <li><b>Legal Hold:</b> Ein Flag pro Dossier stoppt jede Vernichtung, solange ein Verfahren läuft.</li>
+  <li><b>Suche:</b> PostgreSQL-Volltext reicht für Millionen Dokumente. Für Facetten, Tippfehler-Toleranz und sehr grosse Mengen ein Suchcluster, mit Rechte-Feldern im Index.</li>
+  <li><b>Datenschutz:</b> Datenminimierung, Löschung nach Frist, Auskunftsrecht. Personendaten in Dokumenten machen auch Suchindex und Backups schützenswert.</li>
+  <li><b>Netz und Schlüssel:</b> Private Endpoints, keine öffentlichen Storage-Zugänge, Schlüssel im Key Vault oder HSM, Daten in Schweizer Regionen.</li>
+  <li><b>Mandanten:</b> Mehrere Ämter im selben System: getrennte Datenbanken oder Schemas pro Amt geben harte Isolation; Zeilen-Filter sind billiger, aber riskanter.</li>
+</ol>
+
+<h2>5. Vergleich: drei Design-Varianten</h2>
+<ul>
+  <li><b>A. Standardprodukt (GEVER-System, DMS):</b> Fachfunktionen, Archiv-Schnittstellen und Zertifizierungen fertig. Aber: Anpassung schwer, Lizenz, Integration in eigene Fachanwendungen aufwendig.</li>
+  <li><b>B. Eigenbau auf PostgreSQL + Object Storage (wie oben):</b> passt genau zum Fachprozess, offene Technologie. Preis: Audit, Retention, Archiv-Export und Nachweise selbst bauen und betreiben.</li>
+  <li><b>C. Fachanwendung + angebundenes GEVER:</b> Die Fachanwendung arbeitet schnell, das GEVER-System ist Ablage und Archiv-Weg. Oft der realistische Weg; Preis: Synchronisation und zwei Rechte-Modelle.</li>
+</ul>
+
+<h2>6. In der Produktion</h2>
+<ol>
+  <li><b>Treffer zeigen fremde Titel:</b> Rechte erst nach der Suche gefiltert, oder Snippets aus nicht berechtigten Dokumenten. Fix: Rechte-Filter in der Query, Snippets nur für berechtigte Treffer.</li>
+  <li><b>Bearbeitungen gehen verloren:</b> Zwei Personen speichern gleichzeitig. Fix: Optimistic Locking mit 412 und Hinweis im UI.</li>
+  <li><b>Audit-Lücken:</b> Lesezugriffe über einen Batch-Export nicht protokolliert. Fix: Audit in der gemeinsamen Zugriffsschicht, nicht in jedem Endpoint.</li>
+  <li><b>Vernichtung trotz Verfahren:</b> Kein Legal Hold. Fix: Flag, Vier-Augen-Prinzip für Vernichtungsläufe, Protokoll.</li>
+  <li><b>Gescannte PDFs nicht findbar:</b> Kein Text. Fix: OCR in der Verarbeitungs-Pipeline, Qualität stichprobenartig prüfen.</li>
+  <li><b>Backup enthält gelöschte Personendaten:</b> Fix: Backup-Fristen dokumentieren, Wiederherstellung mit erneuter Löschung.</li>
+</ol>
+
+<h2>7. Diagnose: Werkzeuge und Queries</h2>
+<ul>
+  <li><b>Wer hat Dokument X gelesen?</b> <code>SELECT at, actor, action FROM audit_log WHERE object_ref LIKE 'document:4711%' ORDER BY at;</code></li>
+  <li><b>Rechte prüfen:</b> <code>SELECT principal FROM dossier_acl WHERE dossier_id = 7;</code> plus Gruppen aus dem IAM.</li>
+  <li><b>Fällige Dossiers</b> mit der Retention-Query; Anzahl pro Monat als Kennzahl.</li>
+  <li><b>Suche:</b> <code>EXPLAIN (ANALYZE, BUFFERS)</code>, <code>ts_debug('german', '…')</code> für unerwartete Stämme.</li>
+  <li><b>Integrität:</b> periodisch SHA-256 der gespeicherten Bytes gegen <code>document_versions.sha256</code> prüfen.</li>
+  <li><b>Scan-Ergebnisse:</b> Defender-Protokoll (z. B. Log Analytics) für Uploads.</li>
+</ul>
+
+<h2>8. Senior-Punkte</h2>
+<div class="senior">
+<ol>
+  <li><b>Hier ist nicht die Last das Problem,</b> sondern Sicherheit, Nachvollziehbarkeit und Jahrzehnte Lebensdauer. Das sage ich im Interview früh.</li>
+  <li><b>Rechte gehören in jede Query,</b> auch in Suche, Export und Vorschau. Eine zentrale Zugriffsschicht verhindert Lücken.</li>
+  <li><b>Nie überschreiben, nie still löschen.</b> Versionen, WORM und protokollierte Vernichtung.</li>
+  <li><b>Audit ist ein eigenes System</b> mit eigenen Rechten. Wer Dokumente verwaltet, darf das Log nicht ändern.</li>
+  <li><b>Retention ist Fachlogik,</b> nicht ein Storage-Lifecycle allein. Archiv-Angebot und Legal Hold gehören dazu.</li>
+  <li><b>Standardprodukt zuerst prüfen.</b> Eigenbau nur, wenn der Fachprozess es wirklich verlangt.</li>
+</ol>
+</div>
+
+<h2>9. Aus dem Projekt</h2>
+<p>„Bei DigiSanté habe ich die Bausteine gebaut: einen Upload mit Quarantäne und Defender-Scan im privaten Netz, eine gemeinsame Audit-Bibliothek für DSG-konformes Logging nach Azure Monitor, einen PDF-Service mit PDF/A-Ausgabe und einen Personen-Service mit eigener PostgreSQL-Datenbank pro Mandant. Ein ganzes Dokumentensystem mit Archivierung habe ich nicht gebaut.“ <span class="small">(Prüfen und durch dein echtes Beispiel ersetzen.)</span></p>
+
+<h2>10. Fallen</h2>
+<div class="trap">
+<ul>
+  <li>„Ich filtere die Rechte nach der Suche.“ → Falsche Trefferzahlen und Leaks über Titel und Snippets. Filter in der Query.</li>
+  <li>„Nach 10 Jahren löscht ein Lifecycle-Job automatisch.“ → <b>Falsch</b> für Behörden. Erst dem Archiv anbieten, Legal Hold beachten, protokollieren.</li>
+  <li>„Das Audit-Log liegt in derselben Tabelle mit denselben Rechten.“ → Admins könnten Spuren löschen. Getrennt und append-only.</li>
+  <li>„PDF reicht für die Langzeit.“ → Nur PDF/A garantiert eingebettete Schriften und keine externen Abhängigkeiten.</li>
+  <li>„Volltext auf Deutsch reicht.“ → In der Schweiz kommen fr und it dazu, mit eigenen Stemmern.</li>
+  <li>„Klassifizierung ist nur ein Label.“ → Sie bestimmt Rechte, Verschlüsselung, Speicherort und Protokollierung.</li>
+</ul>
+</div>
+
+<h2>11. Fragen</h2>
+<details><summary>Skizzieren Sie das System in einer Minute.</summary><p>Dossiers mit versionierten Dokumenten, Bytes verschlüsselt und unveränderbar im Object Storage, Metadaten, Rechte und Volltext in PostgreSQL, append-only Audit. Upload über Quarantäne und Scan. Am Fristende Archiv-Angebot, dann protokollierte Vernichtung.</p></details>
+<details><summary>Welche Fragen stellen Sie zuerst?</summary><p>Klassifizierungsstufen, Rechte-Modell, Sprachen, Fristen und Archiv-Weg, Mengen, Integration mit bestehendem GEVER, Betrieb in der Schweiz.</p></details>
+<details><summary>Wie gross ist die Last?</summary><p>Klein: ca. 2 TB pro Jahr und einige Suchen pro Sekunde. Das Design wird von Sicherheit und Langzeit getrieben.</p></details>
+<details><summary>Wie bauen Sie das Rechte-Modell?</summary><p>Rollen für Funktionen, ACL pro Dossier mit Personen und Organisationseinheiten, Need-to-know. Dokumente erben vom Dossier.</p></details>
+<details><summary>Wie setzen Sie Rechte in der Suche durch?</summary><p>Der Rechte-Filter ist Teil der Query oder des Index-Filters. Snippets nur für berechtigte Treffer.</p></details>
+<details><summary>Welche Klassifizierungsstufen kennt der Bund?</summary><p>Das ISG kennt intern, vertraulich und geheim. Die Stufe bestimmt Schutzmassnahmen und Speicherort.</p></details>
+<details><summary>Wie versionieren Sie Dokumente?</summary><p>Jede Änderung ist eine neue Version mit Hash, Autor und Zeit. Optimistic Locking über die Versionsnummer, HTTP 412 bei Konflikt.</p></details>
+<details><summary>Wie machen Sie das Audit-Log manipulationssicher?</summary><p>Append-only per Trigger oder Rechte, in einem getrennten System mit eigenen Admins. Optional Hash-Kette oder WORM-Speicher.</p></details>
+<details><summary>Was passiert am Ende der Aufbewahrungsfrist?</summary><p>Das Dossier wird dem Archiv angeboten. Archivwürdiges geht dorthin, der Rest wird protokolliert vernichtet. Legal Hold stoppt das.</p></details>
+<details><summary>Warum PDF/A?</summary><p>Es ist für Langzeitarchivierung gemacht: Schriften eingebettet, keine externen Inhalte. Das Original bleibt zusätzlich erhalten.</p></details>
+<details><summary>Wie machen Sie gescannte Dokumente durchsuchbar?</summary><p>OCR in der Verarbeitungs-Pipeline, Text in die Volltext-Spalte. Qualität stichprobenartig prüfen.</p></details>
+<details><summary>Wie gehen Sie mit drei Landessprachen um?</summary><p>Sprache pro Dokument erkennen oder erfassen und die passende Textsuche-Konfiguration nutzen: german, french, italian.</p></details>
+<details><summary>PostgreSQL-Volltext oder Suchcluster?</summary><p>PostgreSQL reicht für Millionen Dokumente und macht Rechte-Joins leicht. Ein Suchcluster lohnt für Facetten, Tippfehler und sehr grosse Mengen.</p></details>
+<details><summary>Wie isolieren Sie mehrere Ämter?</summary><p>Hart über eigene Datenbank oder Schema pro Amt, weich über Zeilen-Filter. Bei sensiblen Daten bevorzuge ich harte Isolation.</p></details>
+<details><summary>Wie schützen Sie die Dateien?</summary><p>Quarantäne und Malware-Scan, Verschlüsselung mit Schlüsseln im Key Vault, Private Endpoints, kurzlebige Download-Links, WORM bis Fristende.</p></details>
+<details><summary>Standardprodukt oder Eigenbau?</summary><p>Erst ein GEVER- oder DMS-Produkt prüfen, weil Archiv-Wege und Nachweise fertig sind. Eigenbau nur bei besonderem Fachprozess, oft als Fachanwendung mit GEVER-Anbindung.</p></details>
+<details><summary>Szenario: Ein Mitarbeiter sieht in der Trefferliste Titel aus einem vertraulichen Dossier. Was tun Sie?</summary><p>Sofort Snippets und Titel für nicht berechtigte Treffer abschalten. Ursache finden: Filter nach der Suche oder falsche ACL im Index. Im Audit prüfen, wer was gesehen hat, und den Vorfall melden.</p></details>
+<details><summary>Szenario: Zwei Sachbearbeiter überschreiben gegenseitig ihre Änderungen. Was ändern Sie?</summary><p>Optimistic Locking mit Versionsnummer und If-Match. Der zweite bekommt 412 und sieht die neue Version zum Zusammenführen.</p></details>
+<details><summary>Szenario: Die Revision fragt, wer ein Dokument vor drei Jahren gelesen hat. Können Sie das beantworten?</summary><p>Nur wenn Lesezugriffe zentral und append-only protokolliert sind und die Audit-Frist lang genug ist. Darum Audit in der Zugriffsschicht und eine definierte Aufbewahrung für das Log.</p></details>
+
+</body>
+</html>

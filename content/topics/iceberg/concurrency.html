@@ -1,0 +1,211 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Gleichzeitige Writes</title>
+<style>
+  body { font: 17px/1.55 -apple-system, system-ui, sans-serif; max-width: 760px; margin: 0 auto; padding: 16px; color: #1d1d1f; }
+  h1 { font-size: 28px; margin: 8px 0 4px; }
+  h2 { font-size: 21px; margin: 32px 0 8px; padding-top: 12px; border-top: 2px solid #e5e5ea; }
+  .kern { background: #eef6ff; border-left: 4px solid #0a66c2; padding: 10px 14px; border-radius: 6px; }
+  .senior { background: #f0faf0; border-left: 4px solid #2e7d32; padding: 10px 14px; border-radius: 6px; }
+  .trap { background: #fff4f2; border-left: 4px solid #c62828; padding: 10px 14px; border-radius: 6px; }
+  code { background: #f2f2f7; padding: 1px 5px; border-radius: 4px; font-size: 15px; }
+  pre { background: #1e1e1e; color: #e6e6e6; padding: 12px; border-radius: 8px; overflow-x: auto; font-size: 13.5px; line-height: 1.45; }
+  svg { width: 100%; height: auto; display: block; margin: 10px 0; }
+  ol li, ul li { margin: 4px 0; }
+  details { border: 1px solid #e5e5ea; border-radius: 8px; padding: 8px 12px; margin: 6px 0; }
+  summary { font-weight: 600; cursor: pointer; }
+  details p { margin: 6px 0 2px; }
+  .small { color: #6e6e73; font-size: 14px; }
+</style>
+</head>
+<body>
+
+<h1>Gleichzeitige Writes und optimistisches Commit</h1>
+<p class="small">Iceberg · Tier 2 · Quellen: Apache Iceberg Table Spec (Optimistic Concurrency, Sequence Numbers), Iceberg 1.12 Docs (Configuration: commit.retry.*, write.*.isolation-level; Spark Procedures: rewrite_data_files), Iceberg REST Catalog OpenAPI Spec (requirements, /transactions/commit)</p>
+
+<div class="kern">
+<b>Kern:</b> Iceberg nutzt <b>Optimistic Concurrency Control</b>: Jeder Writer arbeitet ohne Lock und versucht am Ende, den Tabellen-Zeiger im Katalog <b>atomar</b> von seiner Basis-Version auf seine neue Version zu setzen. War ein anderer schneller, prüft der Writer, ob dessen Änderungen mit seinen <b>kollidieren</b>. Ohne Konflikt wiederholt er nur den Metadaten-Commit, mit Konflikt scheitert er.
+</div>
+
+<h2>1. Wo sitzt die Concurrency-Kontrolle?</h2>
+<svg viewBox="0 0 720 300" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="cca" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="10" y="20" width="140" height="50" rx="8" fill="#dbe9fb" stroke="#0a66c2"/><text x="80" y="42" text-anchor="middle" font-weight="700">Writer A</text><text x="80" y="60" text-anchor="middle" font-size="12">Ingest-Job</text>
+  <rect x="10" y="90" width="140" height="50" rx="8" fill="#dbe9fb" stroke="#0a66c2"/><text x="80" y="112" text-anchor="middle" font-weight="700">Writer B</text><text x="80" y="130" text-anchor="middle" font-size="12">Compaction</text>
+  <line x1="150" y1="45" x2="268" y2="80" stroke="#555" stroke-width="2" marker-end="url(#cca)"/>
+  <line x1="150" y1="115" x2="268" y2="90" stroke="#555" stroke-width="2" marker-end="url(#cca)"/>
+  <rect x="270" y="55" width="180" height="60" rx="10" fill="#0a66c2"/><text x="360" y="80" text-anchor="middle" fill="#fff" font-weight="700">Katalog</text><text x="360" y="100" text-anchor="middle" fill="#fff" font-size="12">Zeiger: CAS / requirements</text>
+  <line x1="360" y1="115" x2="360" y2="158" stroke="#555" stroke-width="2" marker-end="url(#cca)"/>
+  <rect x="250" y="160" width="220" height="40" rx="8" fill="#fff" stroke="#555"/><text x="360" y="185" text-anchor="middle">v3.metadata.json (aktuell)</text>
+  <line x1="360" y1="200" x2="360" y2="226" stroke="#555" stroke-width="2" marker-end="url(#cca)"/>
+  <rect x="250" y="228" width="220" height="40" rx="8" fill="#fff" stroke="#555"/><text x="360" y="253" text-anchor="middle">Manifest List → Manifests</text>
+  <rect x="500" y="160" width="210" height="108" rx="10" fill="#f7f7fa" stroke="#999" stroke-dasharray="5 4"/><text x="605" y="182" text-anchor="middle" font-weight="700" font-size="13">Object Storage</text>
+  <text x="605" y="206" text-anchor="middle" font-size="12">Datendateien von A und B</text><text x="605" y="226" text-anchor="middle" font-size="12">liegen schon da,</text><text x="605" y="246" text-anchor="middle" font-size="12">bevor der Commit gelingt</text>
+  <line x1="470" y1="248" x2="498" y2="230" stroke="#999" stroke-width="1.5" marker-end="url(#cca)"/>
+  <text x="560" y="80" font-size="12">Nur EIN Writer gewinnt</text><text x="560" y="98" font-size="12">pro Basis-Version.</text>
+</svg>
+<ol>
+  <li><b>Writer:</b> Jeder Job (Ingest, MERGE, Compaction) schreibt seine Datendateien zuerst. Niemand sperrt die Tabelle.</li>
+  <li><b>Neue Metadaten:</b> Dann schreibt er neue Manifests, eine neue Manifest List und eine neue <code>metadata.json</code>.</li>
+  <li><b>Katalog:</b> Er hält den Zeiger auf die aktuelle <code>metadata.json</code>. Der Writer setzt ihn per <b>Compare-and-Swap</b> (CAS): nur wenn der Zeiger noch auf seiner Basis steht.</li>
+  <li><b>REST-Katalog:</b> Dort schickt der Writer <b>requirements</b> mit, z. B. „aktueller Snapshot ist noch X“. Der Server prüft sie atomar.</li>
+  <li><b>Object Storage:</b> Dateien eines gescheiterten Commits bleiben liegen. Sie werden zu <b>Orphan Files</b>, wenn niemand aufräumt.</li>
+</ol>
+
+<h2>2. Die Reise zweier Commits (Wettlauf)</h2>
+<svg viewBox="0 0 720 300" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="ccb" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker><marker id="ccr" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#c62828"/></marker></defs>
+  <rect x="10" y="20" width="140" height="60" rx="10" fill="#eee" stroke="#777"/><text x="80" y="44" text-anchor="middle" font-weight="700">1. Beide lesen v1</text><text x="80" y="64" text-anchor="middle" font-size="12">A und B</text>
+  <line x1="150" y1="50" x2="188" y2="50" stroke="#555" stroke-width="2" marker-end="url(#ccb)"/>
+  <rect x="190" y="20" width="150" height="60" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="265" y="44" text-anchor="middle" font-weight="700">2. Dateien schreiben</text><text x="265" y="64" text-anchor="middle" font-size="12">parallel, ohne Lock</text>
+  <line x1="340" y1="50" x2="378" y2="50" stroke="#555" stroke-width="2" marker-end="url(#ccb)"/>
+  <rect x="380" y="20" width="150" height="60" rx="10" fill="#e8f5e9" stroke="#2e7d32"/><text x="455" y="44" text-anchor="middle" font-weight="700">3. A: CAS v1→v2</text><text x="455" y="64" text-anchor="middle" font-size="12">gewinnt</text>
+  <line x1="530" y1="50" x2="568" y2="50" stroke="#555" stroke-width="2" marker-end="url(#ccb)"/>
+  <rect x="570" y="20" width="140" height="60" rx="10" fill="#ffe9e6" stroke="#c62828"/><text x="640" y="44" text-anchor="middle" font-weight="700">4. B: CAS v1→v3</text><text x="640" y="64" text-anchor="middle" font-size="12">scheitert</text>
+  <line x1="640" y1="80" x2="640" y2="128" stroke="#555" stroke-width="2" marker-end="url(#ccb)"/>
+  <rect x="540" y="130" width="170" height="60" rx="10" fill="#fff" stroke="#555"/><text x="625" y="154" text-anchor="middle" font-weight="700">5. B: v2 laden</text><text x="625" y="174" text-anchor="middle" font-size="12">Änderungen von A prüfen</text>
+  <line x1="540" y1="150" x2="402" y2="120" stroke="#2e7d32" stroke-width="2" marker-end="url(#ccb)"/>
+  <rect x="230" y="100" width="170" height="50" rx="10" fill="#e8f5e9" stroke="#2e7d32"/><text x="315" y="122" text-anchor="middle" font-weight="700">6a. Kein Konflikt</text><text x="315" y="140" text-anchor="middle" font-size="12">Metadaten neu, CAS v2→v3</text>
+  <line x1="540" y1="175" x2="402" y2="205" stroke="#c62828" stroke-width="2" marker-end="url(#ccr)"/>
+  <rect x="230" y="180" width="170" height="50" rx="10" fill="#ffe9e6" stroke="#c62828"/><text x="315" y="202" text-anchor="middle" font-weight="700">6b. Konflikt</text><text x="315" y="220" text-anchor="middle" font-size="12">ValidationException</text>
+  <text x="360" y="270" text-anchor="middle" font-size="12">Beim Retry werden nur Metadaten neu geschrieben, nicht die Datendateien.</text>
+</svg>
+<ol>
+  <li><b>Beide lesen v1:</b> Writer A (Ingest) und Writer B (MERGE) starten auf Snapshot v1.</li>
+  <li><b>Dateien schreiben:</b> Beide schreiben Parquet-Dateien. Das ist der teure Teil und läuft parallel.</li>
+  <li><b>A gewinnt:</b> A setzt den Zeiger von v1 auf v2. Der Katalog bestätigt.</li>
+  <li><b>B scheitert beim CAS:</b> Der Zeiger steht nicht mehr auf v1. B bekommt intern eine <b>CommitFailedException</b>.</li>
+  <li><b>B lädt v2:</b> B liest die neue Version und prüft, was A geändert hat.</li>
+  <li><b>Kein Konflikt:</b> A hat z. B. nur Dateien angehängt, die B nicht betreffen. B baut seine Metadaten auf v2 neu und committet v3. <b>Konflikt:</b> A hat Dateien gelöscht oder Daten geschrieben, die Bs Bedingung trifft. B wirft eine <b>ValidationException</b>, der Job scheitert.</li>
+</ol>
+
+<h2>3. Beispiel: CAS und Konfliktprüfung nachgebaut</h2>
+<pre>history = [("v1.metadata.json", set())]          # (Version, geänderte Partitionen)
+
+def commit(writer, base, new, touched):
+    cur = cat.execute("SELECT metadata_location FROM iceberg_tables "
+                      "WHERE name='silver.trade'").fetchone()[0]
+    if cur != base:                               # jemand war schneller
+        since = [h for v, h in history[[v for v, _ in history].index(base) + 1:]]
+        hit = set().union(*since) &amp; touched
+        if hit:                                   # serializable: gleiche Partition geändert
+            return f"{writer}: ValidationException, Konflikt auf {sorted(hit)}"
+        base = cur                                # sonst auf neuem Stand wiederholen
+    n = cat.execute("UPDATE iceberg_tables SET metadata_location=? "
+                    "WHERE name='silver.trade' AND metadata_location=?", (new, base)).rowcount
+    if n == 1:
+        history.append((new, touched))
+        return f"{writer}: commit OK  {base} -&gt; {new}"
+    return f"{writer}: CommitFailedException"
+
+base = "v1.metadata.json"                         # A, B und C lesen alle v1
+print(commit("A", base, "v2.metadata.json", {"day=2026-11-02"}))
+print(commit("B", base, "v3.metadata.json", {"day=2026-11-03"}))
+print(commit("C", base, "v4.metadata.json", {"day=2026-11-02"}))</pre>
+<pre>A: commit OK  v1.metadata.json -&gt; v2.metadata.json
+B: commit OK  v2.metadata.json -&gt; v3.metadata.json
+C: ValidationException, Konflikt auf ['day=2026-11-02']
+Katalog zeigt: v3.metadata.json</pre>
+<p class="small">Echte Ausgabe, Python 3.12 + sqlite3 3.49.1. Ein Modell des Ablaufs, nicht Iceberg-Code: Die Tabelle <code>iceberg_tables</code> entspricht dem JDBC-Katalog von Iceberg, der den Zeiger ebenso per <code>UPDATE … WHERE metadata_location = alt</code> setzt.</p>
+<ol>
+  <li>A committet direkt, weil der Zeiger noch auf v1 steht.</li>
+  <li>B kam zu spät, aber A hat nur eine <b>andere</b> Partition geändert. B setzt auf v2 neu auf und gewinnt.</li>
+  <li>C hat dieselbe Partition wie A geändert. Bei <b>serializable</b> ist das ein Konflikt: C scheitert.</li>
+  <li>Der Zeiger springt nie zurück. Leser sehen immer eine ganze Version.</li>
+</ol>
+<p><b>In Spark: Isolation pro Operation einstellen:</b></p>
+<pre>ALTER TABLE lake.silver.trade SET TBLPROPERTIES (
+  'write.merge.isolation-level'  = 'snapshot',   -- Standard: serializable
+  'commit.retry.num-retries'     = '10',         -- Standard: 4
+  'commit.retry.min-wait-ms'     = '500');       -- Standard: 100</pre>
+<p class="small">Erwartetes Ergebnis (laut Doku, nicht ausgeführt): Ein MERGE scheitert dann nicht mehr, wenn parallel nur neue Daten angehängt werden, die seine Bedingung treffen würden. Spark läuft hier nicht.</p>
+
+<h2>4. Details, die Interviewer fragen</h2>
+<ol>
+  <li><b>Retry-Standardwerte:</b> <code>commit.retry.num-retries = 4</code>, Wartezeit von 100 ms bis 60 s mit Backoff, insgesamt höchstens 30 Minuten (<code>commit.retry.total-timeout-ms</code>).</li>
+  <li><b>Was wird beim Retry neu geschrieben?</b> Nur Manifest List und <code>metadata.json</code>, evtl. ein Manifest. Die Datendateien bleiben. Darum sind Retries billig.</li>
+  <li><b>Append gegen Append:</b> Zwei reine Appends kollidieren nie. Der zweite setzt einfach auf dem ersten auf.</li>
+  <li><b>serializable</b> (Standard für DELETE, UPDATE, MERGE): Der Commit scheitert auch, wenn parallel <b>neue Daten</b> angehängt wurden, die seine Bedingung treffen.</li>
+  <li><b>snapshot:</b> Der Commit scheitert nur, wenn Dateien, die er ändert oder löscht, inzwischen geändert wurden. Parallele Appends sind erlaubt. Weniger Konflikte, schwächere Garantie.</li>
+  <li><b>CommitStateUnknownException:</b> Der Katalog antwortet nicht, der Commit ist vielleicht gelungen. Iceberg prüft den Status erneut (<code>commit.status-check.num-retries = 3</code>). Dateien dann <b>nicht</b> löschen, sonst wird die Tabelle kaputt.</li>
+  <li><b>Compaction gegen Writer:</b> Compaction ersetzt Dateien. Löscht ein Writer parallel Zeilen in diesen Dateien, gibt es einen Konflikt. <code>partial-progress.enabled</code> committet in Gruppen, so verliert man weniger Arbeit.</li>
+  <li><b>Sequence Numbers:</b> Jeder Commit bekommt eine wachsende Nummer. Delete Files gelten nur für Daten mit kleinerer Nummer. Compaction behält die alte Nummer der Daten, damit neuere Deletes weiter greifen.</li>
+  <li><b>Multi-Table:</b> Iceberg-Commits sind pro Tabelle atomar. Über mehrere Tabellen braucht man den Katalog: Nessie (Commit über mehrere Tabellen) oder den REST-Endpunkt <code>/transactions/commit</code>, wenn der Server ihn anbietet.</li>
+  <li><b>Hadoop-Katalog:</b> Er setzt den Zeiger per Datei-Rename. Auf S3 ist das nicht atomar. Darum nie für gleichzeitige Writer auf Object Storage.</li>
+</ol>
+
+<h2>5. Vergleich</h2>
+<ul>
+  <li><b>Optimistisch (Iceberg, Delta):</b> keine Locks, hoher Durchsatz bei wenig Konflikten. Bei vielen Konflikten verschwendet man Arbeit durch Retries und Fehler.</li>
+  <li><b>Pessimistisch (Locks, z. B. Hive mit Lock-Manager, OLTP-Datenbanken):</b> kein verlorener Aufwand, aber Wartezeiten und Lock-Probleme bei langen Jobs.</li>
+  <li><b>Delta Lake:</b> ebenfalls optimistisch, Konflikt über das Transaktions-Log (<code>_delta_log</code>, atomares „put if absent“ der nächsten Log-Datei).</li>
+</ul>
+
+<h2>6. In der Produktion</h2>
+<ol>
+  <li><b>Zwei Jobs scheitern abwechselnd mit ValidationException:</b> Beide schreiben dieselben Partitionen. Lösung: Arbeit trennen (Partitionen pro Job), Jobs serialisieren, oder <code>snapshot</code>-Isolation, wenn fachlich erlaubt.</li>
+  <li><b>Compaction scheitert immer:</b> Ein Streaming-Job committet jede Minute in dieselbe Partition. Lösung: nur kalte Partitionen kompaktieren (Filter), <code>partial-progress.enabled</code>.</li>
+  <li><b>Viele Orphan Files:</b> gescheiterte Commits. Lösung: <code>remove_orphan_files</code> mit genug Abstand (<code>older_than</code>).</li>
+  <li><b>Tabelle nach Timeout kaputt:</b> Der Writer hat nach CommitStateUnknown Dateien gelöscht. Lösung: Iceberg-Version mit Status-Check, eigene Cleanup-Logik vermeiden.</li>
+  <li><b>Hohe Commit-Rate, langsame Commits:</b> Viele kleine Commits machen viele Metadaten-Dateien. Lösung: Batches bündeln, Manifests mergen lassen, <code>write.metadata.delete-after-commit.enabled</code> setzen.</li>
+</ol>
+
+<h2>7. Diagnose</h2>
+<ul>
+  <li><code>SELECT committed_at, operation, summary FROM lake.silver.trade.snapshots ORDER BY committed_at DESC</code>: wer committet wie oft.</li>
+  <li>Driver-Log: <code>Retrying commit</code>, <code>CommitFailedException</code>, <code>ValidationException: Found conflicting files</code>.</li>
+  <li><code>.metadata_log_entries</code>: Zahl und Rate neuer <code>metadata.json</code>-Versionen.</li>
+  <li>Katalog-Logs (REST/Nessie): Status 409 Conflict pro Tabelle zählen.</li>
+</ul>
+
+<h2>8. Senior-Punkte</h2>
+<div class="senior">
+<ol>
+  <li><b>Konflikte vermeidet man im Design,</b> nicht mit Retries. Jeder Job besitzt seine Partitionen oder Nachrichten.</li>
+  <li><b>serializable bleibt Standard.</b> snapshot nur, wenn man fachlich begründen kann, dass parallele Appends egal sind.</li>
+  <li><b>Wartung und Ingest koordinieren:</b> Compaction auf kalte Daten, Ingest auf heisse.</li>
+  <li><b>Der Katalog ist der Engpass</b> und der Garant der Atomarität. Er braucht Verfügbarkeit und Backup.</li>
+  <li><b>Nie aufräumen nach „unbekanntem“ Commit-Status.</b> Lieber Orphan Files später entfernen.</li>
+</ol>
+</div>
+
+<h2>9. Aus dem Projekt</h2>
+<p>„Bei ElCom MATCH verhindert ein atomarer SQL-Claim (<code>UPDATE … OUTPUT INSERTED.*</code>), dass überlappende Spark-Läufe dieselben Nachrichten verarbeiten, sodass Iceberg-Commit-Konflikte im Normalbetrieb gar nicht erst entstehen.“ <span class="small">(Prüfen und durch dein echtes Beispiel ersetzen.)</span></p>
+
+<h2>10. Fallen</h2>
+<div class="trap">
+<ul>
+  <li>„Iceberg sperrt die Tabelle beim Schreiben.“ → <b>Falsch.</b> Kein Lock, nur ein atomarer Zeiger-Tausch am Ende.</li>
+  <li>„Ein Retry schreibt alle Daten neu.“ → <b>Falsch.</b> Nur Metadaten werden neu geschrieben.</li>
+  <li>„Zwei Appends können kollidieren.“ → <b>Falsch.</b> Reine Appends kollidieren nie.</li>
+  <li>„Iceberg hat Transaktionen über mehrere Tabellen.“ → <b>Nicht im Format.</b> Nur über Katalog-Funktionen wie Nessie oder REST-Multi-Table-Commit.</li>
+  <li>„Der Hadoop-Katalog reicht auf S3.“ → <b>Falsch.</b> Rename ist dort nicht atomar.</li>
+</ul>
+</div>
+
+<h2>11. Fragen</h2>
+<details><summary>Wie verhindert Iceberg, dass zwei Writer sich überschreiben?</summary><p>Mit einem atomaren Compare-and-Swap des Metadaten-Zeigers im Katalog. Nur ein Writer pro Basis-Version gewinnt.</p></details>
+<details><summary>Was passiert mit dem Verlierer?</summary><p>Er lädt die neue Version und prüft Konflikte. Ohne Konflikt committet er erneut, mit Konflikt wirft er eine ValidationException.</p></details>
+<details><summary>Was ist der Unterschied zwischen CommitFailedException und ValidationException?</summary><p>CommitFailedException: Der Zeiger hat sich geändert, ein Retry ist möglich. ValidationException: Die Änderungen widersprechen sich, ein Retry hilft nicht.</p></details>
+<details><summary>Was ist CommitStateUnknownException?</summary><p>Der Katalog hat nicht geantwortet, der Commit ist vielleicht gelungen. Dann keine Dateien löschen, sondern den Status prüfen.</p></details>
+<details><summary>Welche Retry-Einstellungen gibt es?</summary><p>commit.retry.num-retries (Standard 4), min-wait-ms (100), max-wait-ms (60 000) und total-timeout-ms (30 Minuten).</p></details>
+<details><summary>Warum sind Retries billig?</summary><p>Die Datendateien bleiben. Nur Manifest List und metadata.json werden auf der neuen Basis neu geschrieben.</p></details>
+<details><summary>Können zwei Appends kollidieren?</summary><p>Nein. Ein Append ändert keine bestehenden Dateien, der zweite setzt einfach auf.</p></details>
+<details><summary>serializable oder snapshot?</summary><p>serializable scheitert auch bei parallelen Appends, die die eigene Bedingung treffen. snapshot erlaubt sie. Standard ist serializable.</p></details>
+<details><summary>Wie macht der REST-Katalog den Commit atomar?</summary><p>Der Client schickt requirements wie „Snapshot ist noch X“ und updates. Der Server prüft und wendet sie atomar an, sonst kommt 409.</p></details>
+<details><summary>Warum kollidiert Compaction mit Writern?</summary><p>Compaction ersetzt Dateien. Löscht oder ändert ein Writer parallel Zeilen darin, passen die Änderungen nicht zusammen.</p></details>
+<details><summary>Was hilft gegen Compaction-Konflikte?</summary><p>Nur kalte Partitionen kompaktieren, partial-progress.enabled und Zeitfenster ohne Ingest.</p></details>
+<details><summary>Welche Rolle spielen Sequence Numbers?</summary><p>Sie ordnen Commits. Delete Files gelten nur für ältere Daten, darum bleiben Deletes nach Compaction korrekt.</p></details>
+<details><summary>Gibt es Multi-Table-Transaktionen?</summary><p>Nicht im Iceberg-Format. Nessie kann mehrere Tabellen in einem Commit ändern, der REST-Katalog optional über /transactions/commit.</p></details>
+<details><summary>Warum ist der Hadoop-Katalog auf S3 gefährlich?</summary><p>Er nutzt Rename als atomaren Schritt. Auf S3 ist Rename nicht atomar, gleichzeitige Commits können sich überschreiben.</p></details>
+<details><summary>Wie verhindern Sie Konflikte im Design?</summary><p>Jeder Job bekommt eigene Partitionen oder Nachrichten, z. B. per atomarem Claim. Wartung läuft auf kalten Daten.</p></details>
+<details><summary>Wie unterscheidet sich Delta Lake?</summary><p>Auch optimistisch, aber über das Transaktions-Log: Der Writer legt die nächste Log-Datei atomar an. Konflikte prüft er gegen die Log-Einträge dazwischen.</p></details>
+<details><summary>Szenario: Zwei MERGE-Jobs scheitern jede Nacht abwechselnd. Was tun Sie?</summary><p>Prüfen, ob sie dieselben Partitionen treffen. Dann Arbeit trennen oder die Jobs nacheinander laufen lassen. Mehr Retries lösen echte Konflikte nicht.</p></details>
+<details><summary>Szenario: Nach einem Netzwerkfehler fehlen Dateien, Abfragen scheitern mit FileNotFound. Was ist passiert?</summary><p>Wahrscheinlich hat ein Writer nach unbekanntem Commit-Status aufgeräumt, obwohl der Commit gelungen war. Auf einen gültigen Snapshot zurückrollen und Cleanup-Logik entfernen.</p></details>
+<details><summary>Szenario: Die Compaction scheitert seit einer Woche, die Tabelle wird langsam. Wie gehen Sie vor?</summary><p>Logs auf ValidationException prüfen, meist wegen eines Streaming-Writers. Compaction auf ältere Partitionen filtern und partial-progress aktivieren.</p></details>
+
+</body>
+</html>
