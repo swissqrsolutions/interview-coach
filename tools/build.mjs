@@ -72,12 +72,13 @@ if (dup.length) errors.push('duplicate ids: ' + dup.join(', '));
 
 // ---- deep topic pages: content/topics/<tech>/<topic>.md, listed in content/syllabus.json
 const syllabus = JSON.parse(read(C('syllabus.json')));
-const topics = [];
-for (const [t, list] of Object.entries(syllabus)) {
+const topics = [], techSources = {};
+for (const [t, def] of Object.entries(syllabus)) {
   if (!techIds.has(t)) errors.push(`syllabus: unknown tech "${t}"`);
-  for (const [id, title, tier] of list) {
+  techSources[t] = def.sources || [];
+  for (const [id, title, tier, proof] of def.topics) {
     const f = C(path.join('topics', t, id + '.md')), fh = C(path.join('topics', t, id + '.html'));
-    const entry = { tech: t, id, title, tier, done: fs.existsSync(f) || fs.existsSync(fh) };
+    const entry = { tech: t, id, title, tier, proof, done: fs.existsSync(f) || fs.existsSync(fh) };
     if (fs.existsSync(fh)) {
       // gold-standard format: a full HTML page; the app shows its <body> (without the h1) as is
       const src = read(fh);
@@ -129,7 +130,7 @@ if (todo.length) {
   pages.push({ id: 'fill-in', title: 'To fill in (only you know)', html: html(md) });
 }
 
-const data = { built: new Date().toISOString(), tech, rounds, cards, pages, topics };
+const data = { built: new Date().toISOString(), tech, rounds, cards, pages, topics, techSources };
 const json = JSON.stringify(data);
 fs.writeFileSync(path.join(ROOT, 'site', 'data.json'), json);
 const h = s => crypto.createHash('sha1').update(s).digest('hex').slice(0, 8);
@@ -142,3 +143,17 @@ fs.writeFileSync(idx, ih);
 const by = {}; for (const c of cards) by[c.round] = (by[c.round] || 0) + 1;
 console.log(`topics ${topics.filter(t => t.done).length}/${topics.length} written · cards ${cards.length} · pages ${pages.length} · tech ${tech.length} · rounds ${rounds.length}`);
 console.log('per round: ' + rounds.map(r => `${r.id} ${by[r.id] || 0}`).join(' · '));
+
+// ---- human-readable topic list: content/TOPICS.md (regenerated on every build)
+{
+  const P = { project: 'Projekt', study: '— kein Projekt', check: '? prüfen' };
+  let md = `# Topic list\n\nGenerated from content/syllabus.json. Priority 1 = asked in almost every interview. Mark: **Projekt** = shown in CV/Gmail · **— kein Projekt** = no project experience · **? prüfen** = unclear, you decide.\n\n`;
+  const all = topics.length, p = n => topics.filter(x => x.tier === n).length;
+  md += `${all} topics · P1 ${p(1)} · P2 ${p(2)} · P3 ${p(3)} · written ${topics.filter(x => x.done).length}\n`;
+  for (const t of tech.filter(x => !x.hidden && syllabus[x.id])) {
+    const ts = topics.filter(x => x.tech === t.id);
+    md += `\n## ${t.name} (${ts.length})\nSources: ${techSources[t.id].join(' · ')}\n\n| P | Topic | Project | Written |\n|---|---|---|---|\n`;
+    for (const x of [...ts].sort((a, b) => a.tier - b.tier)) md += `| ${x.tier} | ${x.title} | ${P[x.proof] || x.proof} | ${x.done ? '✓' : ''} |\n`;
+  }
+  fs.writeFileSync(path.join(ROOT, 'content', 'TOPICS.md'), md);
+}

@@ -1,0 +1,286 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GC-Collectors</title>
+<style>
+  body { font: 17px/1.55 -apple-system, system-ui, sans-serif; max-width: 760px; margin: 0 auto; padding: 16px; color: #1d1d1f; }
+  h1 { font-size: 28px; margin: 8px 0 4px; }
+  h2 { font-size: 21px; margin: 32px 0 8px; padding-top: 12px; border-top: 2px solid #e5e5ea; }
+  .kern { background: #eef6ff; border-left: 4px solid #0a66c2; padding: 10px 14px; border-radius: 6px; }
+  .senior { background: #f0faf0; border-left: 4px solid #2e7d32; padding: 10px 14px; border-radius: 6px; }
+  .trap { background: #fff4f2; border-left: 4px solid #c62828; padding: 10px 14px; border-radius: 6px; }
+  code { background: #f2f2f7; padding: 1px 5px; border-radius: 4px; font-size: 15px; }
+  pre { background: #1e1e1e; color: #e6e6e6; padding: 12px; border-radius: 8px; overflow-x: auto; font-size: 13.5px; line-height: 1.45; }
+  svg { width: 100%; height: auto; display: block; margin: 10px 0; }
+  ol li, ul li { margin: 4px 0; }
+  details { border: 1px solid #e5e5ea; border-radius: 8px; padding: 8px 12px; margin: 6px 0; }
+  summary { font-weight: 600; cursor: pointer; }
+  details p { margin: 6px 0 2px; }
+  .small { color: #6e6e73; font-size: 14px; }
+</style>
+</head>
+<body>
+
+<h1>GC-Collectors</h1>
+<p class="small">Java · Tier 1 · Quellen: Oracle „HotSpot Virtual Machine Garbage Collection Tuning Guide“ (Java 21 und 25: Ergonomics, G1, ZGC), JEP 248 (G1 Standard, Java 9), JEP 307 (paralleler Full GC in G1), JEP 318 (Epsilon), JEP 363 (CMS entfernt, Java 14), JEP 377/379 (ZGC/Shenandoah produktiv, Java 15), JEP 423 (G1 Region Pinning, Java 22), JEP 439 (Generational ZGC, Java 21), JEP 474 (ZGC generational als Standard, Java 23), JEP 490 (nicht-generationales ZGC entfernt, Java 24), JEP 521 (Generational Shenandoah, Java 25), JEP 519 (Compact Object Headers, Java 25), JEP 523 (G1 überall Standard, Java 27)</p>
+
+<div class="kern">
+<b>Kern:</b> Ein <b>Garbage Collector</b> ist die Strategie, mit der die JVM Speicher freigibt. HotSpot hat mehrere, weil es kein Optimum gibt. Jeder Collector wählt zwischen <b>Durchsatz</b>, <b>Latenz</b> (Pausenlänge) und <b>Speicherbedarf</b>. Standard ist <b>G1</b>, für sehr kurze Pausen gibt es <b>ZGC</b> und <b>Shenandoah</b>.
+</div>
+
+<h2>1. Wo sitzen die Collectors? Drei Arten, den Heap zu teilen</h2>
+<svg viewBox="0 0 720 330" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="a" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="10" y="10" width="700" height="86" rx="10" fill="#f7f7fa" stroke="#999"/><text x="20" y="32" font-weight="700">Serial · Parallel</text><text x="700" y="32" text-anchor="end" font-size="12">feste Generationen, alles mit Pause</text>
+  <rect x="20" y="44" width="220" height="40" rx="6" fill="#dbe9fb" stroke="#0a66c2"/><text x="130" y="69" text-anchor="middle">Young (Eden + S0 + S1)</text>
+  <rect x="246" y="44" width="454" height="40" rx="6" fill="#0a66c2"/><text x="473" y="69" text-anchor="middle" fill="#fff">Old (ein zusammenhängender Block)</text>
+  <rect x="10" y="108" width="700" height="96" rx="10" fill="#f7f7fa" stroke="#999"/><text x="20" y="130" font-weight="700">G1</text><text x="700" y="130" text-anchor="end" font-size="12">gleich grosse Regionen, Rolle pro Region</text>
+  <rect x="20" y="142" width="74" height="48" rx="4" fill="#dbe9fb" stroke="#0a66c2"/><text x="57" y="171" text-anchor="middle">E</text>
+  <rect x="100" y="142" width="74" height="48" rx="4" fill="#0a66c2"/><text x="137" y="171" text-anchor="middle" fill="#fff">O</text>
+  <rect x="180" y="142" width="74" height="48" rx="4" fill="#fff" stroke="#999"/><text x="217" y="171" text-anchor="middle">frei</text>
+  <rect x="260" y="142" width="74" height="48" rx="4" fill="#e8f5e9" stroke="#2e7d32"/><text x="297" y="171" text-anchor="middle">S</text>
+  <rect x="340" y="142" width="152" height="48" rx="4" fill="#fff4f2" stroke="#c62828"/><text x="416" y="164" text-anchor="middle">H (Humongous)</text><text x="416" y="181" text-anchor="middle" font-size="11">grosses Objekt, 2 Regionen</text>
+  <rect x="498" y="142" width="74" height="48" rx="4" fill="#dbe9fb" stroke="#0a66c2"/><text x="535" y="171" text-anchor="middle">E</text>
+  <rect x="578" y="142" width="122" height="48" rx="4" fill="#0a66c2"/><text x="639" y="171" text-anchor="middle" fill="#fff">O … (ca. 2048)</text>
+  <rect x="10" y="216" width="700" height="104" rx="10" fill="#f7f7fa" stroke="#999"/><text x="20" y="238" font-weight="700">ZGC · Shenandoah</text><text x="700" y="238" text-anchor="end" font-size="12">Regionen/Pages, Kopieren läuft concurrent</text>
+  <rect x="20" y="252" width="200" height="56" rx="6" fill="#dbe9fb" stroke="#0a66c2"/><text x="120" y="276" text-anchor="middle">Anwendung</text><text x="120" y="294" text-anchor="middle" font-size="12">liest über Load Barrier</text>
+  <line x1="220" y1="280" x2="288" y2="280" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="290" y="252" width="200" height="56" rx="6" fill="#fff" stroke="#555"/><text x="390" y="276" text-anchor="middle">Young · Old Pages</text><text x="390" y="294" text-anchor="middle" font-size="12">Objekte wandern</text>
+  <line x1="568" y1="280" x2="492" y2="280" stroke="#2e7d32" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="570" y="252" width="130" height="56" rx="6" fill="#e8f5e9" stroke="#2e7d32"/><text x="635" y="276" text-anchor="middle">GC-Threads</text><text x="635" y="294" text-anchor="middle" font-size="12">gleichzeitig</text>
+</svg>
+<ol>
+  <li><b>Serial:</b> ein GC-Thread, alles in einer Pause. Young wird kopiert, Old mit Mark-Sweep-Compact geräumt. Beispiel: ein Pod mit 1 CPU.</li>
+  <li><b>Parallel:</b> gleiche Aufteilung wie Serial, aber viele GC-Threads. Ziel ist <b>Durchsatz</b>, also möglichst wenig GC-Zeit insgesamt. Beispiel: ein Batch-Job über Nacht.</li>
+  <li><b>G1</b> (Garbage First): teilt den Heap in ca. 2048 <b>Regionen</b> (1–32 MB automatisch). Jede Region ist Eden, Survivor, Old oder <b>Humongous</b>. Es räumt zuerst die Regionen mit dem meisten Müll. Ziel: Pausen unter <code>MaxGCPauseMillis</code> (Standard 200 ms).</li>
+  <li><b>Humongous-Objekt:</b> ein Objekt ab einer halben Region. Es bekommt eigene, zusammenhängende Regionen. Beispiel: ein <code>byte[4_000_000]</code> bei 4-MB-Regionen.</li>
+  <li><b>ZGC:</b> verschiebt Objekte, <b>während</b> die Anwendung läuft. Pausen unter 1 ms, unabhängig von der Heap-Grösse (bis 16 TB). Eine <b>Load Barrier</b>, ein kleiner Code bei jedem Lesen einer Referenz, korrigiert verschobene Zeiger.</li>
+  <li><b>Shenandoah:</b> gleiche Idee wie ZGC, andere Technik (Barriers und Forwarding Pointer). Es ist nur in OpenJDK-Builds wie Temurin oder Red Hat enthalten, nicht im Oracle JDK.</li>
+  <li><b>Epsilon:</b> gibt <b>nie</b> Speicher frei. Ist der Heap voll, kommt <code>OutOfMemoryError</code>. Beispiel: Performance-Tests ohne GC-Rauschen.</li>
+</ol>
+
+<h2>2. Ein G1-Zyklus (die Geschichte zum Merken)</h2>
+<svg viewBox="0 0 720 330" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="b" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker><marker id="r" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#c62828"/></marker></defs>
+  <rect x="10" y="20" width="160" height="70" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="90" y="44" text-anchor="middle" font-weight="700">1. Young-only</text><text x="90" y="64" text-anchor="middle" font-size="12">Pause Young (Normal)</text><text x="90" y="80" text-anchor="middle" font-size="12">Eden → Survivor/Old</text>
+  <line x1="170" y1="55" x2="218" y2="55" stroke="#555" stroke-width="2" marker-end="url(#b)"/><text x="194" y="45" text-anchor="middle" font-size="11">Old ≥ IHOP</text>
+  <rect x="220" y="20" width="160" height="70" rx="10" fill="#fff" stroke="#555"/><text x="300" y="44" text-anchor="middle" font-weight="700">2. Concurrent Start</text><text x="300" y="64" text-anchor="middle" font-size="12">Young-Pause +</text><text x="300" y="80" text-anchor="middle" font-size="12">Roots markieren</text>
+  <line x1="380" y1="55" x2="428" y2="55" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="430" y="20" width="280" height="70" rx="10" fill="#e8f5e9" stroke="#2e7d32"/><text x="570" y="44" text-anchor="middle" font-weight="700">3. Concurrent Mark</text><text x="570" y="64" text-anchor="middle" font-size="12">markiert den ganzen Heap,</text><text x="570" y="80" text-anchor="middle" font-size="12">Anwendung läuft weiter</text>
+  <line x1="570" y1="90" x2="570" y2="128" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="430" y="130" width="280" height="70" rx="10" fill="#fff" stroke="#555"/><text x="570" y="154" text-anchor="middle" font-weight="700">4. Remark + Cleanup</text><text x="570" y="174" text-anchor="middle" font-size="12">zwei kurze Pausen: Markierung</text><text x="570" y="190" text-anchor="middle" font-size="12">abschliessen, Regionen bewerten</text>
+  <line x1="430" y1="165" x2="382" y2="165" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="190" y="130" width="190" height="70" rx="10" fill="#0a66c2" stroke="#0a66c2"/><text x="285" y="154" text-anchor="middle" fill="#fff" font-weight="700">5. Mixed GCs</text><text x="285" y="174" text-anchor="middle" fill="#fff" font-size="12">Young + Old-Regionen</text><text x="285" y="190" text-anchor="middle" fill="#fff" font-size="12">mit viel Müll</text>
+  <path d="M190,165 C110,165 90,130 90,92" fill="none" stroke="#555" stroke-width="2" marker-end="url(#b)"/><text x="78" y="140" text-anchor="end" font-size="11">zurück</text>
+  <rect x="190" y="240" width="520" height="70" rx="10" fill="#fff4f2" stroke="#c62828"/><text x="450" y="264" text-anchor="middle" fill="#c62828" font-weight="700">Notfall: Full GC</text><text x="450" y="284" text-anchor="middle" fill="#c62828" font-size="12">Marking zu langsam oder kein freier Platz → ganzer Heap</text><text x="450" y="300" text-anchor="middle" fill="#c62828" font-size="12">kompaktiert in einer langen Pause (parallel seit Java 10)</text>
+  <line x1="285" y1="200" x2="285" y2="238" stroke="#c62828" stroke-width="2" stroke-dasharray="6 4" marker-end="url(#r)"/>
+</svg>
+<ol>
+  <li><b>Young-only-Phase.</b> Die Anwendung füllt Eden-Regionen. Sind genug voll, kommt <code>Pause Young (Normal)</code>. G1 <b>evakuiert</b>, also kopiert lebende Objekte in Survivor- oder Old-Regionen. Die Grösse von Young passt G1 selbst an, damit die Pause ins Ziel passt.</li>
+  <li><b>Old wird voll: Concurrent Start.</b> Erreicht Old die <b>IHOP</b> (Initiating Heap Occupancy Percent, Start 45 %, danach adaptiv), startet G1 einen Markierungszyklus. Er beginnt mit einer normalen Young-Pause: <code>Pause Young (Concurrent Start)</code>.</li>
+  <li><b>Concurrent Mark.</b> GC-Threads markieren den ganzen Heap. Die Anwendung läuft weiter. Eine Write Barrier (<b>SATB</b>, Snapshot-at-the-Beginning) merkt sich Änderungen in dieser Zeit.</li>
+  <li><b>Remark und Cleanup.</b> Zwei kurze Pausen: <code>Pause Remark</code> schliesst die Markierung ab. <code>Pause Cleanup</code> bewertet jede Old-Region nach ihrem Müll-Anteil. Ganz leere Regionen werden sofort frei.</li>
+  <li><b>Mixed GCs.</b> Nach <code>Pause Young (Prepare Mixed)</code> folgen <code>Pause Young (Mixed)</code>. Jede räumt Young plus einige Old-Regionen mit dem meisten Müll. Daher der Name <b>Garbage First</b>. Dann geht es zurück zu Schritt 1.</li>
+  <li><b>Notfall: Full GC.</b> Ist das Marking zu langsam oder kein Platz zum Kopieren frei, macht G1 eine <code>Pause Full</code>. Sie kompaktiert den ganzen Heap. Sie ist seit Java 10 parallel, aber immer noch lang. Im Normalbetrieb sollte es sie nie geben.</li>
+</ol>
+
+<h2>3. Beispiel: gleicher Code, vier Collectors</h2>
+<pre>public class Load {
+  public static void main(String[] args) {
+    byte[][] cache = new byte[100_000][];            // live set: ~100 MB
+    long start = System.nanoTime();
+    for (int i = 0; i &lt; 30_000_000; i++) {
+      byte[] tmp = new byte[1_000];                  // garbage, dies at once
+      if (i % 20 == 0) cache[(i / 20) % 100_000] = tmp; // lives longer, replaces an old one
+    }
+    System.out.println("time: " + (System.nanoTime() - start) / 1_000_000 + " ms");
+  }
+}</pre>
+<pre>$ java -Xmx256m -XX:+UseSerialGC -Xlog:gc Load
+[0.010s][info][gc] Using Serial
+[0.058s][info][gc] GC(0) Pause Young (Allocation Failure) 65M-&gt;3M(237M) 2.581ms
+[0.076s][info][gc] GC(1) Pause Young (Allocation Failure) 69M-&gt;7M(237M) 2.921ms
+...
+[0.675s][info][gc] GC(52) Pause Full (Allocation Failure) 171M-&gt;104M(247M) 22.899ms
+[0.941s][info][gc] GC(75) Pause Full (Allocation Failure) 244M-&gt;104M(247M) 28.417ms
+...
+time: 5353 ms
+
+$ java -Xmx256m -XX:+UseParallelGC -Xlog:gc Load
+[0.007s][info][gc] Using Parallel
+[0.055s][info][gc] GC(0) Pause Young (Allocation Failure) 62M-&gt;3M(236M) 2.017ms
+...
+[0.599s][info][gc] GC(53) Pause Full (Ergonomics) 167M-&gt;97M(251M) 16.646ms
+...
+time: 5202 ms
+
+$ java -Xmx256m -XX:+UseG1GC -Xlog:gc Load
+[0.013s][info][gc] Using G1
+[0.084s][info][gc] GC(0) Pause Young (Normal) (G1 Evacuation Pause) 23M-&gt;2M(246M) 2.541ms
+...
+[0.532s][info][gc] GC(20) Pause Young (Concurrent Start) (G1 Evacuation Pause) 215M-&gt;131M(253M) 3.301ms
+[0.532s][info][gc] GC(21) Concurrent Mark Cycle
+[0.538s][info][gc] GC(21) Pause Remark 161M-&gt;142M(253M) 0.643ms
+[0.541s][info][gc] GC(21) Pause Cleanup 159M-&gt;159M(253M) 0.141ms
+[0.542s][info][gc] GC(21) Concurrent Mark Cycle 9.855ms
+[0.550s][info][gc] GC(22) Pause Young (Prepare Mixed) (G1 Evacuation Pause) 196M-&gt;116M(253M) 2.536ms
+[0.553s][info][gc] GC(23) Pause Young (Mixed) (G1 Evacuation Pause) 124M-&gt;114M(254M) 2.020ms
+[0.568s][info][gc] GC(24) Pause Young (Normal) (G1 Evacuation Pause) 215M-&gt;119M(254M) 1.759ms
+...
+time: 5589 ms
+
+$ java -Xmx256m -XX:+UseZGC -Xlog:gc Load
+[0.037s][info][gc] Using The Z Garbage Collector
+[0.218s][info][gc] GC(0) Garbage Collection (Warmup) 92M(36%)-&gt;80M(31%)
+[0.317s][info][gc] GC(1) Garbage Collection (Warmup) 206M(80%)-&gt;120M(47%)
+[0.383s][info][gc] Allocation Stall (main) 33.313ms
+[0.392s][info][gc] GC(2) Garbage Collection (Allocation Stall) 256M(100%)-&gt;66M(26%)
+...
+time: 9785 ms
+
+$ java -Xmx1g -XX:+UseZGC -Xlog:gc,gc+phases Load
+[0.474s][info][gc,phases] GC(2) Pause Mark Start 0.010ms
+[0.506s][info][gc,phases] GC(2) Concurrent Mark 31.290ms
+[0.506s][info][gc,phases] GC(2) Pause Mark End 0.021ms
+[0.509s][info][gc,phases] GC(2) Concurrent Select Relocation Set 1.870ms
+[0.509s][info][gc,phases] GC(2) Pause Relocate Start 0.015ms
+[0.519s][info][gc,phases] GC(2) Concurrent Relocate 9.389ms
+[0.519s][info][gc       ] GC(2) Garbage Collection (Warmup) 418M(41%)-&gt;150M(15%)
+...
+time: 5643 ms
+
+$ java -Xmx256m -XX:+UnlockExperimentalVMOptions -XX:+UseEpsilonGC -Xlog:gc Load
+[0.007s][info   ][gc     ] Using Epsilon
+...
+[0.092s][info   ][gc     ] Heap: 256M reserved, 256M (100.00%) committed, 250M (97.74%) used
+Terminating due to java.lang.OutOfMemoryError: Java heap space</pre>
+<p class="small">Echte Ausgabe, OpenJDK 17.0.3 (Oracle-Build 17.0.3.1), 16 CPUs, Windows. Gekürzt: <code>...</code> steht für weggelassene Zeilen. Zeiten schwanken von Lauf zu Lauf. Shenandoah fehlt, weil der Oracle-Build es nicht enthält. Die Zahlen unten sind aus den vollständigen Logs gezählt.</p>
+<ul>
+  <li><b>Serial:</b> 443 Pausen, davon 16 Full GC. Summe 1569 ms, längste 33,6 ms.</li>
+  <li><b>Parallel:</b> 410 Pausen, davon 18 Full GC. Summe 1160 ms, längste 21,7 ms.</li>
+  <li><b>G1:</b> 498 Pausen, 0 Full GC. Summe 1004 ms, längste 6,0 ms.</li>
+  <li><b>ZGC, 1 GB Heap:</b> 55 Zyklen, 165 Pausen. Summe 2,9 ms, längste 0,040 ms.</li>
+  <li><b>ZGC, 256 MB Heap:</b> 206 Allocation Stalls, zusammen 4475 ms. Laufzeit 9785 ms statt ca. 5300 ms.</li>
+</ul>
+<ol>
+  <li><b>Serial und Parallel</b> brauchen regelmässig eine <b>Full GC</b>: Old ist voll mit toten Cache-Einträgen. Parallel ist schneller, weil 16 Threads helfen. Der Grund <code>(Ergonomics)</code> heisst: Parallel entscheidet selbst, wann Old geräumt wird.</li>
+  <li><b>G1</b> räumt Old ohne Full GC. Man sieht den ganzen Zyklus aus Abschnitt 2: Concurrent Start, Concurrent Mark (9,9 ms, Anwendung läuft), Remark, Cleanup, Prepare Mixed, Mixed. Die längste Pause sinkt von 33,6 ms auf 6,0 ms.</li>
+  <li><b>ZGC mit 1 GB</b> hat Pausen von 0,01 bis 0,04 ms. Die echte Arbeit (Mark, Relocate) läuft concurrent. Der Preis: mehr CPU und mehr Heap.</li>
+  <li><b>ZGC mit 256 MB</b> zeigt die Grenze: Die Anwendung erzeugt Müll schneller, als ZGC concurrent räumen kann. Dann muss der Thread warten: <b>Allocation Stall</b>. Das ist eine Pause für diesen Thread, nur anders benannt. Lösung: mehr Heap.</li>
+  <li><b>Epsilon</b> gibt nichts frei. Nach 0,09 s ist der Heap voll, die JVM endet mit <code>OutOfMemoryError</code>.</li>
+  <li><b>Unterschied zu Java 21 und 25:</b> Auf Java 17 ist ZGC <b>nicht generational</b>, es markiert immer den ganzen Heap. In Java 21 braucht man <code>-XX:+UseZGC -XX:+ZGenerational</code>. Ab Java 23 ist das der Standard, ab Java 24 gibt es nur noch generationales ZGC. Es hat Young und Old und hätte hier weniger Stalls. Die Log-Zeilen heissen dort z. B. <code>Major Collection</code> und <code>Minor Collection</code>.</li>
+</ol>
+
+<h2>4. Details, die Interviewer fragen</h2>
+<ol>
+  <li><b>Standard-Wahl (Ergonomics):</b> Java 9 bis 26 wählt <b>G1</b> auf einer server-class machine: mindestens 2 CPUs und mindestens 1792 MB. Sonst wählt die JVM <b>Serial</b>. Im Container zählen die Container-Limits. Ab Java 27 ist G1 immer Standard (JEP 523).</li>
+  <li><b>Serial</b> (<code>-XX:+UseSerialGC</code>): ein Thread, Young per Kopie, Old per Mark-Sweep-Compact. Wenig Overhead, gut für kleine Heaps bis ca. 100 MB und 1 CPU.</li>
+  <li><b>Parallel</b> (<code>-XX:+UseParallelGC</code>): wie Serial, aber mit vielen Threads für Young und Old. Höchster Durchsatz, aber lange Full-GC-Pausen. Standard bis Java 8.</li>
+  <li><b>G1</b> (<code>-XX:+UseG1GC</code>): Standard seit Java 9. Regionen, Pausenziel, concurrent Marking, Mixed GCs. Guter Kompromiss für Heaps von ca. 1 bis über 100 GB.</li>
+  <li><b>G1-Pausenziel:</b> <code>-XX:MaxGCPauseMillis=200</code> ist ein <b>Ziel</b>, keine Garantie. G1 erreicht es durch weniger Young-Regionen pro Pause. Ein zu kleines Ziel heisst: mehr Pausen und weniger Durchsatz.</li>
+  <li><b>G1 Region Pinning</b> (Java 22, JEP 423): Kritische JNI-Abschnitte blockieren die GC nicht mehr. G1 lässt nur die betroffene Region liegen.</li>
+  <li><b>ZGC</b> (<code>-XX:+UseZGC</code>): produktiv seit Java 15. Pausen unter 1 ms, Heap 8 MB bis 16 TB. Generational ab Java 21 (JEP 439), Standardmodus ab 23 (JEP 474), einziger Modus ab 24 (JEP 490).</li>
+  <li><b>ZGC-Technik:</b> <b>Colored Pointers</b> speichern GC-Zustand in Bits der Referenz selbst. Die <b>Load Barrier</b> prüft diese Bits beim Lesen und repariert die Referenz, wenn das Objekt verschoben wurde. Darum kann ZGC Objekte verschieben, während die Anwendung läuft.</li>
+  <li><b>ZGC tunen:</b> vor allem <code>-Xmx</code> gross genug setzen. <code>-XX:SoftMaxHeapSize</code> ist eine weiche Grenze: ZGC versucht darunter zu bleiben, darf aber bis <code>-Xmx</code> wachsen.</li>
+  <li><b>Shenandoah</b> (<code>-XX:+UseShenandoahGC</code>): von Red Hat, produktiv seit Java 15, concurrent Compaction wie ZGC. Generationaler Modus ab Java 25 produktiv (JEP 521), aber nicht Standard: <code>-XX:ShenandoahGCMode=generational</code>. Nicht im Oracle JDK enthalten.</li>
+  <li><b>Epsilon</b> (<code>-XX:+UnlockExperimentalVMOptions -XX:+UseEpsilonGC</code>): seit Java 11, experimentell. Gibt keinen Speicher frei. Für Performance-Tests, Speicher-Messungen und sehr kurze Jobs.</li>
+  <li><b>CMS</b> (Concurrent Mark Sweep): seit Java 9 deprecated, seit Java 14 entfernt (JEP 363). Auf Java 17 startet die JVM mit <code>-XX:+UseConcMarkSweepGC</code> gar nicht: <code>Unrecognized VM option</code>.</li>
+  <li><b>Barriers kosten Durchsatz:</b> Concurrent Collectors brauchen Code bei jedem Lesen oder Schreiben von Referenzen. Das kostet einige Prozent CPU. Darum ist Parallel beim reinen Durchsatz oft vorne.</li>
+  <li><b>Tuning-Reihenfolge:</b> 1. richtigen Collector wählen. 2. Heap-Grösse setzen (<code>-Xmx</code> oder <code>-XX:MaxRAMPercentage</code>). 3. Pausenziel setzen. 4. Erst dann Detail-Flags wie <code>G1HeapRegionSize</code> oder <code>ParallelGCThreads</code>.</li>
+  <li><b><code>-Xms</code> gleich <code>-Xmx</code>:</b> verhindert Wachsen und Schrumpfen des Heaps. <code>-XX:+AlwaysPreTouch</code> holt den Speicher schon beim Start. Beides gibt gleichmässigere Latenz, kostet aber Startzeit und RAM.</li>
+  <li><b>Compact Object Headers</b> (Java 25, JEP 519, <code>-XX:+UseCompactObjectHeaders</code>): Objekt-Header von 12 auf 8 Bytes. Weniger Heap, weniger GC-Arbeit. Ist nicht standardmässig aktiv.</li>
+</ol>
+
+<h2>5. Vergleich</h2>
+<ul>
+  <li><b>Serial:</b> 1 Thread, alles STW, kleinster Overhead. Für 1 CPU, kleine Heaps, Tools.</li>
+  <li><b>Parallel:</b> viele Threads, alles STW, höchster Durchsatz. Für Batch-Jobs, bei denen Pausen egal sind.</li>
+  <li><b>G1:</b> Regionen, Mark concurrent, Kopieren STW. Pausen meist 10–200 ms. Für die meisten Services.</li>
+  <li><b>ZGC (generational):</b> fast alles concurrent, Pausen unter 1 ms. Braucht mehr CPU und Heap-Reserve. Für latenzkritische Services und sehr grosse Heaps.</li>
+  <li><b>Shenandoah:</b> wie ZGC, Pausen unter 10 ms, auch auf kleineren Heaps gut. Nur in OpenJDK-Builds ausser Oracle.</li>
+  <li><b>Epsilon:</b> keine GC. Nur für Tests und kurzlebige Jobs.</li>
+  <li><b>CMS:</b> entfernt seit Java 14. Nur als Falle wichtig.</li>
+</ul>
+
+<h2>6. In der Produktion</h2>
+<ol>
+  <li><b>Unerwartet Serial im Container:</b> Ein Pod mit <code>cpu: 1</code> oder unter 1792 MB nutzt in Java 21/25 Serial. Dann gibt es lange Pausen auf grösseren Heaps. Lösung: <code>-XX:+UseG1GC</code> explizit setzen und im Log <code>Using ...</code> prüfen.</li>
+  <li><b>G1 mit <code>Evacuation Failure</code> oder Full GC:</b> G1 findet keinen Platz zum Kopieren. Im Log steht <code>(Evacuation Failure)</code> hinter der Pause. Ursache: Heap zu voll oder Marking startet zu spät. Lösung: mehr Heap, Allokationen senken, eventuell <code>-XX:G1ReservePercent</code> erhöhen.</li>
+  <li><b>Viele Humongous-Allokationen:</b> grosse Arrays (z. B. grosse JSON-Puffer) belegen ganze Regionen und verschwenden Platz. Im Log: <code>(G1 Humongous Allocation)</code>. Lösung: Objekte verkleinern oder <code>-XX:G1HeapRegionSize</code> erhöhen.</li>
+  <li><b>ZGC Allocation Stalls:</b> Im Log steht <code>Allocation Stall</code>, Latenz-Spitzen trotz ZGC. Ursache: Heap zu klein für die Allokationsrate. Lösung: <code>-Xmx</code> erhöhen, mehr CPU, Allokationen senken. Auf Java 17 zusätzlich: Wechsel auf Java 21+ mit generationalem ZGC.</li>
+  <li><b>CPU-Throttling mit concurrent GC:</b> ZGC und Shenandoah brauchen CPU parallel zur Anwendung. Bei engem CPU-Limit in Kubernetes werden sie gebremst. Lösung: CPU-Limit erhöhen oder G1 nutzen.</li>
+  <li><b>Upgrade 8 → 17/21:</b> Der Standard wechselt von Parallel zu G1. Durchsatz kann leicht sinken, Pausen werden kürzer. Alte Flags wie <code>-XX:+UseConcMarkSweepGC</code> verhindern den Start. Lösung: Flags aufräumen, GC-Log vor und nach dem Upgrade vergleichen.</li>
+</ol>
+
+<h2>7. Diagnose: Werkzeuge und Flags</h2>
+<ul>
+  <li><code>-Xlog:gc</code>: erste Zeile <code>Using G1</code> zeigt den aktiven Collector. Danach eine Zeile pro GC.</li>
+  <li><code>-Xlog:gc*,gc+phases=debug:file=gc.log:time,uptime:filecount=5,filesize=20m</code>: Phasen und Details mit Rotation.</li>
+  <li><code>java -XX:+PrintFlagsFinal -version | grep -E "Use.*GC|MaxGCPauseMillis|G1HeapRegionSize"</code>: welche Werte wirklich gelten.</li>
+  <li><code>jcmd &lt;pid&gt; VM.flags</code> und <code>jcmd &lt;pid&gt; GC.heap_info</code>: Flags und Heap-Aufbau eines laufenden Prozesses.</li>
+  <li><code>jstat -gcutil &lt;pid&gt; 1000</code>: Füllgrad und GC-Zeiten pro Sekunde.</li>
+  <li><b>JFR</b> mit <b>JDK Mission Control</b>: Events <code>jdk.GarbageCollection</code>, <code>jdk.GCPhasePause</code>, <code>jdk.G1HeapRegionTypeChange</code>, <code>jdk.ZAllocationStall</code>.</li>
+  <li><code>-XX:ActiveProcessorCount=1 -Xlog:gc -version</code>: testet, welchen Collector die JVM bei 1 CPU wählt. Auf Java 17 zeigt es <code>Using Serial</code>.</li>
+</ul>
+
+<h2>8. Senior-Punkte</h2>
+<div class="senior">
+<ol>
+  <li><b>Es gibt kein bestes GC.</b> Durchsatz, Latenz und Speicher konkurrieren. Erst das Ziel klären: p99-Latenz oder Jobs pro Stunde?</li>
+  <li><b>G1 zuerst.</b> Er ist für die meisten Services richtig. Wechsel nur mit Messung: ZGC bei p99-Problemen durch GC-Pausen, Parallel bei reinen Batch-Jobs.</li>
+  <li><b>ZGC braucht Reserve.</b> Er tauscht Pausen gegen CPU und Heap. Mit knappem Heap entstehen Allocation Stalls, die schlimmer sind als G1-Pausen.</li>
+  <li><b>Den Collector immer explizit setzen</b> im Container. Die Ergonomics hängen von CPU und RAM ab und ändern sich mit Java-Versionen (Java 27).</li>
+  <li><b>Weniger Flags ist mehr.</b> Alte Tuning-Flags aus Java-8-Zeiten passen oft nicht mehr. Wenige Flags: Collector, Heap, Pausenziel.</li>
+  <li><b>Der beste GC-Fix ist oft im Code:</b> weniger Allokationen, kleinerer Live-Set, keine riesigen Arrays.</li>
+</ol>
+</div>
+
+<h2>9. Aus dem Projekt</h2>
+<p>„Für einen latenzkritischen Service haben wir G1 mit ZGC verglichen und die p99-Latenz im GC-Log und in JFR gemessen, bevor wir umgestellt haben.“ <span class="small">(Prüfen und durch dein echtes Beispiel ersetzen.)</span></p>
+
+<h2>10. Fallen</h2>
+<div class="trap">
+<ul>
+  <li>„CMS ist der Collector für kurze Pausen.“ → <b>Falsch.</b> CMS ist seit Java 14 entfernt. Heute: G1, ZGC oder Shenandoah.</li>
+  <li>„Standard ist immer G1.“ → <b>Falsch</b> für Java 9 bis 26. Bei 1 CPU oder unter 1792 MB wählt die JVM Serial. Erst ab Java 27 immer G1.</li>
+  <li>„ZGC hat keine Pausen.“ → <b>Falsch.</b> Kurze STW-Pausen unter 1 ms, und bei zu kleinem Heap Allocation Stalls.</li>
+  <li>„ZGC ist generational.“ → <b>Hängt von der Version ab.</b> Java 17: nein. Java 21: nur mit <code>-XX:+ZGenerational</code>. Ab Java 23: Standard. Ab Java 24: einziger Modus.</li>
+  <li>„<code>MaxGCPauseMillis</code> garantiert die Pause.“ → <b>Falsch.</b> Es ist ein Ziel. G1 kann es verfehlen.</li>
+  <li>„Parallel GC läuft parallel zur Anwendung.“ → <b>Falsch.</b> Parallel heisst viele GC-Threads, aber die Anwendung steht. Neben der Anwendung heisst <b>concurrent</b>.</li>
+  <li>„Shenandoah gibt es in jedem JDK.“ → <b>Falsch.</b> Das Oracle JDK enthält es nicht. Temurin, Corretto, Red Hat und andere OpenJDK-Builds schon.</li>
+  <li>„Generational Shenandoah ist ab Java 25 Standard.“ → <b>Falsch.</b> Es ist produktiv, aber man muss es mit <code>-XX:ShenandoahGCMode=generational</code> einschalten.</li>
+</ul>
+</div>
+
+<h2>11. Fragen</h2>
+<details><summary>Welche Garbage Collectors hat HotSpot heute?</summary><p>Serial, Parallel, G1, ZGC, Shenandoah (nicht im Oracle JDK) und Epsilon. CMS ist seit Java 14 entfernt.</p></details>
+<details><summary>Welcher Collector ist Standard?</summary><p>G1 seit Java 9, aber nur bei mindestens 2 CPUs und 1792 MB. Sonst Serial. Ab Java 27 immer G1.</p></details>
+<details><summary>Wann nehmen Sie Serial?</summary><p>Bei 1 CPU und kleinem Heap, z. B. kleine Tools oder Container. Er hat den kleinsten Overhead.</p></details>
+<details><summary>Wann nehmen Sie Parallel?</summary><p>Bei Batch-Jobs, wo nur der Durchsatz zählt. Er hat die wenigste GC-Zeit insgesamt, aber lange Full-GC-Pausen.</p></details>
+<details><summary>Wie funktioniert G1?</summary><p>Er teilt den Heap in Regionen. Young-Pausen kopieren lebende Objekte. Ein concurrent Marking findet Müll in Old, danach räumen Mixed GCs die Regionen mit dem meisten Müll.</p></details>
+<details><summary>Was ist eine Region in G1?</summary><p>Ein gleich grosser Block des Heaps, 1 bis 32 MB automatisch, ca. 2048 Stück. Jede Region hat eine Rolle: Eden, Survivor, Old oder Humongous.</p></details>
+<details><summary>Was ist ein Humongous-Objekt?</summary><p>Ein Objekt ab einer halben Region. Es bekommt eigene zusammenhängende Regionen. Viele davon verschwenden Platz.</p></details>
+<details><summary>Was ist eine Mixed GC?</summary><p>Eine G1-Pause, die Young plus einige Old-Regionen räumt. Sie kommt nach einem concurrent Marking.</p></details>
+<details><summary>Was ist die IHOP?</summary><p>Initiating Heap Occupancy Percent: ab diesem Füllgrad startet G1 das Marking. Start 45 %, danach passt G1 sie adaptiv an.</p></details>
+<details><summary>Was macht MaxGCPauseMillis?</summary><p>Es setzt das Pausenziel für G1, Standard 200 ms. G1 passt die Grösse von Young an. Es ist ein Ziel, keine Garantie.</p></details>
+<details><summary>Wann macht G1 eine Full GC?</summary><p>Wenn kein Platz zum Kopieren frei ist oder das Marking zu spät fertig wird. Sie ist seit Java 10 parallel, aber lang.</p></details>
+<details><summary>Wie hält ZGC die Pausen unter 1 ms?</summary><p>Markieren und Verschieben laufen concurrent. Colored Pointers und eine Load Barrier reparieren Referenzen beim Lesen. In den Pausen bleibt fast nur Root-Arbeit.</p></details>
+<details><summary>Was ist Generational ZGC?</summary><p>ZGC mit Young und Old. Er räumt junge Objekte öfter und billiger. Java 21 mit <code>-XX:+ZGenerational</code>, ab 23 Standard, ab 24 einziger Modus.</p></details>
+<details><summary>Was ist ein Allocation Stall?</summary><p>Ein Thread muss bei ZGC warten, weil der Heap voll ist und die GC noch läuft. Lösung: mehr Heap oder weniger Allokationen.</p></details>
+<details><summary>ZGC oder Shenandoah?</summary><p>Beide haben sehr kurze Pausen. ZGC ist in allen JDKs und skaliert bis 16 TB. Shenandoah fehlt im Oracle JDK und ist seit Java 25 auch generational.</p></details>
+<details><summary>Wofür ist Epsilon?</summary><p>Für Performance-Tests ohne GC, Speicher-Messungen und sehr kurze Jobs. Er gibt nie frei, bei vollem Heap kommt OutOfMemoryError.</p></details>
+<details><summary>Was ist mit CMS passiert?</summary><p>Deprecated in Java 9, entfernt in Java 14. Ab dann startet die JVM mit dem Flag nicht mehr. Ersatz: G1 oder ZGC.</p></details>
+<details><summary>Parallel vs Concurrent?</summary><p>Parallel: mehrere GC-Threads, Anwendung steht. Concurrent: GC läuft gleichzeitig mit der Anwendung.</p></details>
+<details><summary>Warum haben concurrent Collectors weniger Durchsatz?</summary><p>Sie brauchen Barriers bei jedem Zugriff auf Referenzen und CPU neben der Anwendung. Das kostet einige Prozent.</p></details>
+<details><summary>Welche GC-Flags setzen Sie in einem Container?</summary><p>Den Collector explizit, z. B. <code>-XX:+UseG1GC</code>. Dazu <code>-XX:MaxRAMPercentage</code> (z. B. 75) oder <code>-Xmx</code>. Mehr nur nach Messung.</p></details>
+<details><summary>Wie gehen Sie beim GC-Tuning vor?</summary><p>Ziel klären, GC-Log einschalten, messen. Dann Collector, Heap-Grösse, Pausenziel. Detail-Flags zuletzt, eine Änderung nach der anderen.</p></details>
+<details><summary>Warum -Xms gleich -Xmx?</summary><p>Der Heap muss nicht wachsen oder schrumpfen. Das gibt gleichmässigere Pausen. Der Preis: der Speicher ist von Anfang an belegt.</p></details>
+<details><summary>Wie prüfen Sie, welcher Collector läuft?</summary><p>Im GC-Log steht <code>Using G1</code>. Oder <code>jcmd &lt;pid&gt; VM.flags</code> bzw. <code>-XX:+PrintFlagsFinal</code>.</p></details>
+<details><summary>Szenario: Ein Service auf Java 21 hat p99-Spitzen von 300 ms, das GC-Log zeigt lange G1-Mixed-Pausen. Was tun Sie?</summary><p>Erst Allokationen und Live-Set prüfen. Dann <code>MaxGCPauseMillis</code> senken oder mehr Heap geben. Reicht das nicht, ZGC mit <code>-XX:+UseZGC -XX:+ZGenerational</code> und genug Heap testen und p99 vergleichen.</p></details>
+<details><summary>Szenario: Nach dem Wechsel auf ZGC ist die Latenz schlechter, im Log stehen Allocation Stalls. Warum?</summary><p>Der Heap ist zu klein für die Allokationsrate, oder die GC-Threads bekommen zu wenig CPU. Lösung: <code>-Xmx</code> erhöhen, CPU-Limit prüfen, Allokationen senken.</p></details>
+<details><summary>Szenario: Ein Pod mit 1 CPU und 1 GB hat lange Pausen, obwohl Sie G1 erwartet haben. Woran liegt es?</summary><p>Die JVM hat Serial gewählt, weil die Maschine nicht server-class ist (unter 2 CPUs oder 1792 MB). Im Log steht <code>Using Serial</code>. Lösung: <code>-XX:+UseG1GC</code> explizit setzen.</p></details>
+
+</body>
+</html>

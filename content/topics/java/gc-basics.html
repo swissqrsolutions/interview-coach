@@ -1,0 +1,275 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Garbage Collection: Grundlagen</title>
+<style>
+  body { font: 17px/1.55 -apple-system, system-ui, sans-serif; max-width: 760px; margin: 0 auto; padding: 16px; color: #1d1d1f; }
+  h1 { font-size: 28px; margin: 8px 0 4px; }
+  h2 { font-size: 21px; margin: 32px 0 8px; padding-top: 12px; border-top: 2px solid #e5e5ea; }
+  .kern { background: #eef6ff; border-left: 4px solid #0a66c2; padding: 10px 14px; border-radius: 6px; }
+  .senior { background: #f0faf0; border-left: 4px solid #2e7d32; padding: 10px 14px; border-radius: 6px; }
+  .trap { background: #fff4f2; border-left: 4px solid #c62828; padding: 10px 14px; border-radius: 6px; }
+  code { background: #f2f2f7; padding: 1px 5px; border-radius: 4px; font-size: 15px; }
+  pre { background: #1e1e1e; color: #e6e6e6; padding: 12px; border-radius: 8px; overflow-x: auto; font-size: 13.5px; line-height: 1.45; }
+  svg { width: 100%; height: auto; display: block; margin: 10px 0; }
+  ol li, ul li { margin: 4px 0; }
+  details { border: 1px solid #e5e5ea; border-radius: 8px; padding: 8px 12px; margin: 6px 0; }
+  summary { font-weight: 600; cursor: pointer; }
+  details p { margin: 6px 0 2px; }
+  .small { color: #6e6e73; font-size: 14px; }
+</style>
+</head>
+<body>
+
+<h1>Garbage Collection: Grundlagen</h1>
+<p class="small">Java · Tier 1 · Quellen: Oracle „HotSpot Virtual Machine Garbage Collection Tuning Guide“ (Java 21 und 25), OpenJDK HotSpot (Serial GC, <code>-Xlog:gc</code>), Java SE 21 API-Doku (<code>java.lang.ref</code>, <code>Cleaner</code>), JEP 421 (Finalization deprecated), JEP 523 (G1 überall Standard, Java 27)</p>
+
+<div class="kern">
+<b>Kern:</b> Die <b>Garbage Collection</b> (GC) gibt Heap-Speicher von Objekten frei, die das Programm nicht mehr erreicht. Sie löst das Problem, dass man Speicher nicht von Hand freigeben muss. Erreichbar ist, was von einer <b>GC Root</b> aus über Referenzen erreichbar ist. Der Heap ist in <b>Generationen</b> geteilt, weil die meisten Objekte jung sterben.
+</div>
+
+<h2>1. Wo sitzt die Garbage Collection?</h2>
+<svg viewBox="0 0 720 320" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="a" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="10" y="20" width="170" height="150" rx="10" fill="#fff" stroke="#555"/><text x="95" y="44" text-anchor="middle" font-weight="700">GC Roots</text>
+  <text x="95" y="70" text-anchor="middle" font-size="12">lokale Variablen (Stacks)</text><text x="95" y="90" text-anchor="middle" font-size="12">static-Felder</text><text x="95" y="110" text-anchor="middle" font-size="12">aktive Threads</text><text x="95" y="130" text-anchor="middle" font-size="12">JNI-Referenzen</text><text x="95" y="150" text-anchor="middle" font-size="12">Monitore (synchronized)</text>
+  <line x1="180" y1="95" x2="228" y2="95" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="230" y="8" width="480" height="210" rx="12" fill="#f7f7fa" stroke="#999" stroke-dasharray="5 4"/><text x="470" y="28" text-anchor="middle" font-weight="700">Heap</text>
+  <rect x="246" y="40" width="200" height="164" rx="8" fill="#dbe9fb" stroke="#0a66c2"/><text x="346" y="60" text-anchor="middle" font-weight="700">Young Generation</text>
+  <rect x="258" y="72" width="176" height="56" rx="6" fill="#fff" stroke="#0a66c2"/><text x="346" y="98" text-anchor="middle">Eden</text><text x="346" y="116" text-anchor="middle" font-size="12">neue Objekte</text>
+  <rect x="258" y="138" width="84" height="54" rx="6" fill="#fff" stroke="#0a66c2"/><text x="300" y="170" text-anchor="middle">S0</text>
+  <rect x="350" y="138" width="84" height="54" rx="6" fill="#fff" stroke="#0a66c2"/><text x="392" y="170" text-anchor="middle">S1</text>
+  <line x1="446" y1="122" x2="474" y2="122" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="476" y="40" width="220" height="164" rx="8" fill="#0a66c2" stroke="#0a66c2"/><text x="586" y="100" text-anchor="middle" fill="#fff" font-weight="700">Old Generation</text><text x="586" y="122" text-anchor="middle" fill="#fff" font-size="12">langlebige Objekte</text><text x="586" y="140" text-anchor="middle" fill="#fff" font-size="12">(Tenured)</text>
+  <rect x="230" y="240" width="220" height="60" rx="8" fill="#eee" stroke="#777"/><text x="340" y="266" text-anchor="middle">Metaspace</text><text x="340" y="284" text-anchor="middle" font-size="12">Klassen-Metadaten, kein Heap</text>
+  <rect x="476" y="240" width="220" height="60" rx="8" fill="#e8f5e9" stroke="#2e7d32"/><text x="586" y="266" text-anchor="middle" font-weight="700">GC-Threads</text><text x="586" y="284" text-anchor="middle" font-size="12">markieren, kopieren, räumen</text>
+  <line x1="586" y1="240" x2="586" y2="206" stroke="#2e7d32" stroke-width="2" marker-end="url(#a)"/>
+</svg>
+<ol>
+  <li><b>GC Roots:</b> Startpunkte, die sicher lebendig sind. Beispiel: eine lokale Variable in <code>main</code>.</li>
+  <li><b>Young Generation:</b> Bereich für neue Objekte. Sie besteht aus <b>Eden</b> und zwei <b>Survivor Spaces</b> (S0, S1).</li>
+  <li><b>Eden:</b> Hier entsteht fast jedes neue Objekt. Beispiel: <code>new byte[10_000]</code> in einer Schleife.</li>
+  <li><b>Survivor Spaces:</b> Hier liegen Objekte, die schon eine GC überlebt haben. Immer ist einer der beiden leer.</li>
+  <li><b>Old Generation</b> (auch <b>Tenured</b>): Bereich für langlebige Objekte. Beispiel: ein Cache, der Stunden lebt.</li>
+  <li><b>Metaspace:</b> Speicher für Klassen-Metadaten ausserhalb des Heaps. Er wird nur beim Entladen von Klassen frei.</li>
+  <li><b>GC-Threads:</b> Sie finden lebendige Objekte und geben den Rest frei.</li>
+</ol>
+<p>Dieses Bild gilt für <b>Serial</b> und <b>Parallel</b>. <b>G1</b> teilt den Heap in gleich grosse <b>Regionen</b>, jede Region spielt Eden, Survivor oder Old. <b>ZGC</b> ist seit Java 21 generational, seit Java 23 standardmässig.</p>
+
+<h2>2. Die Reise eines Objekts durch die Generationen (die Geschichte zum Merken)</h2>
+<svg viewBox="0 0 720 330" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="b" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker><marker id="r" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#c62828"/></marker></defs>
+  <rect x="10" y="40" width="130" height="70" rx="10" fill="#eee" stroke="#777"/><text x="75" y="68" text-anchor="middle" font-weight="700">1. new</text><text x="75" y="88" text-anchor="middle" font-size="12">TLAB in Eden</text>
+  <line x1="140" y1="75" x2="188" y2="75" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="190" y="40" width="150" height="70" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="265" y="64" text-anchor="middle" font-weight="700">2. Eden voll</text><text x="265" y="84" text-anchor="middle" font-size="12">Minor GC (Pause)</text><text x="265" y="100" text-anchor="middle" font-size="12">Mark ab Roots</text>
+  <line x1="340" y1="75" x2="388" y2="75" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="390" y="40" width="150" height="70" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="465" y="64" text-anchor="middle" font-weight="700">3. Survivor</text><text x="465" y="84" text-anchor="middle" font-size="12">kopiert, Alter + 1</text><text x="465" y="100" text-anchor="middle" font-size="12">S0 ⇄ S1</text>
+  <line x1="540" y1="75" x2="578" y2="75" stroke="#555" stroke-width="2" marker-end="url(#b)"/><text x="559" y="65" text-anchor="middle" font-size="11">Alter</text>
+  <rect x="580" y="40" width="130" height="70" rx="10" fill="#0a66c2" stroke="#0a66c2"/><text x="645" y="64" text-anchor="middle" fill="#fff" font-weight="700">4. Old</text><text x="645" y="84" text-anchor="middle" fill="#fff" font-size="12">Promotion</text><text x="645" y="100" text-anchor="middle" fill="#fff" font-size="12">(Tenuring)</text>
+  <path d="M465,110 C465,150 300,150 280,114" fill="none" stroke="#555" stroke-width="1.5" stroke-dasharray="5 4" marker-end="url(#b)"/><text x="372" y="160" text-anchor="middle" font-size="12">nächste Minor GC</text>
+  <line x1="645" y1="110" x2="645" y2="198" stroke="#555" stroke-width="2" marker-end="url(#b)"/><text x="655" y="160" font-size="12">Old voll</text>
+  <rect x="430" y="200" width="280" height="76" rx="10" fill="#fff" stroke="#555"/><text x="570" y="222" text-anchor="middle" font-weight="700">5. Major / Full GC</text><text x="570" y="242" text-anchor="middle" font-size="12">Mark → Sweep → Compact</text><text x="570" y="260" text-anchor="middle" font-size="12">lange Pause (Stop-the-World)</text>
+  <line x1="430" y1="238" x2="232" y2="238" stroke="#c62828" stroke-width="2" stroke-dasharray="6 4" marker-end="url(#r)"/>
+  <rect x="10" y="200" width="220" height="76" rx="10" fill="#fff4f2" stroke="#c62828"/><text x="120" y="226" text-anchor="middle" fill="#c62828" font-weight="700">6. Unerreichbar</text><text x="120" y="246" text-anchor="middle" fill="#c62828" font-size="12">nicht markiert →</text><text x="120" y="262" text-anchor="middle" fill="#c62828" font-size="12">Speicher wird frei</text>
+  <text x="120" y="304" text-anchor="middle" font-size="12" fill="#c62828">kann in jedem Schritt passieren</text>
+</svg>
+<ol>
+  <li><b>Geburt im Eden.</b> <code>new Order()</code> legt das Objekt im Eden an. Jeder Thread hat dort einen eigenen Block, den <b>TLAB</b> (Thread-Local Allocation Buffer). Darum ist <code>new</code> sehr schnell: nur ein Zeiger wird verschoben.</li>
+  <li><b>Eden ist voll: Minor GC.</b> Die JVM stoppt alle Threads. Die GC <b>markiert</b> ab den GC Roots alle erreichbaren Objekte. Sie liest nur die Young Generation, nicht die ganze Old Generation.</li>
+  <li><b>Überleben: Kopie in den Survivor.</b> Lebende Objekte werden in den leeren Survivor kopiert. Ihr <b>Alter</b> steigt um 1. Eden und der alte Survivor sind danach komplett leer. Tote Objekte kosten nichts, sie werden nie angefasst.</li>
+  <li><b>Alt genug: Promotion.</b> Erreicht das Alter die <b>Tenuring Threshold</b> (höchstens 15), wird das Objekt in die Old Generation kopiert. Ist der Survivor zu klein, kommt es früher dorthin: <b>Premature Promotion</b>.</li>
+  <li><b>Old ist voll: Major oder Full GC.</b> Jetzt arbeitet die GC auf der Old Generation mit <b>Mark-Sweep-Compact</b>. Bei Serial und Parallel ist das eine lange Pause über den ganzen Heap.</li>
+  <li><b>Tod.</b> Zeigt keine Referenzkette von einer Root mehr auf das Objekt, ist es <b>unerreichbar</b>. Bei der nächsten passenden GC wird sein Speicher frei. Es gibt keinen festen Zeitpunkt dafür.</li>
+</ol>
+<p>Warum das funktioniert: die <b>Weak Generational Hypothesis</b>. Sie sagt: Die meisten Objekte sterben jung. Darum ist eine Minor GC billig, sie kopiert nur die wenigen Überlebenden.</p>
+
+<h2>3. Beispiel: Generationen und Reachability im Log sehen</h2>
+<pre>import java.lang.ref.WeakReference;
+import java.util.ArrayList;
+import java.util.List;
+
+public class GcDemo {
+  static List&lt;byte[]&gt; keep = new ArrayList&lt;&gt;();   // GC Root: static field
+
+  static class Node { Node other; }
+
+  public static void main(String[] args) {
+    // 1) a cycle with no root: unreachable, collected despite the references
+    Node a = new Node(), b = new Node();
+    a.other = b; b.other = a;
+    WeakReference&lt;Node&gt; cycle = new WeakReference&lt;&gt;(a);
+    a = null; b = null;
+
+    // 2) much short-lived garbage, a few long-lived objects
+    for (int i = 0; i &lt; 6_000; i++) {
+      byte[] tmp = new byte[10_000];              // dies at once
+      if (i % 100 == 0) keep.add(new byte[100_000]); // survives
+    }
+    System.out.println("kept: " + keep.size() + " x 100 KB");
+    System.out.println("cycle collected: " + (cycle.get() == null));
+
+    // 3) drop the root, then ask for a full GC
+    keep = null;
+    System.gc();
+    System.out.println("done");
+  }
+}</pre>
+<pre>$ java -Xmx64m -Xmn16m -XX:+UseSerialGC -Xlog:gc,gc+heap GcDemo
+[0.007s][info][gc] Using Serial
+[0.043s][info][gc,heap] GC(0) DefNew: 13091K(14784K)-&gt;1586K(14784K) Eden: 13091K(13184K)-&gt;0K(13184K) From: 0K(1600K)-&gt;1586K(1600K)
+[0.043s][info][gc,heap] GC(0) Tenured: 0K(49152K)-&gt;0K(49152K)
+[0.043s][info][gc     ] GC(0) Pause Young (Allocation Failure) 12M-&gt;1M(62M) 1.177ms
+[0.046s][info][gc,heap] GC(1) DefNew: 14761K(14784K)-&gt;1269K(14784K) Eden: 13174K(13184K)-&gt;0K(13184K) From: 1586K(1600K)-&gt;1269K(1600K)
+[0.046s][info][gc,heap] GC(1) Tenured: 0K(49152K)-&gt;1576K(49152K)
+[0.046s][info][gc     ] GC(1) Pause Young (Allocation Failure) 14M-&gt;2M(62M) 1.246ms
+[0.049s][info][gc,heap] GC(2) DefNew: 14453K(14784K)-&gt;1172K(14784K) Eden: 13184K(13184K)-&gt;0K(13184K) From: 1269K(1600K)-&gt;1172K(1600K)
+[0.075s][info][gc,heap] GC(2) Tenured: 1576K(49152K)-&gt;2846K(49152K)
+[0.075s][info][gc     ] GC(2) Pause Young (Allocation Failure) 15M-&gt;3M(62M) 26.652ms
+[0.077s][info][gc,heap] GC(3) DefNew: 14355K(14784K)-&gt;1172K(14784K) Eden: 13183K(13184K)-&gt;0K(13184K) From: 1172K(1600K)-&gt;1172K(1600K)
+[0.077s][info][gc,heap] GC(3) Tenured: 2846K(49152K)-&gt;4018K(49152K)
+[0.077s][info][gc     ] GC(3) Pause Young (Allocation Failure) 16M-&gt;5M(62M) 0.638ms
+[0.080s][info][gc,heap] GC(4) DefNew: 14356K(14784K)-&gt;1172K(14784K) Eden: 13184K(13184K)-&gt;0K(13184K) From: 1172K(1600K)-&gt;1172K(1600K)
+[0.080s][info][gc,heap] GC(4) Tenured: 4018K(49152K)-&gt;5190K(49152K)
+[0.080s][info][gc     ] GC(4) Pause Young (Allocation Failure) 17M-&gt;6M(62M) 0.774ms
+kept: 60 x 100 KB
+cycle collected: true
+[0.093s][info][gc,heap] GC(5) DefNew: 2326K(14784K)-&gt;0K(14784K) Eden: 1154K(13184K)-&gt;0K(13184K) From: 1172K(1600K)-&gt;0K(1600K)
+[0.093s][info][gc,heap] GC(5) Tenured: 5190K(49152K)-&gt;616K(49152K)
+[0.093s][info][gc     ] GC(5) Pause Full (System.gc()) 7M-&gt;0M(62M) 1.132ms
+done</pre>
+<p class="small">Echte Ausgabe, OpenJDK 17.0.3 (Oracle-Build 17.0.3.1), ungekürzt. Zeiten schwanken von Lauf zu Lauf. In Java 21 und 25 ist die Ausgabe von Serial sehr ähnlich. Ohne <code>-XX:+UseSerialGC</code> nutzt Java 17, 21 und 25 auf grossen Maschinen G1, dann heisst die Zeile <code>Pause Young (Normal) (G1 Evacuation Pause)</code>.</p>
+<ol>
+  <li><b><code>DefNew</code></b> ist die Young Generation von Serial. <code>-Xmn16m</code> ergibt Eden 13184K und zwei Survivor mit je 1600K (Verhältnis 8:1:1).</li>
+  <li><b>Pause Young (Allocation Failure):</b> Eden ist voll, ein <code>new</code> findet keinen Platz. Die Minor GC leert Eden komplett: <code>Eden: 13091K-&gt;0K</code>.</li>
+  <li><b>Die Pause ist kurz:</b> meist unter 1,3 ms für 13 MB Eden. Nur die wenigen Überlebenden werden kopiert. Der Ausreisser 26 ms in GC(2) ist Rauschen beim Start (Messung nicht wiederholbar).</li>
+  <li><b>Premature Promotion:</b> Ab GC(1) wächst <code>Tenured</code> um ca. 1,2 MB pro GC. Der Survivor (1600K) ist zu klein für die 100-KB-Arrays. Sie gehen direkt in die Old Generation, lange vor Alter 15.</li>
+  <li><b>Zyklus gesammelt:</b> <code>cycle collected: true</code>. <code>a</code> und <code>b</code> zeigen aufeinander, aber keine Root zeigt auf sie. Die JVM zählt keine Referenzen, sie prüft Erreichbarkeit.</li>
+  <li><b>Root entfernt:</b> Nach <code>keep = null</code> sind die 60 Arrays unerreichbar. Die <b>Full GC</b> räumt Young und Old: <code>Tenured: 5190K-&gt;616K</code>. Der Rest (616K) sind JDK-interne Objekte.</li>
+  <li><b><code>Pause Full (System.gc())</code></b> ist ein Stop-the-World über den ganzen Heap. Hier kurz, weil der Heap fast leer ist. Bei mehreren GB dauert es Sekunden.</li>
+</ol>
+
+<h2>4. Details, die Interviewer fragen</h2>
+<ol>
+  <li><b>Reachability:</b> Ein Objekt ist <b>erreichbar</b>, wenn eine Kette von Referenzen von einer GC Root zu ihm führt. Nur das zählt. Zyklen ohne Root werden gesammelt.</li>
+  <li><b>GC Roots</b> sind die Startpunkte der Markierung:
+    <ul><li><b>Lokale Variablen und Parameter</b> auf den Thread-Stacks, z. B. <code>order</code> in einer laufenden Methode.</li>
+    <li><b>static-Felder</b> geladener Klassen, z. B. <code>static Map cache</code>.</li>
+    <li><b>Aktive Threads</b> selbst, z. B. ein laufender Worker-Thread.</li>
+    <li><b>JNI-Referenzen</b> aus nativem Code.</li>
+    <li><b>Monitore:</b> Objekte, auf denen gerade <code>synchronized</code> gehalten wird.</li>
+    <li><b>Klassen</b> des System-Classloaders und JVM-interne Objekte.</li></ul></li>
+  <li><b>Mark-Sweep-Compact</b> hat drei Phasen:
+    <ul><li><b>Mark:</b> ab den Roots alle erreichbaren Objekte markieren.</li>
+    <li><b>Sweep:</b> nicht markierte Objekte als frei eintragen. Danach ist der Heap löchrig: <b>Fragmentierung</b>.</li>
+    <li><b>Compact:</b> lebende Objekte zusammenschieben und Referenzen anpassen. Danach ist der freie Platz ein Block.</li></ul></li>
+  <li><b>Copying Collector:</b> Die Young Generation nutzt <b>Kopieren</b> statt Sweep. Lebende Objekte wandern in einen leeren Bereich. Kosten hängen nur von den <b>lebenden</b> Objekten ab, nicht von den toten.</li>
+  <li><b>Stop-the-World (STW):</b> Eine <b>STW-Pause</b> hält alle Java-Threads an. Die Threads stoppen an einem <b>Safepoint</b>, einer Stelle mit bekanntem Zustand. Jeder Collector in HotSpot hat STW-Pausen, auch ZGC (unter 1 ms).</li>
+  <li><b>Parallel vs Concurrent:</b> <b>Parallel</b> heisst: mehrere GC-Threads arbeiten während einer Pause. <b>Concurrent</b> heisst: GC-Threads arbeiten, während die Anwendung weiterläuft.</li>
+  <li><b>Minor, Major, Full GC:</b> <b>Minor GC</b> räumt nur Young. <b>Major GC</b> räumt Old. <b>Full GC</b> räumt den ganzen Heap, meist mit Compaction. Die Begriffe sind nicht streng definiert, der Log-Text zählt.</li>
+  <li><b>Card Table und Remembered Set:</b> Ein Old-Objekt kann auf ein Young-Objekt zeigen. Darum merkt sich die JVM solche Stellen in der <b>Card Table</b> (Serial, Parallel) oder im <b>Remembered Set</b> (G1). Eine <b>Write Barrier</b>, also ein kleiner Code bei jedem Feld-Schreiben, pflegt sie. So muss eine Minor GC nicht die ganze Old Generation lesen.</li>
+  <li><b>Tenuring Threshold:</b> Das Alter eines Objekts steht im Objekt-Header in 4 Bits. Darum ist <code>MaxTenuringThreshold</code> höchstens 15. Die JVM senkt die Schwelle selbst, wenn die Survivor voll werden.</li>
+  <li><b>Referenzarten</b> (<code>java.lang.ref</code>):
+    <ul><li><b>Strong:</b> normale Referenz, hält das Objekt am Leben.</li>
+    <li><b>SoftReference:</b> wird erst bei Speicherdruck geräumt, z. B. für einfache Caches.</li>
+    <li><b>WeakReference:</b> wird bei der nächsten GC geräumt, z. B. <code>WeakHashMap</code>-Schlüssel.</li>
+    <li><b>PhantomReference:</b> meldet nach dem Tod über eine Queue, z. B. für Aufräumarbeit mit <code>Cleaner</code>.</li></ul></li>
+  <li><b>finalize():</b> ist seit Java 9 deprecated und seit Java 18 „for removal“ (JEP 421). Es verzögert die Freigabe um mindestens eine GC. Ersatz: <code>try-with-resources</code> oder <code>java.lang.ref.Cleaner</code>.</li>
+  <li><b><code>System.gc()</code>:</b> ist nur eine Bitte an die JVM. Bei Serial und Parallel löst es meist eine Full GC aus. <code>-XX:+DisableExplicitGC</code> schaltet es ab.</li>
+  <li><b>Heap-Grösse ohne Flags:</b> Startgrösse 1/64, Maximum 1/4 des physischen Speichers. Im Container gilt das Container-Limit. <code>-XX:MaxRAMPercentage</code> (Standard 25) ändert den Anteil.</li>
+  <li><b>Standard-Collector:</b> In Java 21 und 25 ist es <b>G1</b> auf einer „server-class machine“ (mindestens 2 CPUs und 1792 MB). Sonst ist es <b>Serial</b>. Ab Java 27 ist G1 überall Standard (JEP 523).</li>
+</ol>
+
+<h2>5. Vergleich</h2>
+<ul>
+  <li><b>Mark-Sweep:</b> schnell, verschiebt nichts, hinterlässt aber Löcher (Fragmentierung).</li>
+  <li><b>Mark-Compact:</b> kein Loch mehr, aber teurer: Objekte verschieben und alle Referenzen anpassen.</li>
+  <li><b>Copying:</b> sehr schnell bei wenigen Überlebenden, braucht aber einen leeren Zielbereich.</li>
+  <li><b>Reference Counting</b> (nicht in der JVM): zählt Referenzen pro Objekt, findet aber keine Zyklen.</li>
+  <li><b>Minor GC:</b> nur Young, häufig, kurz.</li>
+  <li><b>Full GC:</b> ganzer Heap, selten, lang. Ein häufiger Full GC ist ein Warnsignal.</li>
+  <li><b>STW-Phase vs Concurrent-Phase:</b> STW ist einfach und schnell pro Byte, Concurrent kostet CPU und Barriers, hält aber die Pausen klein.</li>
+</ul>
+
+<h2>6. In der Produktion</h2>
+<ol>
+  <li><b><code>OutOfMemoryError: Java heap space</code>:</b> Die lebenden Objekte passen nicht in den Heap. Ursache ist oft ein Leak, z. B. ein Cache ohne Grenze. Lösung: Heap Dump analysieren, Cache begrenzen. Erst danach den Heap vergrössern.</li>
+  <li><b>Lange Pausen durch Full GC:</b> Requests hängen für Sekunden. Ursache: Old Generation voll, oft durch Premature Promotion. Lösung: Young Generation oder Heap grösser, Allokationen senken, Collector mit kurzen Pausen (G1, ZGC).</li>
+  <li><b>Container wird gekillt (OOMKilled):</b> Der Prozess braucht mehr als das Pod-Limit. Heap ist nur ein Teil: dazu kommen Metaspace, Thread-Stacks, Code Cache und Direct Memory. Lösung: <code>-XX:MaxRAMPercentage</code> auf ca. 50–75 setzen, nicht 100.</li>
+  <li><b>Kleiner Container nutzt Serial:</b> Ein Pod mit 1 CPU oder weniger als 1792 MB bekommt in Java 21 und 25 ohne Flag Serial. Lösung: Collector explizit setzen, z. B. <code>-XX:+UseG1GC</code>.</li>
+  <li><b><code>System.gc()</code> in Bibliotheken:</b> erzeugt unerwartete Full GCs. Lösung: im Log nach <code>(System.gc())</code> suchen, Aufrufer finden, oder <code>-XX:+DisableExplicitGC</code>.</li>
+  <li><b>Hohe Allokationsrate:</b> viele Minor GCs, viel CPU für GC. Lösung: Profiler auf Allokationen, z. B. weniger temporäre Objekte in heissen Schleifen.</li>
+</ol>
+
+<h2>7. Diagnose: Werkzeuge und Flags</h2>
+<ul>
+  <li><code>-Xlog:gc</code>: eine Zeile pro GC mit Art, Grund, Heap vorher/nachher und Pause.</li>
+  <li><code>-Xlog:gc*:file=gc.log:time,uptime:filecount=5,filesize=20m</code>: ausführliches Log mit Rotation für die Produktion.</li>
+  <li><code>-Xlog:gc+heap</code>: Grössen von Eden, Survivor und Old pro GC (wie im Beispiel). <code>-Xlog:gc+age=trace</code>: Alter der Objekte im Survivor.</li>
+  <li><code>jstat -gcutil &lt;pid&gt; 1000</code>: Füllgrad der Generationen und GC-Zeiten jede Sekunde.</li>
+  <li><code>jcmd &lt;pid&gt; GC.heap_info</code>: aktueller Aufbau des Heaps. <code>jcmd &lt;pid&gt; GC.class_histogram</code>: Objekte pro Klasse.</li>
+  <li><code>jcmd &lt;pid&gt; GC.heap_dump /tmp/heap.hprof</code> und <code>-XX:+HeapDumpOnOutOfMemoryError</code>: Heap Dump für <b>Eclipse MAT</b>.</li>
+  <li><b>JFR</b> (Java Flight Recorder) mit <b>JDK Mission Control</b>: Events <code>jdk.GarbageCollection</code>, <code>jdk.GCPhasePause</code>, <code>jdk.ObjectAllocationSample</code>.</li>
+  <li><code>java -XX:+PrintFlagsFinal -version | grep -E "Use.*GC|MaxHeapSize"</code>: welcher Collector und welche Heap-Grösse wirklich gelten.</li>
+</ul>
+
+<h2>8. Senior-Punkte</h2>
+<div class="senior">
+<ol>
+  <li><b>GC-Kosten hängen von lebenden Objekten ab,</b> nicht von Müll. Viel kurzlebiger Müll ist billig. Viele langlebige Objekte sind teuer.</li>
+  <li><b>Kein Speicherleck heisst nicht kein Problem.</b> Ein grosser Live-Set (z. B. riesiger Cache) macht jede Old-GC teurer.</li>
+  <li><b>Die Abwägung heisst Latenz, Durchsatz, Speicher.</b> Man bekommt zwei von drei. Kurze Pausen kosten CPU und Heap-Reserve.</li>
+  <li><b>Heap-Grösse ist eine Betriebsentscheidung:</b> Container-Limit, <code>MaxRAMPercentage</code>, Platz für Off-Heap. Immer explizit setzen.</li>
+  <li><b>Erst das GC-Log lesen,</b> dann Flags ändern. Die meisten GC-Probleme sind Allokations- oder Leak-Probleme im Code.</li>
+  <li><b>Code nie auf GC-Zeitpunkte bauen.</b> Ressourcen schliesst man mit <code>try-with-resources</code>, nicht mit <code>finalize</code>.</li>
+</ol>
+</div>
+
+<h2>9. Aus dem Projekt</h2>
+<p>„In einem Service haben wir im GC-Log häufige Full GCs gesehen, die Ursache war ein Cache ohne Grenze. Mit Grösse und Ablaufzeit waren die Full GCs weg.“ <span class="small">(Prüfen und durch dein echtes Beispiel ersetzen.)</span></p>
+
+<h2>10. Fallen</h2>
+<div class="trap">
+<ul>
+  <li>„Java zählt Referenzen, Zyklen sind ein Leak.“ → <b>Falsch.</b> Die JVM prüft Erreichbarkeit ab GC Roots. Zyklen ohne Root werden gesammelt.</li>
+  <li>„<code>System.gc()</code> erzwingt eine GC.“ → <b>Falsch.</b> Es ist nur eine Bitte. Sie kann ignoriert oder abgeschaltet werden.</li>
+  <li>„Variablen auf <code>null</code> setzen hilft dem GC.“ → <b>Meist falsch.</b> Lokale Variablen sterben mit der Methode. Nur bei langlebigen Feldern oder Collections hilft es.</li>
+  <li>„Mit GC gibt es keine Memory Leaks.“ → <b>Falsch.</b> Erreichbare, aber unnötige Objekte bleiben, z. B. in einer statischen Map.</li>
+  <li>„ZGC hat kein Stop-the-World.“ → <b>Falsch.</b> Es hat sehr kurze Pausen (unter 1 ms), aber es hat sie.</li>
+  <li>„<code>finalize()</code> ist ein Destruktor.“ → <b>Falsch.</b> Kein fester Zeitpunkt, vielleicht nie. Deprecated for removal seit Java 18.</li>
+  <li>„Der Standard ist immer G1.“ → <b>Falsch</b> für Java 21 und 25. Bei 1 CPU oder unter 1792 MB nimmt die JVM Serial. Erst ab Java 27 immer G1.</li>
+  <li>„CMS ist der Collector für kurze Pausen.“ → <b>Veraltet.</b> CMS ist seit Java 14 entfernt (JEP 363). Heute: G1, ZGC oder Shenandoah.</li>
+</ul>
+</div>
+
+<h2>11. Fragen</h2>
+<details><summary>Was ist Garbage Collection?</summary><p>Die JVM gibt automatisch Speicher von Objekten frei, die nicht mehr erreichbar sind. So muss man Speicher nicht von Hand freigeben.</p></details>
+<details><summary>Wann ist ein Objekt Müll?</summary><p>Wenn keine Referenzkette von einer GC Root zu ihm führt. Ob noch Referenzen auf das Objekt zeigen, ist egal.</p></details>
+<details><summary>Was sind GC Roots?</summary><p>Startpunkte der Markierung: lokale Variablen auf Thread-Stacks, static-Felder, aktive Threads, JNI-Referenzen und gehaltene Monitore.</p></details>
+<details><summary>Werden zyklische Referenzen gesammelt?</summary><p>Ja. Die JVM nutzt Erreichbarkeit, kein Reference Counting. Ein Zyklus ohne Root ist unerreichbar und wird gesammelt.</p></details>
+<details><summary>Warum teilt die JVM den Heap in Generationen?</summary><p>Wegen der Weak Generational Hypothesis: Die meisten Objekte sterben jung. Darum räumt man Young oft und billig, Old selten.</p></details>
+<details><summary>Wie ist die Young Generation aufgebaut?</summary><p>Eden für neue Objekte und zwei Survivor Spaces. Einer der Survivor ist immer leer und dient als Ziel der nächsten Kopie.</p></details>
+<details><summary>Was passiert bei einer Minor GC?</summary><p>Alle Threads stoppen. Lebende Objekte aus Eden und Survivor werden in den leeren Survivor oder nach Old kopiert. Danach ist Eden leer.</p></details>
+<details><summary>Wann kommt ein Objekt in die Old Generation?</summary><p>Wenn sein Alter die Tenuring Threshold erreicht (höchstens 15). Oder früher, wenn der Survivor zu klein ist: Premature Promotion.</p></details>
+<details><summary>Was ist Mark-Sweep-Compact?</summary><p>Mark: lebende Objekte ab den Roots markieren. Sweep: den Rest freigeben. Compact: lebende Objekte zusammenschieben gegen Fragmentierung.</p></details>
+<details><summary>Warum kopiert die Young Generation statt zu sweepen?</summary><p>Kopieren kostet nur pro lebendem Objekt. In Young überleben sehr wenige. Danach ist der Bereich ohne Löcher.</p></details>
+<details><summary>Was ist Stop-the-World?</summary><p>Alle Java-Threads stehen an einem Safepoint still, während die GC arbeitet. Jeder HotSpot-Collector hat solche Pausen, nur verschieden lang.</p></details>
+<details><summary>Was ist ein Safepoint?</summary><p>Eine Stelle im Code, an der der Zustand des Threads bekannt ist. Dort können Threads für eine GC anhalten.</p></details>
+<details><summary>Parallel vs Concurrent bei der GC?</summary><p>Parallel: mehrere GC-Threads in einer Pause. Concurrent: die GC arbeitet, während die Anwendung läuft.</p></details>
+<details><summary>Minor, Major, Full GC: was ist der Unterschied?</summary><p>Minor räumt Young, Major räumt Old, Full räumt den ganzen Heap. Full GC ist am teuersten.</p></details>
+<details><summary>Wie findet eine Minor GC Referenzen von Old nach Young?</summary><p>Über die Card Table oder das Remembered Set. Eine Write Barrier markiert jedes Feld-Schreiben in Old. So muss die GC nicht ganz Old lesen.</p></details>
+<details><summary>Was ist ein TLAB?</summary><p>Thread-Local Allocation Buffer: ein eigener Block im Eden pro Thread. <code>new</code> verschiebt nur einen Zeiger, ohne Lock.</p></details>
+<details><summary>Soft, Weak, Phantom Reference: was ist der Unterschied?</summary><p>Soft wird erst bei Speicherdruck geräumt. Weak bei der nächsten GC. Phantom meldet nach dem Tod über eine Queue, z. B. für <code>Cleaner</code>.</p></details>
+<details><summary>Warum nicht finalize() benutzen?</summary><p>Kein fester Zeitpunkt, verzögerte Freigabe, Risiko für Leaks. Seit Java 18 deprecated for removal. Ersatz: try-with-resources oder Cleaner.</p></details>
+<details><summary>Was macht System.gc()?</summary><p>Es bittet um eine GC, meist eine Full GC. Die JVM darf es ignorieren. Mit <code>-XX:+DisableExplicitGC</code> ist es abgeschaltet.</p></details>
+<details><summary>Kann Java Memory Leaks haben?</summary><p>Ja. Objekte, die erreichbar bleiben, aber nicht mehr gebraucht werden. Typisch: statische Collections, Listener, ThreadLocals.</p></details>
+<details><summary>Welcher Collector ist Standard?</summary><p>In Java 21 und 25: G1 bei mindestens 2 CPUs und 1792 MB, sonst Serial. Ab Java 27 immer G1.</p></details>
+<details><summary>Wie gross ist der Heap ohne -Xmx?</summary><p>Maximal 1/4 des physischen Speichers oder des Container-Limits. <code>MaxRAMPercentage</code> ändert den Anteil.</p></details>
+<details><summary>Wie sehen Sie, was die GC macht?</summary><p>Mit <code>-Xlog:gc*</code>, <code>jstat -gcutil</code>, <code>jcmd GC.heap_info</code> und JFR in JDK Mission Control.</p></details>
+<details><summary>Szenario: Die Anwendung hängt alle paar Minuten für 3 Sekunden. Wie gehen Sie vor?</summary><p>GC-Log prüfen: Gibt es <code>Pause Full</code> zur gleichen Zeit? Wenn ja, Ursache suchen: Leak, zu kleiner Heap, Premature Promotion oder <code>System.gc()</code>. Dann Code oder Heap anpassen, eventuell G1 oder ZGC.</p></details>
+<details><summary>Szenario: Der Pod wird OOMKilled, aber es gibt keinen OutOfMemoryError. Warum?</summary><p>Das Container-Limit wurde vom ganzen Prozess überschritten, nicht vom Heap. Metaspace, Stacks und Direct Memory zählen mit. Lösung: <code>MaxRAMPercentage</code> senken und Off-Heap messen.</p></details>
+<details><summary>Szenario: Der Old-Bereich wächst nach jeder Full GC weiter. Was heisst das?</summary><p>Der Live-Set wächst, also wahrscheinlich ein Leak. Heap Dump mit <code>jcmd GC.heap_dump</code> ziehen und in Eclipse MAT den Besitzer der grössten Objekte suchen.</p></details>
+
+</body>
+</html>

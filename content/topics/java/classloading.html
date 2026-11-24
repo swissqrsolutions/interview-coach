@@ -1,0 +1,291 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Class Loading</title>
+<style>
+  body { font: 17px/1.55 -apple-system, system-ui, sans-serif; max-width: 760px; margin: 0 auto; padding: 16px; color: #1d1d1f; }
+  h1 { font-size: 28px; margin: 8px 0 4px; }
+  h2 { font-size: 21px; margin: 32px 0 8px; padding-top: 12px; border-top: 2px solid #e5e5ea; }
+  .kern { background: #eef6ff; border-left: 4px solid #0a66c2; padding: 10px 14px; border-radius: 6px; }
+  .senior { background: #f0faf0; border-left: 4px solid #2e7d32; padding: 10px 14px; border-radius: 6px; }
+  .trap { background: #fff4f2; border-left: 4px solid #c62828; padding: 10px 14px; border-radius: 6px; }
+  code { background: #f2f2f7; padding: 1px 5px; border-radius: 4px; font-size: 15px; }
+  pre { background: #1e1e1e; color: #e6e6e6; padding: 12px; border-radius: 8px; overflow-x: auto; font-size: 13.5px; line-height: 1.45; }
+  svg { width: 100%; height: auto; display: block; margin: 10px 0; }
+  ol li, ul li { margin: 4px 0; }
+  details { border: 1px solid #e5e5ea; border-radius: 8px; padding: 8px 12px; margin: 6px 0; }
+  summary { font-weight: 600; cursor: pointer; }
+  details p { margin: 6px 0 2px; }
+  .small { color: #6e6e73; font-size: 14px; }
+</style>
+</head>
+<body>
+
+<h1>Class Loading</h1>
+<p class="small">Java · Tier 2 · Quellen: Java SE 25 API (<code>java.lang.ClassLoader</code>, <code>Class.forName</code>, <code>ServiceLoader</code>), JVM Specification SE 21/25 Kap. 5 (Loading, Linking, Initializing), JLS 21 §12.4 und §12.7, JEP 261 (Module System), JEP 220 (Modular Run-Time Images), JEP 371 (Hidden Classes), JEP 483 (AOT Class Loading &amp; Linking)</p>
+
+<div class="kern">
+<b>Kern:</b> <b>Class Loading</b> ist der Weg, auf dem die JVM eine Klasse zur Laufzeit findet, prüft und vorbereitet. Es löst das Problem, dass Klassen erst bei Bedarf und aus verschiedenen Quellen kommen: JDK, Classpath, Plugins. Eine Klasse ist in der JVM eindeutig durch <b>Name plus ClassLoader</b>.
+</div>
+
+<h2>1. Wo sitzen die ClassLoader?</h2>
+<svg viewBox="0 0 720 340" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="a" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker><marker id="g" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#2e7d32"/></marker></defs>
+  <rect x="150" y="14" width="260" height="58" rx="8" fill="#0a66c2" stroke="#0a66c2"/><text x="280" y="38" text-anchor="middle" fill="#fff" font-weight="700">Bootstrap ClassLoader</text><text x="280" y="58" text-anchor="middle" fill="#fff" font-size="12">in der JVM · in Java: null</text>
+  <rect x="150" y="104" width="260" height="58" rx="8" fill="#dbe9fb" stroke="#0a66c2"/><text x="280" y="128" text-anchor="middle" font-weight="700">Platform ClassLoader</text><text x="280" y="148" text-anchor="middle" font-size="12">Name "platform"</text>
+  <rect x="150" y="194" width="260" height="58" rx="8" fill="#dbe9fb" stroke="#0a66c2"/><text x="280" y="218" text-anchor="middle" font-weight="700">App (System) ClassLoader</text><text x="280" y="238" text-anchor="middle" font-size="12">Name "app"</text>
+  <rect x="150" y="276" width="260" height="54" rx="8" fill="#fff" stroke="#555" stroke-dasharray="5 4"/><text x="280" y="298" text-anchor="middle" font-weight="700">Eigene ClassLoader</text><text x="280" y="316" text-anchor="middle" font-size="12">URLClassLoader · Tomcat · Plugins</text>
+  <line x1="190" y1="276" x2="190" y2="254" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <line x1="190" y1="194" x2="190" y2="164" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <line x1="190" y1="104" x2="190" y2="74" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <text x="140" y="180" text-anchor="end" font-size="12">1. Eltern</text><text x="140" y="196" text-anchor="end" font-size="12">fragen</text>
+  <line x1="370" y1="74" x2="370" y2="102" stroke="#2e7d32" stroke-width="2" marker-end="url(#g)"/>
+  <line x1="370" y1="164" x2="370" y2="192" stroke="#2e7d32" stroke-width="2" marker-end="url(#g)"/>
+  <text x="380" y="180" font-size="12" fill="#2e7d32">2. nicht gefunden →</text><text x="380" y="196" font-size="12" fill="#2e7d32">selbst suchen</text>
+  <rect x="490" y="14" width="220" height="58" rx="8" fill="#fff" stroke="#555"/><text x="600" y="38" text-anchor="middle">java.base, java.logging …</text><text x="600" y="58" text-anchor="middle" font-size="12">jrt:/ · CDS-Archiv</text>
+  <rect x="490" y="104" width="220" height="58" rx="8" fill="#fff" stroke="#555"/><text x="600" y="128" text-anchor="middle">java.sql, java.net.http …</text><text x="600" y="148" text-anchor="middle" font-size="12">jrt:/</text>
+  <rect x="490" y="194" width="220" height="58" rx="8" fill="#fff" stroke="#555"/><text x="600" y="218" text-anchor="middle">Classpath + Module Path</text><text x="600" y="238" text-anchor="middle" font-size="12">deine Klassen, JARs</text>
+  <line x1="410" y1="43" x2="488" y2="43" stroke="#999" stroke-width="1.5" marker-end="url(#a)"/>
+  <line x1="410" y1="133" x2="488" y2="133" stroke="#999" stroke-width="1.5" marker-end="url(#a)"/>
+  <line x1="410" y1="223" x2="488" y2="223" stroke="#999" stroke-width="1.5" marker-end="url(#a)"/>
+</svg>
+<ol>
+  <li><b>Bootstrap ClassLoader:</b> ist in die JVM eingebaut und hat keinen Parent. Er lädt die Kernmodule wie <code>java.base</code>. In Java ist er <code>null</code>. Beispiel: <code>String.class.getClassLoader()</code> gibt <code>null</code>.</li>
+  <li><b>Platform ClassLoader:</b> lädt weitere Java-SE- und JDK-Module. Er ersetzt seit Java 9 den alten Extension ClassLoader. Beispiel: <code>java.sql.Connection</code>.</li>
+  <li><b>App ClassLoader</b> (auch <b>System ClassLoader</b>): lädt Klassen vom <b>Classpath</b> und <b>Module Path</b>. Beispiel: deine Klasse <code>Main</code>.</li>
+  <li><b>Eigene ClassLoader:</b> laden Klassen aus anderen Quellen, z. B. pro Webapp in Tomcat. Ihr Standard-Parent ist der App ClassLoader.</li>
+  <li><b>Parent Delegation:</b> Ein Loader fragt zuerst seinen Parent. Nur wenn der nichts findet, sucht er selbst. So kann niemand <code>java.lang.String</code> ersetzen.</li>
+  <li><b>Module seit Java 9:</b> Platform und App Loader kennen die Zuordnung Paket → Modul. Liegt das Paket in einem benannten Modul, geht die Anfrage direkt an dessen Loader (JEP 261).</li>
+</ol>
+
+<h2>2. Die Reise einer Klasse (die Geschichte zum Merken)</h2>
+<svg viewBox="0 0 720 280" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="b" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker><marker id="r" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#c62828"/></marker></defs>
+  <rect x="10" y="40" width="130" height="80" rx="10" fill="#eee" stroke="#777"/><text x="75" y="68" text-anchor="middle" font-weight="700">1. Loading</text><text x="75" y="88" text-anchor="middle" font-size="12">Bytes finden</text><text x="75" y="104" text-anchor="middle" font-size="12">Class-Objekt bauen</text>
+  <line x1="140" y1="80" x2="168" y2="80" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="170" y="10" width="300" height="140" rx="10" fill="#f7f7fa" stroke="#999" stroke-dasharray="5 4"/><text x="320" y="30" text-anchor="middle" font-weight="700">2. Linking</text>
+  <rect x="182" y="42" width="88" height="94" rx="8" fill="#dbe9fb" stroke="#0a66c2"/><text x="226" y="74" text-anchor="middle" font-size="13" font-weight="700">Verify</text><text x="226" y="94" text-anchor="middle" font-size="11">Bytecode</text><text x="226" y="108" text-anchor="middle" font-size="11">sicher?</text>
+  <rect x="276" y="42" width="88" height="94" rx="8" fill="#dbe9fb" stroke="#0a66c2"/><text x="320" y="74" text-anchor="middle" font-size="13" font-weight="700">Prepare</text><text x="320" y="94" text-anchor="middle" font-size="11">static-Felder</text><text x="320" y="108" text-anchor="middle" font-size="11">= 0 / null</text>
+  <rect x="370" y="42" width="88" height="94" rx="8" fill="#dbe9fb" stroke="#0a66c2"/><text x="414" y="74" text-anchor="middle" font-size="13" font-weight="700">Resolve</text><text x="414" y="94" text-anchor="middle" font-size="11">Symbole →</text><text x="414" y="108" text-anchor="middle" font-size="11">Referenzen</text>
+  <line x1="470" y1="80" x2="498" y2="80" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="500" y="40" width="210" height="80" rx="10" fill="#0a66c2" stroke="#0a66c2"/><text x="605" y="68" text-anchor="middle" fill="#fff" font-weight="700">3. Initialization</text><text x="605" y="88" text-anchor="middle" fill="#fff" font-size="12">&lt;clinit&gt;: static-Blöcke</text><text x="605" y="104" text-anchor="middle" fill="#fff" font-size="12">beim ersten aktiven Zugriff</text>
+  <line x1="605" y1="120" x2="605" y2="178" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="500" y="180" width="210" height="56" rx="10" fill="#e8f5e9" stroke="#2e7d32"/><text x="605" y="204" text-anchor="middle" font-weight="700">4. Benutzen</text><text x="605" y="222" text-anchor="middle" font-size="12">new · static-Aufruf</text>
+  <path d="M500,208 C380,208 200,250 75,240" fill="none" stroke="#c62828" stroke-width="2" stroke-dasharray="6 4" marker-end="url(#r)"/>
+  <rect x="10" y="200" width="130" height="56" rx="10" fill="#fff4f2" stroke="#c62828"/><text x="75" y="224" text-anchor="middle" font-weight="700" fill="#c62828">5. Unloading</text><text x="75" y="242" text-anchor="middle" font-size="12" fill="#c62828">nur mit Loader</text>
+  <text x="300" y="268" text-anchor="middle" font-size="12" fill="#c62828">ClassLoader nicht mehr erreichbar → GC entfernt Klassen aus dem Metaspace</text>
+</svg>
+<ol>
+  <li><b>Auslöser:</b> Der Code nutzt <code>Lazy</code> zum ersten Mal. Die JVM fragt den Loader der aufrufenden Klasse: „Lade <code>Lazy</code>.“</li>
+  <li><b>Loading:</b> Der Loader prüft <code>findLoadedClass</code>, also ob er die Klasse schon hat. Dann fragt er seinen Parent. Findet keiner sie, liest er die Bytes selbst und ruft <code>defineClass</code>. Die JVM baut die Metadaten im <b>Metaspace</b> und ein <code>Class</code>-Objekt im Heap.</li>
+  <li><b>Verify:</b> Der <b>Verifier</b> prüft den Bytecode: korrekte Typen, kein Stack-Überlauf, keine falschen Sprünge. Fehler: <code>VerifyError</code>.</li>
+  <li><b>Prepare:</b> Die JVM legt die <code>static</code>-Felder an und setzt sie auf Standardwerte (<code>0</code>, <code>null</code>, <code>false</code>). Es läuft noch kein Java-Code.</li>
+  <li><b>Resolve:</b> Symbolische Referenzen im Constant Pool werden zu echten Referenzen. HotSpot macht das <b>lazy</b>, also erst beim ersten Ausführen der Stelle.</li>
+  <li><b>Initialization:</b> Die JVM führt <code>&lt;clinit&gt;</code> aus: alle <code>static</code>-Zuweisungen und <code>static</code>-Blöcke in Textreihenfolge. Zuerst wird die Oberklasse initialisiert. Das passiert genau einmal, thread-sicher unter einem Lock.</li>
+  <li><b>Benutzen:</b> Ab jetzt sind <code>new</code>, statische Aufrufe und Felder frei. Die Klasse bleibt geladen.</li>
+  <li><b>Unloading:</b> Eine Klasse verschwindet nur, wenn ihr <b>ClassLoader</b> nicht mehr erreichbar ist. Dann räumt der GC alle seine Klassen ab. Klassen der drei eingebauten Loader werden nie entladen.</li>
+</ol>
+<p><b>Auslöser für Initialization</b> (JLS §12.4.1): <code>new</code>, Aufruf einer <code>static</code>-Methode, Zugriff auf ein <code>static</code>-Feld (keine Konstante), <code>Class.forName(name)</code>, Initialisierung einer Unterklasse, die Startklasse mit <code>main</code>.</p>
+
+<h2>3. Beispiel: Loader, Delegation und Initialisierung sehen</h2>
+<pre>public class LoaderDemo {
+  public static class Lazy {
+    public Lazy() {}
+    static final int CONST = 42;          // Compile-Zeit-Konstante
+    static int counter = 7;
+    static { System.out.println("  &gt;&gt; Lazy wird initialisiert"); }
+  }
+
+  public static void main(String[] args) throws Exception {
+    System.out.println("1) Wer laedt welche Klasse?");
+    for (Class&lt;?&gt; c : new Class&lt;?&gt;[]{String.class, java.sql.Connection.class, LoaderDemo.class})
+      System.out.printf("  %-20s -&gt; %s%n", c.getSimpleName(), c.getClassLoader());
+
+    System.out.println("2) Kette der Eltern");
+    for (ClassLoader l = LoaderDemo.class.getClassLoader(); l != null; l = l.getParent())
+      System.out.println("  " + l.getName() + "  (" + l.getClass().getName() + ")");
+    System.out.println("  null = Bootstrap ClassLoader");
+
+    System.out.println("3) Laden ist nicht Initialisieren");
+    System.out.println("  CONST = " + Lazy.CONST);
+    ClassLoader app = LoaderDemo.class.getClassLoader();
+    Class&lt;?&gt; c = Class.forName("LoaderDemo$Lazy", false, app);
+    System.out.println("  geladen: " + c.getName() + ", noch kein static-Block");
+    System.out.println("  counter = " + Lazy.counter);
+
+    System.out.println("4) Gleicher Name, anderer Loader");
+    var url = LoaderDemo.class.getProtectionDomain().getCodeSource().getLocation();
+    try (var isolated = new java.net.URLClassLoader(new java.net.URL[]{url}, null)) {
+      Class&lt;?&gt; other = isolated.loadClass("LoaderDemo$Lazy");
+      System.out.println("  gleicher Name: " + other.getName().equals(Lazy.class.getName()));
+      System.out.println("  gleiche Klasse: " + (other == Lazy.class));
+      try { Object o = other.getDeclaredConstructor().newInstance(); Lazy l = (Lazy) o; }
+      catch (ClassCastException e) { System.out.println("  " + e.getMessage()); }
+    }
+  }
+}</pre>
+<pre>$ java LoaderDemo
+1) Wer laedt welche Klasse?
+  String               -&gt; null
+  Connection           -&gt; jdk.internal.loader.ClassLoaders$PlatformClassLoader@1be6f5c3
+  LoaderDemo           -&gt; jdk.internal.loader.ClassLoaders$AppClassLoader@73d16e93
+2) Kette der Eltern
+  app  (jdk.internal.loader.ClassLoaders$AppClassLoader)
+  platform  (jdk.internal.loader.ClassLoaders$PlatformClassLoader)
+  null = Bootstrap ClassLoader
+3) Laden ist nicht Initialisieren
+  CONST = 42
+  geladen: LoaderDemo$Lazy, noch kein static-Block
+  &gt;&gt; Lazy wird initialisiert
+  counter = 7
+4) Gleicher Name, anderer Loader
+  gleicher Name: true
+  gleiche Klasse: false
+  &gt;&gt; Lazy wird initialisiert
+  class LoaderDemo$Lazy cannot be cast to class LoaderDemo$Lazy (LoaderDemo$Lazy is in unnamed module of loader java.net.URLClassLoader @6d311334; LoaderDemo$Lazy is in unnamed module of loader 'app')</pre>
+<pre>$ java -Xlog:class+load LoaderDemo      (gefiltert, Pfad gekürzt)
+[0.009s][info][class,load] java.lang.Object source: shared objects file
+[0.009s][info][class,load] java.lang.String source: shared objects file
+[0.041s][info][class,load] LoaderDemo source: file:/.../classloading/
+[0.046s][info][class,load] java.sql.Connection source: jrt:/java.sql
+  CONST = 42
+[0.066s][info][class,load] LoaderDemo$Lazy source: file:/.../classloading/
+  geladen: LoaderDemo$Lazy, noch kein static-Block
+[0.078s][info][class,load] LoaderDemo$Lazy source: file:/.../classloading/
+  gleicher Name: true</pre>
+<p class="small">Echte Ausgabe, OpenJDK 17.0.3 (Oracle-HotSpot-Build 17.0.3.1). Das Log ist ein Lauf, gefiltert mit <code>grep</code>: Insgesamt lädt das Programm ca. 700 Klassen, ca. 660 davon aus dem CDS-Archiv („shared objects file“). Java 21 und 25 verhalten sich gleich; nur Hash-Codes und Zeiten ändern sich.</p>
+<ol>
+  <li><code>String</code> hat den Loader <code>null</code>, also <b>Bootstrap</b>. <code>Connection</code> kommt vom <b>Platform</b> Loader, die eigene Klasse vom <b>App</b> Loader.</li>
+  <li>Die Kette lautet <code>app</code> → <code>platform</code> → <code>null</code>. Ein „Extension ClassLoader“ kommt nicht vor.</li>
+  <li><code>Lazy.CONST</code> lädt <code>Lazy</code> gar nicht. <b>javac</b> hat die Konstante 42 direkt in <code>LoaderDemo</code> eingesetzt. Das Log zeigt <code>Lazy</code> erst danach.</li>
+  <li><code>Class.forName(name, false, loader)</code> <b>lädt</b> die Klasse, <b>initialisiert</b> sie aber nicht. Der <code>static</code>-Block läuft erst beim Zugriff auf <code>counter</code>.</li>
+  <li>Die <code>&gt;&gt;</code>-Zeile steht vor <code>counter = 7</code>. Grund: Java wertet <code>Lazy.counter</code> aus, bevor <code>println</code> läuft.</li>
+  <li>Ein <code>URLClassLoader</code> mit Parent <code>null</code> lädt dieselbe Datei noch einmal. Name gleich, Klasse verschieden. Der <code>static</code>-Block läuft ein zweites Mal: Jede Kopie hat eigene statische Felder.</li>
+  <li>Der Cast scheitert mit <code>X cannot be cast to X</code>. Die Meldung nennt die zwei Loader: <code>URLClassLoader</code> und <code>'app'</code>.</li>
+  <li>Die Quelle im Log zeigt den Ort: <b>shared objects file</b> (CDS), <b>jrt:/</b> (Modul im JDK-Image) oder <b>file:/</b> (Classpath). Ein <code>rt.jar</code> gibt es seit Java 9 nicht mehr.</li>
+</ol>
+
+<h2>4. Details, die Interviewer fragen</h2>
+<ol>
+  <li><b><code>loadClass</code>-Algorithmus:</b> (1) <code>findLoadedClass</code>, (2) <code>parent.loadClass</code> oder Bootstrap bei Parent <code>null</code>, (3) <code>findClass</code>. Eigene Loader überschreiben meist nur <code>findClass</code>.</li>
+  <li><b>Defining vs. Initiating Loader:</b> Der <b>Defining Loader</b> ruft <code>defineClass</code> auf und besitzt die Klasse. Ein <b>Initiating Loader</b> hat nur delegiert. <code>getClassLoader()</code> gibt den Defining Loader.</li>
+  <li><b>Identität einer Klasse:</b> Laufzeit-Typ = binärer Name + Defining Loader. Darum gibt es <code>ClassCastException: X cannot be cast to X</code> und <code>LinkageError: loader constraint violation</code>.</li>
+  <li><b><code>Class.forName</code> vs. <code>loadClass</code>:</b> <code>Class.forName(name)</code> nutzt den Loader des Aufrufers und <b>initialisiert</b>. <code>ClassLoader.loadClass(name)</code> lädt nur. <code>Class.forName(name, false, loader)</code> lädt ohne Initialisieren.</li>
+  <li><b>Thread Context ClassLoader (TCCL):</b> ein Loader, der an jedem Thread hängt (<code>Thread.getContextClassLoader()</code>). Er löst das Problem, dass Code im JDK keine App-Klassen sieht. <code>ServiceLoader.load(Class)</code> nutzt ihn, ebenso viele Frameworks.</li>
+  <li><b>ServiceLoader:</b> findet Implementierungen über <code>META-INF/services/</code> oder <code>provides</code> in <code>module-info.java</code>. Beispiel: JDBC-Treiber, SLF4J-Bindings.</li>
+  <li><b>Child-first:</b> Manche Loader suchen zuerst selbst, dann beim Parent. Beispiele: Tomcat-Webapp-Loader (ausser <code>java.*</code>), Flink (<code>classloader.resolve-order: child-first</code>), Spark mit <code>spark.driver.userClassPathFirst</code>. Ziel: eigene Bibliotheksversion statt der des Containers.</li>
+  <li><b>Parallel Capable:</b> Ein Loader, der <code>registerAsParallelCapable()</code> aufruft, sperrt pro Klassenname statt den ganzen Loader. Die eingebauten Loader sind parallel capable. Ohne das drohen Deadlocks bei nicht-hierarchischer Delegation.</li>
+  <li><b>Initialisierungs-Reihenfolge:</b> Oberklasse vor Unterklasse. Innerhalb der Klasse: <code>static</code>-Felder und -Blöcke in Textreihenfolge. Interfaces werden nicht mit initialisiert, ausser sie haben <code>default</code>-Methoden und werden gebraucht.</li>
+  <li><b>Lazy Holder Idiom:</b> Ein Singleton in einer inneren <code>static</code>-Klasse wird erst beim ersten Zugriff gebaut. Die JVM garantiert Thread-Sicherheit über das Init-Lock, ohne <code>synchronized</code>.</li>
+  <li><b>Fehler beim Laden:</b>
+    <ul>
+      <li><code>ClassNotFoundException</code> (checked): Suche per Name schlägt fehl, z. B. <code>Class.forName("x.Y")</code>.</li>
+      <li><code>NoClassDefFoundError</code>: Klasse war beim Kompilieren da, fehlt aber zur Laufzeit. Oder ihre Initialisierung ist schon einmal gescheitert: „Could not initialize class X“.</li>
+      <li><code>ExceptionInInitializerError</code>: Exception im <code>static</code>-Block, beim ersten Versuch.</li>
+      <li><code>UnsupportedClassVersionError</code>: Class-Datei zu neu. Version 61 = Java 17, 65 = Java 21, 69 = Java 25.</li>
+    </ul></li>
+  <li><b>Hidden Classes</b> (Java 15, JEP 371): Klassen ohne findbaren Namen, erzeugt mit <code>Lookup.defineHiddenClass</code>. Lambdas und Frameworks nutzen sie. Sie können einzeln entladen werden.</li>
+  <li><b>AOT Cache</b> (Java 24, JEP 483): speichert Klassen schon <b>geladen und gelinkt</b> aus einem Trainingslauf. Java 25 vereinfacht das mit <code>-XX:AOTCacheOutput</code> (JEP 514). Ergebnis: schnellerer Start.</li>
+</ol>
+
+<h2>5. Vergleich</h2>
+<ul>
+  <li><b>Bootstrap:</b> in der JVM, <code>null</code> in Java, lädt <code>java.base</code> und weitere Kernmodule. Keine Parent.</li>
+  <li><b>Platform:</b> Name <code>"platform"</code>, lädt z. B. <code>java.sql</code>. Parent: Bootstrap. Seit Java 9.</li>
+  <li><b>App/System:</b> Name <code>"app"</code>, lädt Classpath und Module Path. Parent: Platform. Startet meist die Anwendung.</li>
+  <li><b>Extension ClassLoader (bis Java 8):</b> lud <code>jre/lib/ext</code>. Mit Java 9 entfernt, die Rolle übernimmt der Platform Loader.</li>
+  <li><b>Classpath vs. Module Path:</b> Classpath: alles in einem <b>unnamed module</b>, keine Kapselung, Duplikate möglich. Module Path: benannte Module, klare Abhängigkeiten, ein Paket gehört nur zu einem Modul.</li>
+  <li><b>Parent-first vs. Child-first:</b> Parent-first schützt die Kernklassen. Child-first erlaubt eigene Versionen, birgt aber Konflikte mit geteilten Typen.</li>
+  <li><b><code>Class.forName</code> vs. <code>loadClass</code>:</b> initialisiert vs. lädt nur.</li>
+</ul>
+
+<h2>6. In der Produktion</h2>
+<ol>
+  <li><b>JAR Hell:</b> Zwei Versionen derselben Bibliothek im Classpath. Die erste gewinnt, Methoden fehlen: <code>NoSuchMethodError</code>. Lösung: <code>mvn dependency:tree</code>, Versionen fixieren, Duplikate ausschliessen.</li>
+  <li><b><code>NoClassDefFoundError: Could not initialize class X</code>:</b> Der <code>static</code>-Block ist früher gescheitert. Die Ursache steht nur beim ersten Fehler: <code>ExceptionInInitializerError</code>. Lösung: im Log nach dem ersten Fehler suchen.</li>
+  <li><b>Metaspace-Leak nach Redeploy:</b> Ein Thread, ThreadLocal oder JDBC-Treiber hält den alten Webapp-Loader. Seine Klassen bleiben. Lösung: Ressourcen beim Undeploy freigeben, Treiber deregistrieren, Heap Dump prüfen.</li>
+  <li><b><code>X cannot be cast to X</code>:</b> Dieselbe Klasse wurde von zwei Loadern geladen. Häufig bei Plugins, Hot Reload (Spring DevTools) oder Spark/Flink mit Child-first. Lösung: geteilte Typen nur im Parent-Loader halten.</li>
+  <li><b>ServiceLoader findet nichts:</b> Falscher TCCL in einem Thread-Pool oder fehlende <code>META-INF/services</code>-Datei nach Shade/Fat-JAR. Lösung: Service-Dateien beim Shade mergen, TCCL bewusst setzen.</li>
+  <li><b><code>UnsupportedClassVersionError</code>:</b> Mit Java 21 gebaut, auf Java 17 gestartet. Lösung: <code>--release</code> beim Kompilieren setzen oder die Runtime anheben.</li>
+  <li><b>Langsamer Start mit vielen Klassen:</b> Spring-Apps laden oft über 10 000 Klassen. Lösung: AppCDS (<code>-XX:ArchiveClassesAtExit</code>) oder AOT Cache ab Java 24.</li>
+</ol>
+
+<h2>7. Diagnose: Werkzeuge, Flags, Befehle</h2>
+<ul>
+  <li><code>-verbose:class</code> oder <code>-Xlog:class+load</code>: jede geladene Klasse mit Quelle. <code>-Xlog:class+unload</code>: entladene Klassen.</li>
+  <li><code>jcmd &lt;pid&gt; VM.classloaders</code>: Baum der Loader. Echte Ausgabe (JDK 17):
+<pre>+-- &lt;bootstrap&gt;
+      +-- "platform", jdk.internal.loader.ClassLoaders$PlatformClassLoader
+            +-- "app", jdk.internal.loader.ClassLoaders$AppClassLoader</pre></li>
+  <li><code>jcmd &lt;pid&gt; VM.classloader_stats</code>: Klassen und Metaspace pro Loader. Gut für Leaks.</li>
+  <li><code>jcmd &lt;pid&gt; VM.metaspace</code>: Metaspace-Verbrauch im Detail.</li>
+  <li><code>jcmd &lt;pid&gt; GC.class_histogram</code>: Anzahl Objekte pro Klasse.</li>
+  <li><code>java --show-module-resolution</code>: welche Module aufgelöst werden.</li>
+  <li><code>javap -v X.class | grep major</code>: Class-Datei-Version.</li>
+  <li><code>jdeps</code>: Abhängigkeiten und Nutzung interner JDK-APIs.</li>
+  <li>Im Code: <code>X.class.getClassLoader()</code>, <code>getParent()</code>, <code>X.class.getProtectionDomain().getCodeSource()</code> (aus welchem JAR?).</li>
+  <li><b>Heap Dump</b> mit Eclipse MAT: „Path to GC Roots“ vom alten ClassLoader zeigt, wer ihn festhält.</li>
+</ul>
+
+<h2>8. Senior-Punkte</h2>
+<div class="senior">
+<ol>
+  <li><b>Parent Delegation ist ein Sicherheits- und Konsistenz-Mechanismus.</b> Kernklassen gibt es nur einmal. Child-first bricht das bewusst für Isolation.</li>
+  <li><b>Isolation kostet:</b> Jeder eigene Loader lädt Klassen neu, braucht Metaspace und kann lecken. Nur einsetzen, wo Plugins oder Mandanten getrennt sein müssen.</li>
+  <li><b>Geteilte Typen gehören in den Parent.</b> Schnittstellen zwischen Host und Plugin müssen vom gleichen Loader kommen. Sonst gibt es <code>ClassCastException</code>.</li>
+  <li><b>Static-Initialisierung ist riskant:</b> Netzwerk, Dateien oder Konfiguration im <code>static</code>-Block machen die Klasse dauerhaft unbrauchbar, wenn sie einmal scheitert.</li>
+  <li><b>Module Path statt Classpath</b> lohnt sich für Bibliotheken und grosse Systeme: Duplikate und Split Packages fallen beim Start auf, nicht zur Laufzeit.</li>
+  <li><b>Startzeit ist Class-Loading-Zeit.</b> Weniger Abhängigkeiten, AppCDS oder AOT Cache bringen oft mehr als JVM-Flags.</li>
+</ol>
+</div>
+
+<h2>9. Aus dem Projekt</h2>
+<p>„In einem Spark-Job kollidierte unsere Jackson-Version mit der von Spark; wir lösten es mit Shading statt <code>userClassPathFirst</code>, weil Child-first neue Cast-Fehler brachte.“ <span class="small">(Prüfen und durch dein echtes Beispiel ersetzen.)</span></p>
+
+<h2>10. Fallen</h2>
+<div class="trap">
+<ul>
+  <li>„Es gibt Bootstrap, Extension und Application ClassLoader.“ → <b>Veraltet.</b> Seit Java 9 heisst der mittlere <b>Platform ClassLoader</b>. Der Extension-Mechanismus ist entfernt.</li>
+  <li>„Der Bootstrap Loader lädt <code>rt.jar</code>.“ → <b>Veraltet.</b> Seit Java 9 gibt es kein <code>rt.jar</code>. Die Klassen kommen aus Modulen im JDK-Image (<code>jrt:/</code>) oder aus dem CDS-Archiv.</li>
+  <li>„Laden und Initialisieren sind dasselbe.“ → <b>Falsch.</b> <code>loadClass</code> lädt nur. Der <code>static</code>-Block läuft erst beim ersten aktiven Zugriff.</li>
+  <li>„Zugriff auf eine <code>static final</code>-Konstante initialisiert die Klasse.“ → <b>Falsch.</b> Compile-Zeit-Konstanten setzt javac direkt ein. Die Klasse wird nicht einmal geladen.</li>
+  <li>„Gleicher voll qualifizierter Name heisst gleiche Klasse.“ → <b>Falsch.</b> Name plus Defining Loader bestimmt die Klasse.</li>
+  <li>„Klassen werden nie entladen.“ → <b>Falsch.</b> Sie werden entladen, wenn ihr Loader unerreichbar ist. Nur Klassen der eingebauten Loader bleiben immer.</li>
+  <li>„ClassNotFoundException und NoClassDefFoundError sind gleich.“ → <b>Falsch.</b> Die erste ist eine checked Exception bei Suche per Name. Der zweite ist ein Error: Die Klasse war beim Kompilieren da und fehlt jetzt, oder ihre Initialisierung scheiterte.</li>
+  <li>„Klassen liegen in der PermGen.“ → <b>Veraltet.</b> Seit Java 8 im Metaspace.</li>
+</ul>
+</div>
+
+<h2>11. Fragen</h2>
+<details><summary>Was ist ein ClassLoader?</summary><p>Ein Objekt, das die Bytes einer Klasse findet und daraus mit defineClass eine Klasse in der JVM macht. Jede Klasse kennt ihren Loader.</p></details>
+<details><summary>Welche eingebauten ClassLoader gibt es seit Java 9?</summary><p>Bootstrap (in der JVM, null in Java), Platform ("platform") und App/System ("app"). Der Extension Loader existiert nicht mehr.</p></details>
+<details><summary>Was ist Parent Delegation?</summary><p>Ein Loader fragt zuerst seinen Parent und sucht erst selbst, wenn der nichts findet. So kommen Kernklassen immer vom Bootstrap Loader.</p></details>
+<details><summary>Warum gibt es Parent Delegation?</summary><p>Sicherheit und Konsistenz. Niemand kann java.lang.String ersetzen, und jede Kernklasse existiert nur einmal.</p></details>
+<details><summary>Was hat sich mit dem Modulsystem geändert?</summary><p>Platform und App Loader schauen zuerst, zu welchem Modul ein Paket gehört, und delegieren direkt an dessen Loader. rt.jar und der Extension-Mechanismus sind weg.</p></details>
+<details><summary>Welche drei Phasen hat Class Loading?</summary><p>Loading, Linking (Verify, Prepare, Resolve) und Initialization. Danach kann die Klasse benutzt und später entladen werden.</p></details>
+<details><summary>Was passiert in der Prepare-Phase?</summary><p>Static-Felder werden angelegt und auf 0, null oder false gesetzt. Java-Code läuft dabei noch nicht.</p></details>
+<details><summary>Wann wird eine Klasse initialisiert?</summary><p>Beim ersten aktiven Zugriff: new, static-Methode, static-Feld (keine Konstante), Class.forName oder Initialisierung einer Unterklasse.</p></details>
+<details><summary>Was ist der Unterschied zwischen Class.forName und loadClass?</summary><p>Class.forName(name) initialisiert die Klasse. loadClass lädt sie nur. Class.forName(name, false, loader) lädt ohne Initialisieren.</p></details>
+<details><summary>Wann ist eine Klasse in der JVM gleich einer anderen?</summary><p>Wenn Name und Defining Loader gleich sind. Gleicher Name in zwei Loadern ergibt zwei verschiedene Klassen.</p></details>
+<details><summary>Wie bekomme ich ClassCastException: X cannot be cast to X?</summary><p>Wenn dieselbe Klasse von zwei verschiedenen Loadern geladen wurde. Typisch bei Plugins, Hot Reload und Child-first-Loadern.</p></details>
+<details><summary>ClassNotFoundException vs. NoClassDefFoundError?</summary><p>ClassNotFoundException: Suche per Name schlägt fehl, checked. NoClassDefFoundError: Die Klasse war beim Kompilieren da, fehlt aber zur Laufzeit oder ihre Initialisierung scheiterte.</p></details>
+<details><summary>Was bedeutet "Could not initialize class X"?</summary><p>Der static-Block von X ist früher schon gescheitert. Die echte Ursache steht beim ersten Fehler als ExceptionInInitializerError.</p></details>
+<details><summary>Was ist der Thread Context ClassLoader?</summary><p>Ein Loader pro Thread, den Bibliotheken nutzen, um App-Klassen zu finden. ServiceLoader.load und JDBC nutzen ihn.</p></details>
+<details><summary>Wie schreibe ich einen eigenen ClassLoader?</summary><p>Von ClassLoader erben und findClass überschreiben: Bytes lesen, defineClass aufrufen. loadClass nur überschreiben, wenn man Child-first will.</p></details>
+<details><summary>Was ist ein Child-first ClassLoader und wo gibt es ihn?</summary><p>Er sucht zuerst selbst, dann beim Parent. Tomcat-Webapps, Flink und Spark mit userClassPathFirst nutzen das, damit eigene Bibliotheksversionen gewinnen.</p></details>
+<details><summary>Wann wird eine Klasse entladen?</summary><p>Wenn ihr ClassLoader nicht mehr erreichbar ist und der GC läuft. Klassen der eingebauten Loader werden nie entladen.</p></details>
+<details><summary>Wo liegen die Daten einer geladenen Klasse?</summary><p>Metadaten und Bytecode im Metaspace. Das Class-Objekt und die static-Werte im Heap.</p></details>
+<details><summary>Ist die Initialisierung einer Klasse thread-sicher?</summary><p>Ja. Die JVM hält ein Init-Lock, &lt;clinit&gt; läuft genau einmal. Darauf baut das Lazy Holder Idiom für Singletons.</p></details>
+<details><summary>Warum lädt der Zugriff auf eine static final int-Konstante die Klasse nicht?</summary><p>Javac setzt Compile-Zeit-Konstanten direkt in den Aufrufer ein. Darum muss man Aufrufer neu kompilieren, wenn sich die Konstante ändert.</p></details>
+<details><summary>Was ist ein parallel capable ClassLoader?</summary><p>Er sperrt pro Klassenname statt den ganzen Loader. Das erlaubt paralleles Laden und vermeidet Deadlocks.</p></details>
+<details><summary>Was sind Hidden Classes?</summary><p>Klassen ohne findbaren Namen seit Java 15, erzeugt mit Lookup.defineHiddenClass. Lambdas und Frameworks nutzen sie, sie können einzeln entladen werden.</p></details>
+<details><summary>Was sind CDS und der AOT Cache?</summary><p>CDS speichert geparste Klassen in einem Archiv für schnelleren Start. Der AOT Cache (Java 24+) speichert sie zusätzlich geladen und gelinkt.</p></details>
+<details><summary>Wie sehe ich, welche Klasse woher geladen wird?</summary><p>Mit -verbose:class oder -Xlog:class+load. Die Quelle zeigt shared objects file, jrt:/ oder den JAR-Pfad.</p></details>
+<details><summary>Szenario: Nach jedem Redeploy wächst der Metaspace, bis OutOfMemoryError: Metaspace kommt. Was tun Sie?</summary><p>Ein ClassLoader-Leak. Mit jcmd VM.classloader_stats viele alte Loader finden, im Heap Dump den Pfad zu den GC Roots prüfen. Typische Halter sind Threads, ThreadLocals und registrierte JDBC-Treiber.</p></details>
+<details><summary>Szenario: In Produktion kommt NoSuchMethodError, lokal läuft alles. Woran denken Sie?</summary><p>An zwei Versionen derselben Bibliothek im Classpath. Mit -verbose:class oder getCodeSource das geladene JAR finden, mit dependency:tree den Konflikt lösen.</p></details>
+<details><summary>Szenario: Ein Plugin-System wirft "Plugin cannot be cast to Plugin". Was ist falsch?</summary><p>Das Interface wurde vom Plugin-Loader selbst geladen, nicht vom Parent. Das Interface gehört nur in den Host-Loader, das Plugin-JAR darf es nicht enthalten oder muss parent-first laden.</p></details>
+
+</body>
+</html>

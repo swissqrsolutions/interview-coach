@@ -1,0 +1,267 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Threads</title>
+<style>
+  body { font: 17px/1.55 -apple-system, system-ui, sans-serif; max-width: 760px; margin: 0 auto; padding: 16px; color: #1d1d1f; }
+  h1 { font-size: 28px; margin: 8px 0 4px; }
+  h2 { font-size: 21px; margin: 32px 0 8px; padding-top: 12px; border-top: 2px solid #e5e5ea; }
+  .kern { background: #eef6ff; border-left: 4px solid #0a66c2; padding: 10px 14px; border-radius: 6px; }
+  .senior { background: #f0faf0; border-left: 4px solid #2e7d32; padding: 10px 14px; border-radius: 6px; }
+  .trap { background: #fff4f2; border-left: 4px solid #c62828; padding: 10px 14px; border-radius: 6px; }
+  code { background: #f2f2f7; padding: 1px 5px; border-radius: 4px; font-size: 15px; }
+  pre { background: #1e1e1e; color: #e6e6e6; padding: 12px; border-radius: 8px; overflow-x: auto; font-size: 13.5px; line-height: 1.45; }
+  svg { width: 100%; height: auto; display: block; margin: 10px 0; }
+  ol li, ul li { margin: 4px 0; }
+  details { border: 1px solid #e5e5ea; border-radius: 8px; padding: 8px 12px; margin: 6px 0; }
+  summary { font-weight: 600; cursor: pointer; }
+  details p { margin: 6px 0 2px; }
+  .small { color: #6e6e73; font-size: 14px; }
+</style>
+</head>
+<body>
+
+<h1>Threads</h1>
+<p class="small">Java · Tier 1 · Quellen: Java SE 21 und 25 API-Doku (<code>java.lang.Thread</code>, <code>Thread.State</code>, <code>Thread.Builder</code>, <code>ExecutorService</code>), JLS Java SE 21 Kapitel 17, JEP 444 (Virtual Threads), JEP 491 (Java 24), JDK-8289610 (<code>Thread.stop</code>, Java 20)</p>
+
+<div class="kern">
+<b>Kern:</b> Ein <b>Thread</b> ist ein eigener Ausführungsstrang mit eigenem <b>Stack</b> in einem JVM-Prozess. Er löst das Problem, mehrere Aufgaben gleichzeitig oder parallel zu erledigen. Alle Threads teilen sich den <b>Heap</b>, darum brauchen geteilte Daten Synchronisation.
+</div>
+
+<h2>1. Wo sitzt ein Thread?</h2>
+<svg viewBox="0 0 720 320" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="a" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="10" y="8" width="700" height="190" rx="12" fill="#f7f7fa" stroke="#999" stroke-dasharray="5 4"/><text x="360" y="28" text-anchor="middle" font-weight="700">JVM-Prozess</text>
+  <rect x="30" y="40" width="660" height="44" rx="8" fill="#eee" stroke="#777"/><text x="360" y="60" text-anchor="middle" font-weight="700">Heap (geteilt)</text><text x="360" y="76" text-anchor="middle" font-size="12">Objekte · static-Felder</text>
+  <rect x="30" y="104" width="200" height="74" rx="8" fill="#0a66c2"/><text x="130" y="126" text-anchor="middle" fill="#fff" font-weight="700">Platform Thread "main"</text><text x="130" y="146" text-anchor="middle" fill="#fff" font-size="12">eigener Stack · PC</text><text x="130" y="164" text-anchor="middle" fill="#fff" font-size="12">Name · Priorität · Daemon</text>
+  <rect x="260" y="104" width="200" height="74" rx="8" fill="#0a66c2"/><text x="360" y="126" text-anchor="middle" fill="#fff" font-weight="700">Platform Thread "worker"</text><text x="360" y="146" text-anchor="middle" fill="#fff" font-size="12">eigener Stack · PC</text><text x="360" y="164" text-anchor="middle" fill="#fff" font-size="12">Interrupt-Flag</text>
+  <rect x="490" y="104" width="200" height="74" rx="8" fill="#e8f5e9" stroke="#2e7d32"/><text x="590" y="126" text-anchor="middle" font-weight="700">Virtual Threads</text><text x="590" y="146" text-anchor="middle" font-size="12">Stack im Heap</text><text x="590" y="164" text-anchor="middle" font-size="12">laufen auf Carrier Threads</text>
+  <line x1="130" y1="178" x2="130" y2="226" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <line x1="360" y1="178" x2="360" y2="226" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <line x1="590" y1="178" x2="420" y2="226" stroke="#2e7d32" stroke-width="2" stroke-dasharray="6 4" marker-end="url(#a)"/>
+  <rect x="30" y="228" width="460" height="40" rx="8" fill="#fff" stroke="#555"/><text x="260" y="253" text-anchor="middle">OS-Threads (1:1) und OS-Scheduler</text>
+  <line x1="260" y1="268" x2="260" y2="282" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="30" y="284" width="460" height="32" rx="8" fill="#fff" stroke="#555"/><text x="260" y="305" text-anchor="middle">CPU-Kerne</text>
+</svg>
+<ol>
+  <li><b>JVM-Prozess:</b> Er enthält alle Threads der Anwendung. Beispiel: <code>main</code>, GC-Threads, JIT-Compiler-Threads.</li>
+  <li><b>Heap:</b> Alle Threads teilen ihn. Ein Objekt, das zwei Threads sehen, braucht Synchronisation.</li>
+  <li><b>Platform Thread:</b> Ein <b>Platform Thread</b> ist eine dünne Hülle um einen <b>OS-Thread</b> (1:1). Er hat einen eigenen Stack (Grösse über <code>-Xss</code>), einen Namen, eine Priorität und ein Interrupt-Flag.</li>
+  <li><b>Virtual Thread (Java 21, JEP 444):</b> Ein <b>Virtual Thread</b> ist ein leichter Thread der JVM. Er läuft abwechselnd auf wenigen <b>Carrier Threads</b>. Details auf der eigenen Seite.</li>
+  <li><b>OS-Scheduler:</b> Er entscheidet, welcher OS-Thread wann auf welchem <b>CPU-Kern</b> läuft. Java hat darauf kaum Einfluss.</li>
+</ol>
+
+<h2>2. Die Reise eines Threads durch seine Zustände (die Geschichte zum Merken)</h2>
+<svg viewBox="0 0 720 330" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="b" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="10" y="40" width="120" height="50" rx="10" fill="#eee" stroke="#777"/><text x="70" y="70" text-anchor="middle" font-weight="700">NEW</text>
+  <line x1="130" y1="65" x2="268" y2="65" stroke="#555" stroke-width="2" marker-end="url(#b)"/><text x="199" y="56" text-anchor="middle" font-size="12">start()</text>
+  <rect x="270" y="30" width="180" height="70" rx="10" fill="#0a66c2"/><text x="360" y="60" text-anchor="middle" fill="#fff" font-weight="700">RUNNABLE</text><text x="360" y="80" text-anchor="middle" fill="#fff" font-size="12">läuft oder wartet auf CPU/OS</text>
+  <line x1="450" y1="65" x2="578" y2="65" stroke="#555" stroke-width="2" marker-end="url(#b)"/><text x="514" y="56" text-anchor="middle" font-size="12">run() endet</text>
+  <rect x="580" y="40" width="130" height="50" rx="10" fill="#eee" stroke="#777"/><text x="645" y="70" text-anchor="middle" font-weight="700">TERMINATED</text>
+  <rect x="10" y="200" width="200" height="80" rx="10" fill="#fff4f2" stroke="#c62828"/><text x="110" y="226" text-anchor="middle" font-weight="700">BLOCKED</text><text x="110" y="246" text-anchor="middle" font-size="12">wartet auf Monitor</text><text x="110" y="264" text-anchor="middle" font-size="12">(synchronized)</text>
+  <rect x="260" y="200" width="200" height="80" rx="10" fill="#fff" stroke="#555"/><text x="360" y="226" text-anchor="middle" font-weight="700">WAITING</text><text x="360" y="246" text-anchor="middle" font-size="12">wait() · join() · park()</text><text x="360" y="264" text-anchor="middle" font-size="12">ohne Timeout</text>
+  <rect x="510" y="200" width="200" height="80" rx="10" fill="#fff" stroke="#555"/><text x="610" y="226" text-anchor="middle" font-weight="700">TIMED_WAITING</text><text x="610" y="246" text-anchor="middle" font-size="12">sleep(ms) · wait(ms)</text><text x="610" y="264" text-anchor="middle" font-size="12">join(ms) · parkNanos()</text>
+  <line x1="300" y1="100" x2="130" y2="198" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <line x1="150" y1="200" x2="318" y2="102" stroke="#555" stroke-width="2" stroke-dasharray="5 4" marker-end="url(#b)"/>
+  <line x1="350" y1="100" x2="350" y2="198" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <line x1="372" y1="200" x2="372" y2="102" stroke="#555" stroke-width="2" stroke-dasharray="5 4" marker-end="url(#b)"/>
+  <line x1="420" y1="100" x2="590" y2="198" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <line x1="570" y1="200" x2="400" y2="102" stroke="#555" stroke-width="2" stroke-dasharray="5 4" marker-end="url(#b)"/>
+  <text x="360" y="310" text-anchor="middle" font-size="12">durchgezogen: hinein · gestrichelt: zurück (Lock frei, notify, Timeout, Interrupt)</text>
+</svg>
+<ol>
+  <li><b>NEW:</b> <code>new Thread(task)</code> erzeugt nur ein Java-Objekt. Es gibt noch keinen OS-Thread.</li>
+  <li><b>RUNNABLE:</b> <code>start()</code> erzeugt den OS-Thread und ruft <code>run()</code> darin auf. RUNNABLE heisst: läuft oder könnte laufen. Auch ein Thread, der im OS auf Netzwerk-I/O wartet, steht oft auf RUNNABLE.</li>
+  <li><b>BLOCKED:</b> Der Thread will in einen <code>synchronized</code>-Block. Ein anderer Thread hält den <b>Monitor</b>, also den Lock des Objekts. Der Thread wartet, bis der Lock frei ist.</li>
+  <li><b>WAITING:</b> Der Thread wartet ohne Zeitlimit auf einen anderen Thread. Auslöser: <code>Object.wait()</code>, <code>join()</code>, <code>LockSupport.park()</code>. Auch Warten auf einen <code>ReentrantLock</code> ist WAITING, nicht BLOCKED.</li>
+  <li><b>TIMED_WAITING:</b> Wie WAITING, aber mit Zeitlimit. Auslöser: <code>Thread.sleep(ms)</code>, <code>wait(ms)</code>, <code>join(ms)</code>, <code>parkNanos</code>.</li>
+  <li><b>Zurück zu RUNNABLE:</b> Der Lock wird frei, ein <code>notify</code> kommt, das Zeitlimit endet oder ein <b>Interrupt</b> weckt den Thread.</li>
+  <li><b>TERMINATED:</b> <code>run()</code> ist fertig, normal oder mit einer Exception. Ein zweites <code>start()</code> wirft <code>IllegalThreadStateException</code>.</li>
+</ol>
+
+<h2>3. Beispiel: Zustände, Interrupt, Callable, Daemon</h2>
+<pre>static final Object lock = new Object();
+
+Thread t = new Thread(() -&gt; {
+  try { Thread.sleep(300); } catch (InterruptedException e) { }
+  synchronized (lock) { }                              // main hält den Lock
+  synchronized (lock) { try { lock.wait(); } catch (InterruptedException e) { } }
+}, "worker");
+print(t.getState()); t.start(); print(t.getState());
+Thread.sleep(100);              print(t.getState());   // in sleep
+synchronized (lock) { Thread.sleep(500); print(t.getState()); }
+Thread.sleep(100);              print(t.getState());   // in wait()
+synchronized (lock) { lock.notify(); }
+t.join();                       print(t.getState());
+
+// 2) Interrupt: sleeper schläft 10 s, main ruft nach 100 ms sleeper.interrupt()
+catch (InterruptedException e) {
+  print(Thread.currentThread().isInterrupted());       // Flag gelöscht
+  Thread.currentThread().interrupt();                  // Flag wiederherstellen
+}
+// 3) Callable
+Future&lt;Integer&gt; f = pool.submit(() -&gt; 6 * 7);
+Future&lt;Integer&gt; bad = pool.submit(() -&gt; { throw new IllegalStateException("boom"); });
+// 4) Daemon
+Thread d = new Thread(endlosSchleife, "heartbeat"); d.setDaemon(true); d.start();</pre>
+<pre>$ java ThreadDemo
+1) after new:      NEW
+   after start:    RUNNABLE
+   in sleep:       TIMED_WAITING
+   lock held by main: BLOCKED
+   in wait():      WAITING
+   after join:     TERMINATED
+2) caught InterruptedException, flag now = false
+   flag restored = true
+3) Callable result = 42
+   ExecutionException cause = java.lang.IllegalStateException: boom
+4) daemon=true, main daemon=false
+   main ends, JVM exits although heartbeat runs forever</pre>
+<p>Thread Dump eines zweiten Programms: <code>owner</code> hält einen Lock und schläft, <code>waiter</code> will denselben Lock.</p>
+<pre>$ jcmd 15588 Thread.print
+"owner" #23 prio=5 os_prio=0 cpu=0.00ms elapsed=0.26s tid=0x0000019008584c80 nid=0x3f8c waiting on condition  [...]
+   java.lang.Thread.State: TIMED_WAITING (sleeping)
+	at java.lang.Thread.sleep(java.base@17.0.3.1/Native Method)
+	at DumpDemo.sleep(DumpDemo.java:18)
+	at DumpDemo.lambda$main$0(DumpDemo.java:6)
+	- locked &lt;0x000000071a503308&gt; (a java.lang.Object)
+	...
+"waiter" #24 prio=5 os_prio=0 cpu=0.00ms elapsed=0.05s tid=0x0000019008589160 nid=0x37d0 waiting for monitor entry  [...]
+   java.lang.Thread.State: BLOCKED (on object monitor)
+	at DumpDemo.lambda$main$1(DumpDemo.java:9)
+	- waiting to lock &lt;0x000000071a503308&gt; (a java.lang.Object)
+	...</pre>
+<p class="small">Echte Ausgabe, OpenJDK 17.0.3 (HotSpot, Windows). Der Demo-Code ist gekürzt (<code>print</code> steht für <code>System.out.println</code>). Im Dump sind Stack-Adressen und die Lambda-/<code>Thread.run</code>-Zeilen gekürzt. Java 21 und 25 zeigen dieselben Zustände; die Zustände sind API-Vertrag. Ab Java 19 ist <code>ExecutorService</code> zusätzlich <code>AutoCloseable</code>.</p>
+<ol>
+  <li><code>start()</code> wechselt sofort von <b>NEW</b> zu <b>RUNNABLE</b>. <code>sleep</code> ergibt <b>TIMED_WAITING</b>.</li>
+  <li>Hält <code>main</code> den Lock, steht der Worker auf <b>BLOCKED</b>. In <code>lock.wait()</code> steht er auf <b>WAITING</b>. <code>wait()</code> gibt den Lock dabei frei.</li>
+  <li>Nach <code>join()</code> ist er <b>TERMINATED</b>. <code>join</code> wartet, bis <code>run()</code> fertig ist.</li>
+  <li>Der Interrupt weckt <code>sleep</code> mit <code>InterruptedException</code>. Das Flag ist danach <b>gelöscht</b> (<code>false</code>). Darum setzt der Handler es neu.</li>
+  <li>Ein <b>Callable</b> liefert 42 über das <b>Future</b>. Seine Exception kommt erst bei <code>get()</code>, verpackt in <code>ExecutionException</code>.</li>
+  <li>Der <b>Daemon</b>-Thread hält die JVM nicht am Leben. <code>main</code> endet, die JVM beendet sich.</li>
+  <li>Im Dump zeigt <code>- locked &lt;0x…3308&gt;</code> den Besitzer, <code>waiting to lock &lt;0x…3308&gt;</code> den Wartenden. Gleiche Adresse heisst gleicher Lock.</li>
+</ol>
+
+<h2>4. Details, die Interviewer fragen</h2>
+<ol>
+  <li><b>Thread erzeugen:</b> Drei Wege.
+    <ul>
+      <li><b>Runnable übergeben:</b> <code>new Thread(runnable, "name").start()</code>. Bevorzugt: Aufgabe und Thread sind getrennt.</li>
+      <li><b>Thread erweitern:</b> <code>run()</code> überschreiben. Selten sinnvoll, die Klasse ist dann an Thread gebunden.</li>
+      <li><b>Thread.Builder (Java 21):</b> <code>Thread.ofPlatform().name("worker-", 0).start(r)</code> oder <code>Thread.ofVirtual().start(r)</code>.</li>
+    </ul></li>
+  <li><b>start() vs run():</b> <code>start()</code> erzeugt einen neuen Thread. <code>run()</code> direkt aufgerufen läuft im aktuellen Thread, ganz normal wie eine Methode.</li>
+  <li><b>Runnable vs Callable:</b> <b>Runnable</b> hat <code>void run()</code> ohne Rückgabe und ohne checked Exception. <b>Callable&lt;V&gt;</b> hat <code>V call() throws Exception</code>. Callable läuft über einen <code>ExecutorService</code> und liefert ein <b>Future</b>.</li>
+  <li><b>Interrupt:</b> Ein <b>Interrupt</b> ist eine höfliche Bitte zum Aufhören. <code>t.interrupt()</code> setzt ein Flag. Blockierende Methoden wie <code>sleep</code>, <code>wait</code>, <code>join</code> werfen dann <code>InterruptedException</code> und löschen das Flag.</li>
+  <li><b>isInterrupted() vs interrupted():</b> <code>t.isInterrupted()</code> liest das Flag. Das statische <code>Thread.interrupted()</code> liest und <b>löscht</b> es.</li>
+  <li><b>InterruptedException richtig behandeln:</b> Weiterwerfen oder <code>Thread.currentThread().interrupt()</code> aufrufen. Nie leer fangen, sonst geht das Stopp-Signal verloren.</li>
+  <li><b>Nicht unterbrechbar:</b> Warten auf <code>synchronized</code> (BLOCKED) und klassische Socket-I/O von Platform Threads reagieren nicht auf Interrupt. <code>InterruptibleChannel</code> wird bei Interrupt geschlossen (<code>ClosedByInterruptException</code>).</li>
+  <li><b>Daemon:</b> Ein <b>Daemon-Thread</b> ist ein Hintergrund-Thread. Die JVM beendet sich, wenn nur noch Daemon-Threads laufen. Deren <code>finally</code>-Blöcke laufen dann nicht. <code>setDaemon</code> geht nur vor <code>start()</code>, sonst <code>IllegalThreadStateException</code>. Ein neuer Thread erbt den Status seines Erzeugers.</li>
+  <li><b>join:</b> <code>t.join()</code> wartet, bis <code>t</code> endet. Es gibt eine <b>happens-before</b>-Garantie: Alle Writes von <code>t</code> sind danach sichtbar.</li>
+  <li><b>sleep vs wait:</b> <code>sleep</code> behält alle Locks. <code>wait</code> braucht den Monitor, gibt ihn frei und holt ihn nach dem Aufwachen zurück. <code>wait</code> gehört in eine <code>while</code>-Schleife, wegen <b>Spurious Wakeups</b> (Aufwachen ohne <code>notify</code>).</li>
+  <li><b>Uncaught Exceptions:</b> Eine Exception in <code>run()</code> beendet nur diesen Thread. Der <code>UncaughtExceptionHandler</code> druckt sie standardmässig auf <code>System.err</code>. Bei <code>submit</code> landet sie im Future und erscheint nirgends, bis jemand <code>get()</code> ruft.</li>
+  <li><b>Priorität:</b> <code>setPriority</code> (1–10) ist nur ein Hinweis an das OS. Bei Virtual Threads wird sie ignoriert (immer <code>NORM_PRIORITY</code>).</li>
+  <li><b>Thread-ID:</b> <code>threadId()</code> seit Java 19. <code>getId()</code> ist seit Java 19 deprecated.</li>
+  <li><b>Thread.stop:</b> Seit Java 1.2 deprecated, seit Java 20 wirft es immer <code>UnsupportedOperationException</code>. Es ist zum Entfernen markiert. <code>suspend</code>/<code>resume</code> gibt es in Java 25 nicht mehr.</li>
+  <li><b>Platform vs Virtual (kurz):</b> Ein Platform Thread kostet einen OS-Thread mit ca. 1 MB reserviertem Stack. Ein Virtual Thread kostet wenige KB im Heap. Virtual Threads sind immer Daemon und lohnen sich für viele blockierende I/O-Aufgaben, nicht für CPU-Arbeit.</li>
+</ol>
+
+<h2>5. Vergleich</h2>
+<ul>
+  <li><b>Thread:</b> ein einzelner Ausführungsstrang. Direkt nutzen nur für einfache, lang laufende Hintergrund-Aufgaben.</li>
+  <li><b>Runnable:</b> eine Aufgabe ohne Ergebnis. Läuft in einem Thread oder Executor.</li>
+  <li><b>Callable:</b> eine Aufgabe mit Ergebnis und checked Exception. Läuft im Executor, Ergebnis über <code>Future</code>.</li>
+  <li><b>ExecutorService:</b> ein Thread-Pool. Er verwaltet Threads, Warteschlange und Shutdown. Standard für Anwendungen.</li>
+  <li><b>CompletableFuture:</b> verkettet asynchrone Schritte ohne blockierendes <code>get()</code>.</li>
+  <li><b>Platform Thread:</b> 1:1 auf einen OS-Thread. Gut für CPU-Arbeit. Teuer in grosser Zahl.</li>
+  <li><b>Virtual Thread (Java 21):</b> von der JVM geplant, billig. Gut für viele gleichzeitige I/O-Requests. Nie poolen.</li>
+</ul>
+
+<h2>6. In der Produktion</h2>
+<ol>
+  <li><b>Zu viele Threads:</b> Ein neuer Platform Thread pro Request endet in <code>OutOfMemoryError: unable to create native thread</code>. Lösung: begrenzter Thread-Pool oder Virtual Threads für I/O.</li>
+  <li><b>Shutdown hängt:</b> Ein Task fängt <code>InterruptedException</code> und macht weiter. <code>shutdownNow()</code> wirkt dann nicht. Lösung: Interrupt-Flag wiederherstellen und die Schleife beenden.</li>
+  <li><b>JVM beendet sich nicht:</b> Ein vergessener Nicht-Daemon-Thread läuft noch, z. B. ein eigener Pool ohne <code>shutdown()</code>. Lösung: Pools sauber schliessen oder Daemon-Threads über eine <code>ThreadFactory</code>.</li>
+  <li><b>Fehler verschwinden:</b> Eine Exception in einem mit <code>submit</code> gestarteten Task erscheint nirgends. Lösung: <code>Future.get()</code> prüfen, oder Fehler im Task selbst loggen.</li>
+  <li><b>Deadlock:</b> Zwei Threads halten je einen Lock und warten auf den anderen. Beide stehen für immer auf BLOCKED. Lösung: Locks immer in derselben Reihenfolge nehmen, oder <code>tryLock</code> mit Timeout.</li>
+  <li><b>ThreadLocal-Leak im Pool:</b> Pool-Threads leben lange. Ein nicht gelöschter <code>ThreadLocal</code> hält Daten oder gibt sie an den nächsten Request weiter. Lösung: <code>remove()</code> im <code>finally</code>.</li>
+  <li><b>Namenlose Threads:</b> Im Dump steht nur <code>Thread-17</code>. Lösung: sprechende Namen über <code>ThreadFactory</code> oder <code>Thread.Builder</code>.</li>
+</ol>
+
+<h2>7. Diagnose: Werkzeuge und Befehle</h2>
+<ul>
+  <li><code>jcmd &lt;pid&gt; Thread.print</code> oder <code>jstack &lt;pid&gt;</code>: Thread Dump mit Zuständen und Locks. <code>jstack</code> meldet Deadlocks am Ende als <code>Found one Java-level deadlock</code>.</li>
+  <li><code>jcmd &lt;pid&gt; Thread.dump_to_file -format=json datei.json</code> (Java 21): Dump inklusive Virtual Threads.</li>
+  <li><code>kill -3 &lt;pid&gt;</code> (Linux): Thread Dump auf stdout der JVM.</li>
+  <li><b>Mehrere Dumps</b> im Abstand von 5–10 Sekunden: Ein Thread, der immer an derselben Stelle steht, hängt dort.</li>
+  <li><b>JFR</b> (Java Flight Recorder): Events <code>jdk.ThreadStart</code>, <code>jdk.JavaMonitorEnter</code> (Lock-Wartezeit), <code>jdk.ThreadPark</code>, <code>jdk.VirtualThreadPinned</code>.</li>
+  <li><b>ThreadMXBean</b>: <code>getThreadCount()</code>, <code>findDeadlockedThreads()</code>. Auch sichtbar in JConsole und VisualVM.</li>
+  <li><code>top -H -p &lt;pid&gt;</code> (Linux): CPU pro OS-Thread. Die <code>nid</code> im Dump ist dieselbe ID in Hex.</li>
+  <li><code>-Xss</code>: Stack-Grösse pro Platform Thread. <code>StackOverflowError</code> heisst meist Rekursion, nicht zu kleiner Stack.</li>
+</ul>
+
+<h2>8. Senior-Punkte</h2>
+<div class="senior">
+<ol>
+  <li><b>Kein <code>new Thread()</code> in Anwendungs-Code.</b> Executor oder Framework nutzen. Sie geben Grenzen, Namen, Fehlerbehandlung und Shutdown.</li>
+  <li><b>Interrupt ist ein Vertrag.</b> Jeder lang laufende Task muss ihn prüfen und respektieren. Sonst funktioniert kein sauberer Shutdown und kein Timeout.</li>
+  <li><b>Pool-Grösse ist eine Entscheidung:</b> CPU-Arbeit → etwa Anzahl Kerne. Blockierende I/O → mehr Threads oder Virtual Threads. Immer eine begrenzte Queue.</li>
+  <li><b>Virtual Threads ersetzen Pools für I/O,</b> nicht für CPU-Arbeit. Begrenzung erfolgt dann über eine <code>Semaphore</code>, nicht über die Pool-Grösse. Seit Java 24 (JEP 491) pinnt <code>synchronized</code> den Carrier nicht mehr.</li>
+  <li><b>Geteilter Zustand ist das eigentliche Problem.</b> Weniger teilen, unveränderliche Daten, Übergabe über Queues.</li>
+  <li><b>Thread Dumps lesen können</b> ist eine Kernfähigkeit. Die meisten Hänger und Deadlocks findet man dort in Minuten.</li>
+</ol>
+</div>
+
+<h2>9. Aus dem Projekt</h2>
+<p>„Ein Hintergrund-Job lief in einem benannten Executor und prüfte das Interrupt-Flag, damit das Deployment ohne Hänger herunterfährt.“ <span class="small">(Prüfen und durch dein echtes Beispiel ersetzen.)</span></p>
+
+<h2>10. Fallen</h2>
+<div class="trap">
+<ul>
+  <li>„<code>run()</code> startet einen Thread.“ → <b>Falsch.</b> Nur <code>start()</code> startet einen neuen Thread. <code>run()</code> läuft im aktuellen Thread.</li>
+  <li>„<code>interrupt()</code> stoppt einen Thread.“ → <b>Falsch.</b> Es setzt nur ein Flag. Der Thread muss selbst reagieren.</li>
+  <li>„Mit <code>Thread.stop()</code> beendet man einen Thread hart.“ → <b>Falsch.</b> Seit Java 20 wirft es immer <code>UnsupportedOperationException</code>. Richtig: Interrupt oder ein volatile Flag.</li>
+  <li>„<code>sleep</code> gibt den Lock frei.“ → <b>Falsch.</b> Nur <code>wait</code> gibt den Monitor frei.</li>
+  <li>„Ein Thread im Socket-Read ist BLOCKED.“ → <b>Falsch.</b> Er ist meist RUNNABLE. BLOCKED heisst nur: wartet auf einen <code>synchronized</code>-Monitor.</li>
+  <li>„Ein Thread kann zweimal gestartet werden.“ → <b>Falsch.</b> Das zweite <code>start()</code> wirft <code>IllegalThreadStateException</code>.</li>
+  <li>„Daemon-Threads räumen beim Ende auf.“ → <b>Falsch.</b> Die JVM bricht sie ab. <code>finally</code>-Blöcke laufen nicht.</li>
+  <li>„Eine höhere Priorität garantiert mehr CPU.“ → <b>Falsch.</b> Sie ist nur ein Hinweis an das OS.</li>
+</ul>
+</div>
+
+<h2>11. Fragen</h2>
+<details><summary>Was ist ein Thread?</summary><p>Ein eigener Ausführungsstrang mit eigenem Stack und Programmzähler. Alle Threads eines Prozesses teilen den Heap.</p></details>
+<details><summary>Welche Zustände hat ein Java-Thread?</summary><p>NEW, RUNNABLE, BLOCKED, WAITING, TIMED_WAITING, TERMINATED. Das ist das Enum Thread.State.</p></details>
+<details><summary>Was ist der Unterschied zwischen BLOCKED und WAITING?</summary><p>BLOCKED wartet auf einen synchronized-Monitor. WAITING wartet ohne Zeitlimit auf eine Aktion eines anderen Threads, z. B. notify, join-Ende oder unpark.</p></details>
+<details><summary>Welchen Zustand hat ein Thread, der auf einen ReentrantLock wartet?</summary><p>WAITING oder TIMED_WAITING. ReentrantLock nutzt LockSupport.park, nicht den Monitor.</p></details>
+<details><summary>Welchen Zustand hat ein Thread in einem blockierenden Socket-Read?</summary><p>Meist RUNNABLE. Die JVM sieht, dass er in nativem Code läuft. Das Warten passiert im Betriebssystem.</p></details>
+<details><summary>Was ist der Unterschied zwischen start() und run()?</summary><p>start() erzeugt einen neuen Thread, der run() aufruft. run() direkt aufgerufen läuft im aktuellen Thread.</p></details>
+<details><summary>Was passiert bei einem zweiten start()?</summary><p>IllegalThreadStateException. Ein Thread-Objekt lässt sich nur einmal starten.</p></details>
+<details><summary>Runnable oder Callable?</summary><p>Runnable hat keine Rückgabe und keine checked Exception. Callable gibt einen Wert zurück und darf Exception werfen. Callable läuft über einen ExecutorService mit Future.</p></details>
+<details><summary>Wie kommt eine Exception aus einem Callable zum Aufrufer?</summary><p>Sie liegt im Future. Future.get() wirft sie als ExecutionException mit der Original-Exception als cause.</p></details>
+<details><summary>Thread erweitern oder Runnable implementieren?</summary><p>Runnable. Aufgabe und Ausführung sind getrennt, die Klasse kann erben, und die Aufgabe läuft auch in einem Executor.</p></details>
+<details><summary>Wie funktioniert interrupt()?</summary><p>Es setzt das Interrupt-Flag. Blockierende Methoden wie sleep, wait und join werfen dann InterruptedException und löschen das Flag. Sonst muss der Thread das Flag selbst prüfen.</p></details>
+<details><summary>Was ist der Unterschied zwischen isInterrupted() und Thread.interrupted()?</summary><p>isInterrupted() liest das Flag eines Threads. Das statische Thread.interrupted() liest das Flag des aktuellen Threads und löscht es.</p></details>
+<details><summary>Wie behandelt man InterruptedException richtig?</summary><p>Weiterwerfen, oder Thread.currentThread().interrupt() aufrufen und die Arbeit beenden. Nie leer fangen.</p></details>
+<details><summary>Wie stoppt man einen Thread sauber?</summary><p>Mit interrupt() oder einem volatile Flag. Der Thread prüft es und beendet run() selbst. Bei Executors: shutdown(), dann shutdownNow() und awaitTermination().</p></details>
+<details><summary>Warum gibt es Thread.stop() nicht mehr?</summary><p>Es brach den Thread an beliebiger Stelle ab und hinterliess Objekte in kaputtem Zustand. Seit Java 20 wirft es immer UnsupportedOperationException.</p></details>
+<details><summary>Was ist ein Daemon-Thread?</summary><p>Ein Hintergrund-Thread, der die JVM nicht am Leben hält. Laufen nur noch Daemons, beendet sich die JVM ohne deren finally-Blöcke.</p></details>
+<details><summary>Wann muss setDaemon() aufgerufen werden?</summary><p>Vor start(). Danach wirft es IllegalThreadStateException. Ohne Aufruf erbt der Thread den Status seines Erzeugers.</p></details>
+<details><summary>Was macht join()?</summary><p>Der aufrufende Thread wartet, bis der andere Thread endet. Danach sind alle seine Writes sichtbar (happens-before).</p></details>
+<details><summary>Was ist der Unterschied zwischen sleep() und wait()?</summary><p>sleep behält alle Locks und braucht keinen. wait braucht den Monitor, gibt ihn frei und wartet auf notify oder Timeout.</p></details>
+<details><summary>Warum steht wait() in einer while-Schleife?</summary><p>Wegen Spurious Wakeups und weil ein anderer Thread die Bedingung schon wieder ändern kann. Nach dem Aufwachen muss man die Bedingung neu prüfen.</p></details>
+<details><summary>Was passiert mit einer Exception, die run() nicht fängt?</summary><p>Nur dieser Thread endet. Der UncaughtExceptionHandler bekommt sie, standardmässig Ausgabe auf System.err. Andere Threads laufen weiter.</p></details>
+<details><summary>Was bringt Thread-Priorität?</summary><p>Wenig. Sie ist nur ein Hinweis an das OS. Bei Virtual Threads wird sie ignoriert.</p></details>
+<details><summary>Platform Thread oder Virtual Thread?</summary><p>Platform Threads für CPU-Arbeit und wenige lange Aufgaben. Virtual Threads (Java 21) für sehr viele gleichzeitige, blockierende I/O-Aufgaben.</p></details>
+<details><summary>Warum nicht einfach 10'000 Platform Threads starten?</summary><p>Jeder braucht einen OS-Thread und reservierten Stack. Das kostet Speicher und Kontextwechsel. Oft endet es in „unable to create native thread“.</p></details>
+<details><summary>Wie liest man einen Thread Dump?</summary><p>Pro Thread: Name, Zustand, Stack. „- locked &lt;adr&gt;“ zeigt den Lock-Besitzer, „waiting to lock &lt;adr&gt;“ den Wartenden. Mehrere Dumps vergleichen.</p></details>
+<details><summary>Was ist ein ThreadLocal und was ist sein Risiko?</summary><p>Eine Variable mit eigenem Wert pro Thread. In Pools leben Threads lange, darum kann ein vergessener Wert lecken oder zum nächsten Request wandern. Immer remove() im finally.</p></details>
+<details><summary>Szenario: Der Service hängt, alle Requests laufen in den Timeout. Was tun Sie zuerst?</summary><p>Mehrere Thread Dumps mit jcmd Thread.print ziehen. Nach BLOCKED-Threads, Deadlock-Meldungen und Threads suchen, die immer an derselben Stelle stehen, z. B. bei einem leeren Connection-Pool.</p></details>
+<details><summary>Szenario: Nach dem Deployment-Stop beendet sich der Pod erst nach dem Kill-Timeout. Warum?</summary><p>Ein Nicht-Daemon-Thread läuft weiter, oder ein Task ignoriert den Interrupt. Lösung: Executor im Shutdown-Hook schliessen, InterruptedException korrekt behandeln.</p></details>
+<details><summary>Szenario: Unter Last kommt „OutOfMemoryError: unable to create native thread“, der Heap ist aber frei. Woran liegt es?</summary><p>Zu viele Platform Threads, oft ein Thread pro Request oder ein unbegrenzter Pool. Das Limit liegt im OS oder Container, nicht im Heap. Lösung: begrenzter Pool oder Virtual Threads.</p></details>
+
+</body>
+</html>

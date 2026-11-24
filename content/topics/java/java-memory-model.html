@@ -1,0 +1,237 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Java Memory Model</title>
+<style>
+  body { font: 17px/1.55 -apple-system, system-ui, sans-serif; max-width: 760px; margin: 0 auto; padding: 16px; color: #1d1d1f; }
+  h1 { font-size: 28px; margin: 8px 0 4px; }
+  h2 { font-size: 21px; margin: 32px 0 8px; padding-top: 12px; border-top: 2px solid #e5e5ea; }
+  .kern { background: #eef6ff; border-left: 4px solid #0a66c2; padding: 10px 14px; border-radius: 6px; }
+  .senior { background: #f0faf0; border-left: 4px solid #2e7d32; padding: 10px 14px; border-radius: 6px; }
+  .trap { background: #fff4f2; border-left: 4px solid #c62828; padding: 10px 14px; border-radius: 6px; }
+  code { background: #f2f2f7; padding: 1px 5px; border-radius: 4px; font-size: 15px; }
+  pre { background: #1e1e1e; color: #e6e6e6; padding: 12px; border-radius: 8px; overflow-x: auto; font-size: 13.5px; line-height: 1.45; }
+  svg { width: 100%; height: auto; display: block; margin: 10px 0; }
+  ol li, ul li { margin: 4px 0; }
+  details { border: 1px solid #e5e5ea; border-radius: 8px; padding: 8px 12px; margin: 6px 0; }
+  summary { font-weight: 600; cursor: pointer; }
+  details p { margin: 6px 0 2px; }
+  .small { color: #6e6e73; font-size: 14px; }
+</style>
+</head>
+<body>
+
+<h1>Java Memory Model</h1>
+<p class="small">Java · Tier 1 · Quellen: JLS Java SE 21, Kapitel 17 (17.4 Memory Model, 17.5 final Fields, 17.7 long/double), Java SE 21 API-Doku (<code>java.util.concurrent</code> „Memory Consistency Properties“, <code>VarHandle</code>), JEP 193 (VarHandles), OpenJDK jcstress</p>
+
+<div class="kern">
+<b>Kern:</b> Das <b>Java Memory Model (JMM)</b> ist die Regel, welchen Wert ein Read in einem Thread sehen darf. Es löst das Problem, dass Compiler, JIT und CPU Code <b>umordnen</b> und Werte <b>zwischenspeichern</b>. Nur eine <b>happens-before</b>-Beziehung garantiert, dass ein Thread den Write eines anderen Threads sieht.
+</div>
+
+<h2>1. Wo sitzt das Java Memory Model?</h2>
+<svg viewBox="0 0 720 330" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="a" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="10" y="20" width="160" height="50" rx="8" fill="#fff" stroke="#555"/><text x="90" y="42" text-anchor="middle">Java-Code</text><text x="90" y="60" text-anchor="middle" font-size="12">x = 1; ready = true;</text>
+  <line x1="170" y1="45" x2="228" y2="45" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="230" y="20" width="200" height="50" rx="8" fill="#dbe9fb" stroke="#0a66c2"/><text x="330" y="42" text-anchor="middle">javac + JIT</text><text x="330" y="60" text-anchor="middle" font-size="12">ordnen um, halten Werte im Register</text>
+  <line x1="430" y1="45" x2="488" y2="45" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="490" y="20" width="220" height="50" rx="8" fill="#dbe9fb" stroke="#0a66c2"/><text x="600" y="42" text-anchor="middle">CPU</text><text x="600" y="60" text-anchor="middle" font-size="12">Store Buffer, Out-of-Order</text>
+  <rect x="10" y="100" width="700" height="44" rx="8" fill="#0a66c2"/><text x="360" y="120" text-anchor="middle" fill="#fff" font-weight="700">Java Memory Model (JLS 17.4)</text><text x="360" y="137" text-anchor="middle" fill="#fff" font-size="12">Vertrag: welche Writes darf ein Read sehen? Antwort: happens-before</text>
+  <rect x="40" y="170" width="250" height="70" rx="8" fill="#fff" stroke="#555"/><text x="165" y="192" text-anchor="middle" font-weight="700">Kern 1: Thread A</text><text x="165" y="212" text-anchor="middle" font-size="12">Register · Store Buffer</text><text x="165" y="228" text-anchor="middle" font-size="12">L1/L2 Cache</text>
+  <rect x="430" y="170" width="250" height="70" rx="8" fill="#fff" stroke="#555"/><text x="555" y="192" text-anchor="middle" font-weight="700">Kern 2: Thread B</text><text x="555" y="212" text-anchor="middle" font-size="12">Register · Store Buffer</text><text x="555" y="228" text-anchor="middle" font-size="12">L1/L2 Cache</text>
+  <line x1="165" y1="240" x2="300" y2="276" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <line x1="555" y1="240" x2="420" y2="276" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="230" y="278" width="260" height="44" rx="8" fill="#eee" stroke="#777"/><text x="360" y="298" text-anchor="middle" font-weight="700">Heap (geteilter Speicher)</text><text x="360" y="314" text-anchor="middle" font-size="12">Felder · static · Array-Elemente</text>
+</svg>
+<ol>
+  <li><b>Java-Code:</b> Der Programmierer schreibt Reads und Writes auf Felder. Beispiel: <code>x = 1; ready = true;</code>.</li>
+  <li><b>javac und JIT:</b> Sie dürfen Befehle <b>umordnen</b> und einen Wert im <b>Register</b> halten. Das ist erlaubt, solange der eigene Thread keinen Unterschied merkt (<b>as-if-serial</b>).</li>
+  <li><b>CPU:</b> Sie schreibt erst in einen <b>Store Buffer</b>, also eine Warteschlange vor dem Cache. Sie führt Befehle auch <b>Out-of-Order</b> aus, also nicht in Code-Reihenfolge.</li>
+  <li><b>Heap:</b> Nur <b>geteilte Variablen</b> sind betroffen: Instanzfelder, <code>static</code>-Felder, Array-Elemente. Lokale Variablen gehören einem Thread allein.</li>
+  <li><b>JMM:</b> Es ist der Vertrag über allen Schichten. Es sagt nicht, wie die Hardware arbeitet. Es sagt, welche Ergebnisse ein Programm haben darf.</li>
+</ol>
+
+<h2>2. Die Reise eines Writes zum anderen Thread (die Geschichte zum Merken)</h2>
+<svg viewBox="0 0 720 330" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="b" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker><marker id="g" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#2e7d32"/></marker></defs>
+  <text x="150" y="24" text-anchor="middle" font-weight="700">Thread A (Producer)</text>
+  <text x="570" y="24" text-anchor="middle" font-weight="700">Thread B (Consumer)</text>
+  <rect x="40" y="40" width="220" height="50" rx="10" fill="#eee" stroke="#777"/><text x="150" y="62" text-anchor="middle" font-weight="700">1. data = 42</text><text x="150" y="80" text-anchor="middle" font-size="12">normaler Write</text>
+  <line x1="150" y1="90" x2="150" y2="128" stroke="#555" stroke-width="2" marker-end="url(#b)"/><text x="160" y="114" font-size="12">Program Order</text>
+  <rect x="40" y="130" width="220" height="50" rx="10" fill="#0a66c2"/><text x="150" y="152" text-anchor="middle" fill="#fff" font-weight="700">2. ready = true</text><text x="150" y="170" text-anchor="middle" fill="#fff" font-size="12">volatile Write (Release)</text>
+  <rect x="460" y="130" width="220" height="50" rx="10" fill="#0a66c2"/><text x="570" y="152" text-anchor="middle" fill="#fff" font-weight="700">3. while (!ready)</text><text x="570" y="170" text-anchor="middle" fill="#fff" font-size="12">volatile Read (Acquire) sieht true</text>
+  <line x1="260" y1="155" x2="458" y2="155" stroke="#2e7d32" stroke-width="3" marker-end="url(#g)"/><text x="360" y="145" text-anchor="middle" fill="#2e7d32" font-weight="700">synchronizes-with</text>
+  <line x1="570" y1="180" x2="570" y2="218" stroke="#555" stroke-width="2" marker-end="url(#b)"/><text x="580" y="204" font-size="12">Program Order</text>
+  <rect x="460" y="220" width="220" height="50" rx="10" fill="#e8f5e9" stroke="#2e7d32"/><text x="570" y="242" text-anchor="middle" font-weight="700">4. print(data)</text><text x="570" y="260" text-anchor="middle" font-size="12">sieht garantiert 42</text>
+  <path d="M150,90 C150,300 400,300 458,250" fill="none" stroke="#2e7d32" stroke-width="2" stroke-dasharray="6 4" marker-end="url(#g)"/>
+  <text x="300" y="300" text-anchor="middle" fill="#2e7d32" font-size="12">happens-before durch Transitivität: 1 → 2 → 3 → 4</text>
+</svg>
+<ol>
+  <li><b>Thread A schreibt <code>data = 42</code>.</b> Das ist ein normaler Write. Er liegt vielleicht nur im Store Buffer. Thread B sieht ihn noch nicht.</li>
+  <li><b>Thread A schreibt <code>ready = true</code>.</b> Das Feld ist <code>volatile</code>. Ein <b>volatile Write</b> wirkt als <b>Release</b>: Alle Writes davor werden vorher sichtbar. Der JIT darf <code>data = 42</code> nicht hinter diesen Write schieben.</li>
+  <li><b>Thread B liest <code>ready</code> und sieht <code>true</code>.</b> Ein <b>volatile Read</b> wirkt als <b>Acquire</b>: Spätere Reads dürfen nicht davor rutschen. Der Write in 2 <b>synchronizes-with</b> diesem Read.</li>
+  <li><b>Thread B liest <code>data</code>.</b> Die Kette 1 → 2 → 3 → 4 ist <b>transitiv</b>. Darum gilt: Write 1 <b>happens-before</b> Read 4. Thread B sieht garantiert 42.</li>
+  <li><b>Ohne <code>volatile</code> auf <code>ready</code></b> gibt es keine Kette. Thread B darf dann <code>ready</code> nie sehen, oder <code>ready = true</code> sehen und trotzdem <code>data = 0</code>.</li>
+</ol>
+
+<h2>3. Beispiel: ein Flag, das nie ankommt</h2>
+<pre>public class JmmDemo {
+  static boolean stop;              // nicht volatile
+  static volatile boolean vstop;    // volatile
+  static int count;                 // count++ ohne Lock
+  static AtomicInteger atomic = new AtomicInteger();
+
+  public static void main(String[] args) throws Exception {
+    Thread t1 = new Thread(() -&gt; { long n = 0; while (!stop) n++; });
+    t1.start(); Thread.sleep(1000);
+    stop = true;  t1.join(3000);                       // höchstens 3 s warten
+    System.out.println("1) plain flag:    alive after 3 s = " + t1.isAlive());
+
+    Thread t2 = new Thread(() -&gt; { long n = 0; while (!vstop) n++; });
+    t2.start(); Thread.sleep(1000);
+    vstop = true; t2.join(3000);
+    System.out.println("2) volatile flag: alive after 3 s = " + t2.isAlive());
+
+    // 4 Threads, je 1_000_000 Mal: count++ und atomic.incrementAndGet()
+    ...
+    System.exit(0);                                    // t1 läuft sonst endlos
+  }
+}</pre>
+<pre>$ java JmmDemo
+1) plain flag:    alive after 3 s = true
+2) volatile flag: alive after 3 s = false
+3) count++ = 3218797, AtomicInteger = 4000000 (expected 4000000)
+
+$ java -Xint JmmDemo
+1) plain flag:    alive after 3 s = false
+2) volatile flag: alive after 3 s = false
+3) count++ = 3979650, AtomicInteger = 4000000 (expected 4000000)</pre>
+<p class="small">Echte Ausgabe, OpenJDK 17.0.3 (HotSpot, x86-64, Windows). Teil 3) ist im Code gekürzt. Drei Läufe mit JIT: Thread 1 hing jedes Mal; <code>count++</code> ergab 3218797, 3223622 und 2590697. Java 21 und 25 verhalten sich gleich, weil das JMM gleich ist. Das Hängen ist aber nur <b>erlaubt</b>, nicht garantiert.</p>
+<ol>
+  <li><b>Plain Flag:</b> Thread 1 läuft auch nach 3 Sekunden weiter. Der <b>C2</b>-Compiler sieht keinen Write auf <code>stop</code> in der Schleife. Er liest <code>stop</code> darum nur einmal vor der Schleife (<b>Hoisting</b>). Das ist erlaubt, weil kein happens-before existiert.</li>
+  <li><b>Volatile Flag:</b> Thread 2 endet sofort. Ein volatile Read muss jedes Mal den aktuellen Wert holen.</li>
+  <li><b>Mit <code>-Xint</code></b> (nur Interpreter) endet sogar Thread 1. Der Interpreter liest das Feld jedes Mal. Das beweist: Der Bug entsteht durch den JIT, nicht durch den Cache. Korrekt ist der Code trotzdem nicht.</li>
+  <li><b>Atomarität:</b> <code>count++</code> verliert bis zu 35 % der Updates. <code>count++</code> sind drei Schritte: lesen, plus 1, schreiben. <code>AtomicInteger</code> nutzt <b>CAS</b> (Compare-and-Swap) und verliert nichts.</li>
+</ol>
+
+<h2>4. Details, die Interviewer fragen</h2>
+<ol>
+  <li><b>happens-before (hb):</b> Wenn Aktion A <b>happens-before</b> B, dann sieht B alle Effekte von A. Es ist eine Garantie über Sichtbarkeit und Reihenfolge, nicht über Uhrzeit.</li>
+  <li><b>Die hb-Regeln (JLS 17.4.5):</b>
+    <ul>
+      <li><b>Program Order:</b> Jede Aktion in einem Thread hb jede spätere Aktion im selben Thread.</li>
+      <li><b>Monitor:</b> Das Verlassen von <code>synchronized</code> (unlock) hb jedes spätere Betreten mit demselben Lock.</li>
+      <li><b>volatile:</b> Ein Write auf ein volatile Feld hb jeden späteren Read desselben Felds.</li>
+      <li><b>Thread.start:</b> <code>t.start()</code> hb jede Aktion im gestarteten Thread.</li>
+      <li><b>Thread-Ende:</b> Jede Aktion im Thread hb die Rückkehr von <code>t.join()</code> oder ein <code>t.isAlive() == false</code>.</li>
+      <li><b>Interrupt:</b> <code>t.interrupt()</code> hb den Moment, in dem <code>t</code> den Interrupt bemerkt.</li>
+      <li><b>Default-Werte:</b> Das Setzen auf <code>0</code>/<code>null</code> hb die erste Aktion jedes Threads.</li>
+      <li><b>Transitivität:</b> A hb B und B hb C, dann A hb C.</li>
+    </ul></li>
+  <li><b>j.u.c.-Garantien:</b> Die API-Doku von <code>java.util.concurrent</code> ergänzt Regeln. Beispiel: Ein <code>put</code> in eine <code>ConcurrentHashMap</code> oder <code>BlockingQueue</code> hb das <code>get</code>/<code>take</code> dieses Elements. <code>submit</code> an einen Executor hb den Start der Task. Das Ende der Task hb <code>Future.get()</code>.</li>
+  <li><b>Data Race:</b> Ein <b>Data Race</b> sind zwei Zugriffe auf dieselbe Variable aus zwei Threads, mindestens einer schreibt, und kein hb ordnet sie. Ein Programm ohne Data Races heisst <b>korrekt synchronisiert</b>.</li>
+  <li><b>DRF-SC-Garantie:</b> Ein korrekt synchronisiertes Programm verhält sich <b>sequenziell konsistent</b>. Das heisst: als ob alle Aktionen in einer Reihenfolge laufen, die zur Code-Reihenfolge jedes Threads passt.</li>
+  <li><b>volatile:</b> Es garantiert <b>Sichtbarkeit</b> und <b>Ordnung</b> (Release/Acquire). Es garantiert keine Atomarität für zusammengesetzte Operationen wie <code>x++</code> oder „prüfen, dann setzen“.</li>
+  <li><b>Reordering:</b> Compiler, JIT und CPU dürfen unabhängige Befehle tauschen. Ein Thread merkt das bei sich selbst nie. Ein anderer Thread sieht ohne hb die Writes in beliebiger Reihenfolge.</li>
+  <li><b>Atomarität von Reads und Writes:</b> Reads und Writes von Referenzen, <code>int</code>, <code>boolean</code> usw. sind atomar. Bei nicht-volatile <code>long</code> und <code>double</code> darf die JVM in zwei 32-Bit-Hälften schreiben (<b>Word Tearing</b>, JLS 17.7). Mit <code>volatile</code> sind sie atomar.</li>
+  <li><b>final-Felder (JLS 17.5):</b> Nach Ende des Konstruktors sieht jeder Thread die <code>final</code>-Felder korrekt. Das gilt auch ohne Lock und auch für Objekte, die über das final-Feld erreichbar sind. Bedingung: <code>this</code> entkommt nicht während des Konstruktors.</li>
+  <li><b>synchronized:</b> Es gibt <b>gegenseitigen Ausschluss</b> und <b>Sichtbarkeit</b>. Beim Unlock werden alle Writes sichtbar für den nächsten, der denselben Lock nimmt.</li>
+  <li><b>Safe Publication:</b> Ein Objekt ist <b>sicher veröffentlicht</b>, wenn ein anderer Thread es nur über eine hb-Kante bekommt. Wege: <code>static</code>-Initialisierer, volatile Feld oder <code>AtomicReference</code>, final Feld, Lock, Concurrent Collection.</li>
+  <li><b>Double-Checked Locking:</b> Das Singleton-Feld muss <code>volatile</code> sein. Sonst kann ein Thread die Referenz sehen, bevor der Konstruktor fertig ist. Einfacher: das <b>Holder-Idiom</b> (Klasse wird erst bei Bedarf initialisiert, die JVM synchronisiert das).</li>
+  <li><b>VarHandle (Java 9, JEP 193):</b> Ein <b>VarHandle</b> gibt feine Zugriffsarten: <b>plain</b>, <b>opaque</b>, <b>release/acquire</b>, <b>volatile</b>. Dazu CAS-Operationen. Das ist für Bibliotheks-Code, selten für Anwendungen.</li>
+  <li><b>Thread.sleep und Thread.yield:</b> Sie haben laut JLS 17.3 <b>keine</b> Synchronisations-Semantik. Der Compiler darf Felder trotz <code>sleep</code> im Register halten.</li>
+</ol>
+
+<h2>5. Vergleich</h2>
+<ul>
+  <li><b>volatile:</b> Sichtbarkeit und Ordnung für ein Feld. Kein Lock, keine Atomarität für <code>x++</code>. Gut für Flags und für eine Referenz auf ein unveränderliches Objekt.</li>
+  <li><b>synchronized:</b> Sichtbarkeit, Ordnung und gegenseitiger Ausschluss. Gut für mehrere Felder, die zusammen stimmen müssen.</li>
+  <li><b>ReentrantLock:</b> gleiche JMM-Garantien wie <code>synchronized</code>. Dazu <code>tryLock</code>, Timeout, Fairness, mehrere Conditions.</li>
+  <li><b>AtomicInteger / AtomicReference:</b> volatile-Semantik plus atomare <b>CAS</b>-Operationen. Gut für Zähler und lock-freie Updates einer Variable.</li>
+  <li><b>LongAdder:</b> Zähler mit mehreren Zellen. Schneller als <code>AtomicLong</code> bei vielen schreibenden Threads. <code>sum()</code> ist kein exakter Schnappschuss.</li>
+  <li><b>final:</b> sichere Veröffentlichung nach dem Konstruktor. Keine spätere Änderung möglich. Basis für <b>unveränderliche</b> Objekte und Records.</li>
+  <li><b>Concurrent Collections:</b> <code>ConcurrentHashMap</code>, <code>BlockingQueue</code>: Übergabe zwischen Threads mit eingebautem hb.</li>
+</ul>
+
+<h2>6. In der Produktion</h2>
+<ol>
+  <li><b>Worker stoppt nie beim Shutdown:</b> Ein <code>running</code>-Flag ist nicht volatile. Der JIT hat den Read aus der Schleife gezogen. Lösung: <code>volatile</code>, <code>AtomicBoolean</code> oder Interrupt.</li>
+  <li><b>Zähler oder Metriken sind zu klein:</b> <code>count++</code> auf einem geteilten Feld verliert Updates. Lösung: <code>AtomicLong</code>, <code>LongAdder</code> oder ein Lock.</li>
+  <li><b>Halb initialisiertes Objekt:</b> Double-Checked Locking ohne volatile liefert ein Objekt mit <code>null</code>-Feldern. Lösung: <code>volatile</code>, Holder-Idiom oder ein <code>enum</code>-Singleton.</li>
+  <li><b>Konfiguration wird neu geladen, aber nicht gesehen:</b> Ein Thread ersetzt eine <code>Map</code> in einem normalen Feld. Lösung: <code>volatile</code>-Referenz auf eine unveränderliche Map (<code>Map.copyOf</code>).</li>
+  <li><b>Läuft auf x86, bricht auf ARM:</b> ARM-CPUs (z. B. AWS Graviton, Apple Silicon) ordnen stärker um als x86. Fehlende Synchronisation zeigt sich dort öfter. Lösung: Code gegen das JMM schreiben, nicht gegen die Hardware.</li>
+  <li><b>Bug verschwindet im Debugger:</b> Ein Breakpoint oder ein <code>println</code> ändert das Timing und das JIT-Verhalten. Lösung: Ursache im Code suchen, nicht im Laufzeitverhalten.</li>
+</ol>
+
+<h2>7. Diagnose: Werkzeuge und Flags</h2>
+<ul>
+  <li><b>jcstress</b> (OpenJDK Code Tools): testet nebenläufigen Code millionenfach und zählt erlaubte und verbotene Ergebnisse.</li>
+  <li><code>-Xint</code>: nur Interpreter. Verschwindet der Bug, ist eine JIT-Optimierung wie Hoisting wahrscheinlich. Nur zum Prüfen einer Hypothese.</li>
+  <li><b>Thread Dump</b> (<code>jcmd &lt;pid&gt; Thread.print</code>): Ein Thread steht immer <code>RUNNABLE</code> in derselben Schleife. Das deutet auf ein nie gesehenes Flag hin.</li>
+  <li><code>-XX:+UnlockDiagnosticVMOptions -XX:+PrintAssembly</code> (braucht <code>hsdis</code>): zeigt den Maschinencode, z. B. ob ein Read in der Schleife fehlt.</li>
+  <li><b>Statische Analyse:</b> SpotBugs (z. B. inkonsistente Synchronisation), Error Prone mit <code>@GuardedBy</code>.</li>
+  <li><b>Stresstests auf ARM:</b> Tests auf einer ARM-Maschine finden Reordering-Bugs eher.</li>
+</ul>
+
+<h2>8. Senior-Punkte</h2>
+<div class="senior">
+<ol>
+  <li><b>Gegen das JMM programmieren, nicht gegen die CPU.</b> „Auf x86 geht es“ ist kein Beweis. Unser Demo hing auf x86 wegen des JIT.</li>
+  <li><b>Unveränderlichkeit zuerst.</b> <code>final</code>-Felder und Records brauchen keine Synchronisation. Geteilter veränderbarer Zustand ist die eigentliche Fehlerquelle.</li>
+  <li><b>High-Level-Werkzeuge bevorzugen:</b> Executor, <code>ConcurrentHashMap</code>, <code>BlockingQueue</code>, <code>CompletableFuture</code>. Sie bringen die hb-Kanten schon mit.</li>
+  <li><b>volatile hat Kosten.</b> Ein volatile Write braucht auf x86 eine Store-Load-Barriere. Ein volatile Read verhindert Hoisting. In heissen Schleifen zählt das.</li>
+  <li><b>Lock-freier Code ist Experten-Code.</b> Ihn schreiben fast nur Bibliotheken. Er braucht jcstress-Tests und Reviews.</li>
+  <li><b>„Benign Data Races“</b> (z. B. der Hash-Cache in <code>String</code>) sind Sonderfälle im JDK. In Anwendungscode sind sie ein Risiko ohne Nutzen.</li>
+</ol>
+</div>
+
+<h2>9. Aus dem Projekt</h2>
+<p>„Ein Background-Thread lud die Konfiguration neu und ersetzte sie über eine <code>volatile</code>-Referenz auf eine unveränderliche Map.“ <span class="small">(Prüfen und durch dein echtes Beispiel ersetzen.)</span></p>
+
+<h2>10. Fallen</h2>
+<div class="trap">
+<ul>
+  <li>„<code>volatile</code> macht <code>count++</code> thread-sicher.“ → <b>Falsch.</b> Es macht nur jeden Read und Write sichtbar. Für <code>++</code> braucht es <code>AtomicInteger</code> oder einen Lock.</li>
+  <li>„happens-before heisst: passiert zeitlich vorher.“ → <b>Falsch.</b> Es ist eine Sichtbarkeitsgarantie. Zeitlich frühere Writes ohne hb dürfen unsichtbar bleiben.</li>
+  <li>„<code>synchronized</code> dient nur dem gegenseitigen Ausschluss.“ → <b>Falsch.</b> Es sorgt auch für Sichtbarkeit. Auch Reads brauchen denselben Lock.</li>
+  <li>„Auf x86 braucht man kein volatile.“ → <b>Falsch.</b> Der JIT ordnet unabhängig von der CPU um. Das Demo oben hing auf x86.</li>
+  <li>„<code>final</code> macht ein Objekt unveränderlich.“ → <b>Falsch.</b> Nur die Referenz ist fest. Eine <code>final List</code> bleibt veränderbar.</li>
+  <li>„<code>long</code> lesen und schreiben ist immer atomar.“ → <b>Falsch.</b> Nur mit <code>volatile</code> garantiert (JLS 17.7). 64-Bit-HotSpot macht es in der Praxis atomar.</li>
+  <li>„<code>Thread.sleep()</code> in der Schleife lässt das Flag erscheinen.“ → <b>Falsch.</b> <code>sleep</code> hat keine Synchronisations-Semantik (JLS 17.3).</li>
+  <li>„Double-Checked Locking ohne volatile ist ok.“ → <b>Falsch.</b> Ein Thread kann ein halb gebautes Objekt sehen.</li>
+</ul>
+</div>
+
+<h2>11. Fragen</h2>
+<details><summary>Was ist das Java Memory Model?</summary><p>Die Regel aus JLS Kapitel 17, welchen Wert ein Read sehen darf. Es erlaubt Optimierungen durch Umordnen und gibt mit happens-before klare Garantien.</p></details>
+<details><summary>Welches Problem löst das JMM?</summary><p>Compiler, JIT und CPU ordnen um und speichern Werte zwischen. Ohne Regeln wäre nebenläufiger Code nicht portabel. Das JMM sagt, wann ein Write für einen anderen Thread sichtbar ist.</p></details>
+<details><summary>Was bedeutet happens-before?</summary><p>Wenn A happens-before B, sieht B alle Effekte von A. Es ist eine Garantie über Sichtbarkeit und Ordnung, nicht über Zeit.</p></details>
+<details><summary>Nennen Sie die wichtigsten happens-before-Regeln.</summary><p>Program Order, Unlock vor späterem Lock desselben Monitors, volatile Write vor späterem Read, Thread.start vor dem Thread, Thread-Ende vor join, dazu Transitivität.</p></details>
+<details><summary>Was ist ein Data Race?</summary><p>Zwei Threads greifen auf dieselbe Variable zu, mindestens einer schreibt, und kein happens-before ordnet die Zugriffe. Dann sind auch „unmögliche“ Werte erlaubt.</p></details>
+<details><summary>Was garantiert ein korrekt synchronisiertes Programm?</summary><p>Sequenzielle Konsistenz (DRF-SC). Es verhält sich, als ob alle Aktionen in einer Reihenfolge laufen, die zur Code-Reihenfolge jedes Threads passt.</p></details>
+<details><summary>Was macht volatile genau?</summary><p>Jeder Read sieht den letzten Write. Ein volatile Write ist ein Release, ein volatile Read ein Acquire. Writes davor werden mit sichtbar.</p></details>
+<details><summary>Ist volatile genug für einen Zähler?</summary><p>Nein. count++ ist lesen, rechnen, schreiben. Zwei Threads können denselben Wert lesen. Lösung: AtomicInteger, LongAdder oder Lock.</p></details>
+<details><summary>Was ist Reordering?</summary><p>Compiler, JIT oder CPU tauschen die Reihenfolge unabhängiger Befehle. Der eigene Thread merkt nichts (as-if-serial). Andere Threads sehen ohne happens-before eine andere Reihenfolge.</p></details>
+<details><summary>Warum hängt eine Schleife mit nicht-volatile Flag?</summary><p>C2 liest das Flag nur einmal vor der Schleife (Hoisting). Das ist erlaubt, weil der Thread keine happens-before-Kante zum Writer hat.</p></details>
+<details><summary>Was garantiert final im JMM?</summary><p>Nach dem Konstruktor sieht jeder Thread die final-Felder korrekt, auch ohne Lock. Bedingung: this entkommt nicht während des Konstruktors.</p></details>
+<details><summary>Was heisst „this entkommt im Konstruktor“?</summary><p>Der Konstruktor gibt this weiter, z. B. an einen Listener oder Thread. Ein anderer Thread kann das Objekt dann vor Ende des Konstruktors sehen, auch mit Default-Werten in final-Feldern.</p></details>
+<details><summary>Sind long und double atomar?</summary><p>Nicht garantiert ohne volatile. Die JLS (17.7) erlaubt zwei 32-Bit-Writes. Mit volatile sind sie atomar.</p></details>
+<details><summary>Was gibt synchronized ausser gegenseitigem Ausschluss?</summary><p>Sichtbarkeit. Alles vor dem Unlock ist sichtbar für den Thread, der denselben Lock als Nächstes nimmt.</p></details>
+<details><summary>Was ist Safe Publication?</summary><p>Ein anderer Thread bekommt das Objekt nur über eine happens-before-Kante. Wege: static-Initialisierer, volatile oder AtomicReference, final Feld, Lock, Concurrent Collection.</p></details>
+<details><summary>Warum braucht Double-Checked Locking volatile?</summary><p>Ohne volatile darf die Referenz sichtbar werden, bevor der Konstruktor fertig ist. Ein Thread sieht dann ein halb gebautes Objekt.</p></details>
+<details><summary>Was ist das Holder-Idiom?</summary><p>Eine statische innere Klasse hält das Singleton. Die JVM initialisiert sie beim ersten Zugriff thread-sicher. Kein volatile und kein Lock nötig.</p></details>
+<details><summary>Welche happens-before-Garantien gibt java.util.concurrent?</summary><p>Ein put in eine Concurrent Collection hb das spätere get. submit hb den Start der Task. Das Ende der Task hb Future.get().</p></details>
+<details><summary>Hat Thread.sleep Synchronisations-Semantik?</summary><p>Nein. JLS 17.3 sagt das ausdrücklich. Der Compiler darf ein Feld trotz sleep im Register halten.</p></details>
+<details><summary>volatile oder AtomicInteger?</summary><p>volatile für ein Flag oder eine Referenz, die nur gesetzt wird. AtomicInteger, wenn der neue Wert vom alten abhängt, z. B. Zähler oder CAS.</p></details>
+<details><summary>AtomicLong oder LongAdder?</summary><p>LongAdder ist bei vielen schreibenden Threads schneller, weil er auf Zellen verteilt. AtomicLong, wenn man einen exakten Wert oder CAS braucht.</p></details>
+<details><summary>Was ist ein VarHandle?</summary><p>Ein typisierter Zeiger auf ein Feld oder Array-Element (Java 9). Er bietet Zugriffsarten wie plain, opaque, acquire/release, volatile und CAS.</p></details>
+<details><summary>Ist eine unveränderliche Klasse automatisch thread-sicher?</summary><p>Ja, wenn alle Felder final sind und this im Konstruktor nicht entkommt. Dann ist sie sogar über einen Data Race sicher lesbar.</p></details>
+<details><summary>Warum zeigen sich Memory-Model-Bugs auf ARM öfter?</summary><p>ARM hat ein schwächeres Hardware-Speichermodell als x86. Die CPU ordnet mehr um. Fehlende happens-before-Kanten fallen dort eher auf.</p></details>
+<details><summary>Szenario: Ein Worker-Thread reagiert nicht auf running = false. Was prüfen Sie?</summary><p>Ob running volatile ist. Im Thread Dump steht der Thread RUNNABLE in der Schleife. Lösung: volatile, AtomicBoolean oder Interrupt nutzen.</p></details>
+<details><summary>Szenario: Ein Request-Zähler zeigt unter Last weniger Requests als das Load-Balancer-Log. Warum?</summary><p>Mehrere Threads machen count++ ohne Synchronisation und verlieren Updates. Lösung: LongAdder oder AtomicLong, oder eine Metrik-Bibliothek wie Micrometer.</p></details>
+<details><summary>Szenario: Selten gibt ein Singleton eine NullPointerException aus einem Feld, das im Konstruktor gesetzt wird. Woran denken Sie?</summary><p>An Double-Checked Locking ohne volatile oder an this, das im Konstruktor entkommt. Lösung: volatile, Holder-Idiom oder enum-Singleton. Mit jcstress nachweisen.</p></details>
+
+</body>
+</html>

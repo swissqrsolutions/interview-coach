@@ -49,19 +49,23 @@
 
   // ---------- lookups ----------
   const card = id => D.cards.find(c => c.id === id);
+  const RS = () => D.rounds.filter(r => !r.hidden);
+  const TS = () => D.tech.filter(t => !t.hidden);
+  const CS = () => D.cards.filter(c => !(round(c.round) || {}).hidden);
   const round = id => D.rounds.find(r => r.id === id);
   const techOf = id => D.tech.find(t => t.id === id);
   const jobs = () => store.get('jobs', []);
   const activeJob = () => { const a = store.get('activeJob', null); return jobs().find(j => j.id === a) || null; };
+  const PMARK = { study: '<span class="pm study">kein Projekt</span>', check: '<span class="pm check">prüfen</span>' };
   const PROOF = { project: '<span class="badge ok">project experience</span>', study: '<span class="badge study">studied only</span>' };
 
   // queue: due reviews first, then up to 5 new cards (job focus first, then tier, then round order)
   function queue() {
     const t = today(), s = st(), job = activeJob();
-    const due = D.cards.filter(c => s[c.id] && s[c.id].due <= t).sort((a, b) => s[a.id].due.localeCompare(s[b.id].due));
+    const due = CS().filter(c => s[c.id] && s[c.id].due <= t).sort((a, b) => s[a.id].due.localeCompare(s[b.id].due));
     const order = r => D.rounds.findIndex(x => x.id === r);
     const fit = c => !job ? 0 : (c.tech.some(x => job.techs.includes(x)) ? 2 : 0) + (job.rounds.includes(c.round) ? 1 : 0);
-    const fresh = D.cards.filter(c => !s[c.id]).sort((a, b) => fit(b) - fit(a) || a.tier - b.tier || order(a.round) - order(b.round));
+    const fresh = CS().filter(c => !s[c.id]).sort((a, b) => fit(b) - fit(a) || a.tier - b.tier || order(a.round) - order(b.round));
     const newToday = Object.values(s).filter(x => x.hist[0] && x.hist[0].d === t).length;
     return [...due, ...fresh.slice(0, Math.max(0, 5 - newToday))];
   }
@@ -181,7 +185,7 @@
   function analyse(text) {
     const t = norm(text);
     const has = a => { const x = a.toLowerCase(); return /^[a-z0-9]/.test(x) ? new RegExp(`[^a-z0-9]${x.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}[^a-z0-9]`).test(t) : t.includes(x); };
-    const techs = D.tech.filter(x => x.aliases.some(has)).map(x => x.id);
+    const techs = TS().filter(x => x.aliases.some(has)).map(x => x.id);
     const r = new Set(['phone', 'hr', 'project', 'tech', 'behaviour', 'final']);
     if (/develop|entwickl|engineer|programm|coding/.test(t)) r.add('coding');
     if (techs.includes('postgres') || techs.includes('oracle') || / sql /.test(t)) r.add('sql');
@@ -191,7 +195,7 @@
     if (/bund|bit |isc|ejpd|ausschreibung|wto|kanton|verwaltung/.test(t)) r.add('assessment');
     if (/take.?home|hausaufgabe|case study|fallstudie/.test(t)) r.add('takehome');
     const lang = (t.match(/\b(c2|c1|b2|b1)\b/) || [])[1] || (/fliessend|fließend|verhandlungssicher|muttersprache/.test(t) ? 'fluent' : '');
-    return { techs, rounds: [...r].sort((a, b) => round(a).n - round(b).n), lang };
+    return { techs, rounds: [...r].filter(id => !round(id).hidden).sort((a, b) => round(a).n - round(b).n), lang };
   }
   function jobView(editId) {
     const list = jobs(), act = store.get('activeJob', null), ed = list.find(j => j.id === editId);
@@ -228,10 +232,10 @@
 
   // ---------- LIBRARY ----------
   function libView() {
-    const groups = {}; for (const t of D.tech) (groups[t.group] ||= []).push(t);
+    const groups = {}; for (const t of TS()) (groups[t.group] ||= []).push(t);
     app.innerHTML = `<h1>Library</h1>
       <div class="row wrap">${D.pages.map(p => `<a class="btn ghost" href="#page-${p.id}">${esc(p.title)}</a>`).join('')}<a class="btn ghost" href="#evidence">My evidence (tenders)</a></div>
-      <h2>Rounds, in order</h2><div class="card"><ul class="list">${D.rounds.map(r => { const cs = D.cards.filter(c => c.round === r.id); return `<li><a href="#r-${r.id}"><span class="rnum">${r.n}</span><span>${esc(r.name)}<br><span class="small">${esc(r.en)}</span></span><span class="st">${cs.filter(c => isReady(c.id)).length}/${cs.length}</span></a></li>`; }).join('')}</ul></div>
+      <h2>Rounds, in order</h2><div class="card"><ul class="list">${RS().map(r => { const cs = D.cards.filter(c => c.round === r.id); return `<li><a href="#r-${r.id}"><span class="rnum">${r.n}</span><span>${esc(r.name)}<br><span class="small">${esc(r.en)}</span></span><span class="st">${cs.filter(c => isReady(c.id)).length}/${cs.length}</span></a></li>`; }).join('')}</ul></div>
       <h2>Technologies</h2>${Object.entries(groups).map(([g, ts]) => `<h3>${esc(g)}</h3><div class="chips">${ts.map(t => `<a class="chip ${t.proof === 'study' ? 'gap' : 'ok'}" href="#t-${t.id}">${esc(t.name)} · ${D.cards.filter(c => c.tech.includes(t.id)).length}</a>`).join(' ')}</div>`).join('')}`;
   }
   function roundView(id) {
@@ -248,13 +252,13 @@
     const t = techOf(id); if (!t) return libView();
     const cs = D.cards.filter(c => c.tech.includes(id));
     const ts = (D.topics || []).filter(x => x.tech === id);
-    app.innerHTML = `<a href="#lib" class="small">← Library</a><h1>${esc(t.name)}</h1>
+    app.innerHTML = `<a href="#home" class="small">← Topics</a><h1>${esc(t.name)}</h1>
       <p class="sub">${PROOF[t.proof]} ${t.project ? '· ' + esc(t.project) : ''}</p>
       ${t.proof === 'study' ? `<div class="card hint">No project with this yet. In the interview say it honestly: <i>„Produktiv habe ich das noch nicht eingesetzt. Das Prinzip kenne ich. Bei uns war es ähnlich mit …“</i></div>` : ''}
       ${ts.length ? `<h2>Learn: all topics (${ts.filter(x => x.done).length}/${ts.length} written)</h2><div class="card"><ul class="list">${ts.map(x => x.done
-        ? `<li><a href="#k-${x.tech}--${x.id}"><span class="rnum">${x.tier}</span><span>${esc(x.title)}</span><span class="st">${x.nq || (x.qs || []).length} Q</span></a></li>`
-        : `<li><a class="off"><span class="rnum">${x.tier}</span><span>${esc(x.title)}</span><span class="st new">coming</span></a></li>`).join('')}</ul>
-        <p class="small">The number in the circle is the priority: 1 = asked in almost every interview.</p></div>` : ''}
+        ? `<li><a href="#k-${x.tech}--${x.id}"><span class="rnum">${x.tier}</span><span>${esc(x.title)} ${PMARK[x.proof] || ""}</span><span class="st">${x.nq || (x.qs || []).length} Q</span></a></li>`
+        : `<li><a class="off"><span class="rnum">${x.tier}</span><span>${esc(x.title)} ${PMARK[x.proof] || ""}</span><span class="st new">coming</span></a></li>`).join('')}</ul>
+        <p class="small">The number in the circle is the priority: 1 = asked in almost every interview. <b>kein Projekt</b> = no project experience; <b>prüfen</b> = unclear, you decide.</p>${(D.techSources || {})[id] ? `<p class="small">List based on: ${D.techSources[id].map(esc).join(" · ")}</p>` : ""}</div>` : ''}
       <h2>Practice cards (${cs.length})</h2>${cs.length ? `<div class="card"><ul class="list">${cs.map(rowCard).join('')}</ul></div>` : '<div class="card small">No cards yet.</div>'}`;
   }
   // a deep topic: read everything, then test yourself (tap a question to see the answer)
@@ -313,7 +317,7 @@
     app.innerHTML = `<h1>Progress</h1>
       <div class="card stats"><div><b>${ready}</b><br>ready</div><div><b>${Object.keys(s).length}</b><br>started</div><div><b>${D.cards.length}</b><br>cards</div></div>
       <p class="small">Ready = 7/8 or more on two different days.</p>
-      <h2>By round</h2><table class="bt"><tr><th>Round</th><th>Ready</th><th>Started</th></tr>${D.rounds.map(r => { const cs = D.cards.filter(c => c.round === r.id); return `<tr><td><a href="#r-${r.id}">${r.n}. ${esc(r.name)}</a></td><td>${cs.filter(c => isReady(c.id)).length}/${cs.length}</td><td>${cs.filter(c => s[c.id]).length}</td></tr>`; }).join('')}</table>
+      <h2>By round</h2><table class="bt"><tr><th>Round</th><th>Ready</th><th>Started</th></tr>${RS().map(r => { const cs = D.cards.filter(c => c.round === r.id); return `<tr><td><a href="#r-${r.id}">${r.n}. ${esc(r.name)}</a></td><td>${cs.filter(c => isReady(c.id)).length}/${cs.length}</td><td>${cs.filter(c => s[c.id]).length}</td></tr>`; }).join('')}</table>
       ${Object.keys(tags).length ? `<h2>What goes wrong most</h2><div class="card">${Object.entries(tags).sort((a, b) => b[1] - a[1]).map(([k, n]) => `<p><b>${k}</b> × ${n}<br><span class="small">${TIP[k] || ''}</span></p>`).join('')}</div>` : ''}
       ${weak.length ? `<h2>Weak cards</h2><div class="card"><ul class="list">${weak.map(rowCard).join('')}</ul></div>` : ''}
       <h2>Backup</h2>
@@ -328,6 +332,16 @@
       try { const o = JSON.parse($('#bk').value); let n = 0; for (const [k, v] of Object.entries(o)) if (k.startsWith('ic:')) { localStorage.setItem(k, v); n++; } toast(n ? 'Imported.' : 'Nothing to import.'); progressView(); }
       catch { toast('That text is not a backup. Copy the whole text again.'); }
     };
+  }
+
+  // ---------- HOME: technologies in study order → topics → topic page ----------
+  const ORDER = ["postgres","search","sysdesign","networking","microservices","kafka","k8s","signals","angular","azure","spark","iceberg","dremio","lakehouse","modelling","spring","hibernate","java","rest"];
+  function topicsHome() {
+    const all = (D.topics || []), ids = [...new Set(all.map(t => t.tech))].filter(id => techOf(id) && !techOf(id).hidden);
+    ids.sort((a, b) => ((ORDER.indexOf(a) + 1) || 99) - ((ORDER.indexOf(b) + 1) || 99));
+    const done = all.filter(t => t.done).length;
+    app.innerHTML = `<h1>Topics</h1><p class="sub">${done} of ${all.length} topics written. Tap a technology.</p>
+      <div class="card"><ul class="list">${ids.map(id => { const ts = all.filter(t => t.tech === id), d = ts.filter(t => t.done).length; return `<li><a href="#t-${id}"><span>${esc(techOf(id).name)}</span><span class="st ${d ? "ok" : "new"}">${d}/${ts.length}</span></a></li>`; }).join("")}</ul></div>`;
   }
 
   // ---------- router ----------
@@ -346,7 +360,7 @@
     else if (p[0] === 'evidence') evidenceView();
     else if (p[0] === 'progress') progressView();
     else if (p[0] === 'plan') planView();
-    else todayView();
+    else topicsHome();
     const tab = { '': 'today', plan: 'today', c: 'today', q: 'today', job: 'job', lib: 'lib', r: 'lib', t: 'lib', k: 'lib', page: 'lib', evidence: 'lib', progress: 'progress' }[p[0]] || 'today';
     $$('.tabs a').forEach(a => a.classList.toggle('on', a.dataset.tab === tab));
   }

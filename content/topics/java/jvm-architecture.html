@@ -1,0 +1,267 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>JVM-Architektur</title>
+<style>
+  body { font: 17px/1.55 -apple-system, system-ui, sans-serif; max-width: 760px; margin: 0 auto; padding: 16px; color: #1d1d1f; }
+  h1 { font-size: 28px; margin: 8px 0 4px; }
+  h2 { font-size: 21px; margin: 32px 0 8px; padding-top: 12px; border-top: 2px solid #e5e5ea; }
+  .kern { background: #eef6ff; border-left: 4px solid #0a66c2; padding: 10px 14px; border-radius: 6px; }
+  .senior { background: #f0faf0; border-left: 4px solid #2e7d32; padding: 10px 14px; border-radius: 6px; }
+  .trap { background: #fff4f2; border-left: 4px solid #c62828; padding: 10px 14px; border-radius: 6px; }
+  code { background: #f2f2f7; padding: 1px 5px; border-radius: 4px; font-size: 15px; }
+  pre { background: #1e1e1e; color: #e6e6e6; padding: 12px; border-radius: 8px; overflow-x: auto; font-size: 13.5px; line-height: 1.45; }
+  svg { width: 100%; height: auto; display: block; margin: 10px 0; }
+  ol li, ul li { margin: 4px 0; }
+  details { border: 1px solid #e5e5ea; border-radius: 8px; padding: 8px 12px; margin: 6px 0; }
+  summary { font-weight: 600; cursor: pointer; }
+  details p { margin: 6px 0 2px; }
+  .small { color: #6e6e73; font-size: 14px; }
+</style>
+</head>
+<body>
+
+<h1>JVM-Architektur</h1>
+<p class="small">Java · Tier 1 · Quellen: JVM Specification SE 21/25 (Kap. 2.5 Run-Time Data Areas, Kap. 5 Loading/Linking/Initializing), Java SE 21 HotSpot GC Tuning Guide, Java SE 25 API (<code>java.lang.management</code>), JEP 122 (Metaspace), JEP 197 (Segmented Code Cache), JEP 444 (Virtual Threads), JEP 483/514/515 (AOT Cache), JEP 519 (Compact Object Headers)</p>
+
+<div class="kern">
+<b>Kern:</b> Die <b>JVM</b> (Java Virtual Machine) ist ein Programm, das <b>Bytecode</b> aus <code>.class</code>-Dateien ausführt. Sie löst das Problem, dass jede CPU und jedes Betriebssystem anderen Maschinencode braucht. Sie hat drei Teile: <b>Class Loader Subsystem</b>, <b>Runtime Data Areas</b> (Speicher) und <b>Execution Engine</b> (Interpreter, JIT, GC).
+</div>
+
+<h2>1. Wo sitzt was in der JVM?</h2>
+<svg viewBox="0 0 720 360" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="a" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="10" y="20" width="120" height="50" rx="8" fill="#fff" stroke="#555"/><text x="70" y="42" text-anchor="middle">.class / .jar</text><text x="70" y="60" text-anchor="middle" font-size="12">Bytecode</text>
+  <line x1="130" y1="45" x2="178" y2="45" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="160" y="6" width="550" height="346" rx="12" fill="#f7f7fa" stroke="#999" stroke-dasharray="5 4"/><text x="690" y="26" text-anchor="end" font-weight="700">JVM</text>
+  <rect x="180" y="20" width="360" height="50" rx="8" fill="#dbe9fb" stroke="#0a66c2"/><text x="360" y="42" text-anchor="middle" font-weight="700">1. Class Loader Subsystem</text><text x="360" y="60" text-anchor="middle" font-size="12">laden · linken (prüfen) · initialisieren</text>
+  <line x1="360" y1="70" x2="360" y2="94" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <text x="440" y="90" text-anchor="middle" font-size="12" fill="#6e6e73">2. Runtime Data Areas</text>
+  <rect x="180" y="96" width="170" height="64" rx="8" fill="#0a66c2" stroke="#0a66c2"/><text x="265" y="120" text-anchor="middle" fill="#fff" font-weight="700">Heap</text><text x="265" y="140" text-anchor="middle" fill="#fff" font-size="12">Objekte · für alle Threads</text>
+  <rect x="360" y="96" width="170" height="64" rx="8" fill="#0a66c2" stroke="#0a66c2"/><text x="445" y="120" text-anchor="middle" fill="#fff" font-weight="700">Metaspace</text><text x="445" y="140" text-anchor="middle" fill="#fff" font-size="12">Method Area · Klassen</text>
+  <rect x="540" y="96" width="160" height="64" rx="8" fill="#fff" stroke="#555"/><text x="620" y="116" text-anchor="middle" font-weight="700">pro Thread</text><text x="620" y="134" text-anchor="middle" font-size="12">PC · JVM Stack</text><text x="620" y="150" text-anchor="middle" font-size="12">Native Stack</text>
+  <line x1="440" y1="160" x2="440" y2="184" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="180" y="186" width="520" height="80" rx="8" fill="#fff" stroke="#555"/><text x="440" y="206" text-anchor="middle" font-weight="700">3. Execution Engine</text>
+  <rect x="196" y="216" width="150" height="40" rx="6" fill="#eee" stroke="#777"/><text x="271" y="241" text-anchor="middle">Interpreter</text>
+  <rect x="360" y="216" width="160" height="40" rx="6" fill="#eee" stroke="#777"/><text x="440" y="236" text-anchor="middle">JIT (C1 + C2)</text><text x="440" y="251" text-anchor="middle" font-size="11">→ Code Cache</text>
+  <rect x="534" y="216" width="150" height="40" rx="6" fill="#eee" stroke="#777"/><text x="609" y="241" text-anchor="middle">GC</text>
+  <line x1="440" y1="266" x2="440" y2="290" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="300" y="292" width="160" height="48" rx="8" fill="#fff" stroke="#555"/><text x="380" y="314" text-anchor="middle" font-weight="700">4. JNI / FFM</text><text x="380" y="330" text-anchor="middle" font-size="12">Brücke zu nativem Code</text>
+  <line x1="460" y1="316" x2="508" y2="316" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="510" y="292" width="180" height="48" rx="8" fill="#fff" stroke="#555"/><text x="600" y="314" text-anchor="middle">Native Libraries</text><text x="600" y="330" text-anchor="middle" font-size="12">.dll · .so · Betriebssystem</text>
+</svg>
+<ol>
+  <li><b>Class Loader Subsystem:</b> lädt Klassen bei Bedarf, prüft den Bytecode und initialisiert sie. Beispiel: <code>java.lang.String</code> kommt vom <b>Bootstrap ClassLoader</b>.</li>
+  <li><b>Heap:</b> hält alle Objekte und Arrays. Alle Threads teilen ihn. Beispiel: <code>new ArrayList&lt;&gt;()</code> landet hier.</li>
+  <li><b>Method Area:</b> hält Klassen-Daten, also Methoden, Bytecode und den <b>Run-Time Constant Pool</b> (Konstanten und symbolische Referenzen pro Klasse). In HotSpot heisst sie <b>Metaspace</b> und liegt im nativen Speicher.</li>
+  <li><b>Pro Thread:</b> der <b>PC Register</b> (aktuelle Bytecode-Adresse), der <b>JVM Stack</b> (ein <b>Frame</b> pro Methodenaufruf) und der <b>Native Method Stack</b> (für nativen Code). Beispiel: Eine lokale <code>int</code>-Variable liegt im Frame.</li>
+  <li><b>Execution Engine:</b> führt Bytecode aus. Der <b>Interpreter</b> startet sofort. Der <b>JIT</b> kompiliert heisse Methoden in den <b>Code Cache</b>. Der <b>GC</b> räumt den Heap auf.</li>
+  <li><b>JNI / FFM:</b> <b>JNI</b> (Java Native Interface) und die <b>FFM API</b> (Foreign Function &amp; Memory, final seit Java 22) rufen C-Code auf. Beispiel: Dateizugriff endet in einer nativen Methode.</li>
+</ol>
+
+<h2>2. Die Reise eines Programms (die Geschichte zum Merken)</h2>
+<svg viewBox="0 0 720 300" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="b" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker><marker id="r" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#2e7d32"/></marker></defs>
+  <rect x="10" y="20" width="150" height="66" rx="10" fill="#eee" stroke="#777"/><text x="85" y="44" text-anchor="middle" font-weight="700">1. java Main</text><text x="85" y="64" text-anchor="middle" font-size="12">Launcher startet JVM</text>
+  <line x1="160" y1="53" x2="198" y2="53" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="200" y="20" width="150" height="66" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="275" y="44" text-anchor="middle" font-weight="700">2. java.base</text><text x="275" y="64" text-anchor="middle" font-size="12">Bootstrap + CDS</text>
+  <line x1="350" y1="53" x2="388" y2="53" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="390" y="20" width="150" height="66" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="465" y="44" text-anchor="middle" font-weight="700">3. Main laden</text><text x="465" y="64" text-anchor="middle" font-size="12">App ClassLoader</text>
+  <line x1="540" y1="53" x2="578" y2="53" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="580" y="20" width="130" height="66" rx="10" fill="#fff" stroke="#555"/><text x="645" y="44" text-anchor="middle" font-weight="700">4. main()</text><text x="645" y="64" text-anchor="middle" font-size="12">Frame auf Stack</text>
+  <line x1="645" y1="86" x2="645" y2="148" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="560" y="150" width="150" height="66" rx="10" fill="#0a66c2" stroke="#0a66c2"/><text x="635" y="174" text-anchor="middle" fill="#fff" font-weight="700">5. new</text><text x="635" y="194" text-anchor="middle" fill="#fff" font-size="12">Objekt im Heap (TLAB)</text>
+  <line x1="560" y1="183" x2="502" y2="183" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="350" y="150" width="150" height="66" rx="10" fill="#fff" stroke="#555"/><text x="425" y="174" text-anchor="middle" font-weight="700">6. ausführen</text><text x="425" y="194" text-anchor="middle" font-size="12">Interpreter → JIT</text>
+  <line x1="350" y1="183" x2="292" y2="183" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="140" y="150" width="150" height="66" rx="10" fill="#e8f5e9" stroke="#2e7d32"/><text x="215" y="174" text-anchor="middle" font-weight="700">7. GC</text><text x="215" y="194" text-anchor="middle" font-size="12">räumt tote Objekte</text>
+  <line x1="140" y1="183" x2="92" y2="183" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="10" y="150" width="80" height="66" rx="10" fill="#eee" stroke="#777"/><text x="50" y="179" text-anchor="middle" font-weight="700">8. Ende</text><text x="50" y="197" text-anchor="middle" font-size="11">Hooks</text>
+  <path d="M215,216 C215,270 425,270 425,218" fill="none" stroke="#2e7d32" stroke-width="2" stroke-dasharray="6 4" marker-end="url(#r)"/>
+  <text x="320" y="285" text-anchor="middle" fill="#2e7d32" font-size="12">Schritte 5–7 wiederholen sich, solange das Programm läuft</text>
+</svg>
+<ol>
+  <li><b>Start:</b> <code>java Main</code> startet den <b>Launcher</b>. Er liest die Flags und lädt die JVM-Bibliothek (<code>jvm.dll</code> oder <code>libjvm.so</code>). Die JVM reserviert Heap, Metaspace und Code Cache.</li>
+  <li><b>Kernklassen laden:</b> Der <b>Bootstrap ClassLoader</b> lädt <code>java.lang.Object</code>, <code>String</code> und weitere aus dem Modul <code>java.base</code>. Die meisten kommen fertig aus dem <b>CDS-Archiv</b> (Class Data Sharing, ein vorbereitetes Abbild geladener Klassen). Das spart Startzeit.</li>
+  <li><b>Main laden:</b> Der <b>App ClassLoader</b> findet <code>Main.class</code> im Classpath. Die JVM <b>verifiziert</b> den Bytecode, legt die <code>static</code>-Felder an und führt den <code>static</code>-Block aus.</li>
+  <li><b>main() läuft:</b> Der Thread <code>main</code> bekommt einen eigenen <b>JVM Stack</b>. Jeder Aufruf legt einen <b>Frame</b> darauf: lokale Variablen, <b>Operand Stack</b> (Zwischenwerte der Bytecode-Befehle) und eine Referenz auf den Constant Pool.</li>
+  <li><b>Objekte entstehen:</b> <code>new</code> legt das Objekt im Heap an. Meist geht das in einen <b>TLAB</b> (Thread-Local Allocation Buffer, ein privates Stück Eden pro Thread). Das ist fast so billig wie ein Pointer-Inkrement. Im Frame liegt nur die Referenz.</li>
+  <li><b>Ausführen:</b> Der <b>Interpreter</b> führt den Bytecode aus und zählt Aufrufe. Heisse Methoden kompiliert der <b>JIT</b> in den Code Cache. Neue Klassen werden erst geladen, wenn der Code sie braucht (<b>lazy</b>).</li>
+  <li><b>Aufräumen:</b> Ist Eden voll, startet der <b>GC</b>. Er findet erreichbare Objekte ab den <b>GC Roots</b> (Stack-Variablen, statische Felder, JNI-Referenzen). Alle anderen gibt er frei.</li>
+  <li><b>Ende:</b> Die JVM endet, wenn der letzte <b>Nicht-Daemon-Thread</b> fertig ist oder <code>System.exit</code> läuft. Vorher laufen die <b>Shutdown Hooks</b>.</li>
+</ol>
+
+<h2>3. Beispiel: die Teile der JVM von innen sehen</h2>
+<pre>import java.lang.management.*;
+
+public class JvmTour {
+  static int depth = 0;
+  static void recurse() { depth++; recurse(); }
+
+  public static void main(String[] args) {
+    System.out.println("VM:  " + System.getProperty("java.vm.name") + " " + Runtime.version());
+    System.out.println("JIT: " + ManagementFactory.getCompilationMXBean().getName());
+    for (GarbageCollectorMXBean gc : ManagementFactory.getGarbageCollectorMXBeans())
+      System.out.println("GC:  " + gc.getName());
+    System.out.println("Memory Pools:");
+    for (MemoryPoolMXBean p : ManagementFactory.getMemoryPoolMXBeans())
+      System.out.printf("  %-8s %-31s %,6d KB%n",
+          p.getType() == MemoryType.HEAP ? "Heap" : "Non-Heap", p.getName(), p.getUsage().getUsed() / 1024);
+    System.out.println("Geladene Klassen: " + ManagementFactory.getClassLoadingMXBean().getLoadedClassCount());
+    System.out.println("Java-Threads: " + Thread.getAllStackTraces().keySet().stream().map(Thread::getName).sorted().toList());
+    try { recurse(); } catch (StackOverflowError e) {
+      System.out.println("StackOverflowError nach " + depth + " Aufrufen");
+    }
+    try { long[][] keep = new long[1000][]; for (int i = 0; ; i++) keep[i] = new long[1_000_000]; }
+    catch (OutOfMemoryError e) { System.out.println("OutOfMemoryError: " + e.getMessage()); }
+  }
+}</pre>
+<pre>$ java -Xmx256m JvmTour
+VM:  Java HotSpot(TM) 64-Bit Server VM 17.0.3.1+2-LTS-6
+JIT: HotSpot 64-Bit Tiered Compilers
+GC:  G1 Young Generation
+GC:  G1 Old Generation
+Memory Pools:
+  Non-Heap CodeHeap 'non-nmethods'          1,642 KB
+  Non-Heap Metaspace                          847 KB
+  Non-Heap CodeHeap 'profiled nmethods'       390 KB
+  Non-Heap Compressed Class Space              84 KB
+  Heap     G1 Eden Space                    2,048 KB
+  Heap     G1 Old Gen                           0 KB
+  Heap     G1 Survivor Space                    0 KB
+  Non-Heap CodeHeap 'non-profiled nmethods'     93 KB
+Geladene Klassen: 954
+Java-Threads: [Attach Listener, Common-Cleaner, Finalizer, Notification Thread, Reference Handler, Signal Dispatcher, main]
+StackOverflowError nach 19636 Aufrufen
+OutOfMemoryError: Java heap space
+
+$ java -Xmx256m -Xss256k JvmTour      (nur die Stack-Zeile)
+StackOverflowError nach 2421 Aufrufen
+
+$ java -Xmx256m -Xint JvmTour
+Exception in thread "main" java.lang.NullPointerException: Cannot invoke "java.lang.management.CompilationMXBean.getName()" because the return value of "java.lang.management.ManagementFactory.getCompilationMXBean()" is null</pre>
+<p class="small">Echte Ausgabe, OpenJDK 17.0.3 (Oracle-HotSpot-Build 17.0.3.1), Windows x64. Java 21 und 25 zeigen dieselben Pool-Namen und dasselbe Verhalten. Die Zahl der Aufrufe bis zum <code>StackOverflowError</code> schwankt von Lauf zu Lauf (ein anderer Lauf: 20540).</p>
+<ol>
+  <li>Die Execution Engine hat einen <b>JIT</b> („Tiered Compilers“ = C1 + C2) und den <b>G1</b>-GC. G1 ist seit Java 9 der Standard.</li>
+  <li><b>Heap</b> besteht bei G1 aus <b>Eden</b>, <b>Survivor</b> und <b>Old Gen</b>. Neue Objekte landen in Eden.</li>
+  <li><b>Non-Heap</b> sind Metaspace, <b>Compressed Class Space</b> (Klassen-Metadaten für komprimierte Klassen-Pointer) und drei <b>CodeHeaps</b> (der segmentierte Code Cache).</li>
+  <li>Ein leeres Programm lädt schon 954 Klassen. Die meisten kommen aus <code>java.base</code>.</li>
+  <li>Die JVM hat eigene Java-Threads, z. B. <code>Reference Handler</code> und <code>Signal Dispatcher</code>. GC- und JIT-Threads sind native Threads und fehlen in dieser Liste.</li>
+  <li>Der <b>Stack</b> ist pro Thread begrenzt. <code>-Xss256k</code> macht ihn kleiner, darum kommt der <code>StackOverflowError</code> viel früher.</li>
+  <li>Der <b>Heap</b> ist durch <code>-Xmx256m</code> begrenzt. Darum kommt <code>OutOfMemoryError: Java heap space</code>.</li>
+  <li>Mit <code>-Xint</code> gibt es keinen JIT. <code>getCompilationMXBean()</code> liefert dann <code>null</code>.</li>
+</ol>
+
+<h2>4. Details, die Interviewer fragen</h2>
+<ol>
+  <li><b>Spezifikation vs. Implementierung:</b> Die <b>JVM Specification</b> beschreibt nur das Verhalten. <b>HotSpot</b> ist die Implementierung in OpenJDK. Begriffe wie Metaspace, Code Cache oder G1 sind HotSpot, nicht Spec.</li>
+  <li><b>Sechs Run-Time Data Areas laut Spec:</b> PC Register, JVM Stack, Native Method Stack (pro Thread). Heap, Method Area, Run-Time Constant Pool (pro JVM).</li>
+  <li><b>Stack Frame:</b> Ein Frame hat ein Array für <b>lokale Variablen</b>, einen <b>Operand Stack</b> und eine Referenz auf den Constant Pool der Klasse. Der Frame entsteht beim Aufruf und verschwindet beim Return.</li>
+  <li><b>Bytecode ist stack-basiert:</b> <code>a + b</code> wird zu <code>iload_1</code>, <code>iload_2</code>, <code>iadd</code>. Die Werte gehen über den Operand Stack, nicht über Register.</li>
+  <li><b>Metaspace:</b> Seit Java 8 ersetzt <b>Metaspace</b> die <b>PermGen</b> (JEP 122). Metaspace liegt im nativen Speicher und ist standardmässig <b>unbegrenzt</b>. <code>-XX:MaxMetaspaceSize</code> setzt eine Grenze.</li>
+  <li><b>Wo liegen statische Felder?</b> In HotSpot liegen die Werte von <code>static</code>-Feldern im Heap, im <code>java.lang.Class</code>-Objekt der Klasse. Die Klassen-Metadaten liegen im Metaspace. Auch der <b>String Pool</b> liegt im Heap.</li>
+  <li><b>Code Cache:</b> Speicher für JIT-Code, seit Java 9 in drei Segmente geteilt (JEP 197): non-nmethods, profiled, non-profiled. Standardgrösse mit Tiered Compilation: 240 MB.</li>
+  <li><b>Object Header:</b> Jedes Objekt hat einen Header mit <b>Mark Word</b> (Hash, Lock-Status, GC-Alter) und <b>Klassen-Pointer</b>. Normal sind das 12 Bytes. Java 25 bietet <b>Compact Object Headers</b> mit 8 Bytes an (JEP 519, Flag <code>-XX:+UseCompactObjectHeaders</code>, nicht Standard).</li>
+  <li><b>Virtual Threads</b> (Java 21, JEP 444): Ihr Stack liegt im <b>Heap</b> als Stack-Chunk-Objekte, wenn sie nicht laufen. Darum kosten Millionen Virtual Threads wenig Speicher. Platform Threads haben weiterhin einen festen nativen Stack.</li>
+  <li><b>Standard-Heapgrösse:</b> Ohne <code>-Xmx</code> nimmt HotSpot 1/4 des physischen Speichers (<code>MaxRAMPercentage=25</code>). In Containern zählt das Container-Limit (<code>UseContainerSupport</code>, Standard an).</li>
+  <li><b>GC-Auswahl:</b> Standard ist <b>G1</b>. Auf sehr kleinen Maschinen (1 CPU oder unter ca. 1792 MB) wählt die JVM <b>Serial GC</b>. <b>ZGC</b> ist seit Java 23 standardmässig generational, ab Java 24 nur noch generational.</li>
+  <li><b>Process-Speicher ist mehr als Heap:</b> RSS = Heap + Metaspace + Code Cache + Thread-Stacks + Direct Memory + GC-Strukturen + JVM-intern. Darum braucht ein Container mehr als <code>-Xmx</code>.</li>
+  <li><b>Startzeit:</b> CDS ist seit Java 12 standardmässig an. Java 24 bringt den <b>AOT Cache</b> (JEP 483): Klassen geladen und gelinkt aus einem Trainingslauf. Java 25 vereinfacht das mit <code>-XX:AOTCacheOutput</code> (JEP 514) und speichert auch Profile (JEP 515).</li>
+</ol>
+
+<h2>5. Vergleich</h2>
+<ul>
+  <li><b>JVM:</b> führt Bytecode aus. Kennt nur <code>.class</code>, nicht die Sprache Java. Auch Kotlin und Scala laufen darauf.</li>
+  <li><b>JRE:</b> JVM + Standardbibliothek. Seit Java 11 liefert Oracle kein eigenes JRE mehr. Heute baut man mit <b>jlink</b> eine eigene, kleine Runtime.</li>
+  <li><b>JDK:</b> JRE + Werkzeuge wie <code>javac</code>, <code>jcmd</code>, <code>jlink</code>, <code>jfr</code>.</li>
+  <li><b>Heap vs. Stack:</b> Heap ist geteilt, hält Objekte und wird vom GC verwaltet. Stack ist pro Thread, hält Frames und wird beim Return frei.</li>
+  <li><b>Metaspace vs. PermGen:</b> PermGen war fester Teil des Heaps bis Java 7. Metaspace ist nativer Speicher, wächst automatisch und existiert seit Java 8.</li>
+  <li><b>HotSpot vs. OpenJ9 vs. GraalVM:</b> HotSpot ist die Standard-JVM in OpenJDK. <b>OpenJ9</b> (Eclipse) braucht oft weniger Speicher. <b>GraalVM</b> hat einen JIT in Java und baut <b>Native Images</b> ohne JVM zur Laufzeit.</li>
+  <li><b>JVM vs. Native Image:</b> JVM: Warm-up, dann beste Spitzenleistung. Native Image: Start in Millisekunden, aber Reflection braucht Konfiguration.</li>
+</ul>
+
+<h2>6. In der Produktion</h2>
+<ol>
+  <li><b>Container wird OOMKilled, aber kein OutOfMemoryError:</b> Der Prozess braucht mehr als das Container-Limit. Der Heap ist nur ein Teil. Lösung: <code>-XX:MaxRAMPercentage=70–75</code> statt festem <code>-Xmx</code> nahe am Limit. Native Speicher mit <b>NMT</b> messen.</li>
+  <li><b><code>OutOfMemoryError: Java heap space</code>:</b> Zu viele lebende Objekte, oft ein Leak in einem Cache. Lösung: Heap Dump bei OOM (<code>-XX:+HeapDumpOnOutOfMemoryError</code>) und mit Eclipse MAT den Besitzer finden.</li>
+  <li><b><code>OutOfMemoryError: Metaspace</code>:</b> Zu viele Klassen, oft ein <b>ClassLoader-Leak</b> nach Redeploys oder viele generierte Proxies. Lösung: Leak finden, <code>MaxMetaspaceSize</code> als Schutzgrenze setzen.</li>
+  <li><b><code>StackOverflowError</code>:</b> Endlose oder zu tiefe Rekursion. Lösung: Rekursion in eine Schleife umbauen. <code>-Xss</code> nur erhöhen, wenn die Tiefe wirklich nötig ist.</li>
+  <li><b><code>OutOfMemoryError: unable to create native thread</code>:</b> Zu viele Platform Threads, jeder mit eigenem Stack. Lösung: Thread-Pool begrenzen oder Virtual Threads (Java 21+).</li>
+  <li><b>Langsamer Start nach Deployment:</b> Klassen laden und JIT-Warm-up kosten Zeit. Lösung: CDS/AppCDS, AOT Cache (Java 24+), Readiness Probe erst nach Warm-up.</li>
+</ol>
+
+<h2>7. Diagnose: Werkzeuge, Flags, Befehle</h2>
+<ul>
+  <li><code>jcmd</code>: listet alle JVMs. <code>jcmd &lt;pid&gt; help</code> zeigt alle Befehle.</li>
+  <li><code>jcmd &lt;pid&gt; VM.flags</code> oder <code>jinfo -flags &lt;pid&gt;</code>: aktive JVM-Flags.</li>
+  <li><code>java -XX:+PrintFlagsFinal -version</code>: alle Flags mit Endwerten, z. B. <code>MaxHeapSize</code>, <code>UseG1GC</code>, <code>ReservedCodeCacheSize</code>.</li>
+  <li><code>jcmd &lt;pid&gt; GC.heap_info</code>: Heap-Regionen und Belegung. <code>jstat -gc &lt;pid&gt; 1000</code>: GC-Statistik jede Sekunde.</li>
+  <li><code>jcmd &lt;pid&gt; VM.metaspace</code>: Metaspace-Verbrauch pro ClassLoader.</li>
+  <li><code>-XX:NativeMemoryTracking=summary</code> + <code>jcmd &lt;pid&gt; VM.native_memory summary</code>: nativer Speicher pro Bereich (Heap, Class, Thread, Code, GC).</li>
+  <li><code>jcmd &lt;pid&gt; Thread.print</code>: Stack aller Threads (Thread Dump).</li>
+  <li><code>-Xlog:gc*</code>: GC-Log. <code>-Xlog:class+load</code>: geladene Klassen.</li>
+  <li><b>JFR</b> (Java Flight Recorder): <code>jcmd &lt;pid&gt; JFR.start duration=60s filename=rec.jfr</code>. Geringer Overhead, geeignet für die Produktion. Auswerten mit <b>JDK Mission Control</b>.</li>
+  <li><code>-XX:+HeapDumpOnOutOfMemoryError -XX:HeapDumpPath=/dumps</code>: Heap Dump automatisch bei OOM.</li>
+</ul>
+
+<h2>8. Senior-Punkte</h2>
+<div class="senior">
+<ol>
+  <li><b>Speicher planen heisst Prozess-Speicher planen,</b> nicht nur Heap. Faustregel im Container: Heap 70–75 % des Limits, der Rest für Metaspace, Stacks, Code Cache und Direct Memory.</li>
+  <li><b>Spec und HotSpot trennen.</b> Im Interview zuerst die Spec-Begriffe (Method Area), dann die HotSpot-Umsetzung (Metaspace). Das zeigt Tiefe.</li>
+  <li><b>Standardwerte sind meist gut.</b> G1 und Ergonomics passen für die meisten Services. Flags nur nach Messung ändern.</li>
+  <li><b>GC-Wahl ist eine Abwägung:</b> G1 für Durchsatz und gute Pausen. ZGC für sehr kurze Pausen bei grossen Heaps, mit etwas mehr CPU und Speicher. Serial für kleine Container mit 1 CPU.</li>
+  <li><b>Startzeit vs. Spitzenleistung:</b> Lange laufende Services profitieren vom JIT. Kurze Jobs oder Serverless profitieren von AOT Cache oder Native Image.</li>
+  <li><b>Virtual Threads ändern die Rechnung:</b> Viele blockierende Aufgaben brauchen keine grossen Thread-Pools mehr. Aber CPU-lastige Arbeit wird dadurch nicht schneller.</li>
+</ol>
+</div>
+
+<h2>9. Aus dem Projekt</h2>
+<p>„Ein Service im Kubernetes-Pod wurde OOMKilled, obwohl der Heap nur halb voll war. Mit NMT sahen wir viel Thread- und Metaspace-Speicher und setzten <code>MaxRAMPercentage</code> statt festem <code>-Xmx</code>.“ <span class="small">(Prüfen und durch dein echtes Beispiel ersetzen.)</span></p>
+
+<h2>10. Fallen</h2>
+<div class="trap">
+<ul>
+  <li>„Klassen-Metadaten liegen in der PermGen.“ → <b>Falsch.</b> PermGen gibt es seit Java 8 nicht mehr. Heute: <b>Metaspace</b> im nativen Speicher.</li>
+  <li>„<code>-Xmx</code> ist der Speicher der JVM.“ → <b>Falsch.</b> <code>-Xmx</code> begrenzt nur den Heap. Der Prozess braucht mehr.</li>
+  <li>„Primitive liegen im Stack, Objekte im Heap.“ → <b>Ungenau.</b> Lokale Primitive liegen im Frame. Primitive Felder eines Objekts liegen mit dem Objekt im Heap.</li>
+  <li>„Die JVM ist ein Interpreter.“ → <b>Falsch.</b> Sie hat Interpreter <b>und</b> JIT. Heisser Code läuft als Maschinencode.</li>
+  <li>„Jeder Thread hat seinen eigenen Heap.“ → <b>Falsch.</b> Der Heap ist geteilt. Nur der TLAB ist ein privater Teil von Eden für schnelles Anlegen.</li>
+  <li>„Das JRE ist ein eigenes Download-Paket.“ → <b>Veraltet.</b> Seit Java 11 baut man eine Runtime mit <code>jlink</code>.</li>
+  <li>„Ein StackOverflowError ist ein Heap-Problem.“ → <b>Falsch.</b> Er betrifft den Stack eines Threads. Mehr Heap hilft nicht.</li>
+</ul>
+</div>
+
+<h2>11. Fragen</h2>
+<details><summary>Was ist die JVM?</summary><p>Ein Programm, das Bytecode ausführt. Es macht Java plattformunabhängig: gleicher Bytecode, eigene JVM pro Betriebssystem und CPU.</p></details>
+<details><summary>Aus welchen Hauptteilen besteht die JVM?</summary><p>Class Loader Subsystem, Runtime Data Areas und Execution Engine. Dazu JNI/FFM als Brücke zu nativem Code.</p></details>
+<details><summary>Welche Run-Time Data Areas definiert die Spec?</summary><p>Pro Thread: PC Register, JVM Stack, Native Method Stack. Pro JVM: Heap, Method Area, Run-Time Constant Pool.</p></details>
+<details><summary>Was ist der Unterschied zwischen Heap und Stack?</summary><p>Der Heap ist geteilt und hält Objekte, der GC räumt ihn auf. Der Stack gehört einem Thread und hält Frames mit lokalen Variablen.</p></details>
+<details><summary>Was steht in einem Stack Frame?</summary><p>Lokale Variablen, der Operand Stack und eine Referenz auf den Constant Pool. Er entsteht beim Aufruf und verschwindet beim Return.</p></details>
+<details><summary>Was ist die Method Area und wie heisst sie in HotSpot?</summary><p>Sie hält Klassen-Metadaten, Bytecode und den Run-Time Constant Pool. In HotSpot ist das der Metaspace im nativen Speicher.</p></details>
+<details><summary>Warum wurde PermGen durch Metaspace ersetzt?</summary><p>PermGen hatte eine feste Grösse und lief oft voll. Metaspace liegt im nativen Speicher und wächst nach Bedarf. Das kam mit Java 8.</p></details>
+<details><summary>Wo liegen statische Variablen?</summary><p>In HotSpot im Heap, im Class-Objekt der Klasse. Die Metadaten der Klasse liegen im Metaspace.</p></details>
+<details><summary>Was ist der Run-Time Constant Pool?</summary><p>Eine Tabelle pro Klasse mit Konstanten und symbolischen Referenzen auf Klassen, Methoden und Felder. Die JVM löst diese Referenzen bei Bedarf auf.</p></details>
+<details><summary>Was macht die Execution Engine?</summary><p>Sie führt Bytecode aus: zuerst der Interpreter, heisse Methoden der JIT. Der GC gehört auch dazu.</p></details>
+<details><summary>Was ist der Code Cache?</summary><p>Nativer Speicher für JIT-kompilierten Maschinencode. Seit Java 9 in drei Segmente geteilt. Ist er voll, stoppt der JIT.</p></details>
+<details><summary>Was ist ein TLAB?</summary><p>Ein privates Stück Eden pro Thread. Objekte werden dort ohne Lock angelegt, nur durch Verschieben eines Pointers.</p></details>
+<details><summary>Was sind GC Roots?</summary><p>Startpunkte für die Erreichbarkeit: lokale Variablen in Frames, statische Felder, JNI-Referenzen, aktive Threads. Was davon nicht erreichbar ist, kann weg.</p></details>
+<details><summary>Welcher GC ist Standard?</summary><p>G1, seit Java 9. Auf sehr kleinen Maschinen wählt die JVM Serial GC.</p></details>
+<details><summary>Wie gross ist der Heap ohne -Xmx?</summary><p>1/4 des physischen Speichers oder des Container-Limits. Steuerbar mit MaxRAMPercentage.</p></details>
+<details><summary>Warum braucht der Java-Prozess mehr Speicher als -Xmx?</summary><p>Dazu kommen Metaspace, Code Cache, Thread-Stacks, Direct Memory und GC-Strukturen. Messen mit Native Memory Tracking.</p></details>
+<details><summary>Was ist der Unterschied zwischen JVM, JRE und JDK?</summary><p>JVM führt Bytecode aus. JRE ist JVM plus Bibliothek. JDK ist JRE plus Werkzeuge wie javac.</p></details>
+<details><summary>Was ist JNI und was ist FFM?</summary><p>JNI ist die alte Schnittstelle zu C-Code. Die FFM API ist der moderne Ersatz, final seit Java 22, ohne C-Glue-Code.</p></details>
+<details><summary>Wo liegt der Stack eines Virtual Threads?</summary><p>Wenn er nicht läuft, im Heap als Stack-Chunk-Objekte. Darum sind Virtual Threads billig.</p></details>
+<details><summary>Was ist der Object Header?</summary><p>Mark Word plus Klassen-Pointer, normal 12 Bytes. Java 25 bietet Compact Object Headers mit 8 Bytes als Option.</p></details>
+<details><summary>Wann endet die JVM?</summary><p>Wenn der letzte Nicht-Daemon-Thread endet oder System.exit läuft. Vorher laufen Shutdown Hooks.</p></details>
+<details><summary>Was ist CDS?</summary><p>Class Data Sharing: ein Archiv mit vorbereiteten Klassen. Es spart Startzeit und Speicher. Seit Java 12 standardmässig für JDK-Klassen an.</p></details>
+<details><summary>Welche OutOfMemoryError-Arten kennen Sie?</summary><p>Java heap space, Metaspace, unable to create native thread, Direct buffer memory, GC overhead limit exceeded. Jede zeigt auf einen anderen Speicherbereich.</p></details>
+<details><summary>Wie sehen Sie die Speicherbereiche einer laufenden JVM?</summary><p>jcmd GC.heap_info, VM.metaspace, VM.native_memory summary (mit NMT), jstat -gc, JFR. Im Code über MemoryPoolMXBean.</p></details>
+<details><summary>Szenario: Der Pod wird OOMKilled, aber es gibt keinen OutOfMemoryError im Log. Was tun Sie?</summary><p>Der Prozess ist über dem Container-Limit, nicht der Heap. NMT einschalten und Bereiche vergleichen. Heap mit MaxRAMPercentage auf ca. 75 % setzen und Thread-Zahl prüfen.</p></details>
+<details><summary>Szenario: Nach vielen Redeploys im Tomcat kommt OutOfMemoryError: Metaspace. Warum?</summary><p>Ein ClassLoader-Leak: Etwas hält eine Referenz auf den alten Webapp-ClassLoader. Seine Klassen bleiben im Metaspace. Mit Heap Dump den Pfad zum Loader finden, z. B. ThreadLocal oder JDBC-Treiber.</p></details>
+<details><summary>Szenario: Ein Batch-Job wirft StackOverflowError bei tiefen Bäumen. Was tun Sie?</summary><p>Die Rekursion ist zu tief für den Thread-Stack. Besser iterativ mit eigenem Deque umbauen. Kurzfristig -Xss erhöhen oder den Job in einem Thread mit grösserem Stack starten.</p></details>
+
+</body>
+</html>
