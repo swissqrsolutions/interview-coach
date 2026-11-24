@@ -1,0 +1,223 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Requests, Limits, QoS-Klassen, OOMKilled</title>
+<style>
+  body { font: 17px/1.55 -apple-system, system-ui, sans-serif; max-width: 760px; margin: 0 auto; padding: 16px; color: #1d1d1f; }
+  h1 { font-size: 28px; margin: 8px 0 4px; }
+  h2 { font-size: 21px; margin: 32px 0 8px; padding-top: 12px; border-top: 2px solid #e5e5ea; }
+  .kern { background: #eef6ff; border-left: 4px solid #0a66c2; padding: 10px 14px; border-radius: 6px; }
+  .senior { background: #f0faf0; border-left: 4px solid #2e7d32; padding: 10px 14px; border-radius: 6px; }
+  .trap { background: #fff4f2; border-left: 4px solid #c62828; padding: 10px 14px; border-radius: 6px; }
+  code { background: #f2f2f7; padding: 1px 5px; border-radius: 4px; font-size: 15px; }
+  pre { background: #1e1e1e; color: #e6e6e6; padding: 12px; border-radius: 8px; overflow-x: auto; font-size: 13.5px; line-height: 1.45; }
+  svg { width: 100%; height: auto; display: block; margin: 10px 0; }
+  ol li, ul li { margin: 4px 0; }
+  details { border: 1px solid #e5e5ea; border-radius: 8px; padding: 8px 12px; margin: 6px 0; }
+  summary { font-weight: 600; cursor: pointer; }
+  details p { margin: 6px 0 2px; }
+  .small { color: #6e6e73; font-size: 14px; }
+</style>
+</head>
+<body>
+
+<h1>Requests, Limits, QoS-Klassen, OOMKilled</h1>
+<p class="small">Kubernetes · Tier 1 · Quellen: kubernetes.io (Resource Management for Pods and Containers, Pod Quality of Service Classes, Node-pressure Eviction, Reserve Compute Resources, Resize CPU and Memory Resources assigned to Containers — stabil seit 1.35, LimitRange, ResourceQuota), Linux-Kernel-Doku cgroup v2 (cpu.max, memory.max), OpenJDK (UseContainerSupport, MaxRAMPercentage, JDK-8281181)</p>
+
+<div class="kern">
+<b>Kern:</b> Ein <b>Request</b> ist die Menge CPU und Speicher, die Kubernetes einem Container beim Planen fest reserviert. Ein <b>Limit</b> ist die Obergrenze, die der Linux-Kernel zur Laufzeit durchsetzt. Über CPU-Limit wird ein Container <b>gedrosselt</b> (Throttling), über Memory-Limit wird er <b>getötet</b> (OOMKilled). Aus Requests und Limits folgt die <b>QoS-Klasse</b>, die bestimmt, wer bei Speichermangel zuerst gehen muss.
+</div>
+
+<h2>1. Wo wirken Requests und Limits?</h2>
+<svg viewBox="0 0 720 320" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="a" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="10" y="20" width="150" height="60" rx="8" fill="#fff" stroke="#555"/><text x="85" y="45" text-anchor="middle" font-weight="700">Pod-Spec</text><text x="85" y="64" text-anchor="middle" font-size="12">requests · limits</text>
+  <line x1="160" y1="50" x2="218" y2="50" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="220" y="20" width="170" height="60" rx="8" fill="#0a66c2"/><text x="305" y="45" text-anchor="middle" fill="#fff" font-weight="700">Scheduler</text><text x="305" y="64" text-anchor="middle" fill="#fff" font-size="12">zählt nur Requests</text>
+  <line x1="390" y1="50" x2="448" y2="50" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="450" y="20" width="260" height="60" rx="8" fill="#dbe9fb" stroke="#0a66c2"/><text x="580" y="45" text-anchor="middle" font-weight="700">Node: Allocatable</text><text x="580" y="64" text-anchor="middle" font-size="12">Kapazität − System-Reserve</text>
+  <line x1="580" y1="80" x2="580" y2="128" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="450" y="130" width="260" height="60" rx="8" fill="#fff" stroke="#555"/><text x="580" y="155" text-anchor="middle" font-weight="700">kubelet + Container Runtime</text><text x="580" y="174" text-anchor="middle" font-size="12">schreibt cgroup-Werte</text>
+  <line x1="530" y1="190" x2="420" y2="238" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <line x1="630" y1="190" x2="640" y2="238" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="200" y="240" width="300" height="70" rx="8" fill="#e8f5e9" stroke="#2e7d32"/><text x="350" y="264" text-anchor="middle" font-weight="700">CPU (komprimierbar)</text><text x="350" y="284" text-anchor="middle" font-size="12">Request → cpu.weight · Limit → cpu.max</text><text x="350" y="300" text-anchor="middle" font-size="12">zu viel → Throttling</text>
+  <rect x="520" y="240" width="190" height="70" rx="8" fill="#fff4f2" stroke="#c62828"/><text x="615" y="264" text-anchor="middle" font-weight="700">Memory</text><text x="615" y="284" text-anchor="middle" font-size="12">Limit → memory.max</text><text x="615" y="300" text-anchor="middle" font-size="12">zu viel → OOMKill</text>
+  <rect x="10" y="130" width="170" height="60" rx="8" fill="#fff" stroke="#999" stroke-dasharray="5 4"/><text x="95" y="155" text-anchor="middle" font-weight="700">QoS-Klasse</text><text x="95" y="174" text-anchor="middle" font-size="12">aus requests/limits</text>
+  <line x1="85" y1="80" x2="85" y2="128" stroke="#999" stroke-width="1.5" marker-end="url(#a)"/>
+</svg>
+<ol>
+  <li><b>Pod-Spec:</b> Jeder Container nennt <code>resources.requests</code> und <code>resources.limits</code>, z. B. <code>cpu: 500m</code> (eine halbe CPU) und <code>memory: 1Gi</code>.</li>
+  <li><b>Scheduler:</b> summiert die Requests aller Pods auf einem Node. Passt der neue Request nicht mehr in <b>Allocatable</b>, kommt der Pod nicht dorthin. Die echte Auslastung zählt nicht.</li>
+  <li><b>Allocatable:</b> Node-Kapazität minus <code>kube-reserved</code>, <code>system-reserved</code> und Eviction-Schwelle.</li>
+  <li><b>kubelet und Runtime:</b> übersetzen die Werte in <b>cgroups</b>. Der CPU-Request wird ein Gewicht (<code>cpu.weight</code>), das CPU-Limit eine Quote (<code>cpu.max</code>), das Memory-Limit eine harte Grenze (<code>memory.max</code>).</li>
+  <li><b>QoS-Klasse:</b> wird aus Requests und Limits berechnet und in <code>status.qosClass</code> gespeichert.</li>
+</ol>
+
+<h2>2. Die Reise eines Containers durch Engpässe</h2>
+<svg viewBox="0 0 720 300" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="b" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="10" y="20" width="160" height="70" rx="10" fill="#eee" stroke="#777"/><text x="90" y="46" text-anchor="middle" font-weight="700">1. Geplant</text><text x="90" y="66" text-anchor="middle" font-size="12">Request passt auf Node</text>
+  <line x1="170" y1="55" x2="208" y2="55" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="210" y="20" width="160" height="70" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="290" y="46" text-anchor="middle" font-weight="700">2. CPU-Spitze</text><text x="290" y="66" text-anchor="middle" font-size="12">Quote in 100 ms leer</text>
+  <line x1="370" y1="55" x2="408" y2="55" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="410" y="20" width="140" height="70" rx="10" fill="#fff" stroke="#555"/><text x="480" y="46" text-anchor="middle" font-weight="700">3. Throttling</text><text x="480" y="66" text-anchor="middle" font-size="12">wartet, Latenz ↑</text>
+  <line x1="550" y1="55" x2="588" y2="55" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="590" y="20" width="120" height="70" rx="10" fill="#fff" stroke="#555"/><text x="650" y="46" text-anchor="middle" font-weight="700">4. Heap</text><text x="650" y="66" text-anchor="middle" font-size="12">wächst</text>
+  <line x1="650" y1="90" x2="650" y2="148" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="470" y="150" width="240" height="70" rx="10" fill="#fff4f2" stroke="#c62828"/><text x="590" y="176" text-anchor="middle" font-weight="700">5. memory.max erreicht</text><text x="590" y="196" text-anchor="middle" font-size="12">Kernel OOM Killer · Exit 137</text>
+  <line x1="470" y1="185" x2="382" y2="185" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="190" y="150" width="190" height="70" rx="10" fill="#0a66c2"/><text x="285" y="176" text-anchor="middle" fill="#fff" font-weight="700">6. Neustart</text><text x="285" y="196" text-anchor="middle" fill="#fff" font-size="12">Reason: OOMKilled</text>
+  <rect x="10" y="240" width="700" height="50" rx="10" fill="#e8f5e9" stroke="#2e7d32"/><text x="360" y="262" text-anchor="middle" font-weight="700">7. Node knapp an RAM: kubelet räumt (Eviction)</text><text x="360" y="280" text-anchor="middle" font-size="12">zuerst Pods über ihrem Request: BestEffort, dann Burstable · Guaranteed zuletzt</text>
+</svg>
+<ol>
+  <li><b>Geplant.</b> Ein Spring-Boot-Pod hat <code>requests: cpu 500m, memory 1Gi</code> und <code>limits: cpu 1, memory 1Gi</code>. Der Scheduler findet einen Node mit genug freien Requests.</li>
+  <li><b>CPU-Spitze.</b> Ein Request startet 8 parallele Threads. Das CPU-Limit 1 heisst: 100 ms CPU-Zeit pro 100-ms-Periode (<b>CFS-Quota</b>). 8 Threads verbrauchen das in 12,5 ms.</li>
+  <li><b>Throttling.</b> Für die restlichen 87,5 ms der Periode darf der Container nicht rechnen. Die Antwortzeit steigt stark, obwohl die durchschnittliche CPU-Last nur 30 % zeigt.</li>
+  <li><b>Speicher wächst.</b> Der Heap ist auf 75 % des Limits gesetzt. Dazu kommen Metaspace, Thread-Stacks, Code Cache und Direct Buffers.</li>
+  <li><b>Limit erreicht.</b> Der Kernel kann keinen Speicher mehr geben. Der <b>OOM Killer</b> tötet den Prozess mit <code>SIGKILL</code>. Exit-Code 137 = 128 + 9.</li>
+  <li><b>Neustart.</b> Der kubelet meldet <code>Last State: Terminated, Reason: OOMKilled</code> und startet den Container neu. Kein Java-Stacktrace, kein <code>OutOfMemoryError</code> im Log.</li>
+  <li><b>Node-Druck.</b> Wird der ganze Node knapp, räumt der kubelet Pods (<b>Node-pressure Eviction</b>). Zuerst gehen Pods, die mehr als ihren Request nutzen. Guaranteed-Pods kommen zuletzt dran.</li>
+</ol>
+
+<h2>3. Beispiel: OOMKilled und die JVM-Heap-Grösse</h2>
+<pre>apiVersion: v1
+kind: Pod
+metadata: { name: memory-demo, namespace: demo-resources }
+spec:
+  containers:
+  - name: stress
+    image: polinux/stress
+    command: ["stress"]
+    args: ["--vm", "1", "--vm-bytes", "250M", "--vm-hang", "1"]
+    resources:
+      requests: { memory: "50Mi" }
+      limits:   { memory: "100Mi" }
+
+$ kubectl -n demo-resources get pod memory-demo -o jsonpath='{.status.qosClass}'
+$ kubectl -n demo-resources describe pod memory-demo | grep -A4 "Last State"</pre>
+<pre>Burstable
+    Last State:     Terminated
+      Reason:       OOMKilled
+      Exit Code:    137
+      Started:      ...
+      Finished:     ...</pre>
+<p class="small">Erwartetes Ergebnis (laut Doku, nicht ausgeführt). Beispiel aus der kubernetes.io-Aufgabe „Assign Memory Resources to Containers“; der lokale k3s-Cluster war nicht erreichbar.</p>
+<pre>$ java -XX:+PrintFlagsFinal -version | grep -E "MaxRAMPercentage| MaxHeapSize"
+   size_t MaxHeapSize          = 4110417920     {product} {ergonomic}
+   double MaxRAMPercentage     = 25.000000      {product} {default}
+$ java -XX:MaxRAMPercentage=75 -XX:+PrintFlagsFinal -version | grep -E "MaxRAMPercentage| MaxHeapSize"
+   size_t MaxHeapSize          = 12331253760    {product} {ergonomic}
+   double MaxRAMPercentage     = 75.000000      {product} {command line}</pre>
+<p class="small">Echte Ausgabe, Oracle JDK 17.0.3 auf einem Windows-Host mit ca. 16 GB RAM (nicht im Container). Spalten gekürzt.</p>
+<ol>
+  <li>Der Container will 250 MB, das Limit ist 100 Mi. Der Kernel tötet ihn: <code>OOMKilled</code>, Exit-Code 137.</li>
+  <li>Request (50Mi) ist kleiner als Limit (100Mi): QoS-Klasse <b>Burstable</b>.</li>
+  <li>Die JVM nimmt standardmässig nur <b>25 %</b> des Speichers als Heap: hier 3,8 GiB von 16 GB. In einem Container mit 1 GiB Limit wären es nur 256 MiB.</li>
+  <li>Mit <code>-XX:MaxRAMPercentage=75</code> steigt der Heap auf 75 %. Im Container zählt das Memory-Limit als „RAM“, weil <code>UseContainerSupport</code> (Linux) standardmässig an ist.</li>
+  <li>Aufräumen: <code>kubectl delete namespace demo-resources</code>.</li>
+</ol>
+
+<h2>4. Details, die Interviewer fragen</h2>
+<ol>
+  <li><b>Einheiten:</b> CPU in Cores oder Millicores (<code>250m</code> = 0,25 Core). Memory in Bytes mit Suffix: <code>Mi</code>/<code>Gi</code> sind Zweierpotenzen, <code>M</code>/<code>G</code> Zehnerpotenzen. <code>100m</code> Memory heisst 0,1 Byte, ein häufiger Tippfehler.</li>
+  <li><b>Fehlender Request:</b> Ist nur ein Limit gesetzt, setzt Kubernetes den Request gleich dem Limit. Ohne beides gilt der Container als BestEffort, ausser eine <b>LimitRange</b> setzt Standardwerte.</li>
+  <li><b>CFS-Quota:</b> Das CPU-Limit wird pro Periode von 100 ms durchgesetzt. Limit <code>500m</code> heisst 50 ms Rechenzeit pro 100 ms, über alle Threads zusammen. In cgroup v2: <code>cpu.max = 50000 100000</code>.</li>
+  <li><b>CPU-Request im Betrieb:</b> Er wirkt als relatives Gewicht bei Konkurrenz. Ist der Node nicht voll, darf ein Pod ohne Limit mehr CPU nutzen als sein Request.</li>
+  <li><b>Memory ist nicht komprimierbar.</b> Speicher kann man nicht drosseln, nur wegnehmen. Darum führt Überschreiten zum Kill, nicht zum Warten.</li>
+  <li><b>QoS Guaranteed:</b> Jeder Container hat CPU- und Memory-Request gleich Limit. Höchster Schutz bei Eviction, <code>oom_score_adj = -997</code>. Nötig für exklusive CPUs mit dem <b>CPU Manager</b> (Policy <code>static</code>, ganzzahlige CPU).</li>
+  <li><b>QoS Burstable:</b> Mindestens ein Container hat einen Request oder ein Limit, aber nicht alles ist gleich. Der OOM-Score hängt vom Memory-Request im Verhältnis zur Node-Grösse ab.</li>
+  <li><b>QoS BestEffort:</b> Kein Container hat Requests oder Limits. Wird bei Speicherdruck zuerst geräumt, <code>oom_score_adj = 1000</code>.</li>
+  <li><b>OOMKilled vs Eviction:</b> OOMKilled kommt vom Kernel, wenn ein Container sein eigenes Limit sprengt; der Container startet neu. Eviction kommt vom kubelet, wenn der Node knapp wird; der Pod wird beendet und neu geplant (Status <code>Evicted</code>).</li>
+  <li><b>JVM im Container:</b> <code>UseContainerSupport</code> liest Limits aus den cgroups. <code>MaxRAMPercentage</code> (Standard 25) bestimmt den Heap. Üblich sind 60–75 %, weil Non-Heap (Metaspace, Threads, Code Cache, Direct Memory) Platz braucht.</li>
+  <li><b>CPU-Anzahl der JVM:</b> Aktuelle JDKs leiten <code>availableProcessors()</code> nur aus dem CPU-Limit ab, nicht aus dem Request (JDK-8281181). Ohne Limit sieht die JVM alle Cores des Nodes und baut zu grosse Thread-Pools. Lösung: <code>-XX:ActiveProcessorCount</code>.</li>
+  <li><b>In-place Resize:</b> Seit Kubernetes 1.35 stabil. CPU und Memory ändert man über die <code>resize</code>-Subresource ohne neuen Pod. <code>resizePolicy</code> pro Ressource: <code>NotRequired</code> (ohne Neustart) oder <code>RestartContainer</code>. Die QoS-Klasse darf sich dabei nicht ändern.</li>
+  <li><b>Resize-Status:</b> Pod-Conditions <code>PodResizePending</code> (Grund <code>Infeasible</code> oder <code>Deferred</code>) und <code>PodResizeInProgress</code>. Memory verkleinern ist „best effort“: Liegt die Nutzung über dem neuen Limit, wartet der Resize.</li>
+  <li><b>LimitRange und ResourceQuota:</b> <b>LimitRange</b> setzt Standard- und Maximalwerte pro Container im Namespace. <b>ResourceQuota</b> begrenzt die Summe aller Requests und Limits im Namespace.</li>
+</ol>
+
+<h2>5. Vergleich</h2>
+<ul>
+  <li><b>Guaranteed:</b> Request = Limit für CPU und Memory. Vorhersehbar, am besten geschützt, aber keine Bursts. Für Datenbanken und latenzkritische Dienste.</li>
+  <li><b>Burstable:</b> Request &lt; Limit oder nur teilweise gesetzt. Gute Auslastung, Bursts möglich, mittlerer Schutz. Der Normalfall für Services.</li>
+  <li><b>BestEffort:</b> nichts gesetzt. Nutzt freie Reste, wird zuerst geopfert. Nur für unwichtige Batch-Arbeit.</li>
+  <li><b>CPU-Limit vs kein CPU-Limit:</b> Mit Limit: Schutz vor lauten Nachbarn, aber Throttling. Ohne Limit: keine Drosselung, Request garantiert den fairen Anteil.</li>
+  <li><b>Memory-Limit = Request vs Limit &gt; Request:</b> Gleich ist sicher bei Eviction. Höher erlaubt Überbuchung, riskiert aber Eviction bei vollem Node.</li>
+</ul>
+
+<h2>6. In der Produktion</h2>
+<ol>
+  <li><b>Hohe Latenz bei niedriger CPU-Auslastung:</b> CPU-Throttling durch ein kleines Limit und viele Threads. Lösung: Limit erhöhen oder entfernen, Request realistisch setzen, Thread-Pools passend zur CPU.</li>
+  <li><b>OOMKilled ohne Java-Fehler:</b> Heap plus Non-Heap übersteigt das Limit. Lösung: <code>MaxRAMPercentage</code> auf 70–75 % senken oder Limit erhöhen, Native Memory Tracking prüfen.</li>
+  <li><b>JVM nutzt nur einen Viertel des Speichers:</b> Standard 25 %, darum häufige GCs trotz grossem Limit. Lösung: <code>MaxRAMPercentage</code> setzen.</li>
+  <li><b>Pods Pending mit „Insufficient cpu“,</b> obwohl die Nodes kaum ausgelastet sind. Die Requests sind zu hoch. Lösung: Requests anhand echter Nutzung senken (VPA-Empfehlung), Nodes ergänzen.</li>
+  <li><b>Evictions bei Lastspitzen:</b> Viele Burstable-Pods mit kleinem Memory-Request auf einem Node. Lösung: Memory-Request nahe am echten Bedarf, Memory-Limit gleich Request für wichtige Pods.</li>
+  <li><b>Test-Container in der CI OOM-killed:</b> parallele Tests und ein speicherhungriger DB-Container. Lösung: harte Speichergrenze für den Container, Tests serialisieren, schnell scheitern beim Start.</li>
+</ol>
+
+<h2>7. Diagnose: Werkzeuge und Befehle</h2>
+<ul>
+  <li><code>kubectl describe pod</code>: <code>Last State: Terminated, Reason: OOMKilled, Exit Code: 137</code>, und QoS-Klasse.</li>
+  <li><code>kubectl describe node &lt;node&gt;</code>: Abschnitt <code>Allocated resources</code> zeigt Summe der Requests und Limits.</li>
+  <li><code>kubectl top pod --containers</code> und <code>kubectl top node</code>: echte Nutzung über Metrics Server.</li>
+  <li><code>kubectl get events -A --field-selector reason=Evicted</code> und <code>reason=OOMKilling</code> (Node-Event).</li>
+  <li>Prometheus: <code>container_cpu_cfs_throttled_periods_total / container_cpu_cfs_periods_total</code> für Throttling-Anteil; <code>container_memory_working_set_bytes</code> gegen das Limit.</li>
+  <li>Im Container: <code>cat /sys/fs/cgroup/cpu.max</code>, <code>cat /sys/fs/cgroup/memory.max</code>, <code>cat /sys/fs/cgroup/cpu.stat</code> (<code>nr_throttled</code>).</li>
+  <li>JVM: <code>java -XshowSettings:system -version</code> (erkannte Container-Grenzen), <code>-XX:NativeMemoryTracking=summary</code> mit <code>jcmd &lt;pid&gt; VM.native_memory</code>.</li>
+</ul>
+
+<h2>8. Senior-Punkte</h2>
+<div class="senior">
+<ol>
+  <li><b>Requests sind die wichtigste Zahl.</b> Sie steuern Scheduling, Kosten, Autoscaling und Eviction-Reihenfolge. Falsche Requests machen alles andere falsch.</li>
+  <li><b>Memory: Limit setzen, meist gleich Request.</b> Speicher kann man nicht drosseln. Gleiche Werte machen das Verhalten vorhersehbar.</li>
+  <li><b>CPU-Limits sind eine echte Abwägung.</b> Sie schützen vor Nachbarn, kosten aber Latenz durch Throttling. Viele Teams setzen nur CPU-Requests, ausser in Multi-Tenant-Clustern.</li>
+  <li><b>Die JVM muss die Grenzen kennen.</b> Heap-Prozent, CPU-Anzahl und Thread-Pools gehören zur Ressourcen-Planung, nicht nur zum Java-Code.</li>
+  <li><b>Policy statt Disziplin.</b> LimitRange, ResourceQuota oder Admission-Regeln (z. B. Kyverno) erzwingen Requests und Limits für jeden Pod.</li>
+  <li><b>Messen, dann setzen.</b> VPA im Empfehlungsmodus oder Prometheus-Daten liefern echte Werte. Raten führt zu Verschwendung oder Ausfällen.</li>
+</ol>
+</div>
+
+<h2>9. Aus dem Projekt</h2>
+<p>„Bei MATCH erzwingt Kyverno Resource Limits für Pods, und in der CI wurde der SQL-Server-Testcontainer OOM-killed, was wir mit einer 2-GB-Grenze und serialisierten Test-Collections gelöst haben (Docker in der CI, nicht Kubernetes).“ <span class="small">(Prüfen und durch dein echtes Beispiel ersetzen.)</span></p>
+
+<h2>10. Fallen</h2>
+<div class="trap">
+<ul>
+  <li>„Der Scheduler plant nach echter Auslastung.“ → <b>Falsch.</b> Nur nach Requests.</li>
+  <li>„Über dem CPU-Limit wird der Container getötet.“ → <b>Falsch.</b> Er wird gedrosselt. Getötet wird er nur über dem Memory-Limit.</li>
+  <li>„Niedrige durchschnittliche CPU heisst kein Throttling.“ → <b>Falsch.</b> Throttling passiert in 100-ms-Perioden. Kurze Spitzen mit vielen Threads reichen.</li>
+  <li>„Xmx gleich Memory-Limit ist richtig.“ → <b>Falsch.</b> Die JVM braucht Non-Heap-Speicher. Dann kommt OOMKilled.</li>
+  <li>„OOMKilled und Evicted sind dasselbe.“ → <b>Falsch.</b> OOMKilled: Kernel, eigenes Limit, Container-Neustart. Evicted: kubelet, Node-Druck, Pod wird neu geplant.</li>
+  <li>„Mit In-place Resize kann ich einen Pod von Burstable auf Guaranteed ändern.“ → <b>Falsch.</b> Die QoS-Klasse bleibt fest.</li>
+</ul>
+</div>
+
+<h2>11. Fragen</h2>
+<details><summary>Was ist der Unterschied zwischen Request und Limit?</summary><p>Der Request ist die reservierte Menge fürs Scheduling. Das Limit ist die harte Obergrenze zur Laufzeit.</p></details>
+<details><summary>Wonach plant der Scheduler?</summary><p>Nach der Summe der Requests im Vergleich zu Allocatable des Nodes. Echte Auslastung zählt nicht.</p></details>
+<details><summary>Was passiert über dem CPU-Limit?</summary><p>Der Container wird gedrosselt. Er muss bis zur nächsten 100-ms-Periode warten.</p></details>
+<details><summary>Was passiert über dem Memory-Limit?</summary><p>Der Kernel tötet den Prozess mit SIGKILL. Status OOMKilled, Exit-Code 137, danach Neustart.</p></details>
+<details><summary>Was ist CFS-Throttling?</summary><p>Der Completely Fair Scheduler gibt pro 100 ms nur die Quote des Limits. Ist sie verbraucht, steht der Container bis zur nächsten Periode.</p></details>
+<details><summary>Warum hat ein Service mit 30 % CPU trotzdem Throttling?</summary><p>Der Durchschnitt versteckt Spitzen. Viele Threads verbrauchen die Quote früh in der Periode und warten dann.</p></details>
+<details><summary>Welche QoS-Klassen gibt es?</summary><p>Guaranteed (Request = Limit für CPU und Memory in jedem Container), Burstable (teilweise gesetzt), BestEffort (nichts gesetzt).</p></details>
+<details><summary>Wer wird bei Speichermangel zuerst geräumt?</summary><p>Pods, deren Nutzung über dem Request liegt, zuerst BestEffort, dann Burstable. Guaranteed zuletzt. Priority spielt auch mit.</p></details>
+<details><summary>Was ist der Unterschied zwischen OOMKilled und Evicted?</summary><p>OOMKilled: Kernel, Container über eigenem Limit, Neustart im gleichen Pod. Evicted: kubelet bei Node-Druck, Pod wird beendet und neu erzeugt.</p></details>
+<details><summary>Was bedeutet Exit-Code 137?</summary><p>128 + 9, also SIGKILL. Meist OOMKilled, manchmal ein harter Kill nach der Grace Period.</p></details>
+<details><summary>Was passiert, wenn ich nur ein Limit setze?</summary><p>Kubernetes setzt den Request gleich dem Limit.</p></details>
+<details><summary>Sollte man CPU-Limits setzen?</summary><p>Es kommt darauf an. Ohne Limit kein Throttling, der Request garantiert den fairen Anteil. Mit Limit Schutz vor Nachbarn, aber Latenzrisiko.</p></details>
+<details><summary>Wie viel Heap bekommt die JVM im Container standardmässig?</summary><p>25 % des Memory-Limits (MaxRAMPercentage = 25). Üblich ist, ihn auf 60–75 % zu setzen.</p></details>
+<details><summary>Warum nicht MaxRAMPercentage=100?</summary><p>Die JVM braucht Speicher ausserhalb des Heaps: Metaspace, Thread-Stacks, Code Cache, Direct Buffers, GC-Strukturen. Sonst OOMKilled.</p></details>
+<details><summary>Wie viele CPUs sieht die JVM im Container?</summary><p>Aktuelle JDKs leiten sie aus dem CPU-Limit ab. Ohne Limit sieht sie alle Cores des Nodes. Mit ActiveProcessorCount setzt man sie fest.</p></details>
+<details><summary>Was ist In-place Pod Resize?</summary><p>CPU und Memory eines laufenden Pods ändern, ohne ihn neu zu erzeugen. Stabil seit Kubernetes 1.35, über die resize-Subresource.</p></details>
+<details><summary>Was ist resizePolicy?</summary><p>Pro Ressource: NotRequired (Änderung ohne Neustart) oder RestartContainer. Für Memory bei Apps wie der JVM oft RestartContainer, weil der Heap beim Start fest ist.</p></details>
+<details><summary>Was machen LimitRange und ResourceQuota?</summary><p>LimitRange setzt Standard- und Maximalwerte pro Container. ResourceQuota begrenzt die Summe im Namespace.</p></details>
+<details><summary>Was ist Allocatable?</summary><p>Die Node-Kapazität minus Reserve für System, kubelet und Eviction-Schwelle. Nur das steht Pods zur Verfügung.</p></details>
+<details><summary>Wie misst man Throttling?</summary><p>container_cpu_cfs_throttled_periods_total geteilt durch container_cpu_cfs_periods_total. Oder nr_throttled in cpu.stat der cgroup.</p></details>
+<details><summary>Szenario: Ein Java-Service wird alle paar Stunden OOMKilled, aber es gibt nie einen OutOfMemoryError. Was tun Sie?</summary><p>Der Prozess sprengt das Container-Limit, nicht den Heap. Heap-Prozent senken oder Limit erhöhen, mit Native Memory Tracking Non-Heap messen (Threads, Direct Buffers, Metaspace).</p></details>
+<details><summary>Szenario: Die P99-Latenz ist hoch, die CPU-Auslastung im Dashboard niedrig. Woran denken Sie?</summary><p>An CPU-Throttling durch ein knappes Limit. Throttling-Metrik prüfen, dann Limit erhöhen oder entfernen und Thread-Pools an die CPU anpassen.</p></details>
+<details><summary>Szenario: Neue Pods bleiben Pending mit „Insufficient memory“, aber kubectl top zeigt viel freien Speicher. Warum?</summary><p>Der Scheduler zählt Requests, nicht Nutzung. Die Requests sind zu hoch angesetzt. Requests nach echten Werten (VPA-Empfehlung) senken oder mehr Nodes bereitstellen.</p></details>
+
+</body>
+</html>

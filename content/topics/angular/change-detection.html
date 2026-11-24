@@ -1,0 +1,215 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Change Detection: Zone.js, OnPush, Zoneless</title>
+<style>
+  body { font: 17px/1.55 -apple-system, system-ui, sans-serif; max-width: 760px; margin: 0 auto; padding: 16px; color: #1d1d1f; }
+  h1 { font-size: 28px; margin: 8px 0 4px; }
+  h2 { font-size: 21px; margin: 32px 0 8px; padding-top: 12px; border-top: 2px solid #e5e5ea; }
+  .kern { background: #eef6ff; border-left: 4px solid #0a66c2; padding: 10px 14px; border-radius: 6px; }
+  .senior { background: #f0faf0; border-left: 4px solid #2e7d32; padding: 10px 14px; border-radius: 6px; }
+  .trap { background: #fff4f2; border-left: 4px solid #c62828; padding: 10px 14px; border-radius: 6px; }
+  code { background: #f2f2f7; padding: 1px 5px; border-radius: 4px; font-size: 15px; }
+  pre { background: #1e1e1e; color: #e6e6e6; padding: 12px; border-radius: 8px; overflow-x: auto; font-size: 13.5px; line-height: 1.45; }
+  svg { width: 100%; height: auto; display: block; margin: 10px 0; }
+  ol li, ul li { margin: 4px 0; }
+  details { border: 1px solid #e5e5ea; border-radius: 8px; padding: 8px 12px; margin: 6px 0; }
+  summary { font-weight: 600; cursor: pointer; }
+  details p { margin: 6px 0 2px; }
+  .small { color: #6e6e73; font-size: 14px; }
+</style>
+</head>
+<body>
+
+<h1>Change Detection: Zone.js, OnPush, Zoneless</h1>
+<p class="small">Angular · Tier 1 · Quellen: angular.dev (v20) Guides „Zoneless“, „Skipping component subtrees“ (OnPush), „Slow computations“, „Signals“; API <code>ChangeDetectorRef</code>, <code>provideZonelessChangeDetection</code>, <code>NgZone</code>, <code>PendingTasks</code></p>
+
+<div class="kern">
+<b>Kern:</b> <b>Change Detection</b> ist der Prozess, der Templates mit dem aktuellen State abgleicht und das DOM aktualisiert. Klassisch sagt <b>Zone.js</b> Angular, <b>wann</b> geprüft wird, und Angular prüft den ganzen Baum. <b>OnPush</b> und <b>Signals</b> begrenzen, <b>was</b> geprüft wird; <b>Zoneless</b> entfernt Zone.js ganz.
+</div>
+
+<h2>1. Wo sitzt die Change Detection?</h2>
+<svg viewBox="0 0 720 300" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="a" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="10" y="20" width="200" height="60" rx="8" fill="#fff" stroke="#555"/><text x="110" y="44" text-anchor="middle" font-weight="700">Auslöser</text><text x="110" y="64" text-anchor="middle" font-size="12">Click · HTTP · Timer · Signal</text>
+  <line x1="210" y1="50" x2="268" y2="50" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="270" y="20" width="200" height="60" rx="8" fill="#dbe9fb" stroke="#0a66c2"/><text x="370" y="44" text-anchor="middle" font-weight="700">Scheduler</text><text x="370" y="64" text-anchor="middle" font-size="12">Zone.js oder zoneless</text>
+  <line x1="470" y1="50" x2="528" y2="50" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="530" y="20" width="180" height="60" rx="8" fill="#0a66c2"/><text x="620" y="44" text-anchor="middle" fill="#fff" font-weight="700">ApplicationRef</text><text x="620" y="64" text-anchor="middle" fill="#fff" font-size="12">tick()</text>
+  <line x1="620" y1="80" x2="360" y2="118" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="280" y="120" width="160" height="40" rx="8" fill="#fff" stroke="#555"/><text x="360" y="145" text-anchor="middle">App (Default)</text>
+  <line x1="330" y1="160" x2="200" y2="198" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <line x1="390" y1="160" x2="520" y2="198" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="110" y="200" width="180" height="40" rx="8" fill="#e8f5e9" stroke="#2e7d32"/><text x="200" y="225" text-anchor="middle">Liste (OnPush, dirty)</text>
+  <rect x="430" y="200" width="200" height="40" rx="8" fill="#eee" stroke="#777"/><text x="530" y="225" text-anchor="middle">Detail (OnPush, sauber)</text>
+  <line x1="200" y1="240" x2="200" y2="258" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="120" y="260" width="160" height="32" rx="8" fill="#e8f5e9" stroke="#2e7d32"/><text x="200" y="281" text-anchor="middle" font-size="12">Zeile: geprüft</text>
+  <text x="530" y="262" text-anchor="middle" font-size="12" fill="#666">Teilbaum übersprungen</text>
+</svg>
+<ol>
+  <li><b>Auslöser:</b> Ein Event, eine HTTP-Antwort, ein Timer oder ein Signal ändert State.</li>
+  <li><b>Scheduler:</b> Er entscheidet, <b>wann</b> geprüft wird. Mit Zone.js nach jeder async Aufgabe, zoneless nur nach einer Benachrichtigung.</li>
+  <li><b>ApplicationRef.tick():</b> startet die Prüfung von der Wurzel nach unten.</li>
+  <li><b>Default-Komponenten:</b> werden bei jedem Tick geprüft.</li>
+  <li><b>OnPush-Komponenten:</b> werden nur geprüft, wenn sie als <b>dirty</b> markiert sind. Sonst überspringt Angular den ganzen Teilbaum.</li>
+</ol>
+
+<h2>2. Die Reise eines Klicks (die Geschichte zum Merken)</h2>
+<svg viewBox="0 0 720 280" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="b" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="10" y="30" width="140" height="60" rx="10" fill="#eee" stroke="#777"/><text x="80" y="56" text-anchor="middle" font-weight="700">1. Klick</text><text x="80" y="76" text-anchor="middle" font-size="12">(click) Listener</text>
+  <line x1="150" y1="60" x2="188" y2="60" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="190" y="30" width="160" height="60" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="270" y="56" text-anchor="middle" font-weight="700">2. Markieren</text><text x="270" y="76" text-anchor="middle" font-size="12">Komponente + Vorfahren</text>
+  <line x1="350" y1="60" x2="388" y2="60" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="390" y="30" width="150" height="60" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="465" y="56" text-anchor="middle" font-weight="700">3. Planen</text><text x="465" y="76" text-anchor="middle" font-size="12">Zone / Scheduler</text>
+  <line x1="540" y1="60" x2="578" y2="60" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="580" y="30" width="130" height="60" rx="10" fill="#0a66c2"/><text x="645" y="56" text-anchor="middle" fill="#fff" font-weight="700">4. tick()</text><text x="645" y="76" text-anchor="middle" fill="#fff" font-size="12">von oben</text>
+  <line x1="645" y1="90" x2="645" y2="148" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="460" y="150" width="250" height="60" rx="10" fill="#fff" stroke="#555"/><text x="585" y="174" text-anchor="middle" font-weight="700">5. Bindings vergleichen</text><text x="585" y="194" text-anchor="middle" font-size="12">alter Wert === neuer Wert?</text>
+  <line x1="460" y1="180" x2="378" y2="180" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="180" y="150" width="196" height="60" rx="10" fill="#e8f5e9" stroke="#2e7d32"/><text x="278" y="174" text-anchor="middle" font-weight="700">6. DOM-Update</text><text x="278" y="194" text-anchor="middle" font-size="12">nur geänderte Knoten</text>
+  <line x1="180" y1="180" x2="128" y2="180" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="10" y="150" width="116" height="60" rx="10" fill="#fff4f2" stroke="#c62828"/><text x="68" y="174" text-anchor="middle" font-weight="700">7. Dev</text><text x="68" y="194" text-anchor="middle" font-size="12">2. Prüfung</text>
+  <text x="360" y="250" text-anchor="middle" font-size="12" fill="#666">Danach: afterNextRender / afterEveryRender</text>
+</svg>
+<ol>
+  <li><b>Klick:</b> Der Nutzer klickt einen Button mit <code>(click)="add()"</code>. Der Handler ändert State.</li>
+  <li><b>Markieren:</b> Ein Template-Listener markiert die Komponente und alle Vorfahren als dirty. So erreicht die Prüfung auch OnPush-Komponenten.</li>
+  <li><b>Planen:</b> Mit Zone.js merkt <b>NgZone</b>, dass die Aufgabe fertig ist. Zoneless plant der Scheduler den Tick selbst.</li>
+  <li><b>tick():</b> Angular geht den Baum von oben nach unten durch. Saubere OnPush-Teilbäume überspringt es.</li>
+  <li><b>Vergleichen:</b> Für jedes Binding vergleicht Angular alt und neu mit <code>===</code>. Kein Deep Compare.</li>
+  <li><b>DOM-Update:</b> Nur geänderte Bindings ändern das DOM.</li>
+  <li><b>Dev-Modus:</b> Ein zweiter Durchlauf prüft, ob sich etwas geändert hat. Wenn ja: <code>ExpressionChangedAfterItHasBeenCheckedError</code>.</li>
+</ol>
+
+<h2>3. Beispiel: drei Arten, einen Zähler zu ändern</h2>
+<pre>// app.config.ts (Angular 20)
+providers: [provideZonelessChangeDetection()]   // und "zone.js" aus polyfills entfernen
+
+@Component({
+  selector: 'app-counter',
+  changeDetection: ChangeDetectionStrategy.OnPush,
+  template: `
+    &lt;p&gt;Feld: {{ plain }}&lt;/p&gt;
+    &lt;p&gt;Signal: {{ count() }}&lt;/p&gt;
+    &lt;button (click)="plain = plain + 1"&gt;Feld +1&lt;/button&gt;`,
+})
+export class Counter {
+  plain = 0;
+  count = signal(0);
+  constructor() {
+    setTimeout(() =&gt; { this.plain = 100; }, 1000);          // A
+    setTimeout(() =&gt; { this.count.set(100); }, 2000);       // B
+  }
+}</pre>
+<pre>Erwartetes Ergebnis (laut Doku, nicht ausgeführt):
+nach 1 s (A): "Feld: 0"       -- zoneless + OnPush: kein Auslöser, kein Update
+nach 2 s (B): "Feld: 100", "Signal: 100"
+              -- Signal-Änderung plant Change Detection, die View zeigt beide Werte
+Klick:        "Feld: 101"     -- Template-Listener markiert die Komponente
+
+Gleicher Code mit Zone.js und Default-Strategie:
+nach 1 s (A): "Feld: 100"     -- Zone.js hat setTimeout gepatcht und tick() ausgelöst</pre>
+<ol>
+  <li>Ohne Zone.js weiss Angular nichts vom <code>setTimeout</code>. Ein normales Feld ist kein Auslöser.</li>
+  <li>Ein Signal, das im Template gelesen wird, ist ein Auslöser. Angular markiert die Komponente und plant einen Tick.</li>
+  <li>Template-Listener (<code>(click)</code>) bleiben Auslöser, auch zoneless.</li>
+  <li>Mit Zone.js funktioniert A, weil Zone.js jede async API patcht. Das ist bequem, aber prüft oft unnötig.</li>
+</ol>
+
+<h2>4. Details, die Interviewer fragen</h2>
+<ol>
+  <li><b>Zone.js:</b> eine Bibliothek, die Browser-APIs patcht: <code>setTimeout</code>, Promises, <code>addEventListener</code>, XHR. Nach jeder Aufgabe meldet <b>NgZone</b> <code>onMicrotaskEmpty</code>. Angular ruft dann <code>tick()</code>.</li>
+  <li><b>Default-Strategie:</b> Jede Komponente wird bei jedem Tick geprüft. Einfach, aber bei grossen Bäumen teuer.</li>
+  <li><b>OnPush:</b> Die Komponente wird nur geprüft, wenn: ein Input eine neue Referenz bekommt, ein Event in ihr oder einem Kind passiert, <code>markForCheck()</code> läuft, die <code>async</code>-Pipe einen Wert bekommt oder ein gelesenes Signal sich ändert.</li>
+  <li><b>markForCheck():</b> markiert die Komponente und alle Vorfahren. Die Prüfung kommt im nächsten Tick.</li>
+  <li><b>detectChanges():</b> prüft diese Komponente und ihre Kinder <b>sofort</b>, synchron.</li>
+  <li><b>detach() / reattach():</b> nimmt eine View aus der automatischen Prüfung. Nur für Sonderfälle, z. B. sehr häufige Datenströme.</li>
+  <li><b>Signals und OnPush:</b> Seit v17 markiert ein Signal nur die lesende Komponente als dirty. Vorfahren werden nur durchlaufen, nicht neu geprüft. Das heisst <b>lokale Change Detection</b>.</li>
+  <li><b>Zoneless:</b> <code>provideZonelessChangeDetection()</code>. In v20.0 Developer Preview, ab v20.2 stabil, ab v21 Standard für neue Projekte. In v18–v19 hiess es <code>provideExperimentalZonelessChangeDetection()</code>.</li>
+  <li><b>Auslöser zoneless:</b> <code>markForCheck()</code> (auch durch <code>async</code>-Pipe), <code>ComponentRef.setInput()</code>, Signal-Update im Template, Template- oder Host-Listener, Anhängen einer dirty View.</li>
+  <li><b>NgZone zoneless:</b> <code>onStable</code>, <code>onMicrotaskEmpty</code> und <code>onUnstable</code> feuern nie. Ersatz: <code>afterNextRender</code> oder <code>afterEveryRender</code>.</li>
+  <li><b>SSR zoneless:</b> Der Server weiss nicht mehr, wann die App fertig ist. Async-Arbeit meldet man mit <b>PendingTasks</b> (<code>run()</code>, <code>add()</code>, <code>pendingUntilEvent()</code>). HttpClient macht das selbst.</li>
+  <li><b>runOutsideAngular:</b> Code läuft ausserhalb der Zone und löst keinen Tick aus. Gut für <code>mousemove</code> oder Animationen mit Zone.js.</li>
+  <li><b>Angular 14:</b> Nur Zone.js, Default und OnPush, <code>markForCheck</code>. Keine Signals, kein zoneless.</li>
+</ol>
+
+<h2>5. Vergleich</h2>
+<ul>
+  <li><b>Zone.js + Default:</b> funktioniert „magisch“, prüft aber den ganzen Baum nach jeder async Aufgabe.</li>
+  <li><b>Zone.js + OnPush:</b> gleiche Auslöser, aber saubere Teilbäume werden übersprungen. Erfordert unveränderliche Daten.</li>
+  <li><b>Zoneless + OnPush + Signals:</b> Prüfung nur nach echter Benachrichtigung. Kleinere Bundles ohne Zone.js, bessere Stack Traces, kein Patchen.</li>
+  <li><b>markForCheck vs detectChanges:</b> später im nächsten Tick vs sofort synchron.</li>
+  <li><b>async-Pipe vs toSignal:</b> beide melden Änderungen. <code>toSignal</code> ist ein Signal und passt besser zu <code>computed</code>.</li>
+</ul>
+
+<h2>6. In der Produktion</h2>
+<ol>
+  <li><b>App ruckelt bei Mausbewegung:</b> Ein <code>mousemove</code>-Listener löst Hunderte Ticks aus. Lösung: <code>runOutsideAngular</code> oder zoneless.</li>
+  <li><b>Daten erscheinen nicht:</b> OnPush-Komponente, Objekt wurde mutiert. Lösung: neue Referenz oder Signal.</li>
+  <li><b>Nach Umstieg auf zoneless bleibt UI stehen:</b> Code ändert Felder in <code>setTimeout</code> oder Callbacks von Bibliotheken. Lösung: Signals oder <code>markForCheck()</code>.</li>
+  <li><b>SSR hängt oder rendert leer:</b> zoneless ohne <code>PendingTasks</code> für eigene async Arbeit. Lösung: Aufgaben registrieren.</li>
+  <li><b>Teure Getter im Template:</b> Eine Methode im Template läuft bei jedem Tick. Lösung: <code>computed()</code> oder eine <b>pure Pipe</b>.</li>
+  <li><b>ExpressionChanged-Fehler</b> nach Refactoring. Lösung: Datenfluss nur von oben nach unten.</li>
+</ol>
+
+<h2>7. Diagnose: Werkzeuge und Befehle</h2>
+<ul>
+  <li><b>Angular DevTools Profiler:</b> zeigt jeden Change-Detection-Zyklus, Dauer pro Komponente und Auslöser.</li>
+  <li><code>ng.profiler.timeChangeDetection()</code> in der Konsole (nach <code>enableDebugTools</code>): misst die Dauer eines Ticks.</li>
+  <li><b>Chrome Performance Tab:</b> lange Tasks und Layout Thrashing finden.</li>
+  <li><code>provideCheckNoChangesConfig({ exhaustive: true, interval: … })</code>: findet im Dev-Modus Änderungen ohne Benachrichtigung, nützlich vor zoneless.</li>
+  <li>Lint-Regel <code>@angular-eslint/prefer-on-push-component-change-detection</code>.</li>
+</ul>
+
+<h2>8. Senior-Punkte</h2>
+<div class="senior">
+<ol>
+  <li><b>OnPush überall</b> als Team-Standard. Es zwingt zu unveränderlichen Daten und klarem Datenfluss.</li>
+  <li><b>Zoneless ist das Ziel,</b> aber eine Migration. Erst OnPush und Signals, dann Zone.js entfernen.</li>
+  <li><b>Signals statt markForCheck:</b> Der Code sagt selbst, was sich geändert hat.</li>
+  <li><b>Kosten messen</b> mit dem Profiler, nicht raten. Oft sind teure Templates das Problem, nicht die Anzahl der Ticks.</li>
+  <li><b>Bibliotheken prüfen:</b> Manche Drittanbieter verlassen sich auf Zone.js. Das blockiert zoneless.</li>
+</ol>
+</div>
+
+<h2>9. Aus dem Projekt</h2>
+<p>„Die CARIAD-Dashboards liefen auf Angular 14 mit Zone.js; State kam über RxJS-Services in Presentational Components, was gut zu OnPush passt. Zoneless und Signals habe ich nur gelernt, nicht in Produktion genutzt.“ <span class="small">(Prüfen und durch dein echtes Beispiel ersetzen: Habt ihr OnPush wirklich genutzt?)</span></p>
+
+<h2>10. Fallen</h2>
+<div class="trap">
+<ul>
+  <li>„OnPush prüft nur bei Input-Änderung.“ → <b>Falsch.</b> Auch bei Events, <code>async</code>-Pipe, <code>markForCheck</code> und Signals.</li>
+  <li>„Angular vergleicht Objekte tief.“ → <b>Falsch.</b> Es vergleicht mit <code>===</code>, also Referenzen.</li>
+  <li>„Zone.js macht die Change Detection.“ → <b>Falsch.</b> Zone.js sagt nur <b>wann</b>. Angular prüft selbst.</li>
+  <li>„Zoneless ist in v20.0 stabil.“ → <b>Falsch.</b> v20.0 Developer Preview, stabil ab v20.2.</li>
+  <li>„detectChanges und markForCheck sind gleich.“ → <b>Falsch.</b> Sofort und lokal vs später im nächsten Tick.</li>
+  <li>„ExpressionChanged-Fehler gibt es in Produktion.“ → <b>Nein.</b> Nur der Dev-Modus prüft doppelt, der Bug bleibt aber.</li>
+</ul>
+</div>
+
+<h2>11. Fragen</h2>
+<details><summary>Was ist Change Detection?</summary><p>Der Abgleich von Templates mit dem State. Angular vergleicht Bindings und aktualisiert nur geänderte DOM-Knoten.</p></details>
+<details><summary>Welche Rolle spielt Zone.js?</summary><p>Es patcht async Browser-APIs. Nach jeder Aufgabe meldet NgZone das, und Angular ruft tick() auf.</p></details>
+<details><summary>Wie läuft ein tick()?</summary><p>Von der Wurzel nach unten. Default-Komponenten immer, OnPush-Komponenten nur wenn dirty.</p></details>
+<details><summary>Wann wird eine OnPush-Komponente geprüft?</summary><p>Neue Input-Referenz, Event in ihr oder einem Kind, markForCheck, async-Pipe, Änderung eines gelesenen Signals.</p></details>
+<details><summary>Was ist der Unterschied zwischen markForCheck und detectChanges?</summary><p>markForCheck markiert bis zur Wurzel für den nächsten Tick. detectChanges prüft sofort diese View und ihre Kinder.</p></details>
+<details><summary>Was ist ExpressionChangedAfterItHasBeenCheckedError?</summary><p>Ein Wert ändert sich nach der Prüfung im selben Zyklus. Der Dev-Modus erkennt das mit einem zweiten Durchlauf.</p></details>
+<details><summary>Was ist Zoneless Change Detection?</summary><p>Angular ohne Zone.js. Prüfung nur nach Benachrichtigungen wie Signal-Update, markForCheck oder Template-Event.</p></details>
+<details><summary>Wie aktiviert man zoneless in Angular 20?</summary><p>provideZonelessChangeDetection() in den Providers und zone.js aus den Polyfills entfernen. Ab v21 ist es Standard.</p></details>
+<details><summary>Welche Vorteile hat zoneless?</summary><p>Weniger unnötige Prüfungen, kleineres Bundle, bessere Stack Traces, keine gepatchten APIs.</p></details>
+<details><summary>Was passiert mit NgZone.onStable bei zoneless?</summary><p>Es feuert nie. Ersatz sind afterNextRender oder afterEveryRender.</p></details>
+<details><summary>Warum braucht SSR bei zoneless PendingTasks?</summary><p>Der Server muss wissen, wann die App stabil ist. Ohne Zone.js meldet man offene Arbeit über PendingTasks.</p></details>
+<details><summary>Wie helfen Signals der Change Detection?</summary><p>Angular weiss genau, welche Komponente ein Signal liest. Es markiert nur diese und prüft lokal.</p></details>
+<details><summary>Was macht runOutsideAngular?</summary><p>Code läuft ausserhalb der Zone und löst keinen Tick aus. Für häufige Events oder Animationen.</p></details>
+<details><summary>Warum sind Methoden im Template problematisch?</summary><p>Sie laufen bei jeder Prüfung. Besser computed() oder eine pure Pipe.</p></details>
+<details><summary>Warum braucht OnPush unveränderliche Daten?</summary><p>Angular vergleicht Referenzen. Eine Mutation behält die Referenz, also sieht OnPush nichts.</p></details>
+<details><summary>Was ist ein pure Pipe?</summary><p>Eine Pipe, die nur bei neuer Eingabe-Referenz neu rechnet. Standard für eigene Pipes.</p></details>
+<details><summary>Szenario: Nach Umstieg auf zoneless aktualisiert ein Websocket-Feed die UI nicht mehr. Warum?</summary><p>Der Callback ändert ein normales Feld ohne Benachrichtigung. Lösung: Wert in ein Signal schreiben oder toSignal nutzen.</p></details>
+<details><summary>Szenario: Ein Dashboard mit 500 Zeilen ruckelt bei jeder Mausbewegung. Was tun Sie?</summary><p>Profiler zeigt viele Ticks. Lösung: OnPush, Listener mit runOutsideAngular, computed statt Template-Methoden, Virtual Scroll.</p></details>
+<details><summary>Szenario: Eine OnPush-Komponente zeigt einen Wert aus einem Service nicht an. Lösung?</summary><p>Der Service ändert ein Feld ohne Benachrichtigung. Den Wert als Observable mit async-Pipe oder als Signal bereitstellen.</p></details>
+
+</body>
+</html>

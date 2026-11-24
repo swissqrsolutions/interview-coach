@@ -1,0 +1,242 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RBAC und ServiceAccounts</title>
+<style>
+  body { font: 17px/1.55 -apple-system, system-ui, sans-serif; max-width: 760px; margin: 0 auto; padding: 16px; color: #1d1d1f; }
+  h1 { font-size: 28px; margin: 8px 0 4px; }
+  h2 { font-size: 21px; margin: 32px 0 8px; padding-top: 12px; border-top: 2px solid #e5e5ea; }
+  .kern { background: #eef6ff; border-left: 4px solid #0a66c2; padding: 10px 14px; border-radius: 6px; }
+  .senior { background: #f0faf0; border-left: 4px solid #2e7d32; padding: 10px 14px; border-radius: 6px; }
+  .trap { background: #fff4f2; border-left: 4px solid #c62828; padding: 10px 14px; border-radius: 6px; }
+  code { background: #f2f2f7; padding: 1px 5px; border-radius: 4px; font-size: 15px; }
+  pre { background: #1e1e1e; color: #e6e6e6; padding: 12px; border-radius: 8px; overflow-x: auto; font-size: 13.5px; line-height: 1.45; }
+  svg { width: 100%; height: auto; display: block; margin: 10px 0; }
+  ol li, ul li { margin: 4px 0; }
+  details { border: 1px solid #e5e5ea; border-radius: 8px; padding: 8px 12px; margin: 6px 0; }
+  summary { font-weight: 600; cursor: pointer; }
+  details p { margin: 6px 0 2px; }
+  .small { color: #6e6e73; font-size: 14px; }
+</style>
+</head>
+<body>
+
+<h1>RBAC und ServiceAccounts</h1>
+<p class="small">Kubernetes · Tier 1 · Quellen: kubernetes.io (Using RBAC Authorization, Service Accounts, Managing Service Accounts, kubectl auth), Microsoft Learn (Microsoft Entra Workload ID on AKS)</p>
+
+<div class="kern">
+<b>Kern:</b> <b>RBAC</b> (Role-Based Access Control) ist die Autorisierung im Kubernetes-API-Server. Sie beantwortet die Frage: Darf dieses <b>Subjekt</b> dieses <b>Verb</b> auf dieser <b>Ressource</b> ausführen? Ein <b>ServiceAccount</b> ist die Identität eines Pods gegenüber dem API-Server. RBAC kennt nur Erlaubnisse, keine Verbote.
+</div>
+
+<h2>1. Wo sitzt RBAC?</h2>
+<svg viewBox="0 0 720 300" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="a" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="10" y="30" width="130" height="50" rx="8" fill="#fff" stroke="#555"/><text x="75" y="52" text-anchor="middle">kubectl / User</text><text x="75" y="70" text-anchor="middle" font-size="12">Zertifikat, OIDC</text>
+  <rect x="10" y="110" width="130" height="50" rx="8" fill="#fff" stroke="#555"/><text x="75" y="132" text-anchor="middle">Pod</text><text x="75" y="150" text-anchor="middle" font-size="12">ServiceAccount-Token</text>
+  <line x1="140" y1="55" x2="196" y2="95" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <line x1="140" y1="135" x2="196" y2="105" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="200" y="10" width="510" height="170" rx="12" fill="#f7f7fa" stroke="#999" stroke-dasharray="5 4"/><text x="455" y="30" text-anchor="middle" font-weight="700">kube-apiserver</text>
+  <rect x="215" y="70" width="140" height="56" rx="8" fill="#fff" stroke="#555"/><text x="285" y="94" text-anchor="middle">Authentication</text><text x="285" y="112" text-anchor="middle" font-size="12">Wer bist du?</text>
+  <line x1="355" y1="98" x2="375" y2="98" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="378" y="70" width="150" height="56" rx="8" fill="#0a66c2"/><text x="453" y="94" text-anchor="middle" fill="#fff" font-weight="700">Authorization</text><text x="453" y="112" text-anchor="middle" fill="#fff" font-size="12">Node, RBAC: darfst du?</text>
+  <line x1="528" y1="98" x2="548" y2="98" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="551" y="70" width="145" height="56" rx="8" fill="#fff" stroke="#555"/><text x="623" y="94" text-anchor="middle">Admission</text><text x="623" y="112" text-anchor="middle" font-size="12">z. B. Kyverno</text>
+  <line x1="623" y1="126" x2="623" y2="214" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="560" y="216" width="130" height="44" rx="8" fill="#fff" stroke="#555"/><text x="625" y="243" text-anchor="middle">etcd</text>
+  <rect x="230" y="210" width="290" height="70" rx="8" fill="#e8f5e9" stroke="#2e7d32"/><text x="375" y="232" text-anchor="middle" font-weight="700">RBAC-Objekte</text><text x="375" y="252" text-anchor="middle" font-size="12">Role · ClusterRole</text><text x="375" y="270" text-anchor="middle" font-size="12">RoleBinding · ClusterRoleBinding</text>
+  <line x1="453" y1="210" x2="453" y2="128" stroke="#2e7d32" stroke-width="1.5" stroke-dasharray="4 3" marker-end="url(#a)"/>
+</svg>
+<ol>
+  <li><b>Authentication</b> prüft die Identität. Menschen kommen über Zertifikate oder OIDC (z. B. Entra ID), Pods über ein <b>ServiceAccount-Token</b>.</li>
+  <li><b>Authorization</b> prüft die Erlaubnis. Typische Modi: <code>Node,RBAC</code>. Der <b>Node Authorizer</b> regelt nur Kubelets.</li>
+  <li><b>Admission</b> prüft und ändert danach den Inhalt des Objekts, z. B. Kyverno-Regeln.</li>
+  <li>Erst dann schreibt der API-Server das Objekt nach <b>etcd</b>.</li>
+  <li>Die RBAC-Regeln sind selbst normale API-Objekte. Man verwaltet sie mit YAML und GitOps.</li>
+</ol>
+
+<h2>2. Die Reise eines API-Requests aus einem Pod</h2>
+<svg viewBox="0 0 720 300" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="b" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker><marker id="r" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#c62828"/></marker></defs>
+  <rect x="10" y="20" width="150" height="64" rx="10" fill="#eee" stroke="#777"/><text x="85" y="46" text-anchor="middle" font-weight="700">1. Kubelet</text><text x="85" y="66" text-anchor="middle" font-size="12">TokenRequest</text>
+  <line x1="160" y1="52" x2="198" y2="52" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="200" y="20" width="160" height="64" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="280" y="46" text-anchor="middle" font-weight="700">2. Projected Token</text><text x="280" y="66" text-anchor="middle" font-size="12">JWT, 1 h, an Pod gebunden</text>
+  <line x1="360" y1="52" x2="398" y2="52" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="400" y="20" width="150" height="64" rx="10" fill="#fff" stroke="#555"/><text x="475" y="46" text-anchor="middle" font-weight="700">3. App-Request</text><text x="475" y="66" text-anchor="middle" font-size="12">Bearer Token</text>
+  <line x1="550" y1="52" x2="588" y2="52" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="590" y="20" width="120" height="64" rx="10" fill="#fff" stroke="#555"/><text x="650" y="46" text-anchor="middle" font-weight="700">4. AuthN</text><text x="650" y="66" text-anchor="middle" font-size="12">Signatur, Pod lebt?</text>
+  <line x1="650" y1="84" x2="650" y2="128" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="440" y="130" width="270" height="70" rx="10" fill="#0a66c2"/><text x="575" y="154" text-anchor="middle" fill="#fff" font-weight="700">5. RBAC</text><text x="575" y="174" text-anchor="middle" fill="#fff" font-size="12">alle Bindings des Subjekts:</text><text x="575" y="190" text-anchor="middle" fill="#fff" font-size="12">passt eine Regel?</text>
+  <line x1="440" y1="165" x2="368" y2="165" stroke="#2e7d32" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="200" y="130" width="166" height="70" rx="10" fill="#e8f5e9" stroke="#2e7d32"/><text x="283" y="160" text-anchor="middle" font-weight="700">6a. Ja: erlaubt</text><text x="283" y="180" text-anchor="middle" font-size="12">weiter zu Admission</text>
+  <line x1="575" y1="200" x2="575" y2="240" stroke="#c62828" stroke-width="2" marker-end="url(#r)"/>
+  <rect x="440" y="242" width="270" height="48" rx="10" fill="#fff4f2" stroke="#c62828"/><text x="575" y="271" text-anchor="middle" fill="#c62828" font-weight="700">6b. Nein: 403 Forbidden</text>
+</svg>
+<ol>
+  <li><b>Der Kubelet holt ein Token.</b> Der Pod hat <code>serviceAccountName: report-reader</code>. Der Kubelet ruft die <b>TokenRequest API</b> auf. Er bekommt ein signiertes <b>JWT</b>.</li>
+  <li><b>Das Token liegt im Pod.</b> Es ist ein <b>projected volume</b> unter <code>/var/run/secrets/kubernetes.io/serviceaccount/token</code>. Es ist ein <b>bound token</b>: zeitlich begrenzt (Standard ca. 1 Stunde) und an den Pod gebunden. Der Kubelet erneuert es nach 80 % der Laufzeit.</li>
+  <li><b>Die App ruft die API auf.</b> Die Client-Bibliothek liest die Datei und sendet <code>Authorization: Bearer &lt;token&gt;</code>. Gute Clients lesen die Datei neu ein, wenn sie sich ändert.</li>
+  <li><b>Authentication.</b> Der API-Server prüft Signatur, Ablauf und Audience. Er prüft auch: Existiert der Pod mit dieser UID noch? Der Benutzername ist <code>system:serviceaccount:match:report-reader</code>.</li>
+  <li><b>RBAC sucht Regeln.</b> Es sammelt alle RoleBindings und ClusterRoleBindings für dieses Subjekt und seine Gruppen (z. B. <code>system:serviceaccounts:match</code>).</li>
+  <li><b>Entscheidung.</b> Passt eine Regel zu Verb, API-Gruppe, Ressource und Namespace: erlaubt. Sonst: <b>403 Forbidden</b>. Es gibt kein „deny“, nur fehlende Erlaubnis.</li>
+</ol>
+
+<h2>3. Beispiel: ServiceAccount, Role, RoleBinding, prüfen</h2>
+<pre>apiVersion: v1
+kind: ServiceAccount
+metadata: { name: report-reader, namespace: demo-rbac }
+automountServiceAccountToken: false      # nur Pods, die es brauchen, bekommen ein Token
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata: { name: pod-reader, namespace: demo-rbac }
+rules:
+- apiGroups: [""]                         # "" = Core-Gruppe (pods, services, secrets)
+  resources: ["pods", "pods/log"]
+  verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata: { name: report-reader-pods, namespace: demo-rbac }
+subjects:
+- kind: ServiceAccount
+  name: report-reader
+  namespace: demo-rbac
+roleRef:                                  # unveränderlich nach dem Anlegen
+  kind: Role
+  name: pod-reader
+  apiGroup: rbac.authorization.k8s.io</pre>
+<pre>$ SA=system:serviceaccount:demo-rbac:report-reader
+$ kubectl auth can-i list pods   -n demo-rbac --as=$SA
+yes
+$ kubectl auth can-i get pods/log -n demo-rbac --as=$SA
+yes
+$ kubectl auth can-i delete pods -n demo-rbac --as=$SA
+no
+$ kubectl auth can-i list pods   -n default   --as=$SA
+no
+$ kubectl auth can-i get secrets -n demo-rbac --as=$SA
+no
+$ kubectl create token report-reader -n demo-rbac --duration=10m
+eyJhbGciOiJSUzI1NiIsImtpZCI6...</pre>
+<p class="small">Erwartetes Ergebnis (laut Doku, nicht ausgeführt). Der lokale k3s-Cluster war nicht erreichbar.</p>
+<ol>
+  <li><code>list pods</code> und <code>get pods/log</code> sind erlaubt. <code>pods/log</code> ist eine <b>Subresource</b> und braucht eine eigene Regel.</li>
+  <li><code>delete</code> fehlt in der Role. Darum <code>no</code>.</li>
+  <li>Im Namespace <code>default</code> gilt die RoleBinding nicht. Eine RoleBinding wirkt nur in ihrem eigenen Namespace.</li>
+  <li><code>--as</code> nutzt <b>Impersonation</b>. Der eigene Benutzer braucht dafür das Verb <code>impersonate</code>.</li>
+  <li><code>kubectl create token</code> holt ein kurzlebiges Token über die TokenRequest API. Es legt kein Secret an.</li>
+</ol>
+
+<h2>4. Details, die Interviewer fragen</h2>
+<ol>
+  <li><b>Role:</b> Erlaubnisse in <b>einem</b> Namespace. Beispiel: Pods lesen in <code>match</code>.</li>
+  <li><b>ClusterRole:</b> Erlaubnisse ohne Namespace. Nötig für cluster-weite Ressourcen (<code>nodes</code>, <code>persistentvolumes</code>, <code>namespaces</code>) und Non-Resource-URLs (<code>/healthz</code>). Auch als Vorlage für viele Namespaces.</li>
+  <li><b>RoleBinding:</b> verbindet Subjekte mit einer Role <b>oder ClusterRole</b>, aber nur im Namespace der RoleBinding. So nutzt man <code>view</code> oder <code>edit</code> pro Namespace.</li>
+  <li><b>ClusterRoleBinding:</b> gibt eine ClusterRole in <b>allen</b> Namespaces. Gefährlich breit, sparsam nutzen.</li>
+  <li><b>Subjekte:</b> <code>User</code>, <code>Group</code>, <code>ServiceAccount</code>. User und Group sind keine API-Objekte. Sie kommen aus dem Zertifikat (CN, O) oder dem OIDC-Token.</li>
+  <li><b>Verben:</b> <code>get, list, watch, create, update, patch, delete, deletecollection</code>. Spezial-Verben: <code>bind</code>, <code>escalate</code>, <code>impersonate</code>.</li>
+  <li><b>Escalation-Schutz:</b> Man kann keine Role anlegen oder binden, die mehr erlaubt, als man selbst hat. Ausnahme: Verb <code>escalate</code> bzw. <code>bind</code>.</li>
+  <li><b>roleRef ist unveränderlich:</b> Um die Rolle einer Binding zu ändern, löscht man sie und legt sie neu an. <code>kubectl auth reconcile</code> macht das automatisch.</li>
+  <li><b>Standard-ClusterRoles:</b> <code>cluster-admin</code> (alles), <code>admin</code> (fast alles im Namespace, auch RBAC), <code>edit</code> (Workloads, keine RBAC), <code>view</code> (lesen, keine Secrets).</li>
+  <li><b>Aggregated ClusterRoles:</b> Eine ClusterRole mit <code>aggregationRule</code> sammelt Regeln aus anderen ClusterRoles per Label. So erweitern CRD-Operatoren <code>view</code> und <code>edit</code>.</li>
+  <li><b>system:masters:</b> Diese Gruppe umgeht RBAC komplett. Zertifikate mit dieser Gruppe kann man nicht entziehen, nur durch CA-Wechsel.</li>
+  <li><b>ServiceAccount:</b> ein namespaced API-Objekt. Jeder Namespace hat einen <code>default</code>-SA. Der hat mit RBAC nur Discovery-Rechte.</li>
+  <li><b>Bound Token (ab 1.22 Standard):</b> kurzlebig, an Audience und Pod gebunden, über TokenRequest erzeugt. Wird der Pod gelöscht, ist das Token sofort ungültig.</li>
+  <li><b>Legacy Secret-Token:</b> Seit 1.24 legt Kubernetes keine Token-Secrets mehr automatisch an. Ungenutzte alte Tokens werden markiert und später gelöscht (<code>LegacyServiceAccountTokenCleanUp</code>). Ein Secret vom Typ <code>kubernetes.io/service-account-token</code> legt man nur noch bewusst an.</li>
+  <li><b>automountServiceAccountToken: false:</b> auf SA oder Pod. Pods ohne API-Zugriff brauchen kein Token. Weniger Angriffsfläche.</li>
+  <li><b>Workload Identity auf AKS:</b> Das AKS-<b>OIDC Issuer</b> veröffentlicht die Schlüssel der SA-Tokens. Eine <b>Managed Identity</b> vertraut per <b>Federated Identity Credential</b> genau dem Subjekt <code>system:serviceaccount:&lt;ns&gt;:&lt;sa&gt;</code>. Der Pod tauscht sein SA-Token gegen ein Entra-Token. Kein Client-Secret nötig.</li>
+  <li><b>Workload Identity praktisch:</b> SA-Annotation <code>azure.workload.identity/client-id</code>, Pod-Label <code>azure.workload.identity/use: "true"</code>. Ein Webhook setzt <code>AZURE_CLIENT_ID</code>, <code>AZURE_TENANT_ID</code>, <code>AZURE_FEDERATED_TOKEN_FILE</code>. Audience: <code>api://AzureADTokenExchange</code>.</li>
+</ol>
+
+<h2>5. Vergleich</h2>
+<ul>
+  <li><b>Role vs ClusterRole:</b> Role gilt in einem Namespace. ClusterRole hat keinen Namespace und kann cluster-weite Ressourcen erlauben.</li>
+  <li><b>RoleBinding vs ClusterRoleBinding:</b> RoleBinding gibt Rechte in einem Namespace, auch aus einer ClusterRole. ClusterRoleBinding gibt Rechte überall.</li>
+  <li><b>User vs ServiceAccount:</b> User ist für Menschen und lebt ausserhalb des Clusters. ServiceAccount ist für Pods und ist ein API-Objekt.</li>
+  <li><b>Bound Token vs Legacy Secret-Token:</b> Bound läuft ab und ist an den Pod gebunden. Legacy läuft nie ab und liegt als Secret im Cluster.</li>
+  <li><b>RBAC vs Admission (Kyverno):</b> RBAC fragt „darf er diese Aktion?“. Admission fragt „ist dieser Inhalt erlaubt?“, z. B. kein privilegierter Pod.</li>
+  <li><b>RBAC vs Azure RBAC für AKS:</b> Mit AKS kann Azure RBAC die Kubernetes-Autorisierung für Entra-Benutzer übernehmen. Kubernetes RBAC bleibt der Standard für ServiceAccounts.</li>
+  <li><b>Workload Identity vs Secret mit Client-Secret:</b> Workload Identity hat keinen Langzeit-Schlüssel. Ein Client-Secret muss man rotieren und kann leaken.</li>
+</ul>
+
+<h2>6. In der Produktion</h2>
+<ol>
+  <li><b>„Forbidden“ nach Deployment:</b> Ein Operator oder Job bekommt 403. Ursache: fehlende Regel oder falscher Namespace in der Binding. Lösung: Fehlermeldung lesen (sie nennt Verb, Ressource, Subjekt), dann <code>kubectl auth can-i --as=...</code>.</li>
+  <li><b>Zu breite Rechte:</b> Ein Helm-Chart bringt eine ClusterRoleBinding auf <code>cluster-admin</code> mit. Ein kompromittierter Pod besitzt dann den Cluster. Lösung: Chart-RBAC prüfen, eigene Role mit minimalen Verben.</li>
+  <li><b>Secrets über Umwege:</b> Wer <code>list</code> auf Secrets hat, liest deren Inhalt. Wer Pods anlegen darf, kann jedes Secret und jeden SA im Namespace in einen Pod mounten. Lösung: <code>create pods</code> und <code>list secrets</code> wie Admin-Rechte behandeln.</li>
+  <li><b>Wildcards:</b> <code>resources: ["*"]</code> oder <code>verbs: ["*"]</code> gelten auch für künftige Ressourcen und CRDs. Lösung: explizit auflisten.</li>
+  <li><b>Alte App bricht mit Bound Tokens:</b> Die App liest das Token nur beim Start. Nach Ablauf kommt 401. Lösung: aktuellen Client nutzen, der die Datei neu liest.</li>
+  <li><b>Workload Identity geht nicht:</b> Häufig falsches Subject im Federated Credential (Namespace oder SA-Name), fehlendes Pod-Label oder Pod vor der Annotation gestartet. Lösung: Werte vergleichen, Pod neu starten.</li>
+</ol>
+
+<h2>7. Diagnose: Werkzeuge und Befehle</h2>
+<ul>
+  <li><code>kubectl auth can-i &lt;verb&gt; &lt;resource&gt; -n &lt;ns&gt; --as=system:serviceaccount:&lt;ns&gt;:&lt;sa&gt;</code>: eine Erlaubnis prüfen.</li>
+  <li><code>kubectl auth can-i --list -n &lt;ns&gt; --as=...</code>: alle Rechte eines Subjekts.</li>
+  <li><code>kubectl auth whoami</code>: zeigt den eigenen Benutzer und die Gruppen (SelfSubjectReview).</li>
+  <li><code>kubectl get rolebindings,clusterrolebindings -A -o wide</code>: wer hat welche Rolle.</li>
+  <li><code>kubectl describe clusterrole edit</code>: Regeln einer Rolle lesen.</li>
+  <li><b>Audit Log</b> des API-Servers: zeigt abgelehnte Requests mit Benutzer und Grund.</li>
+  <li>Plugins: <code>kubectl who-can</code>, <code>rbac-lookup</code>, <code>rakkess</code> (krew), um RBAC rückwärts zu lesen.</li>
+  <li>Token prüfen: JWT dekodieren (<code>aud</code>, <code>exp</code>, <code>sub</code>, Claim <code>kubernetes.io</code> mit Pod-Name).</li>
+</ul>
+
+<h2>8. Senior-Punkte</h2>
+<div class="senior">
+<ol>
+  <li><b>Least Privilege ist Arbeit,</b> kein Schalter. Ein SA pro Workload, nur die nötigen Verben, nur im eigenen Namespace.</li>
+  <li><b>Gefährliche Rechte kennen:</b> <code>create pods</code>, <code>list/get secrets</code>, <code>bind</code>, <code>escalate</code>, <code>impersonate</code>, <code>nodes/proxy</code>. Jedes davon ist fast Admin.</li>
+  <li><b>RBAC ist nur additiv.</b> Verbote („nie privilegierte Pods“) gehören in Admission, z. B. Kyverno oder Pod Security Admission.</li>
+  <li><b>Keine langlebigen Credentials.</b> Bound Tokens im Cluster, Workload Identity nach aussen zu Azure. Secrets nicht in Git.</li>
+  <li><b>RBAC gehört in Git.</b> Mit GitOps sind Änderungen reviewt und mit <code>git revert</code> rückgängig.</li>
+  <li><b>Menschen über Gruppen,</b> nicht über einzelne User binden. Sonst bleibt nach einem Teamwechsel Zugriff übrig.</li>
+</ol>
+</div>
+
+<h2>9. Aus dem Projekt</h2>
+<p>„Bei MATCH auf AKS holen die Pods Secrets über External Secrets Operator aus Azure Key Vault mit Workload Identity, also ohne Client-Secret im Cluster. Eigene RBAC-Rollen habe ich nicht im Detail entworfen; das sollte ich ehrlich sagen und über Workload Identity und Kyverno zeigen, wie ich Zugriff begrenze.“ <span class="small">(Prüfen und durch dein echtes Beispiel ersetzen.)</span></p>
+
+<h2>10. Fallen</h2>
+<div class="trap">
+<ul>
+  <li>„Mit RBAC kann ich eine Aktion verbieten.“ → <b>Falsch.</b> RBAC kennt nur Erlaubnisse. Verbote macht Admission.</li>
+  <li>„Eine ClusterRole gilt immer cluster-weit.“ → <b>Falsch.</b> Mit einer RoleBinding gilt sie nur in deren Namespace.</li>
+  <li>„Die ClusterRole <code>view</code> liest Secrets.“ → <b>Falsch.</b> <code>view</code> schliesst Secrets bewusst aus.</li>
+  <li>„Jeder SA bekommt automatisch ein Secret mit Token.“ → <b>Falsch</b> seit 1.24. Pods bekommen ein kurzlebiges projected Token.</li>
+  <li>„Ohne get auf Secrets kann niemand Secrets lesen.“ → <b>Falsch.</b> <code>list</code> liefert den Inhalt mit, und <code>create pods</code> kann Secrets mounten.</li>
+  <li>„Workload Identity speichert ein Azure-Secret im Pod.“ → <b>Falsch.</b> Der Pod tauscht sein SA-Token gegen ein Entra-Token.</li>
+</ul>
+</div>
+
+<h2>11. Fragen</h2>
+<details><summary>Was ist RBAC in Kubernetes?</summary><p>Die Autorisierung im API-Server. Sie prüft, ob ein Subjekt ein Verb auf einer Ressource ausführen darf. Regeln stehen in Roles und werden mit Bindings vergeben.</p></details>
+<details><summary>Welche vier RBAC-Objekte gibt es?</summary><p>Role, ClusterRole, RoleBinding, ClusterRoleBinding. Roles enthalten Regeln, Bindings verbinden Regeln mit Subjekten.</p></details>
+<details><summary>Role vs ClusterRole?</summary><p>Role gilt in einem Namespace. ClusterRole hat keinen Namespace und kann auch Nodes, PVs oder Non-Resource-URLs erlauben.</p></details>
+<details><summary>Kann eine RoleBinding auf eine ClusterRole zeigen?</summary><p>Ja. Dann gelten die Regeln nur im Namespace der RoleBinding. So nutzt man view oder edit pro Namespace.</p></details>
+<details><summary>Welche Subjekte gibt es?</summary><p>User, Group und ServiceAccount. User und Group sind keine API-Objekte, sie kommen aus Zertifikat oder OIDC.</p></details>
+<details><summary>Was ist ein ServiceAccount?</summary><p>Die Identität eines Pods gegenüber dem API-Server. Ein namespaced Objekt, jeder Namespace hat einen default-SA.</p></details>
+<details><summary>Wie kommt ein Pod an sein Token?</summary><p>Der Kubelet fordert über die TokenRequest API ein JWT an und mountet es als projected volume. Er erneuert es vor Ablauf.</p></details>
+<details><summary>Was ist ein Bound ServiceAccount Token?</summary><p>Ein kurzlebiges Token mit Audience, Ablaufzeit und Bindung an den Pod. Wird der Pod gelöscht, ist es ungültig.</p></details>
+<details><summary>Was hat sich in 1.24 geändert?</summary><p>Kubernetes legt keine Token-Secrets mehr automatisch für ServiceAccounts an. Langlebige Tokens muss man bewusst als Secret anlegen.</p></details>
+<details><summary>Wozu automountServiceAccountToken: false?</summary><p>Pods ohne API-Zugriff bekommen kein Token. Ein Angreifer im Pod findet dann keine Credentials.</p></details>
+<details><summary>Wie prüfen Sie die Rechte eines ServiceAccounts?</summary><p>kubectl auth can-i &lt;verb&gt; &lt;resource&gt; -n &lt;ns&gt; --as=system:serviceaccount:&lt;ns&gt;:&lt;sa&gt;. Mit --list alle Rechte.</p></details>
+<details><summary>Warum ist roleRef unveränderlich?</summary><p>Damit niemand mit update-Rechten auf Bindings die Rolle heimlich austauscht. Man löscht und legt neu an, oder nutzt kubectl auth reconcile.</p></details>
+<details><summary>Was verhindert Privilege Escalation in RBAC?</summary><p>Man kann nur Rechte vergeben, die man selbst hat. Ausnahme sind die Verben escalate und bind.</p></details>
+<details><summary>Welche RBAC-Rechte sind besonders gefährlich?</summary><p>create pods, list secrets, bind, escalate, impersonate, nodes/proxy und Wildcards. Sie führen fast immer zu Admin-Rechten.</p></details>
+<details><summary>Was ist eine Aggregated ClusterRole?</summary><p>Eine ClusterRole, die Regeln anderer ClusterRoles per Label-Selector sammelt. So ergänzen CRDs die Rollen view und edit.</p></details>
+<details><summary>Was ist system:masters?</summary><p>Eine Gruppe, die RBAC komplett umgeht. Zertifikate mit dieser Gruppe sind nur über einen CA-Wechsel zu entziehen.</p></details>
+<details><summary>Kann man mit RBAC etwas verbieten?</summary><p>Nein, RBAC ist nur additiv. Verbote setzt man mit Admission Control, z. B. Kyverno oder Pod Security Admission.</p></details>
+<details><summary>Was ist Least Privilege in Kubernetes konkret?</summary><p>Ein SA pro Workload, eigene Role mit nötigen Verben, RoleBinding statt ClusterRoleBinding, kein Token-Mount ohne Bedarf.</p></details>
+<details><summary>Wie funktioniert Workload Identity auf AKS?</summary><p>AKS veröffentlicht einen OIDC Issuer. Eine Managed Identity vertraut per Federated Credential dem SA-Subjekt. Der Pod tauscht sein SA-Token gegen ein Entra-Token.</p></details>
+<details><summary>Was muss man für Workload Identity am Pod setzen?</summary><p>SA mit Annotation azure.workload.identity/client-id und Pod-Label azure.workload.identity/use: "true". Der Webhook injiziert Umgebungsvariablen und das Token-File.</p></details>
+<details><summary>Workload Identity vs Client-Secret?</summary><p>Workload Identity hat kein langlebiges Geheimnis. Es gibt nichts zu rotieren und nichts, das aus Git oder einem Secret leaken kann.</p></details>
+<details><summary>RBAC vs Admission Controller?</summary><p>RBAC entscheidet über die Aktion. Admission entscheidet über den Inhalt, z. B. Image-Herkunft oder privileged.</p></details>
+<details><summary>Was zeigt kubectl auth whoami?</summary><p>Den Benutzernamen und die Gruppen, mit denen der API-Server mich sieht. Hilft bei OIDC- und Gruppenproblemen.</p></details>
+<details><summary>Szenario: Ein Operator wirft nach dem Upgrade „forbidden: cannot list resource leases“. Was tun Sie?</summary><p>Die Meldung nennt SA, Verb und Ressource. Ich ergänze die Role um leases in coordination.k8s.io und prüfe mit kubectl auth can-i --as.</p></details>
+<details><summary>Szenario: Ein Helm-Chart will eine ClusterRoleBinding auf cluster-admin. Wie reagieren Sie?</summary><p>Ich prüfe, was der Workload wirklich braucht. Dann eine eigene Role oder ClusterRole mit minimalen Verben, über values überschrieben und im Review dokumentiert.</p></details>
+<details><summary>Szenario: Ein Pod bekommt von Key Vault 401, obwohl Workload Identity eingerichtet ist. Wie suchen Sie?</summary><p>Subject im Federated Credential gegen Namespace und SA-Name prüfen, Pod-Label und Env-Variablen prüfen, Pod neu starten. Dann die Rolle der Managed Identity auf Key Vault prüfen.</p></details>
+
+</body>
+</html>

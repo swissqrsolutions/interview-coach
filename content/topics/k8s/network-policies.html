@@ -1,0 +1,277 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Network Policies und CNI (Cilium)</title>
+<style>
+  body { font: 17px/1.55 -apple-system, system-ui, sans-serif; max-width: 760px; margin: 0 auto; padding: 16px; color: #1d1d1f; }
+  h1 { font-size: 28px; margin: 8px 0 4px; }
+  h2 { font-size: 21px; margin: 32px 0 8px; padding-top: 12px; border-top: 2px solid #e5e5ea; }
+  .kern { background: #eef6ff; border-left: 4px solid #0a66c2; padding: 10px 14px; border-radius: 6px; }
+  .senior { background: #f0faf0; border-left: 4px solid #2e7d32; padding: 10px 14px; border-radius: 6px; }
+  .trap { background: #fff4f2; border-left: 4px solid #c62828; padding: 10px 14px; border-radius: 6px; }
+  code { background: #f2f2f7; padding: 1px 5px; border-radius: 4px; font-size: 15px; }
+  pre { background: #1e1e1e; color: #e6e6e6; padding: 12px; border-radius: 8px; overflow-x: auto; font-size: 13.5px; line-height: 1.45; }
+  svg { width: 100%; height: auto; display: block; margin: 10px 0; }
+  ol li, ul li { margin: 4px 0; }
+  details { border: 1px solid #e5e5ea; border-radius: 8px; padding: 8px 12px; margin: 6px 0; }
+  summary { font-weight: 600; cursor: pointer; }
+  details p { margin: 6px 0 2px; }
+  .small { color: #6e6e73; font-size: 14px; }
+</style>
+</head>
+<body>
+
+<h1>Network Policies und CNI (Cilium)</h1>
+<p class="small">Kubernetes · Tier 1 · Quellen: kubernetes.io (Network Policies, Cluster Networking, Network Plugins, Declare Network Policy), CNI Specification (containernetworking/cni), Cilium Docs (Network Policy, Layer 7 Policy, DNS-based Policy, Hubble), Microsoft Learn (Azure CNI Powered by Cilium)</p>
+
+<div class="kern">
+<b>Kern:</b> Eine <b>NetworkPolicy</b> ist eine Firewall-Regel für Pods auf L3/L4. Sie wählt Pods per Label und erlaubt nur bestimmten Verkehr. Ohne Policy darf jeder Pod mit jedem Pod reden (<b>default allow</b>). Durchsetzen muss sie das <b>CNI-Plugin</b>, z. B. <b>Cilium</b> mit eBPF.
+</div>
+
+<h2>1. Wo sitzen Network Policy und CNI?</h2>
+<svg viewBox="0 0 720 310" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="a" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="10" y="20" width="200" height="56" rx="8" fill="#fff" stroke="#555"/><text x="110" y="44" text-anchor="middle">kube-apiserver</text><text x="110" y="62" text-anchor="middle" font-size="12">NetworkPolicy-Objekte</text>
+  <line x1="110" y1="76" x2="110" y2="128" stroke="#555" stroke-width="2" marker-end="url(#a)"/><text x="118" y="106" font-size="12">watch</text>
+  <rect x="230" y="10" width="480" height="290" rx="12" fill="#f7f7fa" stroke="#999" stroke-dasharray="5 4"/><text x="470" y="30" text-anchor="middle" font-weight="700">Node</text>
+  <rect x="10" y="130" width="200" height="56" rx="8" fill="#0a66c2"/><text x="110" y="154" text-anchor="middle" fill="#fff" font-weight="700">Cilium Agent</text><text x="110" y="172" text-anchor="middle" fill="#fff" font-size="12">DaemonSet, 1 pro Node</text>
+  <line x1="210" y1="158" x2="378" y2="158" stroke="#555" stroke-width="2" marker-end="url(#a)"/><text x="295" y="150" text-anchor="middle" font-size="12">lädt eBPF</text>
+  <rect x="250" y="50" width="200" height="50" rx="8" fill="#fff" stroke="#555"/><text x="350" y="72" text-anchor="middle">Kubelet + containerd</text><text x="350" y="90" text-anchor="middle" font-size="12">ruft CNI: ADD / DEL</text>
+  <line x1="450" y1="75" x2="498" y2="75" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="500" y="50" width="195" height="50" rx="8" fill="#fff" stroke="#555"/><text x="597" y="72" text-anchor="middle">CNI-Plugin</text><text x="597" y="90" text-anchor="middle" font-size="12">IP, veth, Routen</text>
+  <rect x="380" y="130" width="315" height="56" rx="8" fill="#dbe9fb" stroke="#0a66c2"/><text x="537" y="154" text-anchor="middle" font-weight="700">eBPF im Kernel</text><text x="537" y="172" text-anchor="middle" font-size="12">Policy, Routing, Service-LB</text>
+  <rect x="380" y="220" width="140" height="56" rx="8" fill="#fff" stroke="#555"/><text x="450" y="244" text-anchor="middle">Pod A</text><text x="450" y="262" text-anchor="middle" font-size="12">10.0.1.12</text>
+  <rect x="555" y="220" width="140" height="56" rx="8" fill="#fff" stroke="#555"/><text x="625" y="244" text-anchor="middle">Pod B</text><text x="625" y="262" text-anchor="middle" font-size="12">10.0.1.37</text>
+  <line x1="450" y1="186" x2="450" y2="218" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <line x1="625" y1="186" x2="625" y2="218" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="250" y="220" width="110" height="56" rx="8" fill="#e8f5e9" stroke="#2e7d32"/><text x="305" y="244" text-anchor="middle">Hubble</text><text x="305" y="262" text-anchor="middle" font-size="12">Flow-Logs</text>
+</svg>
+<ol>
+  <li><b>API-Server:</b> speichert NetworkPolicy-Objekte. Er setzt selbst nichts durch.</li>
+  <li><b>Kubelet und Runtime:</b> rufen beim Start eines Pods das <b>CNI-Plugin</b> mit <code>ADD</code> auf. Das Plugin gibt dem Pod eine IP und verbindet ihn mit dem Netz.</li>
+  <li><b>Cilium Agent:</b> läuft als DaemonSet auf jedem Node. Er beobachtet Pods und Policies und lädt <b>eBPF-Programme</b> in den Kernel.</li>
+  <li><b>eBPF:</b> prüft jedes Paket direkt im Kernel. Erlaubt oder verwirft es nach Policy.</li>
+  <li><b>Hubble:</b> liest dieselben eBPF-Daten und zeigt jeden Flow mit Verdict, z. B. <code>FORWARDED</code> oder <code>DROPPED</code>.</li>
+</ol>
+
+<h2>2. Die Reise eines Pakets durch die Policy</h2>
+<svg viewBox="0 0 720 300" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="b" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker><marker id="r" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#c62828"/></marker></defs>
+  <rect x="10" y="20" width="140" height="60" rx="10" fill="#eee" stroke="#777"/><text x="80" y="46" text-anchor="middle" font-weight="700">1. api-Pod</text><text x="80" y="66" text-anchor="middle" font-size="12">DNS: mssql?</text>
+  <line x1="150" y1="50" x2="188" y2="50" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="190" y="20" width="160" height="60" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="270" y="46" text-anchor="middle" font-weight="700">2. Egress-Check</text><text x="270" y="66" text-anchor="middle" font-size="12">Quelle darf raus?</text>
+  <line x1="350" y1="50" x2="388" y2="50" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="390" y="20" width="150" height="60" rx="10" fill="#fff" stroke="#555"/><text x="465" y="46" text-anchor="middle" font-weight="700">3. Transport</text><text x="465" y="66" text-anchor="middle" font-size="12">Identity im Paket</text>
+  <line x1="540" y1="50" x2="578" y2="50" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="580" y="20" width="130" height="60" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="645" y="46" text-anchor="middle" font-weight="700">4. Ingress-Check</text><text x="645" y="66" text-anchor="middle" font-size="12">Ziel lässt rein?</text>
+  <line x1="645" y1="80" x2="645" y2="128" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="470" y="130" width="240" height="60" rx="10" fill="#0a66c2"/><text x="590" y="156" text-anchor="middle" fill="#fff" font-weight="700">5. L7 (optional)</text><text x="590" y="176" text-anchor="middle" fill="#fff" font-size="12">Envoy: GET /api/* ?</text>
+  <line x1="470" y1="160" x2="368" y2="160" stroke="#2e7d32" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="200" y="130" width="166" height="60" rx="10" fill="#e8f5e9" stroke="#2e7d32"/><text x="283" y="156" text-anchor="middle" font-weight="700">6a. mssql-Pod</text><text x="283" y="176" text-anchor="middle" font-size="12">FORWARDED</text>
+  <line x1="270" y1="80" x2="270" y2="236" stroke="#c62828" stroke-width="2" stroke-dasharray="6 4" marker-end="url(#r)"/>
+  <rect x="200" y="238" width="300" height="50" rx="10" fill="#fff4f2" stroke="#c62828"/><text x="350" y="268" text-anchor="middle" fill="#c62828" font-weight="700">6b. DROPPED (Policy denied)</text>
+</svg>
+<ol>
+  <li><b>DNS zuerst.</b> Der <code>api</code>-Pod fragt CoreDNS nach <code>mssql.match.svc</code>. Hat der Pod eine Egress-Policy ohne DNS-Regel, endet die Reise hier: Timeout.</li>
+  <li><b>Egress-Check auf der Quelle.</b> Ist der <code>api</code>-Pod von einer Egress-Policy ausgewählt? Dann muss eine Regel Ziel und Port 1433 erlauben.</li>
+  <li><b>Transport.</b> Cilium kennt für jeden Pod eine <b>Security Identity</b>, eine Zahl aus seinen Labels. Die Identity reist mit dem Paket, z. B. im VXLAN-Header.</li>
+  <li><b>Ingress-Check auf dem Ziel.</b> Ist der <code>mssql</code>-Pod ausgewählt, muss eine Ingress-Regel die Identity von <code>api</code> erlauben.</li>
+  <li><b>L7-Check (nur Cilium).</b> Hat die Regel HTTP-Regeln, leitet eBPF den Verkehr durch einen <b>Envoy-Proxy</b>. Er prüft Methode und Pfad.</li>
+  <li><b>Verdict.</b> Erlaubt: Paket kommt an. Sonst wird es still verworfen. Die Antwort auf eine erlaubte Verbindung ist automatisch erlaubt (<b>stateful</b>).</li>
+</ol>
+
+<h2>3. Beispiel: deny-all, DNS, gezielt erlauben</h2>
+<pre># 1) Default deny für alles im Namespace (Ingress und Egress)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: { name: default-deny-all, namespace: demo-netpol }
+spec:
+  podSelector: {}                 # leer = alle Pods im Namespace
+  policyTypes: [Ingress, Egress]  # keine Regeln = nichts erlaubt
+---
+# 2) DNS erlauben, sonst geht keine Namensauflösung
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: { name: allow-dns, namespace: demo-netpol }
+spec:
+  podSelector: {}
+  policyTypes: [Egress]
+  egress:
+  - to:
+    - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: kube-system } }
+      podSelector:       { matchLabels: { k8s-app: kube-dns } }   # gleiches Element = UND
+    ports: [ { protocol: UDP, port: 53 }, { protocol: TCP, port: 53 } ]
+---
+# 3) Nur api darf auf db:5432
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: { name: db-from-api, namespace: demo-netpol }
+spec:
+  podSelector: { matchLabels: { app: db } }
+  policyTypes: [Ingress]
+  ingress:
+  - from: [ { podSelector: { matchLabels: { app: api } } } ]
+    ports: [ { protocol: TCP, port: 5432 } ]
+---
+# 4) api darf zu db (Egress-Seite)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: { name: api-to-db, namespace: demo-netpol }
+spec:
+  podSelector: { matchLabels: { app: api } }
+  policyTypes: [Egress]
+  egress:
+  - to: [ { podSelector: { matchLabels: { app: db } } } ]
+    ports: [ { protocol: TCP, port: 5432 } ]</pre>
+<pre>$ kubectl -n demo-netpol exec deploy/api -- nc -zv -w 3 db 5432
+db (10.43.12.7:5432) open
+$ kubectl -n demo-netpol exec deploy/other -- nc -zv -w 3 db 5432
+nc: db (10.43.12.7:5432): Operation timed out
+$ hubble observe -n demo-netpol --verdict DROPPED
+demo-netpol/other-7c9f… -> demo-netpol/db-5d8b…:5432 policy-verdict:none INGRESS DENIED (TCP Flags: SYN)</pre>
+<p class="small">Erwartetes Ergebnis (laut Doku, nicht ausgeführt). Der lokale k3s-Cluster war nicht erreichbar; Hubble braucht Cilium.</p>
+<ol>
+  <li><code>default-deny-all</code> wählt alle Pods für beide Richtungen. Ohne Regeln ist dann nichts erlaubt.</li>
+  <li><code>allow-dns</code> öffnet Port 53 UDP <b>und</b> TCP zu CoreDNS. Grosse Antworten nutzen TCP.</li>
+  <li>Für eine Verbindung braucht es <b>zwei</b> Erlaubnisse: Egress beim Sender und Ingress beim Empfänger.</li>
+  <li><code>other</code> bekommt einen <b>Timeout</b>, kein „connection refused“. Das Paket wird still verworfen.</li>
+  <li>Hubble zeigt den Drop mit Richtung und Grund. Das ist der schnellste Beweis für ein Policy-Problem.</li>
+</ol>
+
+<p><b>Cilium L7 und FQDN:</b></p>
+<pre>apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata: { name: api-l7, namespace: demo-netpol }
+spec:
+  endpointSelector: { matchLabels: { app: api } }
+  ingress:
+  - fromEndpoints: [ { matchLabels: { app: webui } } ]
+    toPorts:
+    - ports: [ { port: "8080", protocol: TCP } ]
+      rules:
+        http: [ { method: "GET", path: "/api/.*" } ]   # Regex auf den Pfad
+  egress:
+  - toEndpoints: [ { matchLabels: { "k8s:io.kubernetes.pod.namespace": kube-system, k8s-app: kube-dns } } ]
+    toPorts:
+    - ports: [ { port: "53", protocol: ANY } ]
+      rules: { dns: [ { matchPattern: "*" } ] }        # DNS-Proxy lernt Namen → IPs
+  - toFQDNs: [ { matchName: "login.microsoftonline.com" } ]
+    toPorts: [ { ports: [ { port: "443", protocol: TCP } ] } ]</pre>
+<ol>
+  <li><code>webui</code> darf nur <code>GET /api/...</code>. Ein <code>DELETE</code> bekommt <b>HTTP 403</b> vom Envoy-Proxy, keinen Timeout.</li>
+  <li><code>toFQDNs</code> erlaubt einen Hostnamen statt IPs. Das klappt nur mit der <code>dns</code>-Regel: Ciliums DNS-Proxy merkt sich die aufgelösten IPs.</li>
+</ol>
+
+<h2>4. Details, die Interviewer fragen</h2>
+<ol>
+  <li><b>Default allow:</b> Ein Pod ist <b>nicht isoliert</b>, bis eine Policy ihn auswählt. Isolation gilt pro Richtung: Ingress und Egress getrennt.</li>
+  <li><b>Additiv:</b> Mehrere Policies auf einem Pod ergeben die <b>Vereinigung</b> ihrer Regeln. Die Reihenfolge ist egal. Die Standard-API kennt keine Deny-Regel.</li>
+  <li><b>podSelector:</b> wählt die Ziel-Pods der Policy im eigenen Namespace. <code>{}</code> heisst: alle Pods.</li>
+  <li><b>from/to-Peers:</b> <code>podSelector</code> (gleicher Namespace), <code>namespaceSelector</code> (andere Namespaces), <code>ipBlock</code> (CIDR mit <code>except</code>, für Ziele ausserhalb).</li>
+  <li><b>UND vs ODER:</b> <code>namespaceSelector</code> und <code>podSelector</code> im <b>selben</b> Listenelement: UND. In <b>zwei</b> Elementen (zwei Bindestriche): ODER. Ein häufiger Fehler.</li>
+  <li><b>Namespace-Label:</b> Jeder Namespace hat automatisch <code>kubernetes.io/metadata.name: &lt;name&gt;</code>. Damit wählt man Namespaces stabil.</li>
+  <li><b>Ports:</b> <code>port</code> und <code>protocol</code> (TCP, UDP, SCTP). Mit <code>endPort</code> ein Portbereich. Benannte Ports sind erlaubt.</li>
+  <li><b>Stateful:</b> Antwortpakete einer erlaubten Verbindung brauchen keine eigene Regel.</li>
+  <li><b>DNS-Egress:</b> Wer Egress sperrt, muss Port 53 UDP und TCP zu CoreDNS öffnen. Sonst sieht es aus wie ein Netzwerkausfall.</li>
+  <li><b>Services:</b> Policies sehen Pod-IPs nach der Service-Übersetzung. Man erlaubt also Pods, nicht Service-Namen.</li>
+  <li><b>Grenzen der Standard-API:</b> kein L7, keine FQDN-Regeln, kein Logging, keine expliziten Denies, keine cluster-weiten Policies. Dafür gibt es CNI-eigene CRDs oder die AdminNetworkPolicy-API der SIG Network (noch nicht Teil des Kerns).</li>
+  <li><b>CNI:</b> Eine Spezifikation für Netzwerk-Plugins. Die Runtime ruft das Plugin-Binary mit <code>ADD</code>, <code>DEL</code>, <code>CHECK</code> auf. Das Plugin richtet Interface, IP (<b>IPAM</b>) und Routen ein.</li>
+  <li><b>Kubernetes-Netzmodell:</b> Jeder Pod hat eine eigene IP. Pods erreichen sich ohne NAT, auch über Nodes hinweg.</li>
+  <li><b>Nicht jedes CNI setzt Policies durch:</b> Flannel allein ignoriert sie. Calico, Cilium und Antrea setzen sie durch. k3s bringt einen eigenen Policy-Controller mit.</li>
+  <li><b>Cilium Identity:</b> Cilium filtert nach <b>Label-Identities</b>, nicht nach IPs. Pods mit gleichen relevanten Labels teilen eine Identity. Das skaliert besser bei vielen Pod-Neustarts.</li>
+  <li><b>CiliumNetworkPolicy:</b> namespaced CRD mit L7 (HTTP, Kafka, DNS), <code>toFQDNs</code>, <code>toEntities</code> (<code>world</code>, <code>cluster</code>, <code>kube-apiserver</code>) und <code>ingressDeny</code>/<code>egressDeny</code>. <b>CiliumClusterwideNetworkPolicy</b> gilt cluster-weit.</li>
+  <li><b>kube-proxy-Ersatz:</b> Cilium kann Services selbst per eBPF balancieren. Dann braucht der Cluster keine iptables-Regeln von kube-proxy.</li>
+  <li><b>Hubble:</b> Observability von Cilium. Hubble Relay sammelt Flows aller Nodes, Hubble UI zeigt eine Service-Map. Metriken gehen nach Prometheus.</li>
+  <li><b>AKS:</b> <b>Azure CNI Powered by Cilium</b> nutzt Cilium als Datenpfad und für Policies. Erweiterte Funktionen wie FQDN- und L7-Policies brauchen dort zusätzliche Features (Advanced Container Networking Services).</li>
+</ol>
+
+<h2>5. Vergleich</h2>
+<ul>
+  <li><b>NetworkPolicy vs CiliumNetworkPolicy:</b> NetworkPolicy ist portabel und nur L3/L4. CiliumNetworkPolicy kann L7, FQDN und Deny, bindet aber an Cilium.</li>
+  <li><b>iptables-CNI (Calico klassisch, kube-proxy) vs eBPF (Cilium):</b> iptables-Regeln wachsen linear mit Services und Policies. eBPF nutzt Hash-Maps und bleibt schnell. Dafür braucht eBPF einen neuen Kernel.</li>
+  <li><b>Calico vs Cilium:</b> Beide setzen Policies durch und haben eigene CRDs. Calico ist stark bei BGP-Routing. Cilium ist stark bei L7 und Observability (Hubble). Calico hat auch einen eBPF-Modus.</li>
+  <li><b>Flannel:</b> einfaches Overlay ohne Policy-Durchsetzung.</li>
+  <li><b>NetworkPolicy vs Service Mesh (Istio, Linkerd):</b> Policy filtert Pakete. Ein Mesh bringt mTLS, Identität per Zertifikat und Retries, aber mit mehr Betriebslast.</li>
+  <li><b>NetworkPolicy vs Azure NSG:</b> NSG filtert auf Subnetz- und VM-Ebene. NetworkPolicy filtert zwischen Pods im Cluster.</li>
+</ul>
+
+<h2>6. In der Produktion</h2>
+<ol>
+  <li><b>Alles hängt nach deny-all:</b> DNS vergessen. Symptom: Name-Lookup-Timeouts überall. Lösung: <code>allow-dns</code>-Policy zuerst ausrollen.</li>
+  <li><b>Nur eine Seite erlaubt:</b> Egress beim Sender erlaubt, Ingress beim Empfänger nicht. Lösung: beide Policies, mit Hubble den Drop finden.</li>
+  <li><b>UND/ODER verwechselt:</b> Ein zusätzlicher Bindestrich öffnet einen ganzen Namespace. Lösung: Policies im Review mit einem Visualizer oder Tests prüfen.</li>
+  <li><b>Policy greift nicht:</b> Das CNI setzt keine Policies durch, oder die Labels passen nicht. Lösung: CNI prüfen, <code>kubectl get pods --show-labels</code>.</li>
+  <li><b>Kein Zugriff auf API-Server oder Webhooks:</b> Operatoren und Admission-Webhooks brauchen Egress zum API-Server. Mit Cilium: <code>toEntities: [kube-apiserver]</code>.</li>
+  <li><b>Externe Ziele mit wechselnden IPs:</b> <code>ipBlock</code> für Cloud-Dienste veraltet schnell. Lösung: Cilium <code>toFQDNs</code> oder Private Endpoints mit fester IP.</li>
+  <li><b>Monitoring bricht:</b> Prometheus darf die Pods nicht mehr scrapen. Lösung: Ingress vom Monitoring-Namespace auf den Metrics-Port erlauben.</li>
+</ol>
+
+<h2>7. Diagnose: Werkzeuge und Befehle</h2>
+<ul>
+  <li><code>kubectl get networkpolicy -A</code> und <code>kubectl describe networkpolicy &lt;name&gt;</code>: welche Policies wählen welche Pods.</li>
+  <li><code>kubectl get pods --show-labels</code>: passen die Labels zum Selector?</li>
+  <li><code>kubectl exec ... -- nc -zv -w 3 &lt;host&gt; &lt;port&gt;</code> oder <code>curl -m 3</code>: Verbindung testen. Timeout deutet auf Drop.</li>
+  <li><code>hubble observe --verdict DROPPED -n &lt;ns&gt;</code>: alle verworfenen Flows mit Grund. <code>--pod</code>, <code>--port</code>, <code>--protocol dns</code> filtern.</li>
+  <li><code>cilium status</code>, <code>cilium connectivity test</code> (Cilium CLI): Gesundheit und End-to-End-Tests.</li>
+  <li>Im Agent-Pod: <code>cilium-dbg endpoint list</code> (Policy-Status pro Endpoint), <code>cilium-dbg policy get</code>.</li>
+  <li><code>kubectl debug</code> mit <code>nicolaka/netshoot</code>: DNS und Verbindungen aus Sicht des Pods prüfen.</li>
+</ul>
+
+<h2>8. Senior-Punkte</h2>
+<div class="senior">
+<ol>
+  <li><b>Default deny pro Namespace,</b> dann gezielt erlauben. DNS und Monitoring sind Teil der Grundlage.</li>
+  <li><b>Labels sind die Sicherheitsgrenze.</b> Wer Labels setzen darf, kann Policies umgehen. Darum Labels per Admission (Kyverno) vorschreiben.</li>
+  <li><b>Portabel vs mächtig:</b> Standard-NetworkPolicy wo möglich. Cilium-CRDs nur für L7, FQDN oder cluster-weite Regeln, bewusst als Bindung an Cilium.</li>
+  <li><b>Ohne Observability keine Policies.</b> Hubble macht Drops sichtbar. Sonst sucht man Stunden nach „Netzwerkproblemen“.</li>
+  <li><b>Policies sind keine Verschlüsselung.</b> Für mTLS braucht es ein Mesh oder Cilium-Encryption (WireGuard/IPsec).</li>
+  <li><b>Policies gehören ins Helm-Chart,</b> neben den Workload. So wandern sie mit GitOps durch alle Umgebungen.</li>
+</ol>
+</div>
+
+<h2>9. Aus dem Projekt</h2>
+<p>„Bei MATCH auf AKS nutzen wir Cilium als CNI mit Network Policies: Sie legen fest, welche Pods mit MSSQL, MinIO und Vault reden dürfen, und mit Hubble sehen wir verworfene Flows.“ <span class="small">(Prüfen und durch dein echtes Beispiel ersetzen.)</span></p>
+
+<h2>10. Fallen</h2>
+<div class="trap">
+<ul>
+  <li>„Kubernetes blockt Verkehr zwischen Namespaces standardmässig.“ → <b>Falsch.</b> Ohne Policy ist alles erlaubt.</li>
+  <li>„Eine NetworkPolicy wirkt immer.“ → <b>Falsch.</b> Nur wenn das CNI sie durchsetzt.</li>
+  <li>„Die spezifischste Policy gewinnt.“ → <b>Falsch.</b> Policies sind additiv; es zählt die Vereinigung.</li>
+  <li>„Mit NetworkPolicy kann ich einzelne IPs verbieten.“ → <b>Nur indirekt</b> über <code>ipBlock.except</code>. Echte Deny-Regeln gibt es nur in CNI-CRDs.</li>
+  <li>„Nach deny-all reicht es, die App-Ports zu öffnen.“ → <b>Falsch.</b> DNS auf Port 53 UDP und TCP fehlt dann.</li>
+  <li>„Ingress erlauben reicht.“ → <b>Falsch</b>, wenn der Sender Egress-isoliert ist. Beide Seiten müssen erlauben.</li>
+</ul>
+</div>
+
+<h2>11. Fragen</h2>
+<details><summary>Was ist eine NetworkPolicy?</summary><p>Ein Kubernetes-Objekt, das erlaubten Pod-Verkehr auf L3/L4 beschreibt. Es wählt Pods per Label und erlaubt Ingress und Egress gezielt.</p></details>
+<details><summary>Was gilt ohne NetworkPolicy?</summary><p>Default allow: Jeder Pod erreicht jeden Pod in allen Namespaces.</p></details>
+<details><summary>Wann ist ein Pod isoliert?</summary><p>Sobald eine Policy ihn für eine Richtung auswählt. Dann ist in dieser Richtung nur noch erlaubter Verkehr möglich.</p></details>
+<details><summary>Wie schreibt man deny-all?</summary><p>podSelector: {} und policyTypes Ingress und Egress, ohne Regeln. Das isoliert alle Pods im Namespace.</p></details>
+<details><summary>Wie kombinieren sich mehrere Policies?</summary><p>Additiv. Erlaubt ist, was irgendeine Policy erlaubt. Es gibt keine Reihenfolge und keine Deny-Regel.</p></details>
+<details><summary>Was ist der Unterschied zwischen einem und zwei Listenelementen in from?</summary><p>namespaceSelector und podSelector in einem Element sind UND. In zwei Elementen sind sie ODER und öffnen viel mehr.</p></details>
+<details><summary>Warum muss man DNS-Egress erlauben?</summary><p>Mit Egress-Isolation ist auch Port 53 zu CoreDNS gesperrt. Dann scheitert jede Namensauflösung. UDP und TCP öffnen.</p></details>
+<details><summary>Muss man Antwortverkehr erlauben?</summary><p>Nein. Policies sind stateful. Antworten auf erlaubte Verbindungen sind automatisch erlaubt.</p></details>
+<details><summary>Wer setzt NetworkPolicies durch?</summary><p>Das CNI-Plugin, z. B. Cilium, Calico oder Antrea. Der API-Server speichert sie nur. Flannel allein ignoriert sie.</p></details>
+<details><summary>Was ist CNI?</summary><p>Eine Spezifikation für Netzwerk-Plugins. Die Runtime ruft das Plugin mit ADD und DEL auf, das Plugin richtet Interface, IP und Routen für den Pod ein.</p></details>
+<details><summary>Was ist das Kubernetes-Netzmodell?</summary><p>Jeder Pod hat eine eigene IP. Pods erreichen sich ohne NAT, auch über Nodes hinweg.</p></details>
+<details><summary>Was ist eBPF und warum nutzt Cilium es?</summary><p>eBPF sind kleine, geprüfte Programme im Linux-Kernel. Cilium filtert und routet damit direkt im Kernel, mit Hash-Maps statt langer iptables-Ketten.</p></details>
+<details><summary>Was ist eine Cilium Security Identity?</summary><p>Eine Zahl, die aus den Labels eines Pods entsteht. Policies prüfen Identities statt IPs, das bleibt stabil bei Pod-Neustarts.</p></details>
+<details><summary>Was kann CiliumNetworkPolicy zusätzlich?</summary><p>L7-Regeln für HTTP, Kafka und DNS, FQDN-Ziele, Entities wie world oder kube-apiserver und explizite Deny-Regeln.</p></details>
+<details><summary>Wie funktioniert eine L7-Policy in Cilium?</summary><p>eBPF leitet den Port an einen Envoy-Proxy auf dem Node. Envoy prüft Methode und Pfad und antwortet bei Verstoss mit 403.</p></details>
+<details><summary>Wie funktioniert toFQDNs?</summary><p>Ciliums DNS-Proxy beobachtet DNS-Antworten und lernt Name-zu-IP. Dafür braucht die Policy eine dns-Regel auf Port 53.</p></details>
+<details><summary>Was ist Hubble?</summary><p>Die Observability-Schicht von Cilium. Sie zeigt jeden Flow mit Quelle, Ziel und Verdict, dazu eine Service-Map und Prometheus-Metriken.</p></details>
+<details><summary>Kann Cilium kube-proxy ersetzen?</summary><p>Ja. Cilium balanciert Services per eBPF. Dann gibt es keine iptables-Regeln von kube-proxy mehr.</p></details>
+<details><summary>NetworkPolicy vs Service Mesh?</summary><p>Policy filtert Verbindungen. Ein Mesh bringt zusätzlich mTLS, Identität per Zertifikat und Traffic-Steuerung, aber mehr Betriebslast.</p></details>
+<details><summary>Wie erlaubt man Verkehr aus einem anderen Namespace?</summary><p>Mit namespaceSelector auf kubernetes.io/metadata.name, optional im selben Element mit podSelector für bestimmte Pods.</p></details>
+<details><summary>Wie testen Sie eine Policy?</summary><p>Mit nc oder curl aus einem erlaubten und einem nicht erlaubten Pod. Dazu hubble observe --verdict DROPPED als Beweis.</p></details>
+<details><summary>Warum sind Labels sicherheitsrelevant?</summary><p>Policies wählen per Label. Wer Labels frei setzt, kann sich Zugang verschaffen. Darum Labels per Admission kontrollieren.</p></details>
+<details><summary>Szenario: Nach dem Ausrollen von deny-all laufen alle Pods in Timeouts. Was ist los?</summary><p>Fast sicher fehlt DNS-Egress zu CoreDNS. Ich rolle allow-dns aus und prüfe mit hubble observe --protocol dns.</p></details>
+<details><summary>Szenario: Der api-Pod erreicht die Datenbank nicht, obwohl eine Ingress-Policy existiert. Wie suchen Sie?</summary><p>Labels mit --show-labels prüfen, dann ob api Egress-isoliert ist. hubble observe zeigt, ob der Drop bei EGRESS oder INGRESS passiert.</p></details>
+<details><summary>Szenario: Ein Pod darf nur einen externen Azure-Dienst erreichen, dessen IPs wechseln. Wie lösen Sie das?</summary><p>Mit Cilium toFQDNs und einer dns-Regel, oder mit einem Private Endpoint mit fester IP und ipBlock. ipBlock auf öffentliche Cloud-IPs veraltet schnell.</p></details>
+
+</body>
+</html>

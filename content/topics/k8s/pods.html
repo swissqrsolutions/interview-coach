@@ -1,0 +1,231 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pods und Sidecars</title>
+<style>
+  body { font: 17px/1.55 -apple-system, system-ui, sans-serif; max-width: 760px; margin: 0 auto; padding: 16px; color: #1d1d1f; }
+  h1 { font-size: 28px; margin: 8px 0 4px; }
+  h2 { font-size: 21px; margin: 32px 0 8px; padding-top: 12px; border-top: 2px solid #e5e5ea; }
+  .kern { background: #eef6ff; border-left: 4px solid #0a66c2; padding: 10px 14px; border-radius: 6px; }
+  .senior { background: #f0faf0; border-left: 4px solid #2e7d32; padding: 10px 14px; border-radius: 6px; }
+  .trap { background: #fff4f2; border-left: 4px solid #c62828; padding: 10px 14px; border-radius: 6px; }
+  code { background: #f2f2f7; padding: 1px 5px; border-radius: 4px; font-size: 15px; }
+  pre { background: #1e1e1e; color: #e6e6e6; padding: 12px; border-radius: 8px; overflow-x: auto; font-size: 13.5px; line-height: 1.45; }
+  svg { width: 100%; height: auto; display: block; margin: 10px 0; }
+  ol li, ul li { margin: 4px 0; }
+  details { border: 1px solid #e5e5ea; border-radius: 8px; padding: 8px 12px; margin: 6px 0; }
+  summary { font-weight: 600; cursor: pointer; }
+  details p { margin: 6px 0 2px; }
+  .small { color: #6e6e73; font-size: 14px; }
+</style>
+</head>
+<body>
+
+<h1>Pods: Container, Sidecar, Init Container</h1>
+<p class="small">Kubernetes · Tier 1 · Quellen: kubernetes.io Docs „Pods“, „Pod Lifecycle“, „Init Containers“, „Sidecar Containers“ (stable seit 1.33), „Ephemeral Containers“, „Debug Running Pods“, „Resize CPU and Memory Resources assigned to Containers“ (Stand Kubernetes 1.37)</p>
+
+<div class="kern">
+<b>Kern:</b> Ein <b>Pod</b> ist die kleinste Einheit, die Kubernetes plant und startet. Er ist eine Gruppe von Containern mit <b>gemeinsamer IP</b>, gemeinsamen <b>Volumes</b> und gleichem Node. <b>Init Container</b> laufen vorher einmal, <b>Sidecars</b> laufen neben der App, <b>Ephemeral Container</b> kommen nur zum Debuggen dazu.
+</div>
+
+<h2>1. Wo sitzt ein Pod?</h2>
+<svg viewBox="0 0 720 320" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="a" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="10" y="10" width="700" height="300" rx="12" fill="#f7f7fa" stroke="#999" stroke-dasharray="5 4"/><text x="360" y="32" text-anchor="middle" font-weight="700">Node (kubelet + containerd)</text>
+  <rect x="30" y="50" width="660" height="240" rx="12" fill="#fff" stroke="#0a66c2" stroke-width="2"/><text x="360" y="72" text-anchor="middle" font-weight="700" fill="#0a66c2">Pod  ·  IP 10.42.0.15  ·  ein Netzwerk-Namespace</text>
+  <rect x="50" y="90" width="130" height="70" rx="8" fill="#eee" stroke="#777"/><text x="115" y="118" text-anchor="middle">Sandbox</text><text x="115" y="138" text-anchor="middle" font-size="12">(pause)</text>
+  <rect x="200" y="90" width="150" height="70" rx="8" fill="#fff" stroke="#555"/><text x="275" y="116" text-anchor="middle" font-weight="700">Init Container</text><text x="275" y="136" text-anchor="middle" font-size="12">läuft vorher, endet</text>
+  <rect x="370" y="90" width="140" height="70" rx="8" fill="#0a66c2"/><text x="440" y="116" text-anchor="middle" fill="#fff" font-weight="700">App</text><text x="440" y="136" text-anchor="middle" fill="#fff" font-size="12">:8080</text>
+  <rect x="530" y="90" width="140" height="70" rx="8" fill="#dbe9fb" stroke="#0a66c2"/><text x="600" y="116" text-anchor="middle" font-weight="700">Sidecar</text><text x="600" y="136" text-anchor="middle" font-size="12">z. B. Log-Shipper</text>
+  <rect x="200" y="200" width="470" height="60" rx="8" fill="#e8f5e9" stroke="#2e7d32"/><text x="435" y="226" text-anchor="middle" font-weight="700">Volume (emptyDir, ConfigMap, PVC …)</text><text x="435" y="245" text-anchor="middle" font-size="12">in jeden Container einzeln gemountet</text>
+  <line x1="275" y1="160" x2="275" y2="198" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <line x1="440" y1="160" x2="440" y2="198" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <line x1="600" y1="160" x2="600" y2="198" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <line x1="530" y1="125" x2="512" y2="125" stroke="#555" stroke-width="2" marker-end="url(#a)"/><text x="521" y="182" text-anchor="middle" font-size="11">localhost</text>
+  <rect x="50" y="200" width="130" height="60" rx="8" fill="#fff4f2" stroke="#c62828"/><text x="115" y="226" text-anchor="middle" font-size="13">Ephemeral</text><text x="115" y="244" text-anchor="middle" font-size="12">kubectl debug</text>
+</svg>
+<ol>
+  <li><b>Pod Sandbox:</b> die Hülle des Pods. Die Runtime legt sie zuerst an, oft mit einem kleinen <b>pause</b>-Container. Sie hält den <b>Netzwerk-Namespace</b>.</li>
+  <li><b>App-Container</b> (<code>spec.containers</code>): die eigentliche Anwendung. Beispiel: Spring-Boot-Service auf Port 8080.</li>
+  <li><b>Init Container</b> (<code>spec.initContainers</code>): laufen nacheinander bis zum Ende, bevor die App startet. Beispiel: auf die Datenbank warten, Schema migrieren.</li>
+  <li><b>Sidecar</b>: ein Init Container mit <code>restartPolicy: Always</code>. Er startet vor der App und läuft die ganze Zeit mit. Beispiel: Log-Shipper, Proxy.</li>
+  <li><b>Ephemeral Container</b> (<code>spec.ephemeralContainers</code>): wird zur Laufzeit zum Debuggen hinzugefügt. Beispiel: Shell mit <code>curl</code> in einem distroless-Pod.</li>
+  <li><b>Gemeinsam:</b> eine IP, ein Port-Raum, <code>localhost</code> zwischen Containern, Volumes. <b>Nicht</b> gemeinsam: Dateisystem des Images, Prozess-Namespace (ausser mit <code>shareProcessNamespace: true</code>).</li>
+</ol>
+
+<h2>2. Die Reise eines Pods (die Geschichte zum Merken)</h2>
+<svg viewBox="0 0 720 300" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="b" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker><marker id="r" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#c62828"/></marker></defs>
+  <rect x="10" y="40" width="130" height="70" rx="10" fill="#eee" stroke="#777"/><text x="75" y="68" text-anchor="middle" font-weight="700">Pending</text><text x="75" y="88" text-anchor="middle" font-size="12">planen, Image</text>
+  <line x1="140" y1="75" x2="168" y2="75" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="170" y="40" width="120" height="70" rx="10" fill="#fff" stroke="#555"/><text x="230" y="68" text-anchor="middle" font-weight="700">Init 1..n</text><text x="230" y="88" text-anchor="middle" font-size="12">nacheinander</text>
+  <line x1="290" y1="75" x2="318" y2="75" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="320" y="40" width="120" height="70" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="380" y="68" text-anchor="middle" font-weight="700">Sidecars</text><text x="380" y="88" text-anchor="middle" font-size="12">started = true</text>
+  <line x1="440" y1="75" x2="468" y2="75" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="470" y="40" width="110" height="70" rx="10" fill="#0a66c2"/><text x="525" y="68" text-anchor="middle" fill="#fff" font-weight="700">Running</text><text x="525" y="88" text-anchor="middle" fill="#fff" font-size="12">App + Ready</text>
+  <line x1="580" y1="75" x2="608" y2="75" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="610" y="40" width="100" height="70" rx="10" fill="#e8f5e9" stroke="#2e7d32"/><text x="660" y="62" text-anchor="middle" font-size="13" font-weight="700">Succeeded</text><text x="660" y="80" text-anchor="middle" font-size="13">oder</text><text x="660" y="98" text-anchor="middle" font-size="13" font-weight="700">Failed</text>
+  <path d="M525,110 C525,200 380,200 380,112" fill="none" stroke="#c62828" stroke-width="2" stroke-dasharray="6 4" marker-end="url(#r)"/>
+  <text x="455" y="215" text-anchor="middle" fill="#c62828" font-size="12">Container crasht → kubelet startet neu (Backoff 10 s … 5 min)</text>
+  <rect x="170" y="235" width="410" height="50" rx="10" fill="#fff4f2" stroke="#c62828"/><text x="375" y="257" text-anchor="middle" font-weight="700">Ende: preStop → SIGTERM → Grace Period → SIGKILL</text><text x="375" y="275" text-anchor="middle" font-size="12">Sidecars stoppen zuletzt, in umgekehrter Reihenfolge</text>
+</svg>
+<ol>
+  <li><b>Pending.</b> Der Pod existiert im API-Server. Er wartet auf einen Node oder auf das Image-Pull. Bleibt er hier hängen: zu wenig Ressourcen, Taints, fehlendes PVC.</li>
+  <li><b>Init Container laufen.</b> Der kubelet startet sie <b>einzeln und nacheinander</b>. Jeder muss mit Exit-Code 0 enden. Scheitert einer, startet der kubelet ihn neu (ausser bei <code>restartPolicy: Never</code>, dann ist der Pod Failed). Status: <code>Init:0/2</code>.</li>
+  <li><b>Sidecars starten.</b> Sie stehen auch in <code>initContainers</code>, an ihrer Position. Der kubelet wartet, bis ihr <b>startupProbe</b> erfolgreich ist oder der Prozess läuft. Dann geht es weiter.</li>
+  <li><b>Running.</b> Die App-Container starten <b>parallel</b>. Liveness, Readiness und Startup Probes laufen. Erst wenn alle Readiness Probes grün sind, ist der Pod <b>Ready</b> und bekommt Service-Traffic.</li>
+  <li><b>Absturz.</b> Ein Container endet. Der kubelet startet ihn nach der <code>restartPolicy</code> neu, mit wachsender Wartezeit. Das ist <b>CrashLoopBackOff</b>. Der Pod bleibt auf demselben Node, die IP bleibt.</li>
+  <li><b>Ende.</b> Beim Löschen läuft der <b>preStop</b>-Hook, dann kommt <b>SIGTERM</b>. Nach <code>terminationGracePeriodSeconds</code> (Standard 30 s) folgt <b>SIGKILL</b>. Sidecars stoppen erst nach der App.</li>
+</ol>
+
+<h2>3. Beispiel: Init Container, Sidecar und Debug</h2>
+<pre>apiVersion: v1
+kind: Pod
+metadata: { name: web, namespace: demo-pods }
+spec:
+  restartPolicy: Always
+  initContainers:
+  - name: wait-db                      # klassischer Init Container
+    image: busybox:1.36
+    command: ['sh','-c','until nslookup db; do sleep 2; done']
+  - name: log-shipper                  # native Sidecar
+    image: busybox:1.36
+    restartPolicy: Always
+    command: ['sh','-c','tail -F /logs/app.log']
+    volumeMounts: [{ name: logs, mountPath: /logs }]
+  containers:
+  - name: app
+    image: busybox:1.36
+    command: ['sh','-c','while true; do date &gt;&gt; /logs/app.log; sleep 5; done']
+    volumeMounts: [{ name: logs, mountPath: /logs }]
+  volumes:
+  - name: logs
+    emptyDir: {}</pre>
+<pre>$ kubectl get pod web -n demo-pods -w
+NAME   READY   STATUS     RESTARTS   AGE
+web    0/2     Init:0/2   0          2s
+web    0/2     Init:1/2   0          9s       # nach: kubectl create svc clusterip db --tcp=5432
+web    1/2     PodInitializing  0     10s
+web    2/2     Running    0          12s
+
+$ kubectl logs web -c log-shipper -n demo-pods
+Mon Nov 24 10:15:02 UTC 2026
+
+$ kubectl debug -it web -n demo-pods --image=busybox:1.36 --target=app
+/ # ps
+PID   USER     COMMAND
+    1 root     sh -c while true; do date &gt;&gt; /logs/app.log; sleep 5; done</pre>
+<p class="small">Erwartetes Ergebnis (laut Doku, nicht ausgeführt). Der lokale k3s-Cluster war nicht erreichbar. Zeitstempel beispielhaft.</p>
+<ol>
+  <li><code>Init:0/2</code>: Der Pod hängt im ersten Init Container, bis der Service <code>db</code> per DNS auflösbar ist.</li>
+  <li><code>READY 2/2</code>: Der Sidecar zählt als Container im READY-Wert, obwohl er in <code>initContainers</code> steht.</li>
+  <li>App und Sidecar teilen das Volume <code>logs</code>. Der Sidecar sieht die Datei der App.</li>
+  <li><code>kubectl debug --target=app</code> fügt einen <b>Ephemeral Container</b> hinzu. Mit <code>--target</code> sieht er die Prozesse des App-Containers.</li>
+</ol>
+
+<h2>4. Details, die Interviewer fragen</h2>
+<ol>
+  <li><b>Pod-Phasen:</b> <b>Pending</b>, <b>Running</b>, <b>Succeeded</b>, <b>Failed</b>, <b>Unknown</b> (Node nicht erreichbar). <code>CrashLoopBackOff</code> und <code>Terminating</code> sind <b>keine</b> Phasen, sondern Anzeigen von <code>kubectl</code>.</li>
+  <li><b>Container-Zustände:</b> <b>Waiting</b> (mit Grund, z. B. <code>ImagePullBackOff</code>), <b>Running</b>, <b>Terminated</b> (mit Exit-Code und Grund, z. B. <code>OOMKilled</code>).</li>
+  <li><b>Pod Conditions:</b> <code>PodScheduled</code>, <code>PodReadyToStartContainers</code>, <code>Initialized</code>, <code>ContainersReady</code>, <code>Ready</code>. Services nutzen nur <code>Ready</code>.</li>
+  <li><b>restartPolicy</b> (Pod-Ebene): <code>Always</code> (Standard, für Deployments), <code>OnFailure</code> (nur bei Exit-Code ≠ 0, für Jobs), <code>Never</code>. Sie gilt für App-Container und Init Container.</li>
+  <li><b>Restart-Backoff:</b> 10 s, 20 s, 40 s … bis max. 5 Minuten. Nach 10 Minuten stabilem Lauf setzt der kubelet den Backoff zurück.</li>
+  <li><b>Native Sidecar:</b> ein Init Container mit <code>restartPolicy: Always</code>. Stable seit 1.33. Er startet vor der App, darf Probes haben, stoppt nach der App und blockiert das Ende eines <b>Jobs</b> nicht.</li>
+  <li><b>Alter Sidecar-Stil:</b> ein zweiter normaler Container. Problem: keine Startreihenfolge, und in einem Job endet der Pod nie, weil der Sidecar weiterläuft.</li>
+  <li><b>Init Container:</b> keine Readiness/Liveness Probes, laufen nacheinander, müssen erfolgreich enden. Sie sollen <b>idempotent</b> sein, weil sie bei einem Pod-Neustart erneut laufen.</li>
+  <li><b>Ressourcen mit Init Containern:</b> Der effektive Request ist das Maximum aus dem grössten Init Container und der Summe aller App-Container plus Sidecars.</li>
+  <li><b>Ephemeral Container:</b> stable seit 1.25. Keine Ports, keine Probes, keine Ressourcen-Garantie. Man kann sie nicht entfernen oder neu starten. Ideal für <b>distroless</b>-Images ohne Shell.</li>
+  <li><b>Graceful Shutdown:</b> Beim Löschen entfernt der EndpointSlice-Controller den Pod aus dem Service. Gleichzeitig kommt SIGTERM. Darum braucht die App einen kurzen <code>preStop</code>-Sleep oder muss Requests noch kurz annehmen.</li>
+  <li><b>Pod ist kurzlebig:</b> Ein gelöschter Pod kommt nie zurück. Ein Controller erzeugt einen <b>neuen</b> Pod mit neuem Namen und neuer IP.</li>
+  <li><b>In-Place Resize:</b> CPU und Memory eines laufenden Pods ändern, ohne Neustart (<code>kubectl patch --subresource resize</code>). GA seit 1.35.</li>
+</ol>
+
+<h2>5. Vergleich</h2>
+<ul>
+  <li><b>Init Container:</b> läuft vorher, einmal, muss enden. Für Vorbereitung.</li>
+  <li><b>Native Sidecar:</b> läuft vorher an und dann die ganze Zeit. Für Hilfsdienste mit sauberer Start- und Stopp-Reihenfolge.</li>
+  <li><b>Zweiter App-Container:</b> startet parallel, keine Reihenfolge. Nur noch für echte gleichwertige Prozesse.</li>
+  <li><b>Ephemeral Container:</b> nur zum Debuggen, nachträglich, ohne Garantien.</li>
+  <li><b>Pod vs Container:</b> Ein Container ist ein Prozess mit Image. Ein Pod ist die geplante Einheit mit Netzwerk und Volumes.</li>
+  <li><b>Pod vs Deployment:</b> Ein nackter Pod wird nach einem Node-Ausfall nicht ersetzt. Ein Deployment ersetzt ihn.</li>
+  <li><b>Sidecar vs DaemonSet:</b> Ein Sidecar läuft pro Pod. Ein DaemonSet läuft einmal pro Node, z. B. für Log-Sammlung aller Pods.</li>
+</ul>
+
+<h2>6. In der Produktion</h2>
+<ol>
+  <li><b>CrashLoopBackOff:</b> App stürzt beim Start ab, z. B. fehlende Config oder Secret. Lösung: <code>kubectl logs --previous</code>, Exit-Code prüfen.</li>
+  <li><b>OOMKilled (Exit-Code 137):</b> Container überschreitet sein Memory-Limit. Lösung: Limit an echte Nutzung anpassen, bei Java Heap über <code>MaxRAMPercentage</code> steuern.</li>
+  <li><b>Pod hängt in <code>Init:0/1</code>:</b> Init Container wartet auf einen Dienst, der nie kommt. Lösung: Logs des Init Containers, Timeout einbauen.</li>
+  <li><b>502 beim Rolling Update:</b> Pod bekommt SIGTERM, bevor alle Load Balancer ihn entfernt haben. Lösung: <code>preStop</code> mit kurzem Sleep, Graceful Shutdown in der App.</li>
+  <li><b>Job endet nie:</b> Ein klassischer Sidecar (z. B. Proxy) läuft weiter. Lösung: native Sidecar mit <code>restartPolicy: Always</code> in <code>initContainers</code>.</li>
+  <li><b>Kein Debuggen möglich:</b> distroless-Image ohne Shell. Lösung: <code>kubectl debug</code> mit Ephemeral Container oder Kopie des Pods (<code>--copy-to</code>).</li>
+  <li><b>Pod hängt in Terminating:</b> Finalizer oder Node nicht erreichbar. Lösung: Finalizer prüfen. <code>--force --grace-period=0</code> nur, wenn sicher ist, dass der Prozess wirklich weg ist.</li>
+</ol>
+
+<h2>7. Diagnose: Werkzeuge und Befehle</h2>
+<ul>
+  <li><code>kubectl get pod -o wide</code>: Status, Restarts, Node, IP.</li>
+  <li><code>kubectl describe pod &lt;p&gt;</code>: Events, Conditions, <code>Last State</code> mit Exit-Code und Grund.</li>
+  <li><code>kubectl logs &lt;p&gt; -c &lt;container&gt; --previous</code>: Log des abgestürzten Containers.</li>
+  <li><code>kubectl get pod &lt;p&gt; -o jsonpath='{.status.containerStatuses[*].lastState}'</code>: Grund des letzten Endes.</li>
+  <li><code>kubectl debug -it &lt;p&gt; --image=busybox --target=&lt;c&gt;</code>: Ephemeral Container.</li>
+  <li><code>kubectl debug node/&lt;n&gt; -it --image=busybox</code>: Debug-Pod direkt auf dem Node.</li>
+  <li><code>kubectl exec -it &lt;p&gt; -c &lt;c&gt; -- sh</code>: in einen laufenden Container.</li>
+  <li><code>kubectl events --for pod/&lt;p&gt;</code>: nur die Events dieses Pods.</li>
+</ul>
+
+<h2>8. Senior-Punkte</h2>
+<div class="senior">
+<ol>
+  <li><b>Ein Pod, ein Hauptprozess.</b> Mehrere Container nur, wenn sie eng gekoppelt sind und gemeinsam skalieren.</li>
+  <li><b>Native Sidecars</b> lösen echte alte Probleme: Startreihenfolge, Shutdown-Reihenfolge, Jobs mit Proxy. Neue Sidecars sollten so gebaut werden.</li>
+  <li><b>Init Container vs Job:</b> Eine DB-Migration im Init Container läuft bei jedem Pod und jeder Replica. Ein separater Job (z. B. Helm-Hook oder Argo-CD-Hook) läuft einmal pro Release.</li>
+  <li><b>Pods sind Vieh, keine Haustiere.</b> Keine Daten im Container-Dateisystem. Zustand in Volumes oder externe Dienste.</li>
+  <li><b>Graceful Shutdown ist Pflicht.</b> SIGTERM behandeln, preStop setzen, Grace Period passend zur längsten Anfrage.</li>
+  <li><b>Distroless + Ephemeral Container</b> ist ein gutes Paar: kleine Angriffsfläche im Betrieb, trotzdem debuggbar.</li>
+</ol>
+</div>
+
+<h2>9. Aus dem Projekt</h2>
+<p>„Bei BAG DigiSanté lief der Sedex-Client als Sidecar neben der App, und ein Init Container hat einmalig das Zertifikat registriert. Das war auf Azure Container Apps, aber das Muster ist dasselbe wie im Kubernetes-Pod.“ <span class="small">(Prüfen und durch dein echtes Beispiel ersetzen.)</span></p>
+
+<h2>10. Fallen</h2>
+<div class="trap">
+<ul>
+  <li>„CrashLoopBackOff ist eine Pod-Phase.“ → <b>Falsch.</b> Die Phase ist meist Running. CrashLoopBackOff ist der Waiting-Grund eines Containers.</li>
+  <li>„Container in einem Pod teilen das Dateisystem.“ → <b>Falsch.</b> Nur gemountete Volumes sind gemeinsam.</li>
+  <li>„Ein neu gestarteter Container bekommt eine neue IP.“ → <b>Falsch.</b> Die IP gehört dem Pod. Nur ein neuer Pod bekommt eine neue IP.</li>
+  <li>„Init Container laufen parallel.“ → <b>Falsch.</b> Sie laufen nacheinander. Erst danach starten die App-Container parallel.</li>
+  <li>„Sidecar ist einfach ein zweiter Container.“ → <b>Veraltet.</b> Seit 1.33 stable: Init Container mit <code>restartPolicy: Always</code>.</li>
+  <li>„Mit kubectl exec kann man jeden Pod debuggen.“ → <b>Falsch.</b> Ohne Shell im Image geht es nicht. Dafür gibt es Ephemeral Container.</li>
+</ul>
+</div>
+
+<h2>11. Fragen</h2>
+<details><summary>Was ist ein Pod?</summary><p>Die kleinste planbare Einheit. Ein oder mehrere Container mit gemeinsamer IP, gemeinsamen Volumes und gleichem Node.</p></details>
+<details><summary>Warum plant Kubernetes Pods und nicht Container?</summary><p>Eng gekoppelte Container brauchen denselben Node, dasselbe Netzwerk und gemeinsame Dateien. Der Pod garantiert das.</p></details>
+<details><summary>Was teilen Container in einem Pod?</summary><p>Netzwerk-Namespace (IP, Ports, localhost), Volumes und optional den Prozess-Namespace. Nicht das Image-Dateisystem.</p></details>
+<details><summary>Welche Pod-Phasen gibt es?</summary><p>Pending, Running, Succeeded, Failed, Unknown.</p></details>
+<details><summary>Welche Container-Zustände gibt es?</summary><p>Waiting, Running, Terminated. Waiting und Terminated haben einen Grund, z. B. ImagePullBackOff oder OOMKilled.</p></details>
+<details><summary>Was ist ein Init Container?</summary><p>Ein Container, der vor der App einmal bis zum Ende läuft. Mehrere laufen nacheinander. Beispiel: auf eine Abhängigkeit warten oder Dateien vorbereiten.</p></details>
+<details><summary>Was ist ein nativer Sidecar?</summary><p>Ein Init Container mit restartPolicy: Always. Er startet vor der App, läuft weiter und stoppt nach ihr. Stable seit 1.33.</p></details>
+<details><summary>Welche Probleme lösen native Sidecars?</summary><p>Startreihenfolge (Proxy vor der App), Stopp-Reihenfolge (Logs bis zum Ende) und Jobs, die wegen eines Sidecars nie fertig wurden.</p></details>
+<details><summary>Welche restartPolicy-Werte gibt es?</summary><p>Always, OnFailure, Never. Deployments brauchen Always, Jobs nutzen OnFailure oder Never.</p></details>
+<details><summary>Was ist CrashLoopBackOff?</summary><p>Ein Container stürzt immer wieder ab. Der kubelet wartet zwischen den Neustarts immer länger, bis max. 5 Minuten.</p></details>
+<details><summary>Was ist ein Ephemeral Container?</summary><p>Ein Container, der zur Laufzeit zum Debuggen in einen Pod kommt. Keine Ports, keine Probes, nicht entfernbar. Start mit kubectl debug.</p></details>
+<details><summary>Was passiert beim Löschen eines Pods?</summary><p>Pod wird Terminating und aus den EndpointSlices entfernt. preStop läuft, dann SIGTERM. Nach der Grace Period (Standard 30 s) kommt SIGKILL.</p></details>
+<details><summary>Was bedeutet Exit-Code 137?</summary><p>128 + 9, also SIGKILL. Meist OOMKilled durch das Memory-Limit, oder Abbruch nach der Grace Period.</p></details>
+<details><summary>Wann ist ein Pod Ready?</summary><p>Wenn alle Container (inkl. Sidecars mit Readiness Probe) ready sind und alle Readiness Gates erfüllt sind. Erst dann bekommt er Service-Traffic.</p></details>
+<details><summary>Wie berechnet sich der Ressourcenbedarf mit Init Containern?</summary><p>Das Maximum aus dem grössten Init-Container-Request und der Summe von App-Containern plus Sidecars.</p></details>
+<details><summary>Warum sollen Init Container idempotent sein?</summary><p>Sie laufen bei jedem Pod-Neustart erneut. Ein zweiter Lauf darf nichts kaputt machen.</p></details>
+<details><summary>Wie debuggen Sie einen Pod ohne Shell?</summary><p>kubectl debug mit Ephemeral Container und --target, oder eine Kopie des Pods mit --copy-to und anderem Image.</p></details>
+<details><summary>Kann man CPU und Memory eines laufenden Pods ändern?</summary><p>Ja, mit In-Place Resize über die resize-Subresource, GA seit 1.35. Vorher nur mit neuem Pod.</p></details>
+<details><summary>Was ist der pause-Container?</summary><p>Ein winziger Container, der den Netzwerk-Namespace der Pod Sandbox hält. Die anderen Container treten diesem Namespace bei.</p></details>
+<details><summary>Szenario: Ein Job wird nie Completed, obwohl die Arbeit fertig ist. Warum?</summary><p>Wahrscheinlich läuft ein klassischer Sidecar (z. B. Proxy) als normaler Container weiter. Lösung: ihn als nativen Sidecar in initContainers mit restartPolicy: Always definieren.</p></details>
+<details><summary>Szenario: Bei jedem Deployment gibt es ein paar 502-Fehler. Was prüfen Sie?</summary><p>Den Shutdown: SIGTERM kommt, bevor der Load Balancer den Pod entfernt hat. Lösung: preStop mit kurzem Sleep, Graceful Shutdown in der App, Readiness Probe korrekt.</p></details>
+<details><summary>Szenario: Ein Pod hat 40 Restarts und Exit-Code 137. Was tun Sie?</summary><p>describe zeigt OOMKilled. Memory-Nutzung in Prometheus/Grafana prüfen, Limit anpassen oder Speicher in der App senken (z. B. Java-Heap-Einstellung).</p></details>
+
+</body>
+</html>

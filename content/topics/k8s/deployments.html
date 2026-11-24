@@ -1,0 +1,219 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Deployments und Rollouts</title>
+<style>
+  body { font: 17px/1.55 -apple-system, system-ui, sans-serif; max-width: 760px; margin: 0 auto; padding: 16px; color: #1d1d1f; }
+  h1 { font-size: 28px; margin: 8px 0 4px; }
+  h2 { font-size: 21px; margin: 32px 0 8px; padding-top: 12px; border-top: 2px solid #e5e5ea; }
+  .kern { background: #eef6ff; border-left: 4px solid #0a66c2; padding: 10px 14px; border-radius: 6px; }
+  .senior { background: #f0faf0; border-left: 4px solid #2e7d32; padding: 10px 14px; border-radius: 6px; }
+  .trap { background: #fff4f2; border-left: 4px solid #c62828; padding: 10px 14px; border-radius: 6px; }
+  code { background: #f2f2f7; padding: 1px 5px; border-radius: 4px; font-size: 15px; }
+  pre { background: #1e1e1e; color: #e6e6e6; padding: 12px; border-radius: 8px; overflow-x: auto; font-size: 13.5px; line-height: 1.45; }
+  svg { width: 100%; height: auto; display: block; margin: 10px 0; }
+  ol li, ul li { margin: 4px 0; }
+  details { border: 1px solid #e5e5ea; border-radius: 8px; padding: 8px 12px; margin: 6px 0; }
+  summary { font-weight: 600; cursor: pointer; }
+  details p { margin: 6px 0 2px; }
+  .small { color: #6e6e73; font-size: 14px; }
+</style>
+</head>
+<body>
+
+<h1>Deployments, ReplicaSets, Rollouts, Rollback</h1>
+<p class="small">Kubernetes · Tier 1 · Quellen: kubernetes.io Docs „Deployments“, „ReplicaSet“, „Performing a Rolling Update“, „kubectl rollout“, „Configure Liveness, Readiness and Startup Probes“, „Pod Readiness Gates“ (Stand Kubernetes 1.37)</p>
+
+<div class="kern">
+<b>Kern:</b> Ein <b>Deployment</b> ist ein Controller für zustandslose Anwendungen. Er verwaltet <b>ReplicaSets</b>, und jedes ReplicaSet hält eine feste Zahl gleicher Pods. Bei einer Änderung am Pod-Template rollt das Deployment schrittweise auf ein neues ReplicaSet um und kann auf ein altes <b>zurückrollen</b>.
+</div>
+
+<h2>1. Wo sitzt das Deployment?</h2>
+<svg viewBox="0 0 720 300" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="a" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="240" y="10" width="240" height="60" rx="10" fill="#0a66c2"/><text x="360" y="36" text-anchor="middle" fill="#fff" font-weight="700">Deployment „api“</text><text x="360" y="56" text-anchor="middle" fill="#fff" font-size="12">replicas: 3 · strategy · template</text>
+  <line x1="300" y1="70" x2="170" y2="118" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <line x1="420" y1="70" x2="550" y2="118" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="40" y="120" width="260" height="60" rx="10" fill="#eee" stroke="#777"/><text x="170" y="144" text-anchor="middle" font-weight="700">ReplicaSet api-7c9f (Rev. 1)</text><text x="170" y="164" text-anchor="middle" font-size="12">replicas: 0 · image v1 (für Rollback)</text>
+  <rect x="420" y="120" width="260" height="60" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="550" y="144" text-anchor="middle" font-weight="700">ReplicaSet api-5d8b (Rev. 2)</text><text x="550" y="164" text-anchor="middle" font-size="12">replicas: 3 · image v2</text>
+  <line x1="490" y1="180" x2="440" y2="228" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <line x1="550" y1="180" x2="550" y2="228" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <line x1="610" y1="180" x2="660" y2="228" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="390" y="230" width="90" height="50" rx="8" fill="#e8f5e9" stroke="#2e7d32"/><text x="435" y="260" text-anchor="middle" font-size="13">Pod</text>
+  <rect x="505" y="230" width="90" height="50" rx="8" fill="#e8f5e9" stroke="#2e7d32"/><text x="550" y="260" text-anchor="middle" font-size="13">Pod</text>
+  <rect x="620" y="230" width="90" height="50" rx="8" fill="#e8f5e9" stroke="#2e7d32"/><text x="665" y="260" text-anchor="middle" font-size="13">Pod</text>
+  <text x="170" y="230" text-anchor="middle" font-size="12">Label pod-template-hash=7c9f</text>
+  <text x="170" y="250" text-anchor="middle" font-size="12">trennt die Pods der Revisionen</text>
+</svg>
+<ol>
+  <li><b>Deployment:</b> beschreibt den Soll-Zustand: Image, Replicas, Strategie. Beispiel: <code>api</code> mit 3 Replicas.</li>
+  <li><b>ReplicaSet:</b> hält genau <code>replicas</code> Pods am Leben. Jede Template-Version hat ein eigenes ReplicaSet. Beispiel: Pod stirbt → ReplicaSet erzeugt einen neuen.</li>
+  <li><b>Revision:</b> Jedes ReplicaSet ist eine Revision. Alte ReplicaSets bleiben mit 0 Replicas stehen. Sie sind die Grundlage für den Rollback.</li>
+  <li><b>pod-template-hash:</b> ein Label, das der Controller aus dem Template berechnet. So überschneiden sich die Selektoren der ReplicaSets nicht.</li>
+  <li><b>Selector:</b> <code>spec.selector</code> wählt die Pods. Er ist nach dem Erstellen <b>unveränderlich</b>.</li>
+</ol>
+
+<h2>2. Die Reise eines Rolling Updates (die Geschichte zum Merken)</h2>
+<svg viewBox="0 0 720 300" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="b" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <text x="20" y="30" font-weight="700">replicas: 3 · maxSurge: 1 · maxUnavailable: 0</text>
+  <text x="20" y="70" font-size="13">Schritt</text><text x="120" y="70" font-size="13">alt (v1)</text><text x="400" y="70" font-size="13">neu (v2)</text>
+  <text x="20" y="105">1</text><rect x="120" y="88" width="40" height="26" rx="4" fill="#999"/><rect x="166" y="88" width="40" height="26" rx="4" fill="#999"/><rect x="212" y="88" width="40" height="26" rx="4" fill="#999"/><rect x="400" y="88" width="40" height="26" rx="4" fill="#fff" stroke="#0a66c2" stroke-dasharray="4 3"/><text x="470" y="106" font-size="12">neuer Pod startet (4 = 3 + Surge)</text>
+  <text x="20" y="145">2</text><rect x="120" y="128" width="40" height="26" rx="4" fill="#999"/><rect x="166" y="128" width="40" height="26" rx="4" fill="#999"/><rect x="212" y="128" width="40" height="26" rx="4" fill="#fff" stroke="#c62828"/><rect x="400" y="128" width="40" height="26" rx="4" fill="#0a66c2"/><text x="470" y="146" font-size="12">Ready → ein alter Pod wird beendet</text>
+  <text x="20" y="185">3</text><rect x="120" y="168" width="40" height="26" rx="4" fill="#999"/><rect x="166" y="168" width="40" height="26" rx="4" fill="#fff" stroke="#c62828"/><rect x="400" y="168" width="40" height="26" rx="4" fill="#0a66c2"/><rect x="446" y="168" width="40" height="26" rx="4" fill="#0a66c2"/><text x="500" y="186" font-size="12">wiederholen</text>
+  <text x="20" y="225">4</text><rect x="120" y="208" width="40" height="26" rx="4" fill="#fff" stroke="#c62828"/><rect x="400" y="208" width="40" height="26" rx="4" fill="#0a66c2"/><rect x="446" y="208" width="40" height="26" rx="4" fill="#0a66c2"/><rect x="492" y="208" width="40" height="26" rx="4" fill="#0a66c2"/><text x="546" y="226" font-size="12">fertig</text>
+  <text x="20" y="280" font-size="12">Grau = v1 Ready · Blau = v2 Ready · Rot umrandet = wird beendet · gestrichelt = startet, noch nicht Ready</text>
+</svg>
+<ol>
+  <li><b>Auslöser.</b> Jemand ändert das <b>Pod-Template</b>, z. B. das Image von v1 auf v2. Nur Template-Änderungen starten einen Rollout. Ein Scale auf 5 Replicas nicht.</li>
+  <li><b>Neues ReplicaSet.</b> Der Deployment-Controller berechnet den neuen Hash. Er erzeugt ein neues ReplicaSet mit 0 Replicas. Revision steigt auf 2.</li>
+  <li><b>Hochskalieren.</b> <b>maxSurge</b> erlaubt Pods über der Soll-Zahl. Mit Surge 1 startet ein neuer Pod: 4 Pods total.</li>
+  <li><b>Warten auf Readiness.</b> Der Controller zählt den neuen Pod erst als verfügbar, wenn seine <b>Readiness Probe</b> grün ist und <code>minReadySeconds</code> vorbei sind. Das ist das <b>Readiness Gating</b>.</li>
+  <li><b>Herunterskalieren.</b> <b>maxUnavailable</b> bestimmt, wie viele Pods unter der Soll-Zahl liegen dürfen. Bei 0 wird ein alter Pod erst nach einem neuen Ready-Pod beendet.</li>
+  <li><b>Wiederholen.</b> Schritt für Schritt, bis das neue ReplicaSet 3 Pods hat und das alte 0.</li>
+  <li><b>Hängen bleiben.</b> Wird ein neuer Pod nie Ready, stoppt der Rollout. Die alten Pods laufen weiter. Nach <code>progressDeadlineSeconds</code> (Standard 600 s) meldet das Deployment <code>ProgressDeadlineExceeded</code>. Ein automatischer Rollback passiert <b>nicht</b>.</li>
+</ol>
+
+<h2>3. Beispiel: Rollout, kaputtes Image, Rollback</h2>
+<pre>$ kubectl create ns demo-deployments
+$ kubectl create deployment api --image=nginx:1.26 --replicas=3 -n demo-deployments
+$ kubectl patch deploy api -n demo-deployments -p \
+  '{"spec":{"strategy":{"rollingUpdate":{"maxSurge":1,"maxUnavailable":0}}}}'
+$ kubectl set image deploy/api nginx=nginx:1.27 -n demo-deployments
+$ kubectl annotate deploy/api kubernetes.io/change-cause="nginx 1.27" -n demo-deployments
+$ kubectl rollout status deploy/api -n demo-deployments
+$ kubectl set image deploy/api nginx=nginx:9.99-gibtsnicht -n demo-deployments
+$ kubectl get rs,pods -n demo-deployments
+$ kubectl rollout history deploy/api -n demo-deployments
+$ kubectl rollout undo deploy/api -n demo-deployments</pre>
+<pre>Waiting for deployment "api" rollout to finish: 1 out of 3 new replicas have been updated...
+Waiting for deployment "api" rollout to finish: 2 out of 3 new replicas have been updated...
+Waiting for deployment "api" rollout to finish: 1 old replicas are pending termination...
+deployment "api" successfully rolled out
+
+NAME                             DESIRED   CURRENT   READY
+replicaset.apps/api-6b7d9c5f4c   0         0         0        # Rev. 1, nginx:1.26
+replicaset.apps/api-79f8d6b8c7   3         3         3        # Rev. 2, nginx:1.27
+replicaset.apps/api-5c4b8f7d9d   1         1         0        # Rev. 3, kaputt
+
+NAME                       READY   STATUS             RESTARTS
+pod/api-5c4b8f7d9d-x2k9p   0/1     ImagePullBackOff   0
+pod/api-79f8d6b8c7-...     1/1     Running            0       (3×)
+
+REVISION  CHANGE-CAUSE
+1         &lt;none&gt;
+2         nginx 1.27
+3         nginx 1.27
+
+deployment.apps/api rolled back</pre>
+<p class="small">Erwartetes Ergebnis (laut Doku, nicht ausgeführt). Der lokale k3s-Cluster war nicht erreichbar. Hashes beispielhaft, Ausgaben gekürzt.</p>
+<ol>
+  <li>Mit <code>maxUnavailable: 0</code> laufen während des Rollouts immer mindestens 3 Ready-Pods.</li>
+  <li>Das kaputte Image erzeugt <b>einen</b> neuen Pod (Surge 1). Er wird nie Ready. Darum bleiben alle 3 alten Pods: kein Ausfall.</li>
+  <li>Revision 3 zeigt die alte <code>change-cause</code>, weil die Annotation am Deployment hängen blieb. Darum die Annotation bei jeder Änderung neu setzen.</li>
+  <li><code>rollout undo</code> kopiert das Template von Revision 2 zurück. Daraus wird eine <b>neue</b> Revision 4. Revision 2 verschwindet aus der Liste.</li>
+</ol>
+
+<h2>4. Details, die Interviewer fragen</h2>
+<ol>
+  <li><b>Standardwerte:</b> Strategie <code>RollingUpdate</code>, <code>maxSurge: 25%</code> (aufgerundet), <code>maxUnavailable: 25%</code> (abgerundet), <code>revisionHistoryLimit: 10</code>, <code>progressDeadlineSeconds: 600</code>, <code>minReadySeconds: 0</code>.</li>
+  <li><b>maxSurge und maxUnavailable:</b> Beide sind Zahlen oder Prozent. Beide dürfen nicht gleichzeitig 0 sein. <code>maxSurge: 0, maxUnavailable: 1</code> spart Ressourcen, senkt aber die Kapazität.</li>
+  <li><b>Recreate:</b> Alle alten Pods werden beendet, dann starten die neuen. Es gibt eine Ausfallzeit. Nötig, wenn zwei Versionen nicht gleichzeitig laufen dürfen, z. B. ein <code>ReadWriteOnce</code>-Volume oder inkompatibles DB-Schema.</li>
+  <li><b>Readiness Gating:</b> Ohne Readiness Probe gilt ein Pod sofort nach dem Start als Ready. Der Rollout läuft dann blind durch, auch wenn die App noch bootet. <b>Pod Readiness Gates</b> erlauben zusätzliche Bedingungen, z. B. vom Cloud Load Balancer.</li>
+  <li><b>minReadySeconds:</b> Ein Pod muss so lange Ready bleiben, bevor er als <b>available</b> zählt. Schützt vor Pods, die kurz nach dem Start abstürzen.</li>
+  <li><b>Rollback:</b> <code>kubectl rollout undo</code> geht eine Revision zurück. <code>--to-revision=N</code> geht zu einer bestimmten. Rollback ist nur möglich, solange das alte ReplicaSet existiert (<code>revisionHistoryLimit</code>).</li>
+  <li><b>Was ein Rollback nicht zurücksetzt:</b> ConfigMaps, Secrets, Replica-Zahl, Datenbank-Schema. Nur das Pod-Template.</li>
+  <li><b>Pause und Resume:</b> <code>kubectl rollout pause</code> sammelt mehrere Änderungen. <code>resume</code> startet einen einzigen Rollout.</li>
+  <li><b>Restart:</b> <code>kubectl rollout restart</code> setzt die Annotation <code>kubectl.kubernetes.io/restartedAt</code> im Template. Das ist eine Template-Änderung, also ein normaler Rolling Update.</li>
+  <li><b>Deployment-Conditions:</b> <code>Available</code> (genug Pods verfügbar), <code>Progressing</code> (Rollout läuft oder fertig), <code>ReplicaFailure</code> (Pods können nicht erzeugt werden, z. B. Quota).</li>
+  <li><b>Proportional Scaling:</b> Wird während eines Rollouts skaliert, verteilt der Controller die neuen Replicas anteilig auf altes und neues ReplicaSet.</li>
+  <li><b>ConfigMap-Änderungen</b> starten keinen Rollout. Lösung: Hash der Config als Annotation im Template (Helm-Muster <code>checksum/config</code>) oder Name mit Hash.</li>
+</ol>
+
+<h2>5. Vergleich</h2>
+<ul>
+  <li><b>RollingUpdate:</b> kein Ausfall, zwei Versionen laufen kurz parallel. Standard.</li>
+  <li><b>Recreate:</b> kurzer Ausfall, nie zwei Versionen gleichzeitig.</li>
+  <li><b>Blue/Green:</b> zwei komplette Umgebungen, Umschalten am Service oder Router. Schneller Rollback, doppelte Ressourcen. Nicht eingebaut, z. B. mit Argo Rollouts.</li>
+  <li><b>Canary:</b> wenige Prozent Traffic auf die neue Version, mit Metriken prüfen. Mit Argo Rollouts, Flagger oder Gateway-API-Gewichten.</li>
+  <li><b>Deployment vs ReplicaSet:</b> ReplicaSet hält nur die Zahl. Deployment bringt Rollout und Rollback. ReplicaSets nie direkt anlegen.</li>
+  <li><b>Deployment vs StatefulSet:</b> StatefulSet für feste Identität, stabile Namen und eigenes Volume pro Pod, z. B. Datenbanken.</li>
+  <li><b>kubectl rollout undo vs git revert:</b> undo ändert nur den Cluster. Mit GitOps ist <code>git revert</code> der richtige Weg, sonst stellt Argo CD den Git-Stand wieder her.</li>
+</ul>
+
+<h2>6. In der Produktion</h2>
+<ol>
+  <li><b>Rollout hängt:</b> neuer Pod in <code>ImagePullBackOff</code> oder <code>CrashLoopBackOff</code>. Lösung: <code>rollout status</code> mit Timeout in der Pipeline, dann <code>undo</code> oder Fix.</li>
+  <li><b>Fehler trotz grünem Rollout:</b> keine Readiness Probe, Traffic geht an bootende Pods. Lösung: echte Readiness Probe, <code>minReadySeconds</code>.</li>
+  <li><b>Kapazität bricht ein:</b> Standard <code>maxUnavailable: 25%</code> bei knapper Kapazität. Lösung: <code>maxUnavailable: 0</code>, dazu PodDisruptionBudget für Node-Wartung.</li>
+  <li><b>Pods Pending beim Rollout:</b> Surge-Pods passen nicht auf die Nodes oder in die ResourceQuota. Lösung: Surge senken, Cluster-Autoscaler oder Karpenter.</li>
+  <li><b>Rollback geht nicht:</b> alte ReplicaSets durch zu kleines <code>revisionHistoryLimit</code> gelöscht. Oder GitOps setzt den Rollback sofort zurück.</li>
+  <li><b>Inkompatible Versionen parallel:</b> v1 und v2 schreiben verschiedene DB-Schemas. Lösung: rückwärtskompatible Migration (expand, migrate, contract) oder Recreate.</li>
+  <li><b>Selector-Änderung scheitert:</b> <code>spec.selector</code> ist unveränderlich. Lösung: neues Deployment.</li>
+</ol>
+
+<h2>7. Diagnose: Werkzeuge und Befehle</h2>
+<ul>
+  <li><code>kubectl rollout status deploy/&lt;d&gt; --timeout=5m</code>: wartet und liefert Exit-Code ≠ 0 bei Fehler. Gut für CI/CD.</li>
+  <li><code>kubectl rollout history deploy/&lt;d&gt; --revision=3</code>: Template einer Revision.</li>
+  <li><code>kubectl get rs -l app=&lt;a&gt;</code>: welche Revision wie viele Pods hat.</li>
+  <li><code>kubectl describe deploy &lt;d&gt;</code>: Conditions, Strategie, Events wie <code>ScalingReplicaSet</code>.</li>
+  <li><code>kubectl get deploy &lt;d&gt; -o jsonpath='{.status.conditions}'</code>: <code>ProgressDeadlineExceeded</code> erkennen.</li>
+  <li><code>kubectl diff -f deploy.yaml</code>: was sich vor dem Apply ändert.</li>
+  <li><b>Argo CD UI/CLI</b> (<code>argocd app history</code>): Sync-Historie und Git-Revision pro Deployment.</li>
+</ul>
+
+<h2>8. Senior-Punkte</h2>
+<div class="senior">
+<ol>
+  <li><b>Readiness Probe ist die halbe Rollout-Strategie.</b> Ohne sie ist RollingUpdate nur ein langsames Recreate ohne Schutz.</li>
+  <li><b>maxSurge/maxUnavailable ist eine Kosten-Entscheidung:</b> Surge kostet Ressourcen, Unavailable kostet Kapazität.</li>
+  <li><b>Rollback ist nur Code-Rollback.</b> Schema, Config und Daten brauchen eigene Rückwärtskompatibilität.</li>
+  <li><b>Kubernetes macht kein Auto-Rollback.</b> Die Pipeline oder ein Tool (Argo Rollouts, Flagger) muss entscheiden.</li>
+  <li><b>In GitOps ist Git die Wahrheit.</b> Rollback per <code>git revert</code>, sonst überschreibt Self-Heal die manuelle Änderung.</li>
+  <li><b>Progressive Delivery</b> (Canary mit Metriken) lohnt sich bei viel Traffic. Bei wenig Traffic sind die Metriken zu dünn.</li>
+</ol>
+</div>
+
+<h2>9. Aus dem Projekt</h2>
+<p>„Bei MATCH lief alles über Argo CD mit Auto-Sync, Prune und Self-Heal. Ein Rollback war darum ein <code>git revert</code>, nie ein <code>kubectl rollout undo</code>, weil Argo CD den manuellen Stand sofort zurückgesetzt hätte.“ <span class="small">(Prüfen und durch dein echtes Beispiel ersetzen.)</span></p>
+
+<h2>10. Fallen</h2>
+<div class="trap">
+<ul>
+  <li>„Ein fehlgeschlagener Rollout rollt automatisch zurück.“ → <b>Falsch.</b> Er bleibt stehen und meldet <code>ProgressDeadlineExceeded</code>.</li>
+  <li>„Scaling erzeugt eine neue Revision.“ → <b>Falsch.</b> Nur Änderungen am Pod-Template.</li>
+  <li>„Rollback setzt auch ConfigMaps zurück.“ → <b>Falsch.</b> Nur das Pod-Template.</li>
+  <li>„Eine ConfigMap-Änderung startet die Pods neu.“ → <b>Falsch.</b> Nur mit Template-Änderung, z. B. Checksum-Annotation.</li>
+  <li>„rollout undo stellt die alte Revisionsnummer wieder her.“ → <b>Falsch.</b> Es entsteht eine neue Revision mit altem Template.</li>
+  <li>„maxSurge und maxUnavailable können beide 0 sein.“ → <b>Falsch.</b> Dann käme der Rollout nie voran. Die API lehnt das ab.</li>
+</ul>
+</div>
+
+<h2>11. Fragen</h2>
+<details><summary>Was ist ein Deployment?</summary><p>Ein Controller für zustandslose Apps. Er verwaltet ReplicaSets und macht Rolling Updates und Rollbacks.</p></details>
+<details><summary>Wie hängen Deployment, ReplicaSet und Pod zusammen?</summary><p>Das Deployment erzeugt pro Template-Version ein ReplicaSet. Das ReplicaSet hält die Anzahl Pods. Die Pods tragen das Label pod-template-hash.</p></details>
+<details><summary>Was löst einen Rollout aus?</summary><p>Jede Änderung an spec.template, z. B. Image, Env oder Annotation. Scaling löst keinen aus.</p></details>
+<details><summary>Was bedeuten maxSurge und maxUnavailable?</summary><p>maxSurge: wie viele Pods über der Soll-Zahl liegen dürfen. maxUnavailable: wie viele darunter. Standard je 25 %.</p></details>
+<details><summary>Wann nutzen Sie Recreate?</summary><p>Wenn zwei Versionen nie gleichzeitig laufen dürfen, z. B. RWO-Volume oder inkompatibles Schema. Preis: kurze Ausfallzeit.</p></details>
+<details><summary>Welche Rolle spielt die Readiness Probe beim Rollout?</summary><p>Der Controller wartet, bis neue Pods Ready sind, bevor er alte beendet. Ohne Probe läuft der Rollout blind durch.</p></details>
+<details><summary>Was ist minReadySeconds?</summary><p>Wie lange ein Pod Ready sein muss, bevor er als verfügbar zählt. Schützt vor Pods, die kurz nach dem Start abstürzen.</p></details>
+<details><summary>Was ist progressDeadlineSeconds?</summary><p>Zeit ohne Fortschritt, bis das Deployment ProgressDeadlineExceeded meldet. Standard 600 s. Kein automatischer Rollback.</p></details>
+<details><summary>Wie machen Sie einen Rollback?</summary><p>kubectl rollout undo, optional --to-revision. Mit GitOps per git revert.</p></details>
+<details><summary>Was ist revisionHistoryLimit?</summary><p>Wie viele alte ReplicaSets bleiben. Standard 10. Ohne altes ReplicaSet kein Rollback dorthin.</p></details>
+<details><summary>Was macht kubectl rollout restart?</summary><p>Es setzt eine Zeitstempel-Annotation im Template. Das startet einen normalen Rolling Update mit neuen Pods.</p></details>
+<details><summary>Wozu rollout pause?</summary><p>Mehrere Änderungen sammeln und mit resume als einen Rollout ausführen.</p></details>
+<details><summary>Wie sorgen Sie dafür, dass eine neue ConfigMap neue Pods startet?</summary><p>Hash der Config als Annotation im Template, z. B. Helm checksum/config, oder ConfigMap-Name mit Hash.</p></details>
+<details><summary>Wie machen Sie Canary oder Blue/Green?</summary><p>Nicht eingebaut. Mit Argo Rollouts oder Flagger, oder mit zwei Deployments und Gewichten im Gateway API HTTPRoute.</p></details>
+<details><summary>Warum keine ReplicaSets direkt anlegen?</summary><p>Ein ReplicaSet kann kein Rolling Update. Ein Image-Wechsel ändert laufende Pods nicht.</p></details>
+<details><summary>Kann man den Selector eines Deployments ändern?</summary><p>Nein, spec.selector ist in apps/v1 unveränderlich. Man braucht ein neues Deployment.</p></details>
+<details><summary>Was setzt ein Rollback nicht zurück?</summary><p>ConfigMaps, Secrets, Replica-Zahl, Daten und DB-Schema. Nur das Pod-Template.</p></details>
+<details><summary>Wie schützt ein PodDisruptionBudget beim Rollout?</summary><p>Gar nicht direkt. Ein PDB begrenzt freiwillige Störungen wie Node-Drain. Den Rollout steuern maxSurge und maxUnavailable.</p></details>
+<details><summary>Szenario: Der Rollout hängt seit 10 Minuten bei 1 von 3. Was tun Sie?</summary><p>rollout status und describe: neuer Pod in ImagePullBackOff oder CrashLoopBackOff? Logs prüfen. Dann rollout undo oder Fix, bei GitOps per git revert.</p></details>
+<details><summary>Szenario: Nach jedem Deploy gibt es eine Minute lang Fehler, obwohl der Rollout grün ist. Warum?</summary><p>Wahrscheinlich keine oder eine zu schwache Readiness Probe. Pods bekommen Traffic, bevor die App bereit ist. Lösung: echte Probe, minReadySeconds, Graceful Shutdown.</p></details>
+<details><summary>Szenario: Sie machen kubectl rollout undo, aber nach einer Minute läuft wieder die kaputte Version. Warum?</summary><p>Argo CD mit Self-Heal setzt den Cluster auf den Git-Stand zurück. Lösung: Rollback per git revert.</p></details>
+
+</body>
+</html>

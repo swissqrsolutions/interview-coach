@@ -1,0 +1,209 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Liveness, Readiness, Startup Probes</title>
+<style>
+  body { font: 17px/1.55 -apple-system, system-ui, sans-serif; max-width: 760px; margin: 0 auto; padding: 16px; color: #1d1d1f; }
+  h1 { font-size: 28px; margin: 8px 0 4px; }
+  h2 { font-size: 21px; margin: 32px 0 8px; padding-top: 12px; border-top: 2px solid #e5e5ea; }
+  .kern { background: #eef6ff; border-left: 4px solid #0a66c2; padding: 10px 14px; border-radius: 6px; }
+  .senior { background: #f0faf0; border-left: 4px solid #2e7d32; padding: 10px 14px; border-radius: 6px; }
+  .trap { background: #fff4f2; border-left: 4px solid #c62828; padding: 10px 14px; border-radius: 6px; }
+  code { background: #f2f2f7; padding: 1px 5px; border-radius: 4px; font-size: 15px; }
+  pre { background: #1e1e1e; color: #e6e6e6; padding: 12px; border-radius: 8px; overflow-x: auto; font-size: 13.5px; line-height: 1.45; }
+  svg { width: 100%; height: auto; display: block; margin: 10px 0; }
+  ol li, ul li { margin: 4px 0; }
+  details { border: 1px solid #e5e5ea; border-radius: 8px; padding: 8px 12px; margin: 6px 0; }
+  summary { font-weight: 600; cursor: pointer; }
+  details p { margin: 6px 0 2px; }
+  .small { color: #6e6e73; font-size: 14px; }
+</style>
+</head>
+<body>
+
+<h1>Liveness, Readiness, Startup Probes</h1>
+<p class="small">Kubernetes · Tier 1 · Quellen: kubernetes.io (Liveness, Readiness and Startup Probes; Configure Liveness, Readiness and Startup Probes; Pod Lifecycle; Container Lifecycle Hooks), Spring Boot 3.x Referenz (Actuator Endpoints, Kubernetes Probes, Application Availability, Health Groups, Graceful Shutdown)</p>
+
+<div class="kern">
+<b>Kern:</b> Eine <b>Probe</b> ist ein Test, den der <b>kubelet</b> regelmässig gegen einen Container ausführt. Die <b>Liveness Probe</b> entscheidet über einen Neustart, die <b>Readiness Probe</b> über Traffic, die <b>Startup Probe</b> schützt langsame Starts. Eine falsche Liveness Probe ist gefährlicher als keine: Sie startet gesunde Pods unter Last neu.
+</div>
+
+<h2>1. Wo sitzen die Probes?</h2>
+<svg viewBox="0 0 720 320" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="a" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker><marker id="r" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#c62828"/></marker></defs>
+  <rect x="10" y="8" width="420" height="300" rx="12" fill="#f7f7fa" stroke="#999" stroke-dasharray="5 4"/><text x="220" y="28" text-anchor="middle" font-weight="700">Node</text>
+  <rect x="30" y="50" width="160" height="70" rx="8" fill="#0a66c2"/><text x="110" y="78" text-anchor="middle" fill="#fff" font-weight="700">kubelet</text><text x="110" y="98" text-anchor="middle" fill="#fff" font-size="12">führt Probes aus</text>
+  <line x1="190" y1="85" x2="248" y2="85" stroke="#555" stroke-width="2" marker-end="url(#a)"/><text x="219" y="77" text-anchor="middle" font-size="11">HTTP</text>
+  <rect x="250" y="50" width="160" height="110" rx="8" fill="#fff" stroke="#555"/><text x="330" y="74" text-anchor="middle" font-weight="700">Pod / Container</text><text x="330" y="96" text-anchor="middle" font-size="12">/health/liveness</text><text x="330" y="114" text-anchor="middle" font-size="12">/health/readiness</text><text x="330" y="132" text-anchor="middle" font-size="12">Port 8080</text>
+  <line x1="110" y1="120" x2="110" y2="208" stroke="#c62828" stroke-width="2" marker-end="url(#r)"/>
+  <rect x="30" y="210" width="180" height="70" rx="8" fill="#fff4f2" stroke="#c62828"/><text x="120" y="238" text-anchor="middle" font-weight="700">Liveness rot</text><text x="120" y="258" text-anchor="middle" font-size="12">Container neu starten</text>
+  <line x1="190" y1="110" x2="468" y2="230" stroke="#555" stroke-width="2" marker-end="url(#a)"/><text x="330" y="190" font-size="11">Readiness-Status</text>
+  <rect x="470" y="200" width="240" height="70" rx="8" fill="#dbe9fb" stroke="#0a66c2"/><text x="590" y="228" text-anchor="middle" font-weight="700">API-Server · EndpointSlice</text><text x="590" y="248" text-anchor="middle" font-size="12">ready: true / false</text>
+  <line x1="590" y1="200" x2="590" y2="112" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="470" y="50" width="240" height="60" rx="8" fill="#e8f5e9" stroke="#2e7d32"/><text x="590" y="75" text-anchor="middle" font-weight="700">Service / Ingress</text><text x="590" y="94" text-anchor="middle" font-size="12">schickt Traffic nur an ready</text>
+</svg>
+<ol>
+  <li><b>kubelet:</b> führt alle Probes lokal auf dem Node aus. Der API-Server prüft nichts selbst.</li>
+  <li><b>Container:</b> beantwortet die Probe, z. B. <code>GET /actuator/health/liveness</code> auf Port 8080.</li>
+  <li><b>Liveness rot:</b> Der kubelet tötet den Container und startet ihn nach <code>restartPolicy</code> neu. Der Pod bleibt derselbe.</li>
+  <li><b>Readiness rot:</b> Der kubelet setzt die Pod-Condition <code>Ready=false</code>. Der Endpoint-Controller markiert die IP in der <b>EndpointSlice</b> als nicht bereit.</li>
+  <li><b>Service:</b> kube-proxy oder Cilium schicken dann keinen neuen Traffic mehr an diesen Pod. Der Container läuft weiter.</li>
+</ol>
+
+<h2>2. Die Reise eines Pods (vom Start bis zum Shutdown)</h2>
+<svg viewBox="0 0 720 300" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="b" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="10" y="30" width="150" height="80" rx="10" fill="#eee" stroke="#777"/><text x="85" y="56" text-anchor="middle" font-weight="700">1. Start</text><text x="85" y="76" text-anchor="middle" font-size="12">nur Startup Probe</text><text x="85" y="94" text-anchor="middle" font-size="12">bis 5 min erlaubt</text>
+  <line x1="160" y1="70" x2="198" y2="70" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="200" y="30" width="150" height="80" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="275" y="56" text-anchor="middle" font-weight="700">2. Gestartet</text><text x="275" y="76" text-anchor="middle" font-size="12">Liveness + Readiness</text><text x="275" y="94" text-anchor="middle" font-size="12">beginnen</text>
+  <line x1="350" y1="70" x2="388" y2="70" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="390" y="30" width="150" height="80" rx="10" fill="#0a66c2"/><text x="465" y="56" text-anchor="middle" fill="#fff" font-weight="700">3. Ready</text><text x="465" y="76" text-anchor="middle" fill="#fff" font-size="12">bekommt Traffic</text><text x="465" y="94" text-anchor="middle" fill="#fff" font-size="12">Rollout geht weiter</text>
+  <line x1="540" y1="70" x2="578" y2="70" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="580" y="30" width="130" height="80" rx="10" fill="#fff" stroke="#555"/><text x="645" y="56" text-anchor="middle" font-weight="700">4. DB langsam</text><text x="645" y="76" text-anchor="middle" font-size="12">Readiness rot</text><text x="645" y="94" text-anchor="middle" font-size="12">kein Neustart</text>
+  <line x1="645" y1="110" x2="645" y2="168" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="470" y="170" width="240" height="80" rx="10" fill="#fff4f2" stroke="#c62828"/><text x="590" y="196" text-anchor="middle" font-weight="700">5. Deadlock</text><text x="590" y="216" text-anchor="middle" font-size="12">Liveness 3× rot</text><text x="590" y="234" text-anchor="middle" font-size="12">→ Container-Neustart</text>
+  <line x1="470" y1="210" x2="352" y2="210" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="100" y="170" width="250" height="80" rx="10" fill="#e8f5e9" stroke="#2e7d32"/><text x="225" y="196" text-anchor="middle" font-weight="700">6. Shutdown (SIGTERM)</text><text x="225" y="216" text-anchor="middle" font-size="12">Readiness → REFUSING</text><text x="225" y="234" text-anchor="middle" font-size="12">laufende Requests fertig</text>
+</svg>
+<ol>
+  <li><b>Start.</b> Ein Spring-Boot-Service mit Hibernate braucht 90 Sekunden. Nur die <b>Startup Probe</b> läuft: <code>failureThreshold: 30</code> × <code>periodSeconds: 10</code> = bis 300 Sekunden Zeit. Liveness und Readiness sind solange aus.</li>
+  <li><b>Gestartet.</b> Die Startup Probe ist einmal grün. Ab jetzt laufen Liveness und Readiness. Die Startup Probe läuft nie wieder.</li>
+  <li><b>Ready.</b> Die Readiness Probe ist grün. Der Pod kommt in die EndpointSlice und bekommt Traffic. Erst jetzt ersetzt das Deployment den nächsten alten Pod.</li>
+  <li><b>Abhängigkeit langsam.</b> Die Datenbank antwortet zäh. Die Readiness Probe (mit DB-Check) wird rot. Der Pod bekommt keinen neuen Traffic, wird aber <b>nicht</b> neu gestartet.</li>
+  <li><b>Echter Hänger.</b> Ein Deadlock blockiert alle Worker-Threads. Die Liveness Probe scheitert 3-mal hintereinander. Der kubelet startet den Container neu. Genau dafür ist Liveness da.</li>
+  <li><b>Shutdown.</b> Bei einem Rollout bekommt der Container <code>SIGTERM</code>. Spring Boot setzt Readiness auf <code>REFUSING_TRAFFIC</code> und beendet laufende Requests (<b>Graceful Shutdown</b>). Nach <code>terminationGracePeriodSeconds</code> (Standard 30 s) kommt <code>SIGKILL</code>.</li>
+</ol>
+
+<h2>3. Beispiel: eine Liveness Probe schlägt fehl</h2>
+<pre>apiVersion: v1
+kind: Pod
+metadata: { name: liveness-exec, namespace: demo-probes }
+spec:
+  containers:
+  - name: liveness
+    image: busybox:1.36
+    args: ["/bin/sh", "-c", "touch /tmp/healthy; sleep 30; rm -f /tmp/healthy; sleep 600"]
+    livenessProbe:
+      exec: { command: ["cat", "/tmp/healthy"] }
+      initialDelaySeconds: 5
+      periodSeconds: 5
+
+$ kubectl -n demo-probes describe pod liveness-exec   # nach ca. 45 s
+$ kubectl -n demo-probes get pod liveness-exec</pre>
+<pre>Events:
+  Type     Reason     Age   From     Message
+  Normal   Started    45s   kubelet  Started container liveness
+  Warning  Unhealthy  10s (x3 over 20s)  kubelet  Liveness probe failed: cat: can't open '/tmp/healthy': No such file or directory
+  Normal   Killing    10s   kubelet  Container liveness failed liveness probe, will be restarted
+
+NAME            READY   STATUS    RESTARTS      AGE
+liveness-exec   1/1     Running   1 (5s ago)    50s</pre>
+<p class="small">Erwartetes Ergebnis (laut Doku, nicht ausgeführt). Das Beispiel stammt aus der kubernetes.io-Aufgabe „Configure Liveness, Readiness and Startup Probes“; der lokale k3s-Cluster war nicht erreichbar.</p>
+<ol>
+  <li>Die ersten 30 Sekunden existiert <code>/tmp/healthy</code>. Die Probe ist grün.</li>
+  <li>Danach scheitert <code>cat</code> mit Exit-Code ungleich 0. Nach <code>failureThreshold</code> = 3 Fehlern (Standard) tötet der kubelet den Container.</li>
+  <li><code>RESTARTS</code> steigt auf 1. Der Pod und seine IP bleiben gleich, nur der Container ist neu.</li>
+  <li>Wiederholt sich das, wartet der kubelet immer länger (<b>CrashLoopBackOff</b>, bis 5 Minuten). Aufräumen: <code>kubectl delete namespace demo-probes</code>.</li>
+</ol>
+
+<h2>4. Details, die Interviewer fragen</h2>
+<ol>
+  <li><b>Vier Mechanismen:</b> <code>httpGet</code> (Status 200–399 ist Erfolg), <code>tcpSocket</code> (Port offen), <code>exec</code> (Exit-Code 0), <code>grpc</code> (gRPC Health Checking Protocol).</li>
+  <li><b>Standardwerte:</b> <code>initialDelaySeconds: 0</code>, <code>periodSeconds: 10</code>, <code>timeoutSeconds: 1</code>, <code>successThreshold: 1</code>, <code>failureThreshold: 3</code>. Liveness und Startup verlangen <code>successThreshold: 1</code>.</li>
+  <li><b>Zeit bis zur Reaktion:</b> ungefähr <code>periodSeconds × failureThreshold</code>. Mit Standardwerten: etwa 30 Sekunden bis zum Neustart.</li>
+  <li><b>Timeout zählt als Fehler.</b> <code>timeoutSeconds: 1</code> ist knapp. Ein GC-Stopp oder voller Thread-Pool lässt die Probe scheitern.</li>
+  <li><b>Startup Probe:</b> Solange sie nicht grün ist, laufen keine anderen Probes. Ist sie <code>failureThreshold</code>-mal rot, wird der Container neu gestartet. Sie ersetzt ein grosses <code>initialDelaySeconds</code>.</li>
+  <li><b>Readiness läuft immer weiter,</b> das ganze Leben des Pods lang. Ein Pod kann also wieder aus dem Load Balancing fallen.</li>
+  <li><b>Readiness und Rollouts:</b> Ein Deployment zählt nur Ready-Pods als verfügbar. <code>minReadySeconds</code> verlangt, dass ein Pod eine Weile ready bleibt. Ohne Readiness Probe gilt der Pod sofort als ready.</li>
+  <li><b>Probe-Level terminationGracePeriodSeconds:</b> Eine Liveness- oder Startup-Probe kann eine eigene, kürzere Gnadenfrist haben. So wartet ein hängender Container nicht die lange Pod-Frist ab.</li>
+  <li><b>Spring Boot Probes:</b> Läuft die App auf Kubernetes, aktiviert Spring Boot automatisch <code>/actuator/health/liveness</code> und <code>/actuator/health/readiness</code>. Sonst: <code>management.endpoint.health.probes.enabled=true</code>.</li>
+  <li><b>Availability States:</b> <code>LivenessState</code> (<code>CORRECT</code>, <code>BROKEN</code>) und <code>ReadinessState</code> (<code>ACCEPTING_TRAFFIC</code>, <code>REFUSING_TRAFFIC</code>). Die App kann sie über <code>AvailabilityChangeEvent</code> selbst ändern.</li>
+  <li><b>Health Groups:</b> <code>management.endpoint.health.group.readiness.include=readinessState,db</code> nimmt die DB nur in Readiness auf. Liveness bleibt bei <code>livenessState</code>.</li>
+  <li><b>Probes auf dem Hauptport:</b> <code>management.endpoint.health.probes.add-additional-paths=true</code> liefert <code>/livez</code> und <code>/readyz</code> auf dem App-Port. So prüft die Probe, ob der echte Web-Server antwortet, auch wenn Actuator einen eigenen Port hat.</li>
+  <li><b>Shutdown-Rennen:</b> Nach <code>SIGTERM</code> braucht das Entfernen aus den Endpoints einen Moment. Ein <code>preStop</code>-Hook mit kurzem <code>sleep</code> (z. B. 5–10 s) verhindert Fehler bei Requests, die noch ankommen.</li>
+</ol>
+
+<h2>5. Vergleich</h2>
+<ul>
+  <li><b>Liveness:</b> Frage „Ist der Prozess kaputt und nur durch Neustart heilbar?“ Aktion: Container neu starten. Nur interne Zustände prüfen.</li>
+  <li><b>Readiness:</b> Frage „Kann der Pod jetzt Requests bedienen?“ Aktion: aus dem Service nehmen. Darf wichtige Abhängigkeiten prüfen.</li>
+  <li><b>Startup:</b> Frage „Ist der Start fertig?“ Aktion: bis dahin die anderen Probes aussetzen, bei Zeitüberschreitung neu starten.</li>
+  <li><b>Docker HEALTHCHECK:</b> wird von Kubernetes ignoriert. Nur die Probes im Pod-Spec zählen.</li>
+  <li><b>Load-Balancer-Health-Check (Azure LB, Ingress):</b> prüft von aussen den Node oder Service. Ergänzt Probes, ersetzt sie nicht.</li>
+</ul>
+
+<h2>6. In der Produktion</h2>
+<ol>
+  <li><b>Kaskade durch Liveness mit DB-Check:</b> Die DB ist 1 Minute langsam. Alle Pods fallen in Liveness durch und starten gleichzeitig neu. Der Kaltstart belastet die DB noch mehr. Lösung: Abhängigkeiten nie in Liveness, nur in Readiness.</li>
+  <li><b>Neustarts unter Last:</b> Bei hoher Last ist der Thread-Pool voll. Die Liveness-Anfrage wartet länger als 1 Sekunde und scheitert. Der Neustart nimmt Kapazität weg und verschlimmert die Last. Lösung: grösseres <code>timeoutSeconds</code>, höherer <code>failureThreshold</code>, Probe auf einem eigenen Management-Port.</li>
+  <li><b>Endlose Neustarts beim Start:</b> Eine JVM braucht 120 Sekunden, die Liveness Probe greift nach 30. Der Pod kommt nie hoch (<b>CrashLoopBackOff</b>). Lösung: Startup Probe mit genug Zeit.</li>
+  <li><b>Alle Pods gleichzeitig nicht ready:</b> Readiness prüft eine gemeinsame Abhängigkeit. Fällt sie aus, hat der Service null Endpoints und liefert 503. Das kann richtig sein, aber man muss es bewusst entscheiden.</li>
+  <li><b>Fehler beim Rollout:</b> Ohne Readiness Probe bekommt ein Pod Traffic, bevor Spring Boot fertig ist. Ergebnis: 502 und 503 bei jedem Deployment.</li>
+  <li><b>Fehler beim Shutdown:</b> Der Pod beendet sich, bevor Ingress und kube-proxy ihn entfernt haben. Lösung: <code>preStop</code>-Sleep und Graceful Shutdown (<code>server.shutdown=graceful</code>, in Spring Boot 3.4+ Standard).</li>
+</ol>
+
+<h2>7. Diagnose: Werkzeuge und Befehle</h2>
+<ul>
+  <li><code>kubectl describe pod &lt;pod&gt;</code>: Events <code>Unhealthy</code> mit Grund (Liveness/Readiness/Startup probe failed) und <code>Killing</code>.</li>
+  <li><code>kubectl get pod &lt;pod&gt; -o jsonpath='{.status.containerStatuses[0].lastState}'</code>: Exit-Code und Grund des letzten Neustarts.</li>
+  <li><code>kubectl logs &lt;pod&gt; --previous</code>: Log des abgestürzten Containers.</li>
+  <li><code>kubectl get endpointslices -l kubernetes.io/service-name=&lt;svc&gt; -o yaml</code>: welche Pods <code>ready: false</code> sind.</li>
+  <li><code>kubectl exec &lt;pod&gt; -- wget -qO- localhost:8080/actuator/health/readiness</code>: Antwort selbst prüfen.</li>
+  <li><code>kubectl get events --field-selector reason=Unhealthy -A</code>: alle Probe-Fehler im Cluster.</li>
+  <li>Prometheus: <code>kube_pod_container_status_restarts_total</code> und <code>prober_probe_total{result="failed"}</code> (kubelet-Metrik).</li>
+</ul>
+
+<h2>8. Senior-Punkte</h2>
+<div class="senior">
+<ol>
+  <li><b>Liveness so dumm wie möglich.</b> Sie prüft nur, ob der Prozess selbst lebt. Jede externe Abhängigkeit darin ist ein Risiko für Kaskaden.</li>
+  <li><b>Keine Liveness ist oft besser als eine schlechte.</b> Stürzt der Prozess ab, startet Kubernetes ihn sowieso neu. Liveness braucht man nur für Hänger.</li>
+  <li><b>Readiness ist ein Lastschutz.</b> Sie darf Abhängigkeiten prüfen, aber man muss entscheiden, ob „alle Pods nicht ready“ das gewünschte Verhalten ist.</li>
+  <li><b>Startup statt initialDelaySeconds.</b> Die Startup Probe gibt langsamen JVMs Zeit und erkennt Hänger danach trotzdem schnell.</li>
+  <li><b>Probes sind Teil des Rollout-Designs.</b> Readiness, <code>minReadySeconds</code>, <code>maxUnavailable</code> und Graceful Shutdown zusammen entscheiden über Zero-Downtime.</li>
+  <li><b>Probe-Neustarts überwachen.</b> Ein Alarm auf steigende Restarts zeigt falsche Probes früh, bevor sie eine Störung auslösen.</li>
+</ol>
+</div>
+
+<h2>9. Aus dem Projekt</h2>
+<p>„Bei DAZiT hatten alle Services Health Checks; bei MATCH beobachten Grafana und Prometheus unter anderem Pod-Restarts, was falsche Probes schnell sichtbar macht.“ <span class="small">(Prüfen und durch dein echtes Beispiel ersetzen.)</span></p>
+
+<h2>10. Fallen</h2>
+<div class="trap">
+<ul>
+  <li>„Liveness soll prüfen, ob die Datenbank erreichbar ist.“ → <b>Falsch.</b> Dann starten alle Pods bei einem DB-Problem neu. DB-Checks gehören in Readiness.</li>
+  <li>„Readiness rot startet den Pod neu.“ → <b>Falsch.</b> Readiness nimmt den Pod nur aus dem Service.</li>
+  <li>„Die Startup Probe läuft periodisch weiter.“ → <b>Falsch.</b> Nach dem ersten Erfolg nie wieder.</li>
+  <li>„Ein grosses initialDelaySeconds reicht für langsame Starts.“ → <b>Schlecht.</b> Es verzögert auch die Erkennung von Hängern und passt nie für jeden Start. Besser: Startup Probe.</li>
+  <li>„Docker HEALTHCHECK wird von Kubernetes genutzt.“ → <b>Falsch.</b> Kubernetes ignoriert ihn.</li>
+</ul>
+</div>
+
+<h2>11. Fragen</h2>
+<details><summary>Was ist eine Liveness Probe?</summary><p>Ein Test, ob der Container noch lebt. Scheitert er failureThreshold-mal, startet der kubelet den Container neu.</p></details>
+<details><summary>Was ist eine Readiness Probe?</summary><p>Ein Test, ob der Pod Traffic bedienen kann. Scheitert er, nimmt Kubernetes den Pod aus den Service-Endpoints, ohne Neustart.</p></details>
+<details><summary>Was ist eine Startup Probe?</summary><p>Ein Test nur für den Start. Bis sie grün ist, laufen Liveness und Readiness nicht. Danach läuft sie nie wieder.</p></details>
+<details><summary>Wer führt Probes aus?</summary><p>Der kubelet auf dem Node des Pods. Der API-Server bekommt nur das Ergebnis.</p></details>
+<details><summary>Welche Probe-Arten gibt es?</summary><p>httpGet, tcpSocket, exec und grpc.</p></details>
+<details><summary>Was sind die Standardwerte einer Probe?</summary><p>initialDelaySeconds 0, periodSeconds 10, timeoutSeconds 1, successThreshold 1, failureThreshold 3.</p></details>
+<details><summary>Wie lange dauert es bis zum Neustart nach einem Hänger?</summary><p>Etwa periodSeconds × failureThreshold, mit Standardwerten rund 30 Sekunden, plus Timeout.</p></details>
+<details><summary>Warum sollte Liveness keine Datenbank prüfen?</summary><p>Ein DB-Problem würde alle Pods gleichzeitig neu starten. Ein Neustart heilt die DB nicht und erzeugt zusätzliche Last.</p></details>
+<details><summary>Wie lösen Sie einen langsamen JVM-Start?</summary><p>Mit einer Startup Probe, z. B. failureThreshold 30 × periodSeconds 10 = 5 Minuten. Dazu ausreichend CPU beim Start.</p></details>
+<details><summary>Warum ist initialDelaySeconds schlechter als eine Startup Probe?</summary><p>Er ist fest. Zu kurz führt zu Neustarts, zu lang verzögert die Erkennung. Die Startup Probe endet, sobald der Start fertig ist.</p></details>
+<details><summary>Was passiert ohne Readiness Probe?</summary><p>Der Pod gilt sofort als ready, sobald der Container läuft. Er bekommt Traffic, bevor die App bereit ist.</p></details>
+<details><summary>Wie hängen Readiness und Rolling Updates zusammen?</summary><p>Das Deployment ersetzt den nächsten alten Pod erst, wenn der neue ready ist. Eine schlechte Readiness Probe stoppt oder beschleunigt das Rollout falsch.</p></details>
+<details><summary>Wie macht Spring Boot Probes?</summary><p>Actuator liefert /actuator/health/liveness und /readiness, auf Kubernetes automatisch aktiv. Grundlage sind LivenessState und ReadinessState.</p></details>
+<details><summary>Was sind Health Groups in Spring Boot?</summary><p>Benannte Gruppen von Health Indicators. Man kann z. B. die DB nur in die readiness-Gruppe aufnehmen.</p></details>
+<details><summary>Was macht Spring Boot beim Shutdown mit Readiness?</summary><p>Es setzt ReadinessState auf REFUSING_TRAFFIC und beendet laufende Requests beim Graceful Shutdown.</p></details>
+<details><summary>Wozu ein preStop-Sleep?</summary><p>Das Entfernen aus Endpoints und Load Balancern braucht Zeit. Der Sleep hält den Pod kurz am Leben, damit späte Requests noch beantwortet werden.</p></details>
+<details><summary>Was ist CrashLoopBackOff?</summary><p>Der Container startet immer wieder neu. Der kubelet wartet zwischen den Versuchen immer länger, bis 5 Minuten.</p></details>
+<details><summary>Warum Probes auf einem eigenen Management-Port?</summary><p>Sie sind von App-Traffic und Security-Filtern getrennt. Aber man prüft dann nicht den echten Web-Server; additional-paths auf dem Hauptport löst das.</p></details>
+<details><summary>Kann eine Probe eine eigene Gnadenfrist haben?</summary><p>Ja, Liveness und Startup Probes haben terminationGracePeriodSeconds. So wird ein hängender Container schneller beendet als bei einem normalen Shutdown.</p></details>
+<details><summary>Szenario: Unter Last starten Pods immer wieder neu, obwohl die App funktioniert. Was prüfen Sie?</summary><p>Ob die Liveness Probe wegen Timeout scheitert, z. B. voller Thread-Pool oder GC-Pause. Lösung: grösserer timeoutSeconds und failureThreshold, Probe ohne Abhängigkeiten, eventuell auf eigenem Port.</p></details>
+<details><summary>Szenario: Ein neuer Service bleibt in CrashLoopBackOff, Logs zeigen einen normalen Start. Warum?</summary><p>Die Liveness Probe tötet ihn, bevor der Start fertig ist. Events zeigen „Liveness probe failed“. Lösung: Startup Probe mit ausreichend Zeit.</p></details>
+<details><summary>Szenario: Bei jedem Deployment gibt es einige 502-Fehler. Was tun Sie?</summary><p>Readiness Probe prüfen, damit neue Pods erst nach dem Start Traffic bekommen. Beim Shutdown Graceful Shutdown und preStop-Sleep einbauen, damit alte Pods nicht zu früh verschwinden.</p></details>
+
+</body>
+</html>

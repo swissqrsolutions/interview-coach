@@ -2,7 +2,7 @@
 
 Generated from content/syllabus.json. Priority 1 = asked in almost every interview. Mark: **Projekt** = shown in CV/Gmail · **— kein Projekt** = no project experience · **? prüfen** = unclear, you decide.
 
-404 topics · P1 239 · P2 125 · P3 40 · written 43
+404 topics · P1 239 · P2 125 · P3 40 · written 83
 
 ## Java 21 (core + advanced) (40)
 Sources: Java SE 21/25 docs (docs.oracle.com) · JVM Specification · OpenJDK source + JEPs (openjdk.org) · Oracle Java SE 21 Developer exam 1Z0-830 topics
@@ -124,14 +124,14 @@ Sources: Apache Kafka documentation · Confluent developer docs · Confluent CCD
 
 | P | Topic | Project | Written |
 |---|---|---|---|
-| 1 | Kafka-Architektur: Broker, Topic, Partition, KRaft | Projekt |  |
-| 1 | Producer intern: Batching, acks, Idempotenz, Partitioner | ? prüfen |  |
-| 1 | Consumer Groups und Rebalancing | Projekt |  |
-| 1 | Offsets und Commit-Strategien | Projekt |  |
+| 1 | Kafka-Architektur: Broker, Topic, Partition, KRaft | Projekt | ✓ |
+| 1 | Producer intern: Batching, acks, Idempotenz, Partitioner | ? prüfen | ✓ |
+| 1 | Consumer Groups und Rebalancing | Projekt | ✓ |
+| 1 | Offsets und Commit-Strategien | Projekt | ✓ |
 | 1 | At-most-once, At-least-once, Exactly-once | Projekt |  |
-| 1 | Reihenfolge und Keys | Projekt |  |
-| 1 | Replikation, ISR, min.insync.replicas | ? prüfen |  |
-| 1 | Fehler, Retries, Dead Letter Topic | ? prüfen |  |
+| 1 | Reihenfolge und Keys | Projekt | ✓ |
+| 1 | Replikation, ISR, min.insync.replicas | ? prüfen | ✓ |
+| 1 | Fehler, Retries, Dead Letter Topic | ? prüfen | ✓ |
 | 1 | Kafka vs RabbitMQ vs Event Hub vs Solace | Projekt |  |
 | 2 | Retention und Log Compaction | ? prüfen |  |
 | 2 | Kafka-Transaktionen | — kein Projekt |  |
@@ -231,19 +231,19 @@ Sources: PostgreSQL 16/17 documentation · Use The Index, Luke (Markus Winand)
 
 | P | Topic | Project | Written |
 |---|---|---|---|
-| 1 | ACID und Transaktionen | Projekt |  |
-| 1 | MVCC: wie PostgreSQL Versionen speichert | ? prüfen |  |
-| 1 | VACUUM, Autovacuum, Bloat | ? prüfen |  |
-| 1 | Isolation Levels und Anomalien | ? prüfen |  |
+| 1 | ACID und Transaktionen | Projekt | ✓ |
+| 1 | MVCC: wie PostgreSQL Versionen speichert | ? prüfen | ✓ |
+| 1 | VACUUM, Autovacuum, Bloat | ? prüfen | ✓ |
+| 1 | Isolation Levels und Anomalien | ? prüfen | ✓ |
 | 1 | Locks, Row Locks, Deadlocks, SELECT FOR UPDATE, SKIP LOCKED | ? prüfen |  |
-| 1 | Index-Typen: B-Tree, Hash, GIN, GiST, BRIN, partial, covering | ? prüfen |  |
-| 1 | Query Planner und EXPLAIN ANALYZE | ? prüfen |  |
-| 1 | Join-Algorithmen: Nested Loop, Hash Join, Merge Join | ? prüfen |  |
+| 1 | Index-Typen in PostgreSQL | ? prüfen | ✓ |
+| 1 | Query Planner und EXPLAIN | ? prüfen | ✓ |
+| 1 | Join-Algorithmen | ? prüfen | ✓ |
 | 1 | Window Functions | ? prüfen |  |
-| 1 | Normalisierung und Denormalisierung | Projekt |  |
-| 1 | Connection Pooling: HikariCP, PgBouncer | ? prüfen |  |
-| 1 | Performance-Tuning: Konfiguration und Abfragen | ? prüfen |  |
-| 1 | Mandantenfähigkeit: DB, Schema oder Zeile | Projekt |  |
+| 1 | Normalisierung und Denormalisierung | Projekt | ✓ |
+| 1 | Connection Pooling: HikariCP, PgBouncer | ? prüfen | ✓ |
+| 1 | Performance-Tuning: Konfiguration und Abfragen | ? prüfen | ✓ |
+| 1 | Mandantenfähigkeit: DB, Schema oder Zeile | Projekt | ✓ |
 | 2 | CTEs und rekursive Abfragen | ? prüfen |  |
 | 2 | Constraints, Keys, Sequences vs UUID | Projekt |  |
 | 2 | JSONB und Indizes darauf | ? prüfen |  |
@@ -421,20 +421,20 @@ Sources: kubernetes.io documentation · CKA and CKAD curricula (CNCF)
 
 | P | Topic | Project | Written |
 |---|---|---|---|
-| 1 | Kubernetes-Architektur: Control Plane, etcd, Scheduler, Kubelet | Projekt |  |
-| 1 | Pods: Container, Sidecar, Init Container | Projekt |  |
-| 1 | Deployments, ReplicaSets, Rollouts, Rollback | Projekt |  |
-| 1 | Services: ClusterIP, NodePort, LoadBalancer, kube-proxy, DNS | Projekt |  |
+| 1 | Kubernetes-Architektur | Projekt | ✓ |
+| 1 | Pods und Sidecars | Projekt | ✓ |
+| 1 | Deployments und Rollouts | Projekt | ✓ |
+| 1 | Services und DNS | Projekt | ✓ |
 | 1 | Ingress und Gateway API | ? prüfen |  |
-| 1 | ConfigMaps und Secrets | Projekt |  |
-| 1 | PV, PVC, StorageClass, StatefulSet | ? prüfen |  |
-| 1 | Liveness, Readiness, Startup Probes | Projekt |  |
-| 1 | Requests, Limits, QoS-Klassen, OOMKilled | Projekt |  |
+| 1 | ConfigMaps und Secrets | Projekt | ✓ |
+| 1 | PV, PVC, StorageClass, StatefulSet | ? prüfen | ✓ |
+| 1 | Liveness, Readiness, Startup Probes | Projekt | ✓ |
+| 1 | Requests, Limits, QoS-Klassen, OOMKilled | Projekt | ✓ |
 | 1 | HPA, VPA, Cluster Autoscaler, Karpenter | Projekt |  |
-| 1 | RBAC und ServiceAccounts | ? prüfen |  |
-| 1 | Network Policies und CNI (Cilium) | Projekt |  |
-| 1 | Troubleshooting: CrashLoopBackOff, Pending, ImagePullBackOff | Projekt |  |
-| 1 | Docker: Image, Layer, Multi-Stage, Container vs VM | Projekt |  |
+| 1 | RBAC und ServiceAccounts | ? prüfen | ✓ |
+| 1 | Network Policies und CNI (Cilium) | Projekt | ✓ |
+| 1 | Troubleshooting: CrashLoopBackOff, Pending, ImagePullBackOff | Projekt | ✓ |
+| 1 | Docker: Image, Layer, Multi-Stage, Container vs VM | Projekt | ✓ |
 | 2 | DaemonSet, Job, CronJob | Projekt |  |
 | 2 | Scheduling: Affinity, Taints, Tolerations | ? prüfen |  |
 | 2 | Pod Security, Admission Controller (Kyverno) | Projekt |  |
@@ -501,11 +501,11 @@ Sources: angular.dev guides (v20) · RxJS docs
 
 | P | Topic | Project | Written |
 |---|---|---|---|
-| 1 | Angular-Architektur: Standalone vs NgModule | Projekt |  |
-| 1 | Komponenten und Lifecycle Hooks | Projekt |  |
-| 1 | Change Detection: Zone.js, OnPush, Zoneless | ? prüfen |  |
-| 1 | Dependency Injection in Angular, inject() | Projekt |  |
-| 1 | RxJS: Observable, Subscription, Hot vs Cold | Projekt |  |
+| 1 | Angular-Architektur: Standalone vs NgModule | Projekt | ✓ |
+| 1 | Komponenten und Lifecycle Hooks | Projekt | ✓ |
+| 1 | Change Detection: Zone.js, OnPush, Zoneless | ? prüfen | ✓ |
+| 1 | Dependency Injection in Angular, inject() | Projekt | ✓ |
+| 1 | RxJS: Observable, Subscription, Hot vs Cold | Projekt | ✓ |
 | 1 | RxJS-Operatoren: switchMap, mergeMap, concatMap, exhaustMap | Projekt |  |
 | 1 | Subject, BehaviorSubject, ReplaySubject | Projekt |  |
 | 1 | Routing, Guards, Resolver, Lazy Loading | Projekt |  |
@@ -520,11 +520,11 @@ Sources: angular.dev signals guide · NgRx docs (Store, Effects, Entity, SignalS
 
 | P | Topic | Project | Written |
 |---|---|---|---|
-| 1 | Signals: signal, computed, effect | — kein Projekt |  |
-| 1 | input(), output(), model(), viewChild() | — kein Projekt |  |
-| 1 | Signals und RxJS: toSignal, toObservable | — kein Projekt |  |
-| 1 | NgRx Store: Actions, Reducer, Selectors | — kein Projekt |  |
-| 1 | NgRx Effects | — kein Projekt |  |
+| 1 | Signals: signal, computed, effect | — kein Projekt | ✓ |
+| 1 | input(), output(), model(), viewChild() | — kein Projekt | ✓ |
+| 1 | Signals und RxJS | — kein Projekt | ✓ |
+| 1 | NgRx Store | — kein Projekt | ✓ |
+| 1 | NgRx Effects | — kein Projekt | ✓ |
 | 1 | NgRx SignalStore | — kein Projekt |  |
 | 1 | Welches State Management wann? | — kein Projekt |  |
 | 2 | linkedSignal und resource() | — kein Projekt |  |

@@ -1,0 +1,248 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>VACUUM, Autovacuum, Bloat</title>
+<style>
+  body { font: 17px/1.55 -apple-system, system-ui, sans-serif; max-width: 760px; margin: 0 auto; padding: 16px; color: #1d1d1f; }
+  h1 { font-size: 28px; margin: 8px 0 4px; }
+  h2 { font-size: 21px; margin: 32px 0 8px; padding-top: 12px; border-top: 2px solid #e5e5ea; }
+  .kern { background: #eef6ff; border-left: 4px solid #0a66c2; padding: 10px 14px; border-radius: 6px; }
+  .senior { background: #f0faf0; border-left: 4px solid #2e7d32; padding: 10px 14px; border-radius: 6px; }
+  .trap { background: #fff4f2; border-left: 4px solid #c62828; padding: 10px 14px; border-radius: 6px; }
+  code { background: #f2f2f7; padding: 1px 5px; border-radius: 4px; font-size: 15px; }
+  pre { background: #1e1e1e; color: #e6e6e6; padding: 12px; border-radius: 8px; overflow-x: auto; font-size: 13.5px; line-height: 1.45; }
+  svg { width: 100%; height: auto; display: block; margin: 10px 0; }
+  ol li, ul li { margin: 4px 0; }
+  details { border: 1px solid #e5e5ea; border-radius: 8px; padding: 8px 12px; margin: 6px 0; }
+  summary { font-weight: 600; cursor: pointer; }
+  details p { margin: 6px 0 2px; }
+  .small { color: #6e6e73; font-size: 14px; }
+</style>
+</head>
+<body>
+
+<h1>VACUUM, Autovacuum, Bloat</h1>
+<p class="small">PostgreSQL · Tier 1 · Quellen: PostgreSQL 17 Doku: „Routine Vacuuming“ (Recovering Disk Space, Updating Planner Statistics, Updating the Visibility Map, Preventing Transaction ID Wraparound Failures, The Autovacuum Daemon), SQL-Befehl <code>VACUUM</code>, „Automatic Vacuuming“ und „Resource Consumption“ (Cost-based Vacuum Delay), „The Cumulative Statistics System“ (<code>pg_stat_user_tables</code>), „Progress Reporting“ (<code>pg_stat_progress_vacuum</code>), Modul <code>pgstattuple</code>, PostgreSQL 17 Release Notes</p>
+
+<div class="kern">
+<b>Kern:</b> <b>VACUUM</b> ist der Prozess, der <b>tote Zeilenversionen</b> aus MVCC entfernt und ihren Platz wieder nutzbar macht. Er <b>friert</b> alte Zeilen ein, aktualisiert die <b>Visibility Map</b> und schützt so vor <b>Transaction ID Wraparound</b>. <b>Autovacuum</b> macht das automatisch. Läuft es zu selten, entsteht <b>Bloat</b>: Tabellen und Indexe voller Leerraum.
+</div>
+
+<h2>1. Wo sitzt VACUUM?</h2>
+<svg viewBox="0 0 720 320" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="a" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="10" y="20" width="200" height="60" rx="8" fill="#dbe9fb" stroke="#0a66c2"/><text x="110" y="44" text-anchor="middle" font-weight="700">Autovacuum Launcher</text><text x="110" y="64" text-anchor="middle" font-size="12">alle naptime (1 min) je DB</text>
+  <line x1="110" y1="80" x2="110" y2="118" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="10" y="120" width="200" height="60" rx="8" fill="#fff" stroke="#555"/><text x="110" y="144" text-anchor="middle" font-weight="700">Autovacuum Worker</text><text x="110" y="164" text-anchor="middle" font-size="12">max. 3 (autovacuum_max_workers)</text>
+  <rect x="270" y="20" width="200" height="60" rx="8" fill="#fff" stroke="#555"/><text x="370" y="44" text-anchor="middle" font-weight="700">pg_stat_user_tables</text><text x="370" y="64" text-anchor="middle" font-size="12">n_dead_tup · n_ins_since_vacuum</text>
+  <line x1="268" y1="50" x2="212" y2="50" stroke="#555" stroke-width="2" marker-end="url(#a)"/><text x="240" y="40" text-anchor="middle" font-size="11">liest</text>
+  <rect x="270" y="120" width="200" height="60" rx="8" fill="#f7f7fa" stroke="#555"/><text x="370" y="144" text-anchor="middle" font-weight="700">Heap (Tabelle)</text><text x="370" y="164" text-anchor="middle" font-size="12">lebende + tote Tuples</text>
+  <line x1="210" y1="150" x2="268" y2="150" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="520" y="120" width="190" height="60" rx="8" fill="#f7f7fa" stroke="#555"/><text x="615" y="144" text-anchor="middle" font-weight="700">Indexe</text><text x="615" y="164" text-anchor="middle" font-size="12">Einträge auf tote Tuples</text>
+  <line x1="470" y1="150" x2="518" y2="150" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="270" y="220" width="200" height="56" rx="8" fill="#e8f5e9" stroke="#2e7d32"/><text x="370" y="244" text-anchor="middle" font-weight="700">Free Space Map</text><text x="370" y="262" text-anchor="middle" font-size="12">wo ist Platz für INSERT?</text>
+  <rect x="520" y="220" width="190" height="56" rx="8" fill="#e8f5e9" stroke="#2e7d32"/><text x="615" y="244" text-anchor="middle" font-weight="700">Visibility Map</text><text x="615" y="262" text-anchor="middle" font-size="12">all-visible · all-frozen</text>
+  <line x1="370" y1="180" x2="370" y2="218" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <line x1="420" y1="180" x2="560" y2="218" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="10" y="220" width="200" height="56" rx="8" fill="#fff4f2" stroke="#c62828"/><text x="110" y="244" text-anchor="middle" font-weight="700">Ältester Snapshot</text><text x="110" y="262" text-anchor="middle" font-size="12">begrenzt, was weg darf</text>
+  <line x1="210" y1="248" x2="268" y2="170" stroke="#c62828" stroke-width="2" stroke-dasharray="5 4" marker-end="url(#a)"/>
+</svg>
+<ol>
+  <li><b>Autovacuum Launcher:</b> ein Hintergrundprozess. Er startet pro Datenbank etwa alle <code>autovacuum_naptime</code> (1 min) einen Worker.</li>
+  <li><b>Autovacuum Worker:</b> prüft jede Tabelle gegen die Schwellen und führt <code>VACUUM</code> und <code>ANALYZE</code> aus. Standard: höchstens 3 gleichzeitig.</li>
+  <li><b>pg_stat_user_tables:</b> die Statistik pro Tabelle. Hier stehen tote Zeilen und Änderungen seit dem letzten Lauf.</li>
+  <li><b>Heap:</b> VACUUM entfernt tote Tuples aus den Seiten. Der Platz bleibt in der Datei, wird aber wiederverwendbar.</li>
+  <li><b>Indexe:</b> VACUUM entfernt auch die Index-Einträge, die auf tote Tuples zeigen.</li>
+  <li><b>Free Space Map (FSM):</b> merkt sich freien Platz pro Seite. Neue Zeilen landen dort.</li>
+  <li><b>Visibility Map:</b> VACUUM setzt all-visible und all-frozen. Spätere Läufe überspringen diese Seiten.</li>
+  <li><b>Ältester Snapshot:</b> Die Grenze. Eine Version, die irgendein Snapshot noch sehen kann, darf nicht weg.</li>
+</ol>
+
+<h2>2. Die Reise eines VACUUM-Laufs (die Geschichte zum Merken)</h2>
+<svg viewBox="0 0 720 320" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="b" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="10" y="20" width="160" height="62" rx="10" fill="#eee" stroke="#777"/><text x="90" y="44" text-anchor="middle" font-weight="700">1. Schwelle</text><text x="90" y="64" text-anchor="middle" font-size="12">50 + 20 % tot</text>
+  <line x1="170" y1="51" x2="198" y2="51" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="200" y="20" width="160" height="62" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="280" y="44" text-anchor="middle" font-weight="700">2. Cutoff</text><text x="280" y="64" text-anchor="middle" font-size="12">ältester Snapshot</text>
+  <line x1="360" y1="51" x2="388" y2="51" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="390" y="20" width="320" height="62" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="550" y="44" text-anchor="middle" font-weight="700">3. Heap scannen</text><text x="550" y="64" text-anchor="middle" font-size="12">VM überspringt · prunen · freezen · TIDs merken</text>
+  <line x1="550" y1="82" x2="550" y2="128" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="390" y="130" width="320" height="62" rx="10" fill="#fff" stroke="#555"/><text x="550" y="154" text-anchor="middle" font-weight="700">4. Indexe aufräumen</text><text x="550" y="174" text-anchor="middle" font-size="12">jeder Index einmal pro Runde</text>
+  <line x1="390" y1="161" x2="362" y2="161" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="160" y="130" width="200" height="62" rx="10" fill="#fff" stroke="#555"/><text x="260" y="154" text-anchor="middle" font-weight="700">5. Heap-Slots frei</text><text x="260" y="174" text-anchor="middle" font-size="12">Line Pointer → unused</text>
+  <line x1="260" y1="192" x2="260" y2="238" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="160" y="240" width="200" height="62" rx="10" fill="#e8f5e9" stroke="#2e7d32"/><text x="260" y="264" text-anchor="middle" font-weight="700">6. FSM + VM</text><text x="260" y="284" text-anchor="middle" font-size="12">Platz und Bits setzen</text>
+  <line x1="360" y1="271" x2="388" y2="271" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="390" y="240" width="320" height="62" rx="10" fill="#0a66c2"/><text x="550" y="264" text-anchor="middle" fill="#fff" font-weight="700">7. Ende abschneiden + Stats</text><text x="550" y="284" text-anchor="middle" fill="#fff" font-size="12">leere Endseiten · relfrozenxid · ANALYZE</text>
+</svg>
+<ol>
+  <li><b>Schwelle erreicht:</b> Die Tabelle <code>orders</code> hat 1 Mio. Zeilen. Autovacuum startet ab 50 + 0.2 × 1 Mio. = <b>200 050</b> toten Zeilen.</li>
+  <li><b>Cutoff bestimmen:</b> VACUUM sucht den ältesten Snapshot im System. Nur Versionen, die älter als dieser sind und tot sind, dürfen weg.</li>
+  <li><b>Heap scannen:</b> Seiten mit all-visible-Bit überspringt er. Auf den anderen Seiten <b>prunt</b> er tote Versionen und <b>friert</b> alte Zeilen ein. Die Adressen (TIDs) toter Zeilen sammelt er im Speicher (<code>maintenance_work_mem</code>).</li>
+  <li><b>Indexe aufräumen:</b> Mit der TID-Liste geht er durch <b>jeden</b> Index und entfernt passende Einträge. Ist der Speicher voll, macht er mehrere Runden. Jede Runde liest alle Indexe erneut.</li>
+  <li><b>Heap-Slots freigeben:</b> Jetzt zeigt kein Index mehr auf die toten Zeilen. Ihre Line Pointer werden wiederverwendbar.</li>
+  <li><b>FSM und VM:</b> Freier Platz kommt in die Free Space Map. Saubere Seiten bekommen all-visible, ganz gefrorene all-frozen.</li>
+  <li><b>Abschluss:</b> Leere Seiten am <b>Ende</b> der Datei schneidet er ab, nur dort schrumpft die Datei. Er aktualisiert <code>relfrozenxid</code> und die Statistik. Autovacuum macht danach oft ein ANALYZE.</li>
+</ol>
+
+<h2>3. Beispiel: Bloat erzeugen und messen</h2>
+<pre>CREATE TABLE t (id int, v text) WITH (autovacuum_enabled = off);
+INSERT INTO t SELECT g, 'x' FROM generate_series(1, 100000) g;
+SELECT pg_size_pretty(pg_relation_size('t'));          -- 1
+
+UPDATE t SET v = 'y';                                  -- jede Zeile neu
+SELECT n_live_tup, n_dead_tup FROM pg_stat_user_tables
+WHERE relname = 't';                                   -- 2
+SELECT pg_size_pretty(pg_relation_size('t'));          -- 3
+
+VACUUM (VERBOSE) t;                                    -- 4
+SELECT pg_size_pretty(pg_relation_size('t'));          -- 5
+
+VACUUM FULL t;                                         -- 6
+SELECT pg_size_pretty(pg_relation_size('t'));</pre>
+<pre>1)  3544 kB
+2)  n_live_tup | n_dead_tup
+    -----------+-----------
+        100000 |     100000
+3)  7080 kB
+4)  INFO:  vacuuming "postgres.public.t"
+    INFO:  finished vacuuming "postgres.public.t": index scans: 0
+    pages: 0 removed, 885 remain, 885 scanned (100.00% of total)
+    tuples: 100000 removed, 100000 remain, 0 are dead but not yet removable
+    …
+5)  7080 kB
+6)  3544 kB</pre>
+<p class="small">Erwartetes Ergebnis (laut Doku, nicht ausgeführt), PostgreSQL 17. Grössen sind ungefähr. Die Statistik in 2) kann kurz verzögert sein.</p>
+<ol>
+  <li>100 000 kleine Zeilen brauchen ca. 443 Seiten (3.5 MB).</li>
+  <li>Das UPDATE schreibt 100 000 <b>neue Versionen</b>. Die alten sind tot: <code>n_dead_tup = 100000</code>.</li>
+  <li>Die Tabelle ist <b>doppelt so gross</b>. Die neuen Versionen fanden keinen Platz und kamen auf neue Seiten.</li>
+  <li><code>VACUUM</code> entfernt die 100 000 toten Zeilen. „0 are dead but not yet removable“ heisst: Kein alter Snapshot hat gebremst. Die Tabelle hat keinen Index, darum „index scans: 0“.</li>
+  <li>Die Datei bleibt <b>gleich gross</b>. Der Platz ist frei für neue Zeilen, aber nicht für das Betriebssystem. Die leeren Seiten liegen am Anfang, nicht am Ende.</li>
+  <li><code>VACUUM FULL</code> schreibt die Tabelle neu. Sie ist wieder 3.5 MB. Dafür hielt es einen <b>ACCESS EXCLUSIVE</b> Lock.</li>
+</ol>
+
+<h2>4. Details, die Interviewer fragen</h2>
+<ol>
+  <li><b>Die vier Aufgaben von VACUUM:</b> tote Versionen entfernen, Visibility Map pflegen, Zeilen einfrieren (Wraparound-Schutz), mit <code>ANALYZE</code> die Planner-Statistik aktualisieren.</li>
+  <li><b>VACUUM:</b> Lock <b>SHARE UPDATE EXCLUSIVE</b>. Lesen und Schreiben laufen weiter. Nur DDL und ein zweites VACUUM warten. Die Datei schrumpft meist nicht.</li>
+  <li><b>VACUUM FULL:</b> schreibt Tabelle und Indexe komplett neu. Lock <b>ACCESS EXCLUSIVE</b>: Auch Lesen ist blockiert. Braucht Platz für eine zweite Kopie. Gibt Speicher an das Betriebssystem zurück.</li>
+  <li><b>Autovacuum-Schwelle (Updates/Deletes):</b> <code>autovacuum_vacuum_threshold</code> (50) + <code>autovacuum_vacuum_scale_factor</code> (0.2) × Zeilenzahl. Bei 100 Mio. Zeilen sind das 20 Mio. tote Zeilen. Viel zu spät.</li>
+  <li><b>Insert-Schwelle:</b> Seit PostgreSQL 13 startet Autovacuum auch nach vielen Inserts: 1000 + 0.2 × Zeilenzahl. So bekommen Append-only-Tabellen Visibility Map und Freezing.</li>
+  <li><b>ANALYZE-Schwelle:</b> 50 + 0.1 × Zeilenzahl geänderte Zeilen (<code>autovacuum_analyze_scale_factor</code>).</li>
+  <li><b>Pro Tabelle einstellen:</b> <code>ALTER TABLE orders SET (autovacuum_vacuum_scale_factor = 0.01, autovacuum_vacuum_threshold = 1000);</code> Das ist der übliche Hebel für grosse Tabellen.</li>
+  <li><b>Cost-based Delay:</b> VACUUM sammelt Kostenpunkte pro Seite (Treffer 1, Disk-Lesen 2, dirty machen 20). Bei 200 Punkten (<code>vacuum_cost_limit</code>) schläft er 2 ms (<code>autovacuum_vacuum_cost_delay</code>). Das Limit teilen sich alle Worker.</li>
+  <li><b>Freezing-Parameter:</b> <code>vacuum_freeze_min_age</code> (50 Mio.): ab diesem Alter friert VACUUM eine Zeile ein. <code>vacuum_freeze_table_age</code> (150 Mio.): dann scannt VACUUM <b>aggressiv</b> alle nicht gefrorenen Seiten. <code>autovacuum_freeze_max_age</code> (200 Mio.): dann erzwingt PostgreSQL ein Autovacuum.</li>
+  <li><b>Anti-Wraparound-Autovacuum:</b> In <code>pg_stat_activity</code> steht „(to prevent wraparound)“. Es läuft auch bei <code>autovacuum = off</code>. Es weicht anderen Lock-Anfragen <b>nicht</b> aus. Ein normales Autovacuum bricht dagegen ab, wenn jemand einen Konflikt-Lock will.</li>
+  <li><b>Failsafe:</b> Ab <code>vacuum_failsafe_age</code> (1.6 Mrd.) schaltet VACUUM in den Notfall-Modus. Er ignoriert den Cost Delay und überspringt das Index-Aufräumen.</li>
+  <li><b>Was VACUUM blockiert:</b> lange oder „idle in transaction“ Sessions, verwaiste <b>Replication Slots</b>, vergessene <b>prepared Transactions</b>, lange Queries auf Replicas mit <code>hot_standby_feedback</code>. VERBOSE zeigt dann „dead but not yet removable“.</li>
+  <li><b>Speicher:</b> <code>maintenance_work_mem</code> bzw. <code>autovacuum_work_mem</code> bestimmt, wie viele tote TIDs pro Runde passen. PostgreSQL 17 speichert sie viel kompakter (TidStore). Die alte Grenze von 1 GB fällt weg.</li>
+  <li><b>Index-Bloat:</b> VACUUM macht Index-Seiten wiederverwendbar, schrumpft den Index aber kaum. Abhilfe: <code>REINDEX INDEX CONCURRENTLY</code> (seit 12), ohne lange Sperre.</li>
+  <li><b>Truncate am Ende:</b> Das Abschneiden leerer Endseiten braucht kurz einen ACCESS EXCLUSIVE Lock. Auf Replicas kann das Queries abbrechen. Abschaltbar mit <code>vacuum_truncate = off</code> pro Tabelle.</li>
+</ol>
+
+<h2>5. Vergleich</h2>
+<ul>
+  <li><b>VACUUM:</b> online, Platz intern wiederverwendbar, Datei bleibt gross. Der Normalfall.</li>
+  <li><b>VACUUM FULL:</b> Tabelle neu schreiben, Datei klein, aber volle Sperre und doppelter Platz. Nur im Wartungsfenster.</li>
+  <li><b>pg_repack</b> (Extension): schreibt die Tabelle online neu. Nur kurze Sperren am Anfang und Ende. Braucht auch doppelten Platz und einen Primary Key.</li>
+  <li><b>CLUSTER:</b> schreibt neu und sortiert nach einem Index. Gleiche Sperre wie VACUUM FULL.</li>
+  <li><b>VACUUM FREEZE:</b> friert alle Zeilen sofort ein. Gut nach einem grossen Import, bevor das Pflicht-Autovacuum zur Unzeit kommt.</li>
+  <li><b>ANALYZE:</b> nur Statistik für den Planner, kein Aufräumen.</li>
+  <li><b>TRUNCATE:</b> leert eine Tabelle sofort ohne tote Zeilen. Lock ACCESS EXCLUSIVE.</li>
+  <li><b>Partition droppen statt DELETE:</b> Alte Daten per <code>DROP</code> oder <code>DETACH</code> einer Partition entfernen erzeugt keinen Bloat.</li>
+</ul>
+
+<h2>6. In der Produktion</h2>
+<ol>
+  <li><b>Grosse Tabelle, Autovacuum zu spät:</b> 20 % Schwelle bei 500 Mio. Zeilen. Abfragen werden über Wochen langsamer. Lösung: <code>scale_factor</code> pro Tabelle auf 0.01 oder tiefer.</li>
+  <li><b>Autovacuum zu langsam:</b> Er läuft dauernd, wird aber nie fertig. Lösung: <code>autovacuum_vacuum_cost_limit</code> erhöhen (z. B. 1000–2000), mehr Worker, <code>maintenance_work_mem</code> erhöhen.</li>
+  <li><b>Bloat trotz Autovacuum:</b> VERBOSE zeigt viele „dead but not yet removable“. Ursache: alter Snapshot. Lösung: Blocker finden (<code>backend_xmin</code>, Slots, prepared xacts) und Timeouts setzen.</li>
+  <li><b>Pflicht-Autovacuum zur Spitzenzeit:</b> Eine grosse, nie geänderte Tabelle erreicht 200 Mio. Alter. Ein langer Lauf mit viel I/O startet. Lösung: nach Imports <code>VACUUM (FREEZE)</code>, Alter überwachen.</li>
+  <li><b>Migration hängt hinter Autovacuum:</b> Ein Anti-Wraparound-Lauf gibt seinen Lock nicht ab. <code>ALTER TABLE</code> wartet, dahinter alle Queries. Lösung: <code>lock_timeout</code> in Migrationen, Wraparound-Läufe nicht abbrechen.</li>
+  <li><b>Queue-Tabelle bläht sich auf:</b> Hoher Durchsatz mit UPDATE und DELETE. Lösung: aggressives Autovacuum pro Tabelle, kurze Transaktionen. Oder Partitionen pro Tag und alte droppen.</li>
+  <li><b>VACUUM FULL in Produktion:</b> Die Tabelle ist minutenlang komplett gesperrt. Lösung: pg_repack oder Partitionierung statt VACUUM FULL.</li>
+</ol>
+
+<h2>7. Diagnose: Werkzeuge und Abfragen</h2>
+<pre>-- Tote Zeilen und letzter Lauf pro Tabelle
+SELECT relname, n_live_tup, n_dead_tup,
+       round(100.0 * n_dead_tup / nullif(n_live_tup + n_dead_tup, 0), 1) AS dead_pct,
+       last_autovacuum, last_autoanalyze, autovacuum_count
+FROM pg_stat_user_tables ORDER BY n_dead_tup DESC LIMIT 10;
+
+-- Laufende VACUUMs
+SELECT pid, relid::regclass, phase, heap_blks_scanned, heap_blks_total, index_vacuum_count
+FROM pg_stat_progress_vacuum;
+
+-- Wraparound-Alter pro Tabelle
+SELECT c.oid::regclass, age(c.relfrozenxid) FROM pg_class c
+WHERE c.relkind = 'r' ORDER BY 2 DESC LIMIT 10;
+
+-- Genaue Bloat-Messung (liest die ganze Tabelle)
+CREATE EXTENSION pgstattuple;
+SELECT tuple_percent, dead_tuple_percent, free_percent FROM pgstattuple('orders');</pre>
+<ul>
+  <li><code>pg_stat_user_tables</code>: <code>n_dead_tup</code>, <code>n_mod_since_analyze</code>, <code>n_ins_since_vacuum</code>, <code>last_vacuum</code>, <code>last_autovacuum</code>.</li>
+  <li><code>pg_stat_progress_vacuum</code>: Phase und Fortschritt. In 17 heissen die Speicherspalten <code>max_dead_tuple_bytes</code> und <code>dead_tuple_bytes</code>.</li>
+  <li><code>pgstattuple</code> / <code>pgstattuple_approx</code>: echter Anteil toter und freier Bytes. <code>pgstatindex</code> für Indexe.</li>
+  <li><code>log_autovacuum_min_duration</code>: loggt Läufe über der Dauer (Standard seit 15: 10 min). Für Analyse auf 0 oder 1 s setzen.</li>
+  <li><code>pg_stat_activity</code>, <code>pg_replication_slots</code>, <code>pg_prepared_xacts</code>: Blocker finden.</li>
+  <li><code>VACUUM (VERBOSE)</code>: „removable cutoff“ und „dead but not yet removable“ zeigen, ob ein Snapshot bremst.</li>
+</ul>
+
+<h2>8. Senior-Punkte</h2>
+<div class="senior">
+<ol>
+  <li><b>Autovacuum nie abschalten.</b> Lieber pro Tabelle schärfer einstellen. Abschalten verschiebt das Problem zum Wraparound.</li>
+  <li><b>Standardwerte passen für kleine Tabellen.</b> Für grosse Tabellen ist 20 % viel zu spät. Grosse und heisse Tabellen bekommen eigene Werte.</li>
+  <li><b>Bloat ist meist ein Symptom.</b> Die Ursache ist oft ein alter Snapshot, nicht ein zu langsamer VACUUM.</li>
+  <li><b>VACUUM FULL ist kein Wartungsjob.</b> Es ist eine Notoperation mit voller Sperre. Online: pg_repack.</li>
+  <li><b>Datenlebenszyklus planen.</b> Wer viel löscht, partitioniert und droppt Partitionen. Das ist billiger als jeder VACUUM.</li>
+  <li><b>Monitoring:</b> <code>n_dead_tup</code>, Alter von <code>datfrozenxid</code>, älteste Transaktion, Slot-Lag. Alle vier gehören auf ein Dashboard mit Alarm.</li>
+</ol>
+</div>
+
+<h2>9. Aus dem Projekt</h2>
+<p>„PostgreSQL-VACUUM habe ich nicht selbst getuned. Das gleiche Problem kenne ich aus MATCH: Iceberg mit merge-on-read erzeugt Delete-Dateien und kleine Dateien. Ich räume sie mit <code>rewrite_data_files</code> und <code>expire_snapshots</code> auf.“ <span class="small">(Prüfen und durch dein echtes Beispiel ersetzen. Ehrlich sagen: keine eigene Autovacuum-Erfahrung in Produktion.)</span></p>
+
+<h2>10. Fallen</h2>
+<div class="trap">
+<ul>
+  <li>„VACUUM gibt Speicher an das Betriebssystem zurück.“ → <b>Meist falsch.</b> Nur leere Seiten am Dateiende. Sonst wird der Platz nur intern wiederverwendbar.</li>
+  <li>„VACUUM FULL ist ein gründlicheres VACUUM für regelmässige Wartung.“ → <b>Falsch.</b> Es sperrt die Tabelle komplett und schreibt sie neu.</li>
+  <li>„VACUUM sperrt die Tabelle.“ → <b>Falsch.</b> Normales VACUUM erlaubt Lesen und Schreiben. Nur DDL wartet.</li>
+  <li>„Autovacuum ausschalten macht die Datenbank schneller.“ → <b>Falsch.</b> Bloat wächst, Statistiken veralten, und das Pflicht-Autovacuum kommt trotzdem.</li>
+  <li>„Append-only-Tabellen brauchen kein VACUUM.“ → <b>Falsch.</b> Sie brauchen Freezing und die Visibility Map für Index-Only Scans.</li>
+  <li>„Ein Anti-Wraparound-Autovacuum kann man einfach abbrechen.“ → <b>Gefährlich.</b> Es startet sofort wieder, und das Alter steigt weiter.</li>
+</ul>
+</div>
+
+<h2>11. Fragen</h2>
+<details><summary>Warum braucht PostgreSQL VACUUM?</summary><p>MVCC lässt alte Versionen im Heap liegen. VACUUM entfernt die toten Versionen, pflegt die Visibility Map und friert alte Zeilen gegen Wraparound ein.</p></details>
+<details><summary>Was ist ein dead tuple?</summary><p>Eine Zeilenversion, die durch UPDATE oder DELETE ersetzt wurde und die kein Snapshot mehr sehen kann.</p></details>
+<details><summary>Was ist Bloat?</summary><p>Leerer oder toter Platz in Tabellen und Indexen. Die Dateien sind viel grösser als die echten Daten. Mehr I/O, schlechtere Cache-Nutzung.</p></details>
+<details><summary>VACUUM vs VACUUM FULL?</summary><p>VACUUM läuft online und macht Platz intern wiederverwendbar. VACUUM FULL schreibt die Tabelle neu, gibt Platz zurück, sperrt aber alles.</p></details>
+<details><summary>Welchen Lock nimmt VACUUM?</summary><p>SHARE UPDATE EXCLUSIVE. SELECT, INSERT, UPDATE und DELETE laufen weiter. VACUUM FULL nimmt ACCESS EXCLUSIVE.</p></details>
+<details><summary>Wann startet Autovacuum?</summary><p>Wenn tote Zeilen über 50 + 20 % der Zeilen liegen. Oder Inserts über 1000 + 20 %. Oder das xid-Alter über autovacuum_freeze_max_age.</p></details>
+<details><summary>Wie stellt man Autovacuum für eine grosse Tabelle ein?</summary><p>Mit Storage-Parametern pro Tabelle, z. B. autovacuum_vacuum_scale_factor = 0.01. Dazu eventuell ein höheres Cost Limit.</p></details>
+<details><summary>Was ist der Cost-based Vacuum Delay?</summary><p>VACUUM zählt Kosten pro Seite. Beim Limit (200) schläft er kurz (2 ms bei Autovacuum). Das schont I/O, kann VACUUM aber zu langsam machen.</p></details>
+<details><summary>Was ist Freezing?</summary><p>VACUUM markiert alte Zeilen als für alle sichtbar. Ihr xmin zählt dann nicht mehr. Das verhindert Probleme beim xid-Wraparound.</p></details>
+<details><summary>Was ist ein aggressiver VACUUM?</summary><p>Ab vacuum_freeze_table_age scannt VACUUM alle Seiten, die nicht all-frozen sind. Nur so kann er relfrozenxid vorrücken.</p></details>
+<details><summary>Was ist das Besondere am Anti-Wraparound-Autovacuum?</summary><p>Es läuft auch mit autovacuum = off. Es weicht Lock-Konflikten nicht aus. Und es bricht nicht von selbst ab.</p></details>
+<details><summary>Was kann VACUUM am Aufräumen hindern?</summary><p>Alte Transaktionen, idle in transaction, Replication Slots, prepared Transactions und Replica-Queries mit hot_standby_feedback.</p></details>
+<details><summary>Wie erkennen Sie Bloat?</summary><p>n_dead_tup in pg_stat_user_tables, Grösse gegen Zeilenzahl, genau mit pgstattuple. Für Indexe pgstatindex.</p></details>
+<details><summary>Wie entfernen Sie Bloat ohne Downtime?</summary><p>Tabellen mit pg_repack, Indexe mit REINDEX CONCURRENTLY. Vorher die Ursache beheben, sonst kommt er zurück.</p></details>
+<details><summary>Warum braucht eine Append-only-Tabelle VACUUM?</summary><p>Für Freezing und die Visibility Map. Ohne sie gibt es kein schnelles Index-Only Scan und später ein grosses Pflicht-Autovacuum.</p></details>
+<details><summary>Was macht maintenance_work_mem bei VACUUM?</summary><p>Es begrenzt den Speicher für tote TIDs. Ist er voll, muss VACUUM alle Indexe mehrmals scannen. PostgreSQL 17 speichert die TIDs viel kompakter.</p></details>
+<details><summary>Was ist der Failsafe-Modus?</summary><p>Ab 1.6 Mrd. xid-Alter ignoriert VACUUM den Cost Delay und überspringt Index-Arbeit. Ziel: so schnell wie möglich freezen.</p></details>
+<details><summary>Warum schrumpft ein Index nicht durch VACUUM?</summary><p>VACUUM gibt Index-Seiten nur zur Wiederverwendung frei. Die Datei bleibt gross. Kleiner wird sie nur mit REINDEX.</p></details>
+<details><summary>Warum ist DELETE auf grossen Tabellen teuer?</summary><p>Jede gelöschte Zeile wird ein dead tuple, das VACUUM aufräumen muss. Besser: Partitionen droppen.</p></details>
+<details><summary>Szenario: Autovacuum läuft auf einer Tabelle seit Stunden. Was tun Sie?</summary><p>pg_stat_progress_vacuum prüfen: Phase und index_vacuum_count. Steht „to prevent wraparound“ dabei, nicht abbrechen. Cost Limit und maintenance_work_mem erhöhen.</p></details>
+<details><summary>Szenario: n_dead_tup steigt trotz Autovacuum immer weiter. Woran liegt es?</summary><p>Ein alter Snapshot verhindert das Aufräumen. Prüfen: backend_xmin in pg_stat_activity, pg_replication_slots, pg_prepared_xacts. Blocker beenden und Timeouts setzen.</p></details>
+<details><summary>Szenario: Eine 200-GB-Tabelle hat 60 % Bloat, Downtime ist nicht erlaubt. Ihr Plan?</summary><p>Zuerst die Ursache beheben und Autovacuum pro Tabelle schärfen. Dann pg_repack mit genug freiem Platz. Langfristig partitionieren, wenn alte Daten gelöscht werden.</p></details>
+
+</body>
+</html>

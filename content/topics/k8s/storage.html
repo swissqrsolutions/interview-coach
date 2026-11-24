@@ -1,0 +1,236 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PV, PVC, StorageClass, StatefulSet</title>
+<style>
+  body { font: 17px/1.55 -apple-system, system-ui, sans-serif; max-width: 760px; margin: 0 auto; padding: 16px; color: #1d1d1f; }
+  h1 { font-size: 28px; margin: 8px 0 4px; }
+  h2 { font-size: 21px; margin: 32px 0 8px; padding-top: 12px; border-top: 2px solid #e5e5ea; }
+  .kern { background: #eef6ff; border-left: 4px solid #0a66c2; padding: 10px 14px; border-radius: 6px; }
+  .senior { background: #f0faf0; border-left: 4px solid #2e7d32; padding: 10px 14px; border-radius: 6px; }
+  .trap { background: #fff4f2; border-left: 4px solid #c62828; padding: 10px 14px; border-radius: 6px; }
+  code { background: #f2f2f7; padding: 1px 5px; border-radius: 4px; font-size: 15px; }
+  pre { background: #1e1e1e; color: #e6e6e6; padding: 12px; border-radius: 8px; overflow-x: auto; font-size: 13.5px; line-height: 1.45; }
+  svg { width: 100%; height: auto; display: block; margin: 10px 0; }
+  ol li, ul li { margin: 4px 0; }
+  details { border: 1px solid #e5e5ea; border-radius: 8px; padding: 8px 12px; margin: 6px 0; }
+  summary { font-weight: 600; cursor: pointer; }
+  details p { margin: 6px 0 2px; }
+  .small { color: #6e6e73; font-size: 14px; }
+</style>
+</head>
+<body>
+
+<h1>PV, PVC, StorageClass, StatefulSet</h1>
+<p class="small">Kubernetes · Tier 1 · Quellen: kubernetes.io (Persistent Volumes, Storage Classes, Dynamic Volume Provisioning, Volume Snapshots, StatefulSets, StatefulSet Basics, Headless Services), Microsoft Learn (AKS Storage Concepts, Azure Disk CSI, Azure Files CSI), k3s Doku (Local Path Provisioner)</p>
+
+<div class="kern">
+<b>Kern:</b> Ein <b>PersistentVolume</b> (PV) ist ein Stück Speicher im Cluster, das länger lebt als ein Pod. Ein <b>PersistentVolumeClaim</b> (PVC) ist die Bestellung eines Pods dafür, und eine <b>StorageClass</b> legt fest, wie ein PV automatisch erzeugt wird. Ein <b>StatefulSet</b> gibt jedem Pod einen festen Namen und sein eigenes Volume, damit zustandsbehaftete Software wie Datenbanken läuft.
+</div>
+
+<h2>1. Wo sitzen PV, PVC und StorageClass?</h2>
+<svg viewBox="0 0 720 320" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="a" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="10" y="20" width="150" height="56" rx="8" fill="#fff" stroke="#555"/><text x="85" y="44" text-anchor="middle" font-weight="700">Pod</text><text x="85" y="63" text-anchor="middle" font-size="12">volumes: claimName</text>
+  <line x1="160" y1="48" x2="218" y2="48" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="220" y="20" width="150" height="56" rx="8" fill="#0a66c2"/><text x="295" y="44" text-anchor="middle" fill="#fff" font-weight="700">PVC</text><text x="295" y="63" text-anchor="middle" fill="#fff" font-size="12">10Gi · RWO · Namespace</text>
+  <line x1="370" y1="48" x2="438" y2="48" stroke="#555" stroke-width="2" marker-end="url(#a)"/><text x="404" y="40" text-anchor="middle" font-size="11">bound</text>
+  <rect x="440" y="20" width="150" height="56" rx="8" fill="#dbe9fb" stroke="#0a66c2"/><text x="515" y="44" text-anchor="middle" font-weight="700">PV</text><text x="515" y="63" text-anchor="middle" font-size="12">clusterweit</text>
+  <line x1="515" y1="76" x2="515" y2="128" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="420" y="130" width="190" height="56" rx="8" fill="#fff" stroke="#555"/><text x="515" y="154" text-anchor="middle" font-weight="700">CSI-Treiber</text><text x="515" y="173" text-anchor="middle" font-size="12">disk.csi.azure.com</text>
+  <line x1="515" y1="186" x2="515" y2="238" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="420" y="240" width="190" height="56" rx="8" fill="#eee" stroke="#777"/><text x="515" y="264" text-anchor="middle" font-weight="700">Echter Speicher</text><text x="515" y="283" text-anchor="middle" font-size="12">Azure Disk · Files · NFS</text>
+  <rect x="200" y="130" width="190" height="56" rx="8" fill="#e8f5e9" stroke="#2e7d32"/><text x="295" y="154" text-anchor="middle" font-weight="700">StorageClass</text><text x="295" y="173" text-anchor="middle" font-size="12">managed-csi</text>
+  <line x1="295" y1="76" x2="295" y2="128" stroke="#555" stroke-width="2" marker-end="url(#a)"/><text x="305" y="106" font-size="11">storageClassName</text>
+  <line x1="390" y1="158" x2="418" y2="158" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="10" y="240" width="370" height="56" rx="8" fill="#fff" stroke="#999" stroke-dasharray="5 4"/><text x="195" y="264" text-anchor="middle" font-weight="700">Rollen</text><text x="195" y="283" text-anchor="middle" font-size="12">Entwickler: PVC · Plattform: StorageClass · Cloud: Disk</text>
+</svg>
+<ol>
+  <li><b>Pod:</b> verweist im Volume nur auf den Namen des PVC. Er kennt keine Disk.</li>
+  <li><b>PVC:</b> die Bestellung im Namespace. Beispiel: „10 GiB, ReadWriteOnce, Klasse <code>managed-csi</code>“.</li>
+  <li><b>StorageClass:</b> die Vorlage der Plattform. Sie nennt den <b>Provisioner</b> (CSI-Treiber), Parameter wie SKU, die <b>Reclaim Policy</b> und den <b>Binding Mode</b>.</li>
+  <li><b>PV:</b> das Cluster-Objekt für ein echtes Volume. Es ist nicht an einen Namespace gebunden. Ein PV gehört zu genau einem PVC.</li>
+  <li><b>CSI-Treiber:</b> das <b>Container Storage Interface</b>-Plugin. Es erzeugt, hängt an (<b>attach</b>) und mountet die echte Disk. Beispiel: <code>disk.csi.azure.com</code> auf AKS, <code>rancher.io/local-path</code> auf k3s.</li>
+</ol>
+
+<h2>2. Die Reise eines Volumes (dynamisches Provisioning im StatefulSet)</h2>
+<svg viewBox="0 0 720 300" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="b" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker><marker id="r" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#c62828"/></marker></defs>
+  <rect x="10" y="20" width="150" height="64" rx="10" fill="#eee" stroke="#777"/><text x="85" y="46" text-anchor="middle" font-weight="700">1. StatefulSet</text><text x="85" y="66" text-anchor="middle" font-size="12">pg, replicas: 2</text>
+  <line x1="160" y1="52" x2="198" y2="52" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="200" y="20" width="150" height="64" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="275" y="46" text-anchor="middle" font-weight="700">2. PVC</text><text x="275" y="66" text-anchor="middle" font-size="12">data-pg-0 · Pending</text>
+  <line x1="350" y1="52" x2="388" y2="52" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="390" y="20" width="150" height="64" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="465" y="46" text-anchor="middle" font-weight="700">3. Scheduler</text><text x="465" y="66" text-anchor="middle" font-size="12">wählt Node + Zone</text>
+  <line x1="540" y1="52" x2="578" y2="52" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="580" y="20" width="130" height="64" rx="10" fill="#fff" stroke="#555"/><text x="645" y="46" text-anchor="middle" font-weight="700">4. Provisioner</text><text x="645" y="66" text-anchor="middle" font-size="12">Disk in Zone 1</text>
+  <line x1="645" y1="84" x2="645" y2="128" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="520" y="130" width="190" height="60" rx="10" fill="#0a66c2"/><text x="615" y="155" text-anchor="middle" fill="#fff" font-weight="700">5. PV · Bound</text><text x="615" y="174" text-anchor="middle" fill="#fff" font-size="12">attach + mount</text>
+  <line x1="520" y1="160" x2="352" y2="160" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="150" y="130" width="200" height="60" rx="10" fill="#e8f5e9" stroke="#2e7d32"/><text x="250" y="155" text-anchor="middle" font-weight="700">6. pg-0 läuft</text><text x="250" y="174" text-anchor="middle" font-size="12">dann erst pg-1</text>
+  <path d="M250,190 C250,270 615,270 615,192" fill="none" stroke="#c62828" stroke-width="2" stroke-dasharray="6 4" marker-end="url(#r)"/>
+  <text x="432" y="262" text-anchor="middle" fill="#c62828" font-weight="700">7. pg-0 stirbt → neuer pg-0 bekommt dasselbe PVC</text>
+</svg>
+<ol>
+  <li><b>Das StatefulSet startet.</b> <code>pg</code> hat <code>replicas: 2</code> und ein <b>volumeClaimTemplate</b> namens <code>data</code>. Der Controller erzeugt zuerst nur Pod <code>pg-0</code>.</li>
+  <li><b>Ein PVC entsteht.</b> Aus der Vorlage wird PVC <code>data-pg-0</code>. Sein Name ist <code>&lt;template&gt;-&lt;statefulset&gt;-&lt;ordinal&gt;</code>. Es bleibt <b>Pending</b>.</li>
+  <li><b>Der Scheduler entscheidet zuerst.</b> Die StorageClass hat <code>volumeBindingMode: WaitForFirstConsumer</code>. Darum wählt der Scheduler erst einen Node, zum Beispiel in Zone 1.</li>
+  <li><b>Der Provisioner erzeugt die Disk.</b> Der CSI-Treiber legt die Azure Disk in Zone 1 an. So passen Disk und Node zusammen.</li>
+  <li><b>PV und PVC werden gebunden.</b> Das PV ist <b>Bound</b>. Der kubelet hängt die Disk an den Node und mountet sie in den Pod.</li>
+  <li><b>Ordnung:</b> Erst wenn <code>pg-0</code> Running und Ready ist, startet <code>pg-1</code> mit eigenem PVC <code>data-pg-1</code>.</li>
+  <li><b>Der Pod stirbt.</b> Der neue Pod heisst wieder <code>pg-0</code> und bekommt wieder <code>data-pg-0</code>. Die Daten bleiben. Aber: Er muss in Zone 1 laufen, denn die Disk ist zonal.</li>
+</ol>
+
+<h2>3. Beispiel: StatefulSet mit volumeClaimTemplates</h2>
+<pre>apiVersion: v1
+kind: Service
+metadata: { name: pg, namespace: demo-storage }
+spec: { clusterIP: None, selector: { app: pg }, ports: [{ port: 5432 }] }   # headless
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata: { name: pg, namespace: demo-storage }
+spec:
+  serviceName: pg
+  replicas: 2
+  selector: { matchLabels: { app: pg } }
+  template:
+    metadata: { labels: { app: pg } }
+    spec:
+      containers:
+      - name: pg
+        image: postgres:17
+        env: [{ name: POSTGRES_PASSWORD, value: demo }, { name: PGDATA, value: /data/pgdata }]
+        volumeMounts: [{ name: data, mountPath: /data }]
+  volumeClaimTemplates:
+  - metadata: { name: data }
+    spec:
+      accessModes: ["ReadWriteOnce"]
+      storageClassName: local-path
+      resources: { requests: { storage: 1Gi } }
+
+$ kubectl -n demo-storage get pods,pvc
+$ kubectl -n demo-storage delete pod pg-0 &amp;&amp; kubectl -n demo-storage get pvc
+$ kubectl -n demo-storage scale sts pg --replicas=1 &amp;&amp; kubectl -n demo-storage get pvc</pre>
+<pre>NAME       READY   STATUS    RESTARTS   AGE
+pod/pg-0   1/1     Running   0          40s
+pod/pg-1   1/1     Running   0          25s
+
+NAME                              STATUS   VOLUME          CAPACITY   ACCESS MODES   STORAGECLASS
+persistentvolumeclaim/data-pg-0   Bound    pvc-3f2a…       1Gi        RWO            local-path
+persistentvolumeclaim/data-pg-1   Bound    pvc-9c41…       1Gi        RWO            local-path
+
+# nach delete pod pg-0: neuer pg-0, gleiches PVC data-pg-0
+# nach scale auf 1: pg-1 weg, data-pg-1 ist weiterhin Bound</pre>
+<p class="small">Erwartetes Ergebnis (laut Doku, nicht ausgeführt). Der lokale k3s-Cluster war nicht erreichbar. <code>local-path</code> ist die Standard-StorageClass von k3s.</p>
+<ol>
+  <li><code>pg-1</code> startet 15 Sekunden nach <code>pg-0</code>: Standard ist <code>podManagementPolicy: OrderedReady</code>.</li>
+  <li>Jeder Pod hat sein eigenes PVC. Das ist der Unterschied zu einem Deployment, wo alle Pods dasselbe PVC teilen würden.</li>
+  <li>Nach dem Löschen von <code>pg-0</code> kommt ein Pod mit gleichem Namen und gleichem Volume.</li>
+  <li>Beim Herunterskalieren bleibt <code>data-pg-1</code> standardmässig bestehen. Das schützt Daten, kostet aber Speicher.</li>
+  <li>DNS: <code>pg-0.pg.demo-storage.svc.cluster.local</code> zeigt immer auf <code>pg-0</code>. Aufräumen: <code>kubectl delete namespace demo-storage</code> (PVCs gehen mit, PVs mit Reclaim Policy <code>Delete</code> ebenso).</li>
+</ol>
+
+<h2>4. Details, die Interviewer fragen</h2>
+<ol>
+  <li><b>Statisch vs dynamisch:</b> Beim <b>statischen Provisioning</b> legt ein Admin PVs vorher an. Beim <b>dynamischen Provisioning</b> erzeugt die StorageClass das PV, sobald ein PVC kommt. Heute ist dynamisch der Normalfall.</li>
+  <li><b>Access Modes:</b> <code>ReadWriteOnce</code> (RWO, ein <b>Node</b> schreibt), <code>ReadOnlyMany</code> (ROX), <code>ReadWriteMany</code> (RWX, viele Nodes schreiben), <code>ReadWriteOncePod</code> (RWOP, genau ein <b>Pod</b>). RWO erlaubt mehrere Pods auf demselben Node.</li>
+  <li><b>Wer kann was:</b> Azure Disk kann nur RWO/RWOP. Azure Files und NFS können RWX. Blockspeicher ist schnell, Dateispeicher ist teilbar.</li>
+  <li><b>Reclaim Policy:</b> <code>Delete</code> löscht die Disk mit dem PVC. <code>Retain</code> behält PV und Disk, das PV wird <b>Released</b> und muss von Hand bereinigt werden. Dynamische PVs erben die Policy der StorageClass, Standard ist <code>Delete</code>.</li>
+  <li><b>Binding Mode:</b> <code>Immediate</code> erzeugt die Disk sofort, vielleicht in der falschen Zone. <code>WaitForFirstConsumer</code> wartet auf den Scheduler. Für zonale Disks immer WaitForFirstConsumer.</li>
+  <li><b>Volume Expansion:</b> Mit <code>allowVolumeExpansion: true</code> vergrössert man ein PVC durch Ändern von <code>spec.resources.requests.storage</code>. Verkleinern geht nicht.</li>
+  <li><b>Default StorageClass:</b> Die Annotation <code>storageclass.kubernetes.io/is-default-class: "true"</code> macht eine Klasse zum Standard. PVCs ohne <code>storageClassName</code> nutzen sie. AKS: <code>managed-csi</code>.</li>
+  <li><b>Schutz:</b> Ein PVC in Benutzung hat den Finalizer <code>kubernetes.io/pvc-protection</code>. Löschen wartet, bis kein Pod es mehr nutzt.</li>
+  <li><b>StatefulSet-Identität:</b> fester Name mit Ordinalzahl (<code>pg-0</code>), feste DNS über einen <b>Headless Service</b> (<code>clusterIP: None</code>), festes Volume pro Ordinal.</li>
+  <li><b>Reihenfolge:</b> <code>OrderedReady</code> startet 0, 1, 2 nacheinander und stoppt rückwärts. <code>Parallel</code> startet alle gleichzeitig. Rolling Updates gehen immer von der höchsten Ordinalzahl rückwärts; <code>partition</code> erlaubt Canary.</li>
+  <li><b>PVC-Retention:</b> <code>persistentVolumeClaimRetentionPolicy</code> mit <code>whenDeleted</code> und <code>whenScaled</code> (<code>Retain</code> oder <code>Delete</code>). Standard ist zweimal <code>Retain</code>. Stabil seit Kubernetes 1.32.</li>
+  <li><b>volumeClaimTemplates sind unveränderlich:</b> Man kann die Grösse im Template nicht einfach ändern. Weg: jedes PVC einzeln vergrössern, dann das StatefulSet mit <code>--cascade=orphan</code> löschen und mit neuem Template neu anlegen.</li>
+  <li><b>Snapshots:</b> <b>VolumeSnapshot</b> und <b>VolumeSnapshotClass</b> erzeugen CSI-Snapshots. Ein neues PVC kann aus einem Snapshot starten (<code>dataSource</code>). Ein Snapshot ist nicht automatisch ein konsistentes DB-Backup.</li>
+  <li><b>Ephemeral Storage:</b> <code>emptyDir</code> lebt so lange wie der Pod. <b>Generic Ephemeral Volumes</b> erzeugen ein PVC pro Pod, das mit dem Pod gelöscht wird.</li>
+</ol>
+
+<h2>5. Vergleich</h2>
+<ul>
+  <li><b>Deployment + PVC:</b> alle Replikas teilen ein PVC. Mit RWO geht nur 1 Replika sinnvoll. Gut für einen einzelnen Service mit Datei-Cache.</li>
+  <li><b>StatefulSet:</b> feste Namen, feste DNS, eigenes Volume pro Pod, geordnete Starts. Für Datenbanken, Kafka, ZooKeeper, MinIO verteilt.</li>
+  <li><b>Operator (z. B. CloudNativePG, Strimzi):</b> nutzt intern StatefulSets oder eigene Pods. Er kennt die Software: Failover, Backup, Upgrades. Für Datenbanken auf K8s fast immer besser als ein nacktes StatefulSet.</li>
+  <li><b>Managed DB (Azure Database for PostgreSQL):</b> kein Betrieb im Cluster, Backups und HA vom Provider. Teurer pro Leistung, weniger Kontrolle.</li>
+  <li><b>Azure Disk vs Azure Files:</b> Disk ist Block, RWO, zonal, niedrige Latenz. Files ist SMB/NFS, RWX, langsamer, gut für geteilte Dateien.</li>
+  <li><b>Local PV / local-path:</b> sehr schnell, aber an einen Node gebunden. Stirbt der Node, sind die Daten weg, ausser die App repliziert selbst.</li>
+</ul>
+
+<h2>6. In der Produktion</h2>
+<ol>
+  <li><b>Pod hängt in Pending mit „volume node affinity conflict“:</b> Die Disk liegt in Zone 1, in Zone 1 ist kein Node frei. Lösung: WaitForFirstConsumer, Nodes in jeder Zone, oder ZRS-Disks (zonenredundant), wo unterstützt.</li>
+  <li><b>Multi-Attach-Fehler beim Rollout:</b> Ein Deployment mit RWO-Disk und <code>RollingUpdate</code> will den neuen Pod auf einem anderen Node starten. Die Disk hängt noch am alten. Lösung: <code>strategy: Recreate</code> oder StatefulSet.</li>
+  <li><b>Daten weg nach <code>helm uninstall</code>:</b> Helm löscht ein PVC aus seinem Chart, und Reclaim Policy <code>Delete</code> löscht die Disk mit. (PVCs aus volumeClaimTemplates löscht Helm nicht.) Lösung: für wichtige Daten eine StorageClass mit <code>Retain</code>, plus echte Backups.</li>
+  <li><b>Disk voll:</b> Die DB stoppt. Lösung: Monitoring auf <code>kubelet_volume_stats_available_bytes</code>, Volume Expansion erlauben, Alarm bei 80 %.</li>
+  <li><b>Zustand im falschen Ort:</b> Eine Komponente speichert in einer eingebetteten DB auf einem Volume ohne Backup. Ein Reschedule oder ein neues Volume löscht den Zustand. Lösung: Zustand in eine echte, gesicherte Datenbank auslagern.</li>
+  <li><b>Langsame Pod-Starts:</b> Attach und Detach von Cloud-Disks dauern Sekunden bis Minuten, besonders nach einem Node-Ausfall. Das verlängert Failover.</li>
+</ol>
+
+<h2>7. Diagnose: Werkzeuge und Befehle</h2>
+<ul>
+  <li><code>kubectl get pvc -A</code> und <code>kubectl get pv</code>: Status <code>Pending</code>, <code>Bound</code>, <code>Released</code>, <code>Failed</code>.</li>
+  <li><code>kubectl describe pvc &lt;name&gt;</code>: Events wie <code>waiting for first consumer</code> oder Provisioning-Fehler.</li>
+  <li><code>kubectl describe pod &lt;name&gt;</code>: <code>FailedAttachVolume</code>, <code>Multi-Attach error</code>, <code>FailedMount</code>.</li>
+  <li><code>kubectl get volumeattachment</code>: welche Disk an welchem Node hängt.</li>
+  <li><code>kubectl get storageclass</code>: Default-Klasse, Provisioner, Reclaim Policy, Binding Mode.</li>
+  <li><code>kubectl get pv &lt;name&gt; -o jsonpath='{.spec.nodeAffinity}'</code>: in welcher Zone das Volume liegt.</li>
+  <li>Prometheus: <code>kubelet_volume_stats_used_bytes</code> / <code>capacity_bytes</code> für Füllstand.</li>
+</ul>
+
+<h2>8. Senior-Punkte</h2>
+<div class="senior">
+<ol>
+  <li><b>Datenbanken auf Kubernetes sind möglich, aber kein Selbstläufer.</b> Man braucht einen Operator, getestete Backups, Monitoring und Leute mit DB-Wissen. Ohne das ist eine Managed DB billiger.</li>
+  <li><b>Ein StatefulSet macht keine Replikation.</b> Es gibt nur Identität und Volumes. Replikation, Failover und Quorum muss die Software selbst oder ein Operator liefern.</li>
+  <li><b>Zonen bestimmen das Design.</b> Zonale Disks binden Pods an eine Zone. HA heisst: Replikas über Zonen verteilen und auf App-Ebene replizieren.</li>
+  <li><b>Reclaim Policy ist eine Geschäftsentscheidung.</b> <code>Retain</code> für Produktionsdaten, <code>Delete</code> für Wegwerf-Umgebungen.</li>
+  <li><b>Snapshots sind keine Backups.</b> Ein Backup muss konsistent, ausserhalb des Clusters und mit Restore getestet sein.</li>
+  <li><b>Der kostbarste Zustand zuerst.</b> Kataloge, Metadaten und Konfiguration gehören in gesicherte Datenbanken, nicht in eingebettete Stores auf einem einzelnen Volume.</li>
+</ol>
+</div>
+
+<h2>9. Aus dem Projekt</h2>
+<p>„Bei MATCH lief der Nessie-Katalog zuerst mit eingebettetem RocksDB, sodass Zustand bei einem Pod-Reschedule verloren gehen konnte; wir haben Nessie auf ein Postgres-Backend umgestellt, weil der Katalog der wertvollste Teil des Lakehouses ist.“ <span class="small">(Prüfen und durch dein echtes Beispiel ersetzen.)</span></p>
+
+<h2>10. Fallen</h2>
+<div class="trap">
+<ul>
+  <li>„ReadWriteOnce heisst: nur ein Pod.“ → <b>Falsch.</b> Ein <b>Node</b>. Für genau einen Pod gibt es <code>ReadWriteOncePod</code>.</li>
+  <li>„Ein StatefulSet repliziert meine Datenbank.“ → <b>Falsch.</b> Es gibt nur feste Identität und Volumes. Replikation macht die DB oder ein Operator.</li>
+  <li>„Beim Löschen eines StatefulSets sind die Daten weg.“ → <b>Standardmässig falsch.</b> PVCs bleiben, ausser die Retention Policy sagt <code>Delete</code>.</li>
+  <li>„Ein PVC kann man verkleinern.“ → <b>Falsch.</b> Nur vergrössern, und nur mit <code>allowVolumeExpansion</code>.</li>
+  <li>„Retain schützt vor Datenverlust.“ → <b>Nur teilweise.</b> Es schützt vor versehentlichem Löschen, nicht vor Korruption oder Zonen-Ausfall. Backups bleiben Pflicht.</li>
+</ul>
+</div>
+
+<h2>11. Fragen</h2>
+<details><summary>Was ist ein PersistentVolume?</summary><p>Ein Cluster-Objekt für echten Speicher, der länger lebt als ein Pod. Es ist nicht an einen Namespace gebunden.</p></details>
+<details><summary>Was ist ein PersistentVolumeClaim?</summary><p>Die Bestellung von Speicher im Namespace: Grösse, Access Mode, StorageClass. Kubernetes bindet sie an genau ein passendes PV.</p></details>
+<details><summary>Was macht eine StorageClass?</summary><p>Sie beschreibt, wie PVs dynamisch erzeugt werden: Provisioner, Parameter, Reclaim Policy, Binding Mode, Expansion.</p></details>
+<details><summary>Was ist dynamisches Provisioning?</summary><p>Ein PVC mit StorageClass löst automatisch das Anlegen einer Disk und eines PV aus. Kein Admin muss PVs vorher erzeugen.</p></details>
+<details><summary>Welche Access Modes gibt es?</summary><p>RWO (ein Node), ROX (viele lesen), RWX (viele Nodes schreiben), RWOP (genau ein Pod).</p></details>
+<details><summary>Was ist der Unterschied zwischen RWO und RWOP?</summary><p>RWO erlaubt mehrere Pods auf demselben Node. RWOP erlaubt clusterweit nur einen Pod.</p></details>
+<details><summary>Was bedeutet Reclaim Policy Delete vs Retain?</summary><p>Delete löscht die Disk, wenn das PVC gelöscht wird. Retain behält sie; das PV wird Released und muss von Hand bereinigt werden.</p></details>
+<details><summary>Warum WaitForFirstConsumer?</summary><p>Die Disk entsteht erst, wenn der Scheduler einen Node gewählt hat. So liegen Disk und Pod in derselben Zone.</p></details>
+<details><summary>Kann man ein PVC vergrössern?</summary><p>Ja, wenn die StorageClass allowVolumeExpansion hat: requests.storage erhöhen. Verkleinern geht nicht.</p></details>
+<details><summary>Was garantiert ein StatefulSet?</summary><p>Feste Pod-Namen mit Ordinalzahl, feste DNS-Namen über einen Headless Service, ein eigenes PVC pro Pod und geordnete Starts und Updates.</p></details>
+<details><summary>Was ist ein Headless Service?</summary><p>Ein Service mit clusterIP: None. DNS liefert die Pod-IPs direkt und für StatefulSets einen Namen pro Pod.</p></details>
+<details><summary>Was sind volumeClaimTemplates?</summary><p>Vorlagen im StatefulSet, aus denen pro Pod ein PVC entsteht, z. B. data-pg-0. Das PVC bleibt beim Neustart des Pods dasselbe.</p></details>
+<details><summary>Was passiert mit den PVCs beim Herunterskalieren?</summary><p>Standardmässig bleiben sie. Mit persistentVolumeClaimRetentionPolicy whenScaled: Delete werden sie gelöscht.</p></details>
+<details><summary>OrderedReady vs Parallel?</summary><p>OrderedReady startet Pods nacheinander und wartet auf Ready. Parallel startet alle gleichzeitig, z. B. für Systeme, die keine Reihenfolge brauchen.</p></details>
+<details><summary>Wie macht man ein Canary-Update bei einem StatefulSet?</summary><p>Mit rollingUpdate.partition. Nur Pods mit Ordinalzahl ab der Partition bekommen die neue Version.</p></details>
+<details><summary>Warum nicht ein Deployment für eine Datenbank?</summary><p>Alle Replikas würden ein PVC teilen und haben zufällige Namen. Rolling Updates mit RWO-Disk führen zu Multi-Attach-Fehlern.</p></details>
+<details><summary>Azure Disk oder Azure Files?</summary><p>Disk für Datenbanken: Block, schnell, RWO, zonal. Files für geteilte Dateien: RWX, aber höhere Latenz.</p></details>
+<details><summary>Sind Volume Snapshots ein Backup?</summary><p>Nicht allein. Sie sind nicht immer app-konsistent und liegen oft im gleichen Konto. Ein Backup braucht Konsistenz, Kopie ausserhalb und getesteten Restore.</p></details>
+<details><summary>Datenbank auf Kubernetes oder managed?</summary><p>Managed, wenn kein Team für DB-Betrieb da ist. Auf Kubernetes mit Operator, wenn Portabilität, Kosten oder Datenhoheit wichtiger sind und Backups geübt werden.</p></details>
+<details><summary>Wie ändert man die Grösse in volumeClaimTemplates?</summary><p>Das Feld ist unveränderlich. PVCs einzeln vergrössern, StatefulSet mit --cascade=orphan löschen und mit neuem Template anlegen.</p></details>
+<details><summary>Szenario: Ein StatefulSet-Pod bleibt nach einem Node-Ausfall Pending mit „volume node affinity conflict“. Was tun Sie?</summary><p>Die Disk ist zonal und in ihrer Zone ist kein Node frei. Kapazität in dieser Zone schaffen (Autoscaler, Node-Pool pro Zone) oder auf zonenredundanten Speicher umstellen.</p></details>
+<details><summary>Szenario: Nach einem Deployment hängt der neue Pod mit „Multi-Attach error“. Warum?</summary><p>Ein Deployment mit RWO-Disk startet den neuen Pod, während der alte die Disk noch hält. Lösung: strategy Recreate oder ein StatefulSet.</p></details>
+<details><summary>Szenario: Nach helm uninstall sind die Daten einer Testumgebung weg, aber das Team wollte sie behalten. Was ändern Sie?</summary><p>Helm hat die PVCs aus dem Chart gelöscht, und Reclaim Policy Delete hat die Disks mitgelöscht. Für wichtige Daten eine StorageClass mit Retain, PVCs mit helm.sh/resource-policy: keep schützen und echte Backups einführen.</p></details>
+
+</body>
+</html>

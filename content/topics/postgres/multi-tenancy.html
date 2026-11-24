@@ -1,0 +1,248 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mandantenfähigkeit: DB, Schema oder Zeile</title>
+<style>
+  body { font: 17px/1.55 -apple-system, system-ui, sans-serif; max-width: 760px; margin: 0 auto; padding: 16px; color: #1d1d1f; }
+  h1 { font-size: 28px; margin: 8px 0 4px; }
+  h2 { font-size: 21px; margin: 32px 0 8px; padding-top: 12px; border-top: 2px solid #e5e5ea; }
+  .kern { background: #eef6ff; border-left: 4px solid #0a66c2; padding: 10px 14px; border-radius: 6px; }
+  .senior { background: #f0faf0; border-left: 4px solid #2e7d32; padding: 10px 14px; border-radius: 6px; }
+  .trap { background: #fff4f2; border-left: 4px solid #c62828; padding: 10px 14px; border-radius: 6px; }
+  code { background: #f2f2f7; padding: 1px 5px; border-radius: 4px; font-size: 15px; }
+  pre { background: #1e1e1e; color: #e6e6e6; padding: 12px; border-radius: 8px; overflow-x: auto; font-size: 13.5px; line-height: 1.45; }
+  svg { width: 100%; height: auto; display: block; margin: 10px 0; }
+  ol li, ul li { margin: 4px 0; }
+  details { border: 1px solid #e5e5ea; border-radius: 8px; padding: 8px 12px; margin: 6px 0; }
+  summary { font-weight: 600; cursor: pointer; }
+  details p { margin: 6px 0 2px; }
+  .small { color: #6e6e73; font-size: 14px; }
+</style>
+</head>
+<body>
+
+<h1>Mandantenfähigkeit: DB, Schema oder Zeile</h1>
+<p class="small">PostgreSQL · Quellen: PostgreSQL 17 Doku (5.9 Row Security Policies, CREATE POLICY, CREATE DATABASE, 5.10 Schemas, ALTER ROLE/DATABASE, pg_dump), Flyway Doku (API, schemas), Hibernate ORM 6 User Guide (Multitenancy), Microsoft Learn (Azure Architecture Center: Multitenant SaaS, Azure Database for PostgreSQL Backup and Restore, PgBouncer)</p>
+
+<div class="kern">
+<b>Kern:</b> <b>Mandantenfähigkeit</b> (Multi-Tenancy) heisst: Eine Anwendung bedient mehrere Kunden (<b>Mandanten</b>), deren Daten getrennt bleiben. In PostgreSQL gibt es drei Modelle: <b>Datenbank pro Mandant</b>, <b>Schema pro Mandant</b> oder <b>geteilte Tabellen mit <code>tenant_id</code></b>. Die Wahl ist ein Trade-off zwischen Isolation und Betriebskosten.
+</div>
+
+<h2>1. Wo sitzt die Trennung?</h2>
+<svg viewBox="0 0 720 330" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="a" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="230" y="10" width="260" height="50" rx="8" fill="#fff" stroke="#555"/><text x="360" y="32" text-anchor="middle" font-weight="700">App + Tenant-Resolver</text><text x="360" y="50" text-anchor="middle" font-size="12">Mandant aus JWT oder Header</text>
+  <line x1="300" y1="60" x2="125" y2="98" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <line x1="360" y1="60" x2="360" y2="98" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <line x1="420" y1="60" x2="595" y2="98" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="10" y="100" width="230" height="210" rx="10" fill="#f7f7fa" stroke="#999"/><text x="125" y="122" text-anchor="middle" font-weight="700">A: DB pro Mandant</text>
+  <rect x="30" y="136" width="190" height="40" rx="6" fill="#0a66c2"/><text x="125" y="161" text-anchor="middle" fill="#fff">DB tenant_a</text>
+  <rect x="30" y="186" width="190" height="40" rx="6" fill="#0a66c2"/><text x="125" y="211" text-anchor="middle" fill="#fff">DB tenant_b</text>
+  <text x="125" y="256" text-anchor="middle" font-size="12">eigener Pool pro DB</text><text x="125" y="274" text-anchor="middle" font-size="12">Flyway pro DB</text><text x="125" y="292" text-anchor="middle" font-size="12">stärkste Isolation</text>
+  <rect x="245" y="100" width="230" height="210" rx="10" fill="#f7f7fa" stroke="#999"/><text x="360" y="122" text-anchor="middle" font-weight="700">B: Schema pro Mandant</text>
+  <rect x="265" y="136" width="190" height="90" rx="6" fill="#fff" stroke="#555"/><text x="360" y="156" text-anchor="middle" font-size="13">eine DB</text>
+  <rect x="275" y="166" width="80" height="44" rx="4" fill="#dbe9fb" stroke="#0a66c2"/><text x="315" y="193" text-anchor="middle" font-size="12">tenant_a</text>
+  <rect x="365" y="166" width="80" height="44" rx="4" fill="#dbe9fb" stroke="#0a66c2"/><text x="405" y="193" text-anchor="middle" font-size="12">tenant_b</text>
+  <text x="360" y="256" text-anchor="middle" font-size="12">search_path wechseln</text><text x="360" y="274" text-anchor="middle" font-size="12">Flyway pro Schema</text><text x="360" y="292" text-anchor="middle" font-size="12">mittlere Isolation</text>
+  <rect x="480" y="100" width="230" height="210" rx="10" fill="#f7f7fa" stroke="#999"/><text x="595" y="122" text-anchor="middle" font-weight="700">C: geteilte Tabellen</text>
+  <rect x="500" y="136" width="190" height="90" rx="6" fill="#e8f5e9" stroke="#2e7d32"/><text x="595" y="160" text-anchor="middle" font-size="13">orders</text><text x="595" y="182" text-anchor="middle" font-size="12">tenant_id | id | …</text><text x="595" y="204" text-anchor="middle" font-size="12">+ Row-Level Security</text>
+  <text x="595" y="256" text-anchor="middle" font-size="12">ein Pool, eine Migration</text><text x="595" y="274" text-anchor="middle" font-size="12">billigster Betrieb</text><text x="595" y="292" text-anchor="middle" font-size="12">schwächste Isolation</text>
+</svg>
+<ol>
+  <li><b>Tenant-Resolver:</b> bestimmt den Mandanten pro Request. Beispiel: ein Claim <code>tenant</code> im validierten JWT.</li>
+  <li><b>A: Datenbank pro Mandant:</b> Jeder Mandant hat eine eigene Datenbank im Cluster oder auf einem eigenen Server. Die App wählt die richtige Verbindung.</li>
+  <li><b>B: Schema pro Mandant:</b> Eine Datenbank, ein <b>Schema</b> (Namensraum für Tabellen) pro Mandant. Die App setzt <code>search_path</code>.</li>
+  <li><b>C: Geteilte Tabellen:</b> Alle Mandanten in denselben Tabellen. Jede Zeile hat <code>tenant_id</code>. <b>Row-Level Security</b> filtert in der Datenbank.</li>
+</ol>
+
+<h2>2. Die Reise eines Requests im Modell „DB pro Mandant“</h2>
+<svg viewBox="0 0 720 310" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="b" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="10" y="20" width="150" height="70" rx="10" fill="#eee" stroke="#777"/><text x="85" y="48" text-anchor="middle" font-weight="700">1. Request</text><text x="85" y="68" text-anchor="middle" font-size="12">JWT: tenant = b</text>
+  <line x1="160" y1="55" x2="198" y2="55" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="200" y="20" width="160" height="70" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="280" y="48" text-anchor="middle" font-weight="700">2. TenantContext</text><text x="280" y="68" text-anchor="middle" font-size="12">ThreadLocal = b</text>
+  <line x1="360" y1="55" x2="398" y2="55" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="400" y="20" width="150" height="70" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="475" y="48" text-anchor="middle" font-weight="700">3. Routing</text><text x="475" y="68" text-anchor="middle" font-size="12">DataSource für b</text>
+  <line x1="550" y1="55" x2="588" y2="55" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="590" y="20" width="120" height="70" rx="10" fill="#0a66c2"/><text x="650" y="48" text-anchor="middle" fill="#fff" font-weight="700">4. DB b</text><text x="650" y="68" text-anchor="middle" fill="#fff" font-size="12">SQL</text>
+  <line x1="475" y1="90" x2="475" y2="148" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <text x="485" y="124" font-size="12">Pool fehlt?</text>
+  <rect x="380" y="150" width="330" height="70" rx="10" fill="#e8f5e9" stroke="#2e7d32"/><text x="545" y="176" text-anchor="middle" font-weight="700">5. Neuer Mandant: CREATE DATABASE</text><text x="545" y="196" text-anchor="middle" font-size="12">dann Flyway migrate, dann Pool anlegen</text>
+  <line x1="380" y1="185" x2="318" y2="185" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="60" y="150" width="256" height="70" rx="10" fill="#fff" stroke="#555"/><text x="188" y="176" text-anchor="middle" font-weight="700">6. Registry</text><text x="188" y="196" text-anchor="middle" font-size="12">tenant → DB, Version, Status</text>
+  <rect x="60" y="240" width="650" height="50" rx="10" fill="#fff4f2" stroke="#c62828"/><text x="385" y="270" text-anchor="middle" fill="#c62828">7. finally: TenantContext.clear(), sonst erbt der nächste Request den Mandanten</text>
+</svg>
+<ol>
+  <li><b>Request kommt.</b> Ein Filter validiert das JWT und liest den Mandanten <code>b</code>.</li>
+  <li><b>TenantContext setzen.</b> Der Mandant kommt in einen <code>ThreadLocal</code>. Alle Schichten darunter lesen ihn dort.</li>
+  <li><b>Routing.</b> Ein <b>AbstractRoutingDataSource</b> (Spring) oder ein <b>MultiTenantConnectionProvider</b> (Hibernate) wählt die DataSource für <code>b</code>.</li>
+  <li><b>SQL läuft.</b> Die Abfrage landet in der Datenbank von <code>b</code>. Ein Zugriff auf Daten von <code>a</code> ist technisch unmöglich.</li>
+  <li><b>Neuer Mandant.</b> Beim Onboarding legt die App <code>CREATE DATABASE tenant_b</code> an, führt <b>Flyway</b> darauf aus und registriert erst danach einen Pool.</li>
+  <li><b>Registry.</b> Eine zentrale Tabelle kennt alle Mandanten mit Datenbank, Schema-Version und Status (z. B. <code>PROVISIONING</code>, <code>ACTIVE</code>).</li>
+  <li><b>Aufräumen.</b> Nach dem Request wird der Kontext gelöscht. Bei Thread-Pools ist das Pflicht.</li>
+</ol>
+
+<h2>3. Beispiel: geteilte Tabelle mit Row-Level Security</h2>
+<pre>CREATE TABLE orders (
+  tenant_id uuid   NOT NULL,
+  id        bigint GENERATED ALWAYS AS IDENTITY,
+  amount    numeric(10,2) NOT NULL,
+  PRIMARY KEY (tenant_id, id)             -- tenant_id vorne: Index pro Mandant
+);
+ALTER TABLE orders ENABLE ROW LEVEL SECURITY;
+ALTER TABLE orders FORCE  ROW LEVEL SECURITY;   -- gilt auch für den Owner
+
+CREATE POLICY tenant_isolation ON orders
+  USING      (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid)
+  WITH CHECK (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid);
+
+-- App-Rolle: kein Superuser, kein BYPASSRLS
+CREATE ROLE app_user LOGIN PASSWORD '...';
+GRANT SELECT, INSERT, UPDATE, DELETE ON orders TO app_user;
+
+-- pro Transaktion (funktioniert auch hinter PgBouncer im Transaction Mode)
+BEGIN;
+SELECT set_config('app.tenant_id', '11111111-1111-1111-1111-111111111111', true);
+SELECT count(*) FROM orders;
+INSERT INTO orders (tenant_id, amount)
+  VALUES ('22222222-2222-2222-2222-222222222222', 10);
+ROLLBACK;
+
+BEGIN;   -- ohne Mandant
+SELECT count(*) FROM orders;
+COMMIT;</pre>
+<pre> count
+-------
+     3
+(1 row)
+
+ERROR:  new row violates row-level security policy for table "orders"
+
+ count
+-------
+     0
+(1 row)</pre>
+<p class="small">Erwartetes Ergebnis (laut Doku, nicht ausgeführt). Annahme: Mandant 1111… hat 3 Bestellungen in der Tabelle.</p>
+<ol>
+  <li>Die Policy hängt <code>tenant_id = ...</code> an jede Abfrage an. Die App sieht nur 3 eigene Zeilen, ohne <code>WHERE</code> im Code.</li>
+  <li><code>WITH CHECK</code> verhindert, dass ein Mandant Zeilen für einen anderen schreibt. Das Insert scheitert.</li>
+  <li>Ohne gesetzten Mandanten liefert <code>current_setting(..., true)</code> <code>NULL</code> oder, nach einem früheren <code>SET LOCAL</code> in der Session, einen Leerstring. <code>nullif(..., '')</code> macht beides zu <code>NULL</code>. Der Vergleich ist nie wahr. Man sieht <b>nichts</b> statt alles: <b>fail closed</b>.</li>
+  <li><code>set_config(..., true)</code> wirkt wie <code>SET LOCAL</code>: nur bis Transaktionsende. Darum bleibt kein Wert auf einer gepoolten Verbindung hängen.</li>
+  <li><code>FORCE ROW LEVEL SECURITY</code> ist nötig, wenn die App als Tabellen-Owner verbindet. Owner umgehen RLS sonst.</li>
+</ol>
+
+<h2>4. Details, die Interviewer fragen</h2>
+<ol>
+  <li><b>Datenbank pro Mandant:</b> beste Isolation innerhalb von PostgreSQL. Kein SQL kann Datenbanken übergreifend lesen. Eigenes Backup, eigenes Löschen (<code>DROP DATABASE</code>), eigene Extensions und Einstellungen.</li>
+  <li><b>CREATE DATABASE zur Laufzeit:</b> Es geht nicht in einem Transaktionsblock. Die App-Rolle braucht <code>CREATEDB</code>. Mit <code>TEMPLATE</code> kopiert man eine vorbereitete Datenbank. Der Name kann kein Bind-Parameter sein, also streng validieren und mit <code>quote_ident</code> oder einer Whitelist bauen.</li>
+  <li><b>Flyway pro Mandant:</b>
+<pre>Flyway.configure()
+      .dataSource(tenantUrl, user, password)   // oder .schemas("tenant_b")
+      .locations("classpath:db/migration/tenant")
+      .load()
+      .migrate();</pre>
+    Jede Datenbank (oder jedes Schema) hat eine eigene <code>flyway_schema_history</code>. Spring Boot migriert automatisch nur die primäre DataSource. Für Mandanten ruft man Flyway selbst auf: beim Start für alle, beim Onboarding für den neuen.</li>
+  <li><b>Migrationen bei vielen Mandanten:</b> Sie laufen nacheinander oder begrenzt parallel. Ein Mandant kann scheitern, während andere schon neu sind. Darum: Migrationen rückwärtskompatibel (<b>expand/contract</b>), Status pro Mandant in der Registry, Retry.</li>
+  <li><b>Schema pro Mandant:</b> Isolation per <code>search_path</code> und Rechte pro Schema. Ein Fehler im <code>search_path</code> zeigt Daten des falschen Mandanten. Tausende Schemas machen den Systemkatalog gross, <code>pg_dump</code> und Migrationen langsam.</li>
+  <li><b>Geteilte Tabellen:</b> billig und einfach zu migrieren (eine Migration für alle). Risiko: ein vergessenes <code>WHERE tenant_id</code> zeigt fremde Daten. RLS ist das Sicherheitsnetz in der DB.</li>
+  <li><b>Wer RLS umgeht:</b> Superuser, Rollen mit <code>BYPASSRLS</code> und der Tabellen-Owner (ohne <code>FORCE</code>). Ohne Policy gilt <b>default deny</b>. Unique- und FK-Prüfungen ignorieren RLS. Das kann Informationen verraten („Schlüssel existiert schon“).</li>
+  <li><b>RLS und Performance:</b> Die Policy ist ein zusätzliches Prädikat. Ohne Index mit <code>tenant_id</code> vorne gibt es Seq Scans. Funktionen in Policies sollten <code>STABLE</code> sein und keine Unterabfragen pro Zeile auslösen.</li>
+  <li><b>Hibernate 6:</b> <code>@TenantId</code> auf einem Feld filtert und befüllt automatisch (geteilte Tabelle). Für DB oder Schema pro Mandant: <code>MultiTenantConnectionProvider</code> plus <code>CurrentTenantIdentifierResolver</code>.</li>
+  <li><b>Connection Routing und Pools:</b> DB pro Mandant heisst Pool pro Mandant. 200 Mandanten × Pool 5 × 3 Pods = 3000 Verbindungen. Lösung: kleine Pools, Pools lazy anlegen und idle schliessen, PgBouncer davor (er poolt pro User/Datenbank-Paar).</li>
+  <li><b>Noisy Neighbour:</b> Ein Mandant verbraucht CPU, I/O oder Verbindungen und bremst alle anderen. Im selben Cluster gibt es keine echte CPU- oder I/O-Isolation. Grenzen: <code>ALTER DATABASE tenant_b CONNECTION LIMIT 20</code>, <code>ALTER ROLE ... SET statement_timeout</code>, Rate Limits in der App.</li>
+  <li><b>Backup und Restore pro Mandant:</b> DB pro Mandant: <code>pg_dump -Fc -d tenant_b</code> und <code>pg_restore</code> einzeln. Schema: <code>pg_dump -n tenant_b</code>. Geteilte Tabellen: nur per Export mit <code>WHERE tenant_id</code>. Azure Point-in-Time-Restore stellt immer den <b>ganzen Server</b> als neuen Server her. Einen Mandanten holt man dann per Dump daraus.</li>
+  <li><b>Löschen eines Mandanten (DSG/DSGVO):</b> DB pro Mandant: <code>DROP DATABASE</code>. Geteilte Tabellen: <code>DELETE</code> über viele Tabellen, Bloat, und die Daten bleiben in alten Backups bis zum Ablauf der Aufbewahrung.</li>
+</ol>
+
+<h2>5. Vergleich</h2>
+<ul>
+  <li><b>DB pro Mandant:</b> stärkste Isolation, einfaches Backup und Löschen pro Mandant, Mandanten-spezifische Anpassungen möglich. Teuer: viele Pools, viele Migrationen, Cross-Tenant-Reports schwer.</li>
+  <li><b>Schema pro Mandant:</b> Mittelweg. Eine DB, getrennte Namensräume. Geteilte Ressourcen, Katalog-Probleme ab tausenden Schemas.</li>
+  <li><b>Geteilte Tabellen + RLS:</b> billigster Betrieb, skaliert auf sehr viele kleine Mandanten, eine Migration. Schwächste Isolation, Noisy Neighbour, Restore pro Mandant schwer.</li>
+  <li><b>Server pro Mandant:</b> volle Ressourcen-Isolation (CPU, I/O, Wartungsfenster). Am teuersten. Für grosse oder regulierte Mandanten.</li>
+  <li><b>Hybrid:</b> kleine Mandanten geteilt, grosse oder sensible Mandanten mit eigener DB. Die Registry entscheidet das Routing.</li>
+  <li><b>Sharding nach tenant_id (z. B. Citus, Azure elastic clusters):</b> geteilte Tabellen, aber verteilt über Knoten. Für sehr grosse Mandantenzahlen.</li>
+</ul>
+
+<h2>6. In der Produktion</h2>
+<ol>
+  <li><b>Daten des falschen Mandanten:</b> Ein <code>ThreadLocal</code> wird nicht geleert. Ein Async-Thread oder der nächste Request erbt den Mandanten. Lösung: <code>finally { clear(); }</code>, Kontext explizit an Async-Tasks übergeben, Tests mit zwei Mandanten.</li>
+  <li><b>Session-Wert klebt auf der Verbindung:</b> <code>SET app.tenant_id</code> statt <code>SET LOCAL</code>. Hinter einem Pool sieht der nächste Nutzer fremde Daten. Lösung: <code>set_config(..., true)</code> in jeder Transaktion.</li>
+  <li><b>Verbindungen erschöpft:</b> Jeder neue Mandant bringt einen Pool. Irgendwann kommt <code>too many clients already</code>. Lösung: Verbindungsbudget, kleine und lazy Pools, PgBouncer.</li>
+  <li><b>Halb migrierte Mandanten:</b> Flyway scheitert bei Mandant 37 von 120. Die App läuft mit gemischten Schema-Versionen. Lösung: rückwärtskompatible Migrationen, Status pro Mandant, Mandant bis zum Erfolg sperren.</li>
+  <li><b>Onboarding halb fertig:</b> <code>CREATE DATABASE</code> klappt, Flyway nicht. Lösung: idempotentes Provisioning mit Status-Maschine und Retry. Beim nächsten Versuch existiert die DB schon.</li>
+  <li><b>Noisy Neighbour:</b> Ein grosser Import eines Mandanten macht alle langsam. Lösung: Limits pro Datenbank oder Rolle, eigener Batch-Pool, grosse Mandanten auf eigenen Server.</li>
+  <li><b>RLS umgangen:</b> Die App verbindet als Owner oder Superuser. Die Policy greift nie. Lösung: eigene App-Rolle ohne <code>BYPASSRLS</code>, plus <code>FORCE ROW LEVEL SECURITY</code>.</li>
+</ol>
+
+<h2>7. Diagnose: Werkzeuge und Abfragen</h2>
+<ul>
+  <li><code>SELECT datname, numbackends, xact_commit, blks_read FROM pg_stat_database;</code>: Last pro Mandanten-DB.</li>
+  <li><code>SELECT datname, count(*) FROM pg_stat_activity GROUP BY datname;</code>: Verbindungen pro Mandant.</li>
+  <li><code>pg_stat_statements</code> mit Spalte <code>dbid</code>: teure Abfragen pro Mandanten-DB.</li>
+  <li><code>SELECT pg_size_pretty(pg_database_size('tenant_b'));</code>: Grösse pro Mandant.</li>
+  <li><code>SELECT relname, relrowsecurity, relforcerowsecurity FROM pg_class WHERE relname = 'orders';</code> und <code>SELECT * FROM pg_policies;</code>: RLS aktiv und welche Policies.</li>
+  <li><code>SELECT rolname, rolsuper, rolbypassrls FROM pg_roles;</code>: wer RLS umgeht.</li>
+  <li><code>SELECT version, success FROM flyway_schema_history ORDER BY installed_rank DESC LIMIT 1;</code>: Schema-Version pro Mandant.</li>
+  <li><code>SET row_security = off;</code> bei Backups: Abfrage scheitert mit Fehler, statt still Zeilen zu filtern.</li>
+</ul>
+
+<h2>8. Senior-Punkte</h2>
+<div class="senior">
+<ol>
+  <li><b>Isolation folgt dem Risiko.</b> Gesundheits- oder Personendaten mit strengen Vorgaben sprechen für DB pro Mandant. Viele kleine SaaS-Kunden sprechen für geteilte Tabellen.</li>
+  <li><b>Die Registry ist das Herz.</b> Sie kennt Mandant, Ort, Schema-Version und Status. Ohne sie gibt es kein sicheres Routing und keine Migration im grossen Stil.</li>
+  <li><b>Fail closed.</b> Fehlt der Mandant, sieht man nichts. Nie einen Default-Mandanten oder „alle“.</li>
+  <li><b>Defense in Depth:</b> Filter in der App plus RLS in der DB. Ein Bug in einer Schicht reicht dann nicht für ein Datenleck.</li>
+  <li><b>Migrationen sind das grösste Betriebsrisiko</b> bei DB und Schema pro Mandant. Expand/contract und Status pro Mandant sind Pflicht.</li>
+  <li><b>Verbindungen skalieren mit Mandanten.</b> Das muss man vor dem 100. Mandanten planen, nicht danach.</li>
+  <li><b>Restore pro Mandant vorher üben.</b> PITR in Azure stellt den ganzen Server her. Den Weg zum einzelnen Mandanten muss man kennen.</li>
+</ol>
+</div>
+
+<h2>9. Aus dem Projekt</h2>
+<p>„Beim Personen-Service von BAG DigiSanté hat jeder Mandant eine eigene PostgreSQL-Datenbank, die zur Laufzeit angelegt wird; Flyway migriert sie automatisch pro Mandant, sodass die Daten vollständig isoliert sind.“ <span class="small">(Prüfen und durch dein echtes Beispiel ersetzen. Details wie Pool-Strategie, Registry oder Backup pro Mandant stehen nicht im Profil.)</span></p>
+
+<h2>10. Fallen</h2>
+<div class="trap">
+<ul>
+  <li>„RLS schützt auch vor dem Admin.“ → <b>Falsch.</b> Superuser und <code>BYPASSRLS</code>-Rollen umgehen RLS immer, Owner ohne <code>FORCE</code> auch.</li>
+  <li>„Schema pro Mandant ist so sicher wie DB pro Mandant.“ → <b>Falsch.</b> Ein falscher <code>search_path</code> oder ein voll qualifizierter Name greift auf fremde Schemas zu.</li>
+  <li>„Mit SET app.tenant_id bin ich sicher.“ → <b>Falsch</b> hinter einem Pool. Nur <code>SET LOCAL</code> bzw. <code>set_config(..., true)</code> endet mit der Transaktion.</li>
+  <li>„Azure PITR stellt einen Mandanten wieder her.“ → <b>Falsch.</b> Es stellt den ganzen Server als neuen Server her.</li>
+  <li>„DB pro Mandant löst Noisy Neighbours.“ → <b>Falsch.</b> Im gleichen Cluster teilen sich alle CPU, I/O, WAL und <code>max_connections</code>.</li>
+  <li>„Ohne Policy sieht man mit RLS alles.“ → <b>Falsch.</b> Ohne Policy gilt default deny.</li>
+</ul>
+</div>
+
+<h2>11. Fragen</h2>
+<details><summary>Welche drei Modelle für Mandantenfähigkeit gibt es in PostgreSQL?</summary><p>Datenbank pro Mandant, Schema pro Mandant und geteilte Tabellen mit tenant_id. Dazu Server pro Mandant als teuerste Variante.</p></details>
+<details><summary>Wann wählen Sie Datenbank pro Mandant?</summary><p>Bei hohen Isolations- und Compliance-Anforderungen, wenigen bis mittleren Mandantenzahlen und Bedarf an Backup oder Löschen pro Mandant.</p></details>
+<details><summary>Wann wählen Sie geteilte Tabellen?</summary><p>Bei sehr vielen kleinen Mandanten, gleichem Schema für alle und Kostendruck. Mit RLS als Sicherheitsnetz.</p></details>
+<details><summary>Was sind Nachteile von Schema pro Mandant?</summary><p>Grosser Systemkatalog ab tausenden Schemas, langsame Dumps und Migrationen. Isolation hängt am korrekten search_path.</p></details>
+<details><summary>Was ist Row-Level Security?</summary><p>Policies, die PostgreSQL als Filter an jede Abfrage auf einer Tabelle anhängt. USING filtert lesbare Zeilen, WITH CHECK prüft geschriebene.</p></details>
+<details><summary>Wer umgeht RLS?</summary><p>Superuser, Rollen mit BYPASSRLS und der Tabellen-Owner, ausser mit FORCE ROW LEVEL SECURITY.</p></details>
+<details><summary>Was passiert mit RLS ohne Policy?</summary><p>Default deny: Keine Zeilen sind sichtbar oder änderbar.</p></details>
+<details><summary>Wie übergeben Sie den Mandanten an RLS?</summary><p>Mit set_config('app.tenant_id', x, true) am Anfang jeder Transaktion. Die Policy liest current_setting('app.tenant_id', true).</p></details>
+<details><summary>Warum set_config mit true?</summary><p>Der Wert gilt nur bis zum Transaktionsende. So bleibt er nicht auf einer gepoolten Verbindung für den nächsten Nutzer.</p></details>
+<details><summary>Kann RLS Informationen verraten?</summary><p>Ja. Unique- und FK-Prüfungen ignorieren RLS. Ein Fehler „Schlüssel existiert“ verrät fremde Daten.</p></details>
+<details><summary>Wie routen Sie Verbindungen bei DB pro Mandant?</summary><p>Tenant aus JWT in einen Kontext, dann AbstractRoutingDataSource oder Hibernate MultiTenantConnectionProvider. Ein Pool pro Mandant.</p></details>
+<details><summary>Welches Problem bringt ein Pool pro Mandant?</summary><p>Die Verbindungen wachsen mit Mandanten × Pods × Poolgrösse. Lösung: kleine, lazy Pools und PgBouncer.</p></details>
+<details><summary>Wie legen Sie eine Mandanten-DB zur Laufzeit an?</summary><p>CREATE DATABASE ausserhalb einer Transaktion mit CREATEDB-Recht, Name streng validiert. Dann Flyway migrate, dann Status ACTIVE.</p></details>
+<details><summary>Wie migrieren Sie mit Flyway pro Mandant?</summary><p>Flyway per API für jede Mandanten-DataSource oder jedes Schema aufrufen. Jede hat ihre eigene flyway_schema_history.</p></details>
+<details><summary>Was tun, wenn die Migration bei einem Mandanten scheitert?</summary><p>Mandant markieren und sperren, die anderen laufen weiter. Migrationen rückwärtskompatibel halten, Fehler beheben, Retry.</p></details>
+<details><summary>Was ist ein Noisy Neighbour?</summary><p>Ein Mandant verbraucht so viele Ressourcen, dass andere leiden. Im gleichen Cluster gibt es keine echte CPU- oder I/O-Isolation.</p></details>
+<details><summary>Wie begrenzen Sie einen Noisy Neighbour?</summary><p>CONNECTION LIMIT pro DB oder Rolle, statement_timeout pro Rolle, Rate Limits in der App. Grosse Mandanten auf eigenen Server.</p></details>
+<details><summary>Wie stellen Sie einen einzelnen Mandanten wieder her?</summary><p>Bei DB pro Mandant mit pg_dump/pg_restore. In Azure: PITR auf einen neuen Server, dann den Mandanten per Dump zurückholen.</p></details>
+<details><summary>Wie löschen Sie einen Mandanten vollständig?</summary><p>DB pro Mandant: DROP DATABASE. Geteilte Tabellen: DELETE über alle Tabellen. Backups enthalten die Daten bis zum Ende der Aufbewahrung.</p></details>
+<details><summary>Was macht Hibernate @TenantId?</summary><p>Es befüllt und filtert eine Mandanten-Spalte automatisch für geteilte Tabellen. Der Wert kommt vom CurrentTenantIdentifierResolver.</p></details>
+<details><summary>Welchen Index brauchen geteilte Tabellen?</summary><p>tenant_id als erste Spalte in Primärschlüssel und wichtigen Indizes. Sonst scannt jede RLS-gefilterte Abfrage zu viel.</p></details>
+<details><summary>Was ist ein Hybrid-Modell?</summary><p>Kleine Mandanten in geteilten Tabellen, grosse oder sensible mit eigener DB. Eine Registry steuert das Routing.</p></details>
+<details><summary>Szenario: Ein Kunde sieht kurz Daten eines anderen Kunden. Wo suchen Sie?</summary><p>ThreadLocal nicht geleert, Async-Thread ohne Kontext, oder Session-SET auf gepoolter Verbindung. Als Netz RLS mit FORCE und App-Rolle ohne BYPASSRLS.</p></details>
+<details><summary>Szenario: Mit dem 150. Mandanten kommt „too many clients already“. Was tun Sie?</summary><p>Verbindungsbudget rechnen. Pools pro Mandant verkleinern und idle schliessen, PgBouncer davor, oder Mandanten auf mehrere Server verteilen.</p></details>
+<details><summary>Szenario: Ein Mandant hat versehentlich Daten gelöscht und will den Stand von gestern. Wie gehen Sie vor?</summary><p>Bei DB pro Mandant: PITR auf einen neuen Server, pg_dump dieser Mandanten-DB, in eine neue DB restoren, prüfen, dann umschalten. Die anderen Mandanten bleiben unberührt.</p></details>
+
+</body>
+</html>

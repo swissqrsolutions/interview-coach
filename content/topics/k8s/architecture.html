@@ -1,0 +1,232 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Kubernetes-Architektur</title>
+<style>
+  body { font: 17px/1.55 -apple-system, system-ui, sans-serif; max-width: 760px; margin: 0 auto; padding: 16px; color: #1d1d1f; }
+  h1 { font-size: 28px; margin: 8px 0 4px; }
+  h2 { font-size: 21px; margin: 32px 0 8px; padding-top: 12px; border-top: 2px solid #e5e5ea; }
+  .kern { background: #eef6ff; border-left: 4px solid #0a66c2; padding: 10px 14px; border-radius: 6px; }
+  .senior { background: #f0faf0; border-left: 4px solid #2e7d32; padding: 10px 14px; border-radius: 6px; }
+  .trap { background: #fff4f2; border-left: 4px solid #c62828; padding: 10px 14px; border-radius: 6px; }
+  code { background: #f2f2f7; padding: 1px 5px; border-radius: 4px; font-size: 15px; }
+  pre { background: #1e1e1e; color: #e6e6e6; padding: 12px; border-radius: 8px; overflow-x: auto; font-size: 13.5px; line-height: 1.45; }
+  svg { width: 100%; height: auto; display: block; margin: 10px 0; }
+  ol li, ul li { margin: 4px 0; }
+  details { border: 1px solid #e5e5ea; border-radius: 8px; padding: 8px 12px; margin: 6px 0; }
+  summary { font-weight: 600; cursor: pointer; }
+  details p { margin: 6px 0 2px; }
+  .small { color: #6e6e73; font-size: 14px; }
+</style>
+</head>
+<body>
+
+<h1>Kubernetes-Architektur: Control Plane, etcd, Scheduler, Kubelet</h1>
+<p class="small">Kubernetes · Tier 1 · Quellen: kubernetes.io Docs „Cluster Architecture“, „Kubernetes Components“, „Controllers“, „Container Runtime Interface“, „Operating etcd clusters“, „Controlling Access to the API“ (Stand Kubernetes 1.37)</p>
+
+<div class="kern">
+<b>Kern:</b> Kubernetes ist ein System, das Container nach einem <b>Soll-Zustand</b> betreibt. Die <b>Control Plane</b> speichert den Soll-Zustand und trifft Entscheidungen. Die <b>Worker Nodes</b> führen die Container aus. Alles läuft über <b>Reconciliation Loops</b>: Controller vergleichen Soll und Ist und korrigieren die Differenz.
+</div>
+
+<h2>1. Wo sitzen die Komponenten?</h2>
+<svg viewBox="0 0 720 340" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="a" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="10" y="10" width="330" height="320" rx="12" fill="#f7f7fa" stroke="#999" stroke-dasharray="5 4"/><text x="175" y="30" text-anchor="middle" font-weight="700">Control Plane</text>
+  <rect x="80" y="50" width="190" height="56" rx="8" fill="#0a66c2"/><text x="175" y="74" text-anchor="middle" fill="#fff" font-weight="700">kube-apiserver</text><text x="175" y="93" text-anchor="middle" fill="#fff" font-size="12">einzige Tür zu etcd</text>
+  <rect x="30" y="250" width="130" height="56" rx="8" fill="#fff" stroke="#555"/><text x="95" y="274" text-anchor="middle" font-weight="700">etcd</text><text x="95" y="292" text-anchor="middle" font-size="12">Key-Value, Raft</text>
+  <rect x="30" y="150" width="130" height="56" rx="8" fill="#fff" stroke="#555"/><text x="95" y="174" text-anchor="middle">kube-scheduler</text><text x="95" y="192" text-anchor="middle" font-size="12">Pod → Node</text>
+  <rect x="190" y="150" width="140" height="56" rx="8" fill="#fff" stroke="#555"/><text x="260" y="170" text-anchor="middle" font-size="13">controller-</text><text x="260" y="188" text-anchor="middle" font-size="13">manager</text>
+  <rect x="190" y="250" width="140" height="56" rx="8" fill="#fff" stroke="#555"/><text x="260" y="270" text-anchor="middle" font-size="13">cloud-controller-</text><text x="260" y="288" text-anchor="middle" font-size="13">manager</text>
+  <line x1="120" y1="106" x2="95" y2="248" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <line x1="95" y1="150" x2="140" y2="108" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <line x1="240" y1="150" x2="215" y2="108" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <line x1="290" y1="250" x2="250" y2="108" stroke="#555" stroke-width="1.5" stroke-dasharray="4 3" marker-end="url(#a)"/>
+  <rect x="380" y="10" width="330" height="320" rx="12" fill="#f7f7fa" stroke="#999" stroke-dasharray="5 4"/><text x="545" y="30" text-anchor="middle" font-weight="700">Worker Node</text>
+  <rect x="400" y="50" width="140" height="56" rx="8" fill="#dbe9fb" stroke="#0a66c2"/><text x="470" y="74" text-anchor="middle" font-weight="700">kubelet</text><text x="470" y="92" text-anchor="middle" font-size="12">Pod-Agent</text>
+  <rect x="560" y="50" width="135" height="56" rx="8" fill="#fff" stroke="#555"/><text x="627" y="74" text-anchor="middle">kube-proxy</text><text x="627" y="92" text-anchor="middle" font-size="12">Service-Regeln</text>
+  <rect x="400" y="150" width="140" height="56" rx="8" fill="#fff" stroke="#555"/><text x="470" y="172" text-anchor="middle">containerd</text><text x="470" y="190" text-anchor="middle" font-size="12">Runtime (CRI)</text>
+  <rect x="400" y="250" width="295" height="56" rx="8" fill="#e8f5e9" stroke="#2e7d32"/><text x="547" y="274" text-anchor="middle" font-weight="700">Pods</text><text x="547" y="292" text-anchor="middle" font-size="12">Container + CNI-Netzwerk + CSI-Volumes</text>
+  <line x1="270" y1="70" x2="398" y2="70" stroke="#555" stroke-width="2" marker-end="url(#a)"/><text x="334" y="62" text-anchor="middle" font-size="11">watch</text>
+  <line x1="470" y1="106" x2="470" y2="148" stroke="#555" stroke-width="2" marker-end="url(#a)"/><text x="490" y="132" font-size="11">gRPC</text>
+  <line x1="470" y1="206" x2="470" y2="248" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+</svg>
+<ol>
+  <li><b>kube-apiserver</b>: REST-Front-End des Clusters. Alle Komponenten und <code>kubectl</code> sprechen nur mit ihm. Beispiel: <code>kubectl apply</code> ist ein HTTP-Request an den API-Server.</li>
+  <li><b>etcd</b>: verteilter Key-Value-Store für den gesamten Cluster-Zustand. Nur der API-Server schreibt hinein. Beispiel: ein Pod liegt unter <code>/registry/pods/&lt;ns&gt;/&lt;name&gt;</code>.</li>
+  <li><b>kube-scheduler</b>: wählt für jeden neuen Pod einen Node. Er schreibt nur das Feld <code>spec.nodeName</code>. Beispiel: Pod braucht 2 CPU → nur Nodes mit 2 freien CPU-Requests kommen in Frage.</li>
+  <li><b>kube-controller-manager</b>: ein Prozess mit vielen <b>Controllern</b> (Deployment, ReplicaSet, Node, Job, EndpointSlice …). Beispiel: Der ReplicaSet-Controller erzeugt fehlende Pods.</li>
+  <li><b>cloud-controller-manager</b>: verbindet den Cluster mit der Cloud-API. Beispiel: Er erstellt in AKS den Azure Load Balancer für einen Service <code>type: LoadBalancer</code>.</li>
+  <li><b>kubelet</b>: Agent auf jedem Node. Er startet die Pods, die dem Node zugewiesen sind, und meldet ihren Status. Beispiel: Er führt Liveness Probes aus.</li>
+  <li><b>Container Runtime</b>: startet die Container, z. B. <b>containerd</b> oder <b>CRI-O</b>. Der kubelet spricht mit ihr über das <b>CRI</b> (Container Runtime Interface, gRPC).</li>
+  <li><b>kube-proxy</b>: setzt Service-IPs in Netzwerk-Regeln um (iptables, nftables, IPVS). Manche CNIs wie Cilium ersetzen ihn mit eBPF.</li>
+</ol>
+
+<h2>2. Die Reise eines Deployments (die Geschichte zum Merken)</h2>
+<svg viewBox="0 0 720 330" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="b" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="10" y="20" width="130" height="56" rx="10" fill="#eee" stroke="#777"/><text x="75" y="44" text-anchor="middle" font-weight="700">1. kubectl</text><text x="75" y="63" text-anchor="middle" font-size="12">apply -f</text>
+  <line x1="140" y1="48" x2="198" y2="48" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="200" y="20" width="190" height="56" rx="10" fill="#0a66c2"/><text x="295" y="44" text-anchor="middle" fill="#fff" font-weight="700">2. API-Server</text><text x="295" y="63" text-anchor="middle" fill="#fff" font-size="12">AuthN · AuthZ · Admission</text>
+  <line x1="390" y1="48" x2="468" y2="48" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="470" y="20" width="240" height="56" rx="10" fill="#fff" stroke="#555"/><text x="590" y="44" text-anchor="middle" font-weight="700">3. etcd</text><text x="590" y="63" text-anchor="middle" font-size="12">Deployment gespeichert</text>
+  <line x1="590" y1="76" x2="590" y2="128" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="470" y="130" width="240" height="56" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="590" y="154" text-anchor="middle" font-weight="700">4. Controller</text><text x="590" y="173" text-anchor="middle" font-size="12">Deployment → ReplicaSet → Pods</text>
+  <line x1="470" y1="158" x2="392" y2="158" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="200" y="130" width="190" height="56" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="295" y="154" text-anchor="middle" font-weight="700">5. Scheduler</text><text x="295" y="173" text-anchor="middle" font-size="12">Filter · Score · Bind</text>
+  <line x1="295" y1="186" x2="295" y2="238" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="200" y="240" width="190" height="56" rx="10" fill="#fff" stroke="#555"/><text x="295" y="264" text-anchor="middle" font-weight="700">6. kubelet</text><text x="295" y="283" text-anchor="middle" font-size="12">sieht Pod mit nodeName</text>
+  <line x1="390" y1="268" x2="468" y2="268" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="470" y="240" width="240" height="56" rx="10" fill="#e8f5e9" stroke="#2e7d32"/><text x="590" y="264" text-anchor="middle" font-weight="700">7. CRI + CNI + CSI</text><text x="590" y="283" text-anchor="middle" font-size="12">Container läuft, Status zurück</text>
+  <path d="M200,268 C80,268 60,200 75,78" fill="none" stroke="#2e7d32" stroke-width="2" stroke-dasharray="6 4" marker-end="url(#b)"/>
+  <text x="70" y="200" text-anchor="middle" fill="#2e7d32" font-size="12">Status</text>
+</svg>
+<ol>
+  <li><b>kubectl schickt das Manifest.</b> <code>kubectl apply</code> sendet das Deployment per HTTPS an den API-Server.</li>
+  <li><b>Der API-Server prüft.</b> Zuerst <b>Authentication</b> (wer bist du, z. B. Zertifikat oder OIDC-Token). Dann <b>Authorization</b> (darfst du das, meist RBAC). Dann <b>Admission</b>: Mutating Webhooks ändern das Objekt, Validating Webhooks und Policies lehnen es ab oder lassen es durch. Kyverno läuft hier als Admission Webhook.</li>
+  <li><b>etcd speichert.</b> Das Objekt bekommt eine <b>resourceVersion</b>. Der Request ist fertig. Noch läuft kein Container.</li>
+  <li><b>Controller reagieren.</b> Der Deployment-Controller sieht das neue Objekt über einen <b>Watch</b>. Er erzeugt ein ReplicaSet. Der ReplicaSet-Controller erzeugt die Pods. Die Pods haben noch kein <code>nodeName</code>: Status <b>Pending</b>.</li>
+  <li><b>Der Scheduler wählt einen Node.</b> <b>Filter</b> streicht ungeeignete Nodes (Ressourcen, Taints, Affinity). <b>Score</b> bewertet den Rest. <b>Bind</b> schreibt <code>spec.nodeName</code>.</li>
+  <li><b>Der kubelet übernimmt.</b> Er beobachtet Pods mit seinem Node-Namen. Er ruft über CRI die Runtime auf.</li>
+  <li><b>Container startet.</b> Die Runtime zieht das Image und startet die <b>Pod Sandbox</b>. Das <b>CNI</b>-Plugin gibt dem Pod eine IP. Das <b>CSI</b>-Plugin hängt Volumes ein. Der kubelet schreibt den Status zurück: <b>Running</b>.</li>
+</ol>
+<p>Keine Komponente ruft eine andere direkt auf. Alle schreiben und beobachten Objekte im API-Server. Das macht das System robust: Fällt der Scheduler aus, bleiben laufende Pods unberührt.</p>
+
+<h2>3. Beispiel: die Control Plane von innen sehen</h2>
+<pre>$ kubectl get nodes -o wide
+$ kubectl get pods -n kube-system
+$ kubectl get --raw='/readyz?verbose' | tail -3
+$ kubectl get events -n demo-architecture --sort-by=.lastTimestamp
+$ kubectl create deployment web --image=nginx:1.27 -n demo-architecture</pre>
+<pre>NAME                   STATUS   ROLES                  AGE   VERSION
+lima-rancher-desktop   Ready    control-plane          12d   v1.3x.y+k3s1
+
+NAMESPACE     NAME                                      READY   STATUS
+kube-system   coredns-xxxxxxxxxx-xxxxx                  1/1     Running
+kube-system   local-path-provisioner-xxxxxxxxxx-xxxxx   1/1     Running
+kube-system   metrics-server-xxxxxxxxxx-xxxxx           1/1     Running
+kube-system   traefik-xxxxxxxxxx-xxxxx                  1/1     Running
+
+[+]shutdown ok
+readyz check passed
+
+REASON              OBJECT                         MESSAGE
+ScalingReplicaSet   deployment/web                 Scaled up replica set web-6d5f7c8b9 from 0 to 1
+SuccessfulCreate    replicaset/web-6d5f7c8b9       Created pod: web-6d5f7c8b9-abcde
+Scheduled           pod/web-6d5f7c8b9-abcde        Successfully assigned demo-architecture/web-... to lima-rancher-desktop
+Pulling             pod/web-6d5f7c8b9-abcde        Pulling image "nginx:1.27"
+Created             pod/web-6d5f7c8b9-abcde        Created container: nginx
+Started             pod/web-6d5f7c8b9-abcde        Started container nginx</pre>
+<p class="small">Erwartetes Ergebnis (laut Doku, nicht ausgeführt). Der lokale k3s-Cluster war nicht erreichbar. Spalten gekürzt.</p>
+<ol>
+  <li>In <b>k3s</b> laufen API-Server, Scheduler und Controller-Manager in <b>einem Prozess</b>. Darum sieht man sie nicht als Pods. In kubeadm-Clustern sind sie <b>Static Pods</b> in <code>kube-system</code>.</li>
+  <li>In <b>AKS</b> sieht man die Control Plane gar nicht. Microsoft betreibt sie. Man sieht nur Worker Nodes.</li>
+  <li>Die Events zeigen die Reise genau: Deployment-Controller → ReplicaSet-Controller → Scheduler → kubelet.</li>
+  <li><code>/readyz</code> und <code>/livez</code> sind die Health-Endpunkte des API-Servers.</li>
+</ol>
+
+<h2>4. Details, die Interviewer fragen</h2>
+<ol>
+  <li><b>Reconciliation Loop:</b> Ein Controller liest den <b>Soll-Zustand</b> (<code>spec</code>) und den <b>Ist-Zustand</b> (<code>status</code>). Er handelt, bis beide gleich sind. Er ist <b>level-triggered</b>: Er reagiert auf den aktuellen Zustand, nicht nur auf einzelne Events. Darum heilt er sich nach Ausfällen selbst.</li>
+  <li><b>Watch und Informer:</b> Controller fragen nicht ständig ab. Sie öffnen einen <b>Watch</b> auf den API-Server. Ein <b>Informer</b> hält einen lokalen Cache und eine Work Queue. Das entlastet API-Server und etcd.</li>
+  <li><b>Optimistic Concurrency:</b> Jedes Objekt hat eine <b>resourceVersion</b>. Ein Update mit alter Version scheitert mit <code>409 Conflict</code>. Der Client liest neu und versucht es noch einmal.</li>
+  <li><b>etcd und Raft:</b> etcd repliziert mit dem <b>Raft</b>-Konsensverfahren. Ein Schreibzugriff braucht eine <b>Mehrheit (Quorum)</b>. Bei 3 Mitgliedern darf 1 ausfallen, bei 5 dürfen 2 ausfallen. Darum immer eine ungerade Zahl.</li>
+  <li><b>etcd-Grenzen:</b> Ein Objekt darf höchstens ca. 1,5 MB gross sein. Die Datenbank hat ein Standard-Limit von 2 GB (<code>--quota-backend-bytes</code>, empfohlen max. 8 GB). etcd braucht schnelle Disks (fsync-Latenz).</li>
+  <li><b>Leader Election:</b> Scheduler und Controller-Manager laufen in HA-Setups mehrfach. Nur eine Instanz ist aktiv. Sie hält ein <b>Lease</b>-Objekt in <code>kube-system</code>. Der API-Server dagegen läuft <b>aktiv-aktiv</b> hinter einem Load Balancer.</li>
+  <li><b>Scheduler-Phasen:</b> Das <b>Scheduling Framework</b> hat Plugins für <b>Filter</b> (z. B. NodeResourcesFit, TaintToleration) und <b>Score</b> (z. B. ImageLocality, Balanced Allocation). Er plant nach <b>Requests</b>, nicht nach echter Last.</li>
+  <li><b>Admission:</b> Reihenfolge: Mutating Admission → Schema-Validierung → Validating Admission. <b>ValidatingAdmissionPolicy</b> (CEL, GA seit 1.30) läuft ohne externen Webhook.</li>
+  <li><b>kubelet-Aufgaben:</b> Pods starten, Probes ausführen, Ressourcen erzwingen (cgroups), <b>Eviction</b> bei Speicherdruck, Status melden. Er sendet <b>Node Heartbeats</b> als Lease-Objekte in <code>kube-node-lease</code>.</li>
+  <li><b>Node-Ausfall:</b> Kommt kein Heartbeat, setzt der Node-Controller den Node auf <code>NotReady</code>. Er setzt Taints wie <code>node.kubernetes.io/unreachable</code>. Pods werden nach der Toleration (Standard 300 s) ersetzt.</li>
+  <li><b>CRI:</b> Seit 1.24 gibt es kein <b>dockershim</b> mehr. Der kubelet spricht nur noch CRI. Docker-Images laufen trotzdem, weil sie OCI-Images sind.</li>
+  <li><b>Static Pods:</b> Der kubelet startet sie direkt aus Dateien in <code>/etc/kubernetes/manifests</code>. So startet kubeadm die Control Plane selbst. Im API-Server erscheinen sie als <b>Mirror Pods</b>.</li>
+  <li><b>Plug-in-Schnittstellen:</b> <b>CRI</b> für Container, <b>CNI</b> für Netzwerk, <b>CSI</b> für Storage. So bleibt der Kern klein und austauschbar.</li>
+</ol>
+
+<h2>5. Vergleich</h2>
+<ul>
+  <li><b>Managed (AKS, EKS, GKE):</b> Der Anbieter betreibt Control Plane und etcd. Man sieht sie nicht. Man verwaltet Node Pools, Upgrades und Add-ons.</li>
+  <li><b>kubeadm (selbst betrieben):</b> Control Plane als Static Pods. Man verantwortet etcd-Backups, Zertifikate und Upgrades selbst.</li>
+  <li><b>k3s (z. B. Rancher Desktop):</b> ein einzelnes Binary. Standard-Speicher ist SQLite über <b>kine</b>, für HA embedded etcd. Gut für lokal und Edge.</li>
+  <li><b>Imperativ vs deklarativ:</b> <code>kubectl create</code> sagt „tu das“. <code>kubectl apply</code> und GitOps sagen „so soll es sein“. Nur deklarativ passt zum Reconciliation-Modell.</li>
+  <li><b>Kubernetes vs Docker Compose:</b> Compose startet Container einmal auf einem Host. Kubernetes hält einen Soll-Zustand über viele Nodes und heilt sich selbst.</li>
+</ul>
+
+<h2>6. In der Produktion</h2>
+<ol>
+  <li><b>etcd voll:</b> Meldung <code>mvcc: database space exceeded</code>. Der Cluster wird read-only. Ursache oft: viele Events, grosse ConfigMaps, Secrets in Massen. Lösung: Compaction und Defragmentierung, Ursache beseitigen.</li>
+  <li><b>etcd langsam:</b> langsame Disk → hohe fsync-Latenz → Leader-Wechsel → API-Timeouts. Lösung: SSD, eigene Disk für etcd.</li>
+  <li><b>Quorum verloren:</b> 2 von 3 etcd-Mitgliedern tot. Keine Schreibzugriffe mehr. Lösung: Restore aus <b>Snapshot</b>. Darum regelmässige Backups (bei selbst betriebenen Clustern).</li>
+  <li><b>API-Server überlastet:</b> Controller oder Skripte mit vielen <code>LIST</code>-Aufrufen ohne Cache. <b>API Priority and Fairness</b> drosselt dann. Lösung: Informer statt Polling, Operatoren prüfen.</li>
+  <li><b>Kaputter Admission Webhook:</b> Webhook-Pod down und <code>failurePolicy: Fail</code> → niemand kann mehr Pods erstellen, auch nicht im <code>kube-system</code>. Lösung: Namespaces ausnehmen, HA für den Webhook, Timeout klein halten.</li>
+  <li><b>Abgelaufene Zertifikate</b> (kubeadm): Nach einem Jahr akzeptiert der API-Server die Clients nicht mehr. Lösung: <code>kubeadm certs renew</code> oder regelmässige Upgrades.</li>
+  <li><b>Node NotReady:</b> kubelet tot, Disk voll oder Runtime hängt. Pods werden erst nach ca. 5 Minuten ersetzt.</li>
+</ol>
+
+<h2>7. Diagnose: Werkzeuge und Befehle</h2>
+<ul>
+  <li><code>kubectl get --raw='/readyz?verbose'</code> und <code>/livez</code>: Zustand des API-Servers.</li>
+  <li><code>kubectl get events -A --sort-by=.lastTimestamp</code>: was die Controller und der Scheduler gerade tun.</li>
+  <li><code>kubectl describe node &lt;n&gt;</code>: Conditions (MemoryPressure, DiskPressure), Taints, Allocated Resources.</li>
+  <li><code>kubectl get lease -n kube-system</code>: wer Leader von Scheduler und Controller-Manager ist.</li>
+  <li><code>etcdctl endpoint status --write-out=table</code> und <code>etcdctl snapshot save</code>: Grösse, Leader, Backup.</li>
+  <li>Auf dem Node: <code>journalctl -u kubelet</code>, <code>crictl ps</code>, <code>crictl logs</code>: wenn <code>kubectl</code> nichts zeigt.</li>
+  <li><code>kubectl get --raw /metrics</code>: Metriken wie <code>apiserver_request_duration_seconds</code> für Prometheus/Grafana.</li>
+  <li><code>kubectl auth can-i create pods --as=&lt;user&gt;</code>: RBAC prüfen.</li>
+</ul>
+
+<h2>8. Senior-Punkte</h2>
+<div class="senior">
+<ol>
+  <li><b>Deklarativ und level-triggered ist der Kern.</b> Wer das versteht, versteht Self-Healing, GitOps und Operatoren.</li>
+  <li><b>etcd ist das wertvollste Teil.</b> Alles andere ist zustandslos und ersetzbar. Ohne Backup kein Disaster Recovery.</li>
+  <li><b>Managed Control Plane</b> spart Betrieb, aber nicht Verantwortung: Upgrades, Node Pools, Add-ons, Policies bleiben beim Team.</li>
+  <li><b>Admission ist die stärkste Hebelstelle</b> für Governance (Kyverno, ValidatingAdmissionPolicy). Ein schlechter Webhook kann aber den ganzen Cluster blockieren.</li>
+  <li><b>Der Scheduler sieht nur Requests.</b> Falsche Requests heissen falsche Platzierung, egal wie die echte Last ist.</li>
+  <li><b>Upgrade-Strategie:</b> Kubernetes hat ca. 3 Releases pro Jahr, jede mit ca. 14 Monaten Support. Control Plane zuerst, dann Nodes. Der kubelet darf bis zu 3 Minor-Versionen älter sein als der API-Server.</li>
+</ol>
+</div>
+
+<h2>9. Aus dem Projekt</h2>
+<p>„Bei MATCH lief der ganze Stack auf AKS, also mit Managed Control Plane. Das Cluster selbst haben wir mit Terraform provisioniert, Kyverno hat als Admission Controller nur Images aus der ACR und keine privilegierten Pods zugelassen.“ <span class="small">(Prüfen und durch dein echtes Beispiel ersetzen.)</span></p>
+
+<h2>10. Fallen</h2>
+<div class="trap">
+<ul>
+  <li>„Der Scheduler startet die Pods.“ → <b>Falsch.</b> Er schreibt nur <code>nodeName</code>. Der kubelet startet sie.</li>
+  <li>„Controller sprechen direkt mit etcd.“ → <b>Falsch.</b> Nur der API-Server spricht mit etcd.</li>
+  <li>„Fällt die Control Plane aus, stoppen alle Pods.“ → <b>Falsch.</b> Laufende Pods laufen weiter. Nur Änderungen und Self-Healing stoppen.</li>
+  <li>„Kubernetes braucht Docker.“ → <b>Falsch.</b> Seit 1.24 nur noch CRI-Runtimes wie containerd. OCI-Images aus Docker laufen weiter.</li>
+  <li>„4 etcd-Mitglieder sind sicherer als 3.“ → <b>Falsch.</b> Beide vertragen nur 1 Ausfall. 4 hat nur mehr Schreib-Overhead.</li>
+  <li>„kube-proxy leitet jedes Paket weiter.“ → <b>Falsch.</b> Er schreibt nur Kernel-Regeln. Der Kernel leitet weiter.</li>
+</ul>
+</div>
+
+<h2>11. Fragen</h2>
+<details><summary>Welche Komponenten hat die Control Plane?</summary><p>kube-apiserver, etcd, kube-scheduler, kube-controller-manager und optional cloud-controller-manager.</p></details>
+<details><summary>Welche Komponenten laufen auf jedem Worker Node?</summary><p>kubelet, eine Container Runtime (z. B. containerd) und meist kube-proxy. Dazu CNI- und CSI-Plugins.</p></details>
+<details><summary>Was macht der API-Server?</summary><p>Er ist die einzige Schnittstelle zum Cluster-Zustand. Er prüft Authentication, Authorization und Admission und speichert Objekte in etcd.</p></details>
+<details><summary>Was ist etcd und warum ist es so wichtig?</summary><p>Ein verteilter Key-Value-Store mit Raft. Er hält den gesamten Cluster-Zustand. Ohne etcd-Backup ist ein verlorener Cluster nicht wiederherstellbar.</p></details>
+<details><summary>Warum hat etcd eine ungerade Zahl an Mitgliedern?</summary><p>Schreiben braucht eine Mehrheit. 3 Mitglieder vertragen 1 Ausfall, 4 auch nur 1. Die vierte bringt nur Overhead.</p></details>
+<details><summary>Was macht der Scheduler genau?</summary><p>Er filtert ungeeignete Nodes, bewertet die übrigen und bindet den Pod an den besten Node. Er schreibt nur spec.nodeName.</p></details>
+<details><summary>Was ist ein Controller?</summary><p>Eine Schleife, die Soll- und Ist-Zustand vergleicht und die Differenz korrigiert. Beispiel: der ReplicaSet-Controller erzeugt fehlende Pods.</p></details>
+<details><summary>Was heisst level-triggered?</summary><p>Der Controller reagiert auf den aktuellen Zustand, nicht nur auf ein einzelnes Event. Verpasste Events schaden darum nicht.</p></details>
+<details><summary>Was macht der kubelet?</summary><p>Er startet die Pods seines Nodes über CRI, führt Probes aus, erzwingt Limits, evicted bei Ressourcendruck und meldet den Status.</p></details>
+<details><summary>Was ist das CRI?</summary><p>Das Container Runtime Interface: eine gRPC-Schnittstelle zwischen kubelet und Runtime. Damit sind containerd oder CRI-O austauschbar.</p></details>
+<details><summary>Was passiert bei kubectl apply bis zum laufenden Container?</summary><p>API-Server prüft und speichert in etcd. Controller erzeugen ReplicaSet und Pods. Scheduler bindet an einen Node. kubelet startet die Container über CRI, CNI gibt die IP.</p></details>
+<details><summary>Was ist Admission Control?</summary><p>Ein Schritt nach der Autorisierung. Mutating Admission ändert Objekte, Validating Admission lehnt sie ab. Beispiele: Kyverno, ValidatingAdmissionPolicy, LimitRanger.</p></details>
+<details><summary>Was ist eine resourceVersion?</summary><p>Die Version eines Objekts aus etcd. Sie ermöglicht Optimistic Concurrency und Watches ab einem bestimmten Stand.</p></details>
+<details><summary>Was sind Static Pods?</summary><p>Pods, die der kubelet direkt aus Dateien startet, ohne Scheduler. kubeadm startet so die Control Plane.</p></details>
+<details><summary>Was passiert, wenn der API-Server ausfällt?</summary><p>Laufende Pods laufen weiter. Aber kein Deployment, kein Scaling und kein Self-Healing mehr, bis er zurück ist.</p></details>
+<details><summary>Was passiert, wenn ein Node ausfällt?</summary><p>Der Node-Controller setzt ihn auf NotReady und taintet ihn. Nach der Toleration (Standard 300 s) ersetzen Controller die Pods auf anderen Nodes.</p></details>
+<details><summary>Wie funktioniert Leader Election?</summary><p>Mehrere Instanzen konkurrieren um ein Lease-Objekt. Nur der Halter arbeitet. Fällt er aus, übernimmt eine andere Instanz.</p></details>
+<details><summary>Was ist der Unterschied zwischen Managed Kubernetes und kubeadm?</summary><p>Bei AKS/EKS/GKE betreibt der Anbieter Control Plane und etcd. Bei kubeadm macht man Backups, Zertifikate und Upgrades selbst.</p></details>
+<details><summary>Was macht der cloud-controller-manager?</summary><p>Er verbindet Kubernetes mit der Cloud: Load Balancer für Services, Node-Informationen, Routen.</p></details>
+<details><summary>Warum ist dockershim weg?</summary><p>Docker unterstützt CRI nicht direkt. Der Adapter war Wartungslast. Seit 1.24 nutzen Cluster containerd oder CRI-O.</p></details>
+<details><summary>Was sind CNI und CSI?</summary><p>CNI ist die Schnittstelle für Pod-Netzwerk (z. B. Cilium). CSI ist die Schnittstelle für Storage (z. B. Azure Disk).</p></details>
+<details><summary>Szenario: Niemand kann mehr Pods erstellen, die Fehlermeldung nennt einen Webhook. Was tun Sie?</summary><p>Der Admission Webhook ist nicht erreichbar und hat failurePolicy Fail. Webhook-Pods prüfen, notfalls die WebhookConfiguration temporär anpassen. Danach HA und Namespace-Ausnahmen einführen.</p></details>
+<details><summary>Szenario: Der API-Server antwortet langsam und es gibt Timeouts. Wo suchen Sie?</summary><p>etcd-Latenz und Grösse (etcdctl, Metriken), API-Request-Metriken pro Client, API Priority and Fairness. Oft ist ein Controller mit zu vielen LIST-Aufrufen schuld.</p></details>
+<details><summary>Szenario: Ein Node ist NotReady. Wie gehen Sie vor?</summary><p>kubectl describe node für Conditions. Dann auf dem Node journalctl -u kubelet und crictl. Häufig: Disk voll, Runtime hängt, kubelet-Zertifikat abgelaufen.</p></details>
+
+</body>
+</html>

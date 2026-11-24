@@ -1,0 +1,260 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Troubleshooting: CrashLoopBackOff, Pending, ImagePullBackOff</title>
+<style>
+  body { font: 17px/1.55 -apple-system, system-ui, sans-serif; max-width: 760px; margin: 0 auto; padding: 16px; color: #1d1d1f; }
+  h1 { font-size: 28px; margin: 8px 0 4px; }
+  h2 { font-size: 21px; margin: 32px 0 8px; padding-top: 12px; border-top: 2px solid #e5e5ea; }
+  .kern { background: #eef6ff; border-left: 4px solid #0a66c2; padding: 10px 14px; border-radius: 6px; }
+  .senior { background: #f0faf0; border-left: 4px solid #2e7d32; padding: 10px 14px; border-radius: 6px; }
+  .trap { background: #fff4f2; border-left: 4px solid #c62828; padding: 10px 14px; border-radius: 6px; }
+  code { background: #f2f2f7; padding: 1px 5px; border-radius: 4px; font-size: 15px; }
+  pre { background: #1e1e1e; color: #e6e6e6; padding: 12px; border-radius: 8px; overflow-x: auto; font-size: 13.5px; line-height: 1.45; }
+  svg { width: 100%; height: auto; display: block; margin: 10px 0; }
+  ol li, ul li { margin: 4px 0; }
+  details { border: 1px solid #e5e5ea; border-radius: 8px; padding: 8px 12px; margin: 6px 0; }
+  summary { font-weight: 600; cursor: pointer; }
+  details p { margin: 6px 0 2px; }
+  .small { color: #6e6e73; font-size: 14px; }
+</style>
+</head>
+<body>
+
+<h1>Troubleshooting: CrashLoopBackOff, Pending, ImagePullBackOff</h1>
+<p class="small">Kubernetes · Tier 1 · Quellen: kubernetes.io (Pod Lifecycle, Debug Pods, Debug Running Pods, Debugging DNS Resolution, Resource Management for Pods and Containers, Configure Liveness, Readiness and Startup Probes, kubectl debug), Microsoft Learn (AKS: ACR-Integration)</p>
+
+<div class="kern">
+<b>Kern:</b> Kubernetes-Troubleshooting ist ein fester Pfad: <b>get → describe → logs --previous → events</b>. Der Status sagt, <b>wo</b> der Pod hängt: <b>Pending</b> heisst Scheduler oder Volume, <b>ImagePullBackOff</b> heisst Registry, <b>CrashLoopBackOff</b> heisst, die App selbst stirbt. Erst die Phase finden, dann die Ursache.
+</div>
+
+<h2>1. Wo hängt der Pod?</h2>
+<svg viewBox="0 0 720 300" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="a" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="10" y="30" width="120" height="56" rx="8" fill="#fff" stroke="#555"/><text x="70" y="54" text-anchor="middle">API-Server</text><text x="70" y="72" text-anchor="middle" font-size="12">Pod angelegt</text>
+  <line x1="130" y1="58" x2="168" y2="58" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="170" y="30" width="120" height="56" rx="8" fill="#dbe9fb" stroke="#0a66c2"/><text x="230" y="54" text-anchor="middle">Scheduler</text><text x="230" y="72" text-anchor="middle" font-size="12">Node wählen</text>
+  <line x1="290" y1="58" x2="328" y2="58" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="330" y="30" width="120" height="56" rx="8" fill="#dbe9fb" stroke="#0a66c2"/><text x="390" y="54" text-anchor="middle">Kubelet</text><text x="390" y="72" text-anchor="middle" font-size="12">Volumes, CNI</text>
+  <line x1="450" y1="58" x2="488" y2="58" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="490" y="30" width="100" height="56" rx="8" fill="#dbe9fb" stroke="#0a66c2"/><text x="540" y="54" text-anchor="middle">Registry</text><text x="540" y="72" text-anchor="middle" font-size="12">Image ziehen</text>
+  <line x1="590" y1="58" x2="618" y2="58" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="620" y="30" width="90" height="56" rx="8" fill="#0a66c2"/><text x="665" y="54" text-anchor="middle" fill="#fff">Container</text><text x="665" y="72" text-anchor="middle" fill="#fff" font-size="12">läuft, Probes</text>
+  <rect x="170" y="140" width="120" height="70" rx="8" fill="#fff4f2" stroke="#c62828"/><text x="230" y="164" text-anchor="middle" fill="#c62828" font-weight="700">Pending</text><text x="230" y="182" text-anchor="middle" font-size="12">CPU, Taint,</text><text x="230" y="198" text-anchor="middle" font-size="12">PVC, Affinity</text>
+  <rect x="330" y="140" width="120" height="70" rx="8" fill="#fff4f2" stroke="#c62828"/><text x="390" y="160" text-anchor="middle" fill="#c62828" font-weight="700">Container-</text><text x="390" y="176" text-anchor="middle" fill="#c62828" font-weight="700">Creating</text><text x="390" y="198" text-anchor="middle" font-size="12">Volume, CNI, Secret</text>
+  <rect x="490" y="140" width="100" height="70" rx="8" fill="#fff4f2" stroke="#c62828"/><text x="540" y="164" text-anchor="middle" fill="#c62828" font-weight="700">ImagePull</text><text x="540" y="182" text-anchor="middle" fill="#c62828" font-weight="700">BackOff</text><text x="540" y="200" text-anchor="middle" font-size="12">Tag, Auth</text>
+  <rect x="610" y="140" width="100" height="70" rx="8" fill="#fff4f2" stroke="#c62828"/><text x="660" y="164" text-anchor="middle" fill="#c62828" font-weight="700">CrashLoop</text><text x="660" y="182" text-anchor="middle" fill="#c62828" font-weight="700">BackOff</text><text x="660" y="200" text-anchor="middle" font-size="12">App, OOM, Probe</text>
+  <line x1="230" y1="86" x2="230" y2="138" stroke="#c62828" stroke-width="1.5" stroke-dasharray="4 3"/>
+  <line x1="390" y1="86" x2="390" y2="138" stroke="#c62828" stroke-width="1.5" stroke-dasharray="4 3"/>
+  <line x1="540" y1="86" x2="540" y2="138" stroke="#c62828" stroke-width="1.5" stroke-dasharray="4 3"/>
+  <line x1="665" y1="86" x2="665" y2="138" stroke="#c62828" stroke-width="1.5" stroke-dasharray="4 3"/>
+  <text x="440" y="250" text-anchor="middle" font-size="13">Jede Station hat ihren eigenen Fehlerstatus.</text>
+  <text x="440" y="272" text-anchor="middle" font-size="13">Die Station sagt, wo man sucht.</text>
+</svg>
+<ol>
+  <li><b>Scheduler:</b> findet einen passenden Node. Findet er keinen, bleibt der Pod <b>Pending</b> ohne Node.</li>
+  <li><b>Kubelet:</b> bindet Volumes, holt Secrets und ConfigMaps, ruft das CNI. Hängt das, zeigt der Pod <b>ContainerCreating</b> oder <b>CreateContainerConfigError</b>.</li>
+  <li><b>Registry:</b> Der Kubelet zieht das Image über containerd. Scheitert das: <b>ErrImagePull</b>, dann <b>ImagePullBackOff</b>.</li>
+  <li><b>Container:</b> läuft. Stirbt er wiederholt, wartet der Kubelet immer länger: <b>CrashLoopBackOff</b>.</li>
+  <li><b>Probes:</b> Readiness steuert den Traffic, Liveness den Neustart. Ein Pod kann <code>Running</code> sein und trotzdem keinen Traffic bekommen.</li>
+</ol>
+
+<h2>2. Die Reise einer Fehlersuche</h2>
+<svg viewBox="0 0 720 300" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="b" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="10" y="20" width="160" height="64" rx="10" fill="#eee" stroke="#777"/><text x="90" y="46" text-anchor="middle" font-weight="700">1. get pods</text><text x="90" y="66" text-anchor="middle" font-size="12">Status, Restarts</text>
+  <line x1="170" y1="52" x2="208" y2="52" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="210" y="20" width="170" height="64" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="295" y="46" text-anchor="middle" font-weight="700">2. describe</text><text x="295" y="66" text-anchor="middle" font-size="12">Last State, Exit Code</text>
+  <line x1="380" y1="52" x2="418" y2="52" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="420" y="20" width="140" height="64" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="490" y="46" text-anchor="middle" font-weight="700">3. Events</text><text x="490" y="66" text-anchor="middle" font-size="12">Scheduler, Kubelet</text>
+  <line x1="560" y1="52" x2="588" y2="52" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="590" y="20" width="120" height="64" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="650" y="46" text-anchor="middle" font-weight="700">4. logs</text><text x="650" y="66" text-anchor="middle" font-size="12">--previous</text>
+  <line x1="650" y1="84" x2="650" y2="128" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="470" y="130" width="240" height="64" rx="10" fill="#0a66c2"/><text x="590" y="156" text-anchor="middle" fill="#fff" font-weight="700">5. kubectl debug</text><text x="590" y="176" text-anchor="middle" fill="#fff" font-size="12">Ephemeral Container, Node</text>
+  <line x1="470" y1="162" x2="388" y2="162" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="190" y="130" width="196" height="64" rx="10" fill="#fff" stroke="#555"/><text x="288" y="156" text-anchor="middle" font-weight="700">6. Hypothese testen</text><text x="288" y="176" text-anchor="middle" font-size="12">eine Änderung</text>
+  <line x1="288" y1="194" x2="288" y2="234" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="160" y="236" width="256" height="54" rx="10" fill="#e8f5e9" stroke="#2e7d32"/><text x="288" y="260" text-anchor="middle" font-weight="700">7. Fix in Git + Alarm</text><text x="288" y="278" text-anchor="middle" font-size="12">nicht im Cluster patchen</text>
+</svg>
+<ol>
+  <li><b>get pods.</b> <code>kubectl get pods -n match -o wide</code> zeigt: <code>CrashLoopBackOff</code>, 7 Restarts, Node <code>aks-spark-01</code>. Die Restart-Zahl beweist: Der Container startete schon.</li>
+  <li><b>describe.</b> <code>kubectl describe pod</code> zeigt <b>Last State: Terminated</b>, <b>Reason: OOMKilled</b>, <b>Exit Code: 137</b>. Das ist die wichtigste Zeile.</li>
+  <li><b>Events.</b> Unten in <code>describe</code> oder <code>kubectl get events --sort-by=.lastTimestamp</code>. Sie zeigen Scheduler-, Pull- und Probe-Meldungen. Events leben standardmässig nur ca. eine Stunde.</li>
+  <li><b>logs --previous.</b> Die Logs des <b>gestorbenen</b> Containers. Ohne <code>--previous</code> sieht man den neuen, oft leeren Container.</li>
+  <li><b>kubectl debug.</b> Hat das Image keine Shell (distroless), hängt man einen <b>Ephemeral Container</b> an. Oder man kopiert den Pod mit anderem Command.</li>
+  <li><b>Hypothese testen.</b> Eine Änderung zur Zeit, z. B. Memory-Limit hoch. Dann beobachten.</li>
+  <li><b>Fix dauerhaft machen.</b> Die Änderung kommt in Git (Helm values). Dazu ein Alarm auf Restarts, damit es nächstes Mal früher auffällt.</li>
+</ol>
+
+<h2>3. Beispiel: CrashLoopBackOff durch OOMKilled</h2>
+<pre>$ kubectl -n demo-trouble get pods
+NAME                      READY   STATUS             RESTARTS      AGE
+stress-6d9f8b7c4-x2kqp    0/1     CrashLoopBackOff   4 (52s ago)   3m
+
+$ kubectl -n demo-trouble describe pod stress-6d9f8b7c4-x2kqp
+...
+    State:          Waiting
+      Reason:       CrashLoopBackOff
+    Last State:     Terminated
+      Reason:       OOMKilled
+      Exit Code:    137
+    Limits:
+      memory:  64Mi
+    Requests:
+      memory:  64Mi
+...
+Events:
+  Type     Reason   Age                From     Message
+  ----     ------   ----               ----     -------
+  Normal   Pulled   2m (x5 over 3m)    kubelet  Container image "polinux/stress" already present on machine
+  Warning  BackOff  12s (x14 over 3m)  kubelet  Back-off restarting failed container stress in pod stress-..._demo-trouble
+
+$ kubectl -n demo-trouble get pod stress-6d9f8b7c4-x2kqp \
+    -o jsonpath='{.status.containerStatuses[0].lastState.terminated.reason}'
+OOMKilled</pre>
+<p class="small">Erwartetes Ergebnis (laut Doku, nicht ausgeführt). Der lokale k3s-Cluster war nicht erreichbar. Testpod: <code>stress --vm 1 --vm-bytes 150M</code> mit Limit 64Mi.</p>
+<ol>
+  <li><b>STATUS</b> ist der aktuelle Wartegrund. Der echte Fehler steht im <b>Last State</b>.</li>
+  <li><b>Exit Code 137</b> = 128 + 9 (SIGKILL). Der Kernel hat den Prozess wegen des Memory-Limits der <b>cgroup</b> getötet.</li>
+  <li>Die Wartezeit wächst: 10 s, 20 s, 40 s … bis maximal 5 Minuten. Nach 10 Minuten stabilem Lauf setzt der Kubelet den Zähler zurück.</li>
+  <li>Logs sind bei OOMKilled oft leer. Die App bekommt kein Signal, das sie loggen könnte.</li>
+  <li>Fix: Limit passend zum echten Verbrauch setzen, oder den Speicherbedarf der App senken (z. B. JVM <code>-XX:MaxRAMPercentage</code>).</li>
+</ol>
+
+<p><b>Weitere typische Meldungen</b> (Erwartetes Ergebnis laut Doku, nicht ausgeführt):</p>
+<pre># Pending
+Warning  FailedScheduling  default-scheduler  0/3 nodes are available: 3 Insufficient memory.
+  preemption: 0/3 nodes are available: 3 No preemption victims found for incoming pod.
+Warning  FailedScheduling  default-scheduler  0/3 nodes are available: 1 node(s) had untolerated
+  taint {sku: gpu}, 2 node(s) didn't match Pod's node affinity/selector.
+Warning  FailedScheduling  default-scheduler  0/3 nodes are available: pod has unbound immediate PersistentVolumeClaims.
+
+# ImagePullBackOff
+Warning  Failed  kubelet  Failed to pull image "myacr.azurecr.io/api:1.4.0": ... not found
+Warning  Failed  kubelet  Failed to pull image "...": ... 401 Unauthorized
+Warning  Failed  kubelet  Error: ImagePullBackOff
+
+# Probe
+Warning  Unhealthy  kubelet  Liveness probe failed: HTTP probe failed with statuscode: 503
+Normal   Killing    kubelet  Container api failed liveness probe, will be restarted
+
+# Config
+Warning  Failed  kubelet  Error: secret "db-credentials" not found</pre>
+
+<h2>4. Details, die Interviewer fragen</h2>
+<ol>
+  <li><b>Pod-Phasen:</b> <code>Pending</code>, <code>Running</code>, <code>Succeeded</code>, <code>Failed</code>, <code>Unknown</code>. <code>CrashLoopBackOff</code> ist <b>keine</b> Phase, sondern der Wartegrund eines Containers.</li>
+  <li><b>Container-States:</b> <code>Waiting</code> (mit Reason), <code>Running</code>, <code>Terminated</code> (mit Reason und Exit Code).</li>
+  <li><b>CrashLoopBackOff:</b> Der Container endet immer wieder, und <code>restartPolicy</code> verlangt Neustart. Backoff 10 s, verdoppelt, Deckel 5 Minuten. Ab 1.35 kann man den Deckel pro Node in der Kubelet-Config senken (<code>maxContainerRestartPeriod</code>).</li>
+  <li><b>Häufige Crash-Ursachen:</b> App-Exception beim Start, fehlende Env-Variable, falscher Command, Datenbank nicht erreichbar, OOMKilled, Liveness Probe zu streng.</li>
+  <li><b>Exit Codes:</b> <code>0</code> fertig (bei Deployment trotzdem Neustart), <code>1</code> App-Fehler, <code>137</code> SIGKILL (OOM oder Kill nach Grace Period), <code>143</code> SIGTERM, <code>126/127</code> Command nicht ausführbar oder nicht gefunden.</li>
+  <li><b>OOMKilled vs Evicted:</b> OOMKilled: Container über <b>seinem</b> Limit, Kernel tötet ihn. <b>Evicted:</b> der <b>Node</b> hat zu wenig Speicher, der Kubelet wirft Pods nach QoS-Klasse raus.</li>
+  <li><b>Pending-Ursachen:</b> zu wenig CPU/Memory für die <b>Requests</b>, Taints ohne Toleration, nodeSelector/Affinity, PVC nicht gebunden, ResourceQuota, keine Nodes (Autoscaler skaliert noch).</li>
+  <li><b>Requests zählen, nicht Verbrauch:</b> Der Scheduler plant nach Requests. Ein fast leerer Node kann „voll“ sein.</li>
+  <li><b>ImagePullBackOff-Ursachen:</b> Tippfehler in Name oder Tag, Tag gelöscht, private Registry ohne <code>imagePullSecrets</code>, AKS ohne ACR-Berechtigung (AcrPull), Rate Limit bei Docker Hub, Proxy/TLS, falsche Architektur.</li>
+  <li><b>CreateContainerConfigError:</b> referenziertes Secret oder ConfigMap (oder ein Key darin) fehlt.</li>
+  <li><b>Probes:</b> <b>Liveness</b> fehlgeschlagen → Neustart, sieht aus wie CrashLoop. <b>Readiness</b> fehlgeschlagen → kein Traffic, kein Neustart. <b>Startup</b> schützt langsame Starts; bis sie gelingt, laufen die anderen Probes nicht.</li>
+  <li><b>DNS-Probleme:</b> Die Pod-<code>/etc/resolv.conf</code> zeigt auf CoreDNS mit <code>ndots:5</code>. Externe Namen erzeugen dadurch mehrere Suchanfragen. Ursachen: CoreDNS down, NetworkPolicy blockt Port 53, falscher Service-Name oder Namespace.</li>
+  <li><b>kubectl debug (Ephemeral Container):</b> <code>kubectl debug -it &lt;pod&gt; --image=busybox:1.36 --target=&lt;container&gt;</code>. Teilt den Prozess-Namespace des Ziel-Containers. Ideal für distroless.</li>
+  <li><b>kubectl debug --copy-to:</b> Kopie des Pods, z. B. mit <code>--container=app -- sh</code> oder anderem Image. Der Original-Pod bleibt unberührt.</li>
+  <li><b>kubectl debug node/&lt;name&gt;:</b> Pod im Host-Namespace, Node-Dateisystem unter <code>/host</code>. Für Kubelet-Logs und <code>crictl</code>.</li>
+  <li><b>Terminating hängt:</b> meist ein <b>Finalizer</b> oder ein nicht erreichbarer Node. Erst Ursache klären, dann notfalls <code>--force --grace-period=0</code>.</li>
+</ol>
+
+<h2>5. Vergleich</h2>
+<ul>
+  <li><b>Pending:</b> kein Node gewählt oder Volume fehlt. Suchen in Scheduler-Events.</li>
+  <li><b>ContainerCreating:</b> Node gewählt, aber Volume, CNI oder Secret hängt. Suchen in Kubelet-Events.</li>
+  <li><b>ErrImagePull / ImagePullBackOff:</b> erster Fehlschlag / wiederholter Fehlschlag mit Wartezeit. Suchen in Registry, Tag, Auth.</li>
+  <li><b>CrashLoopBackOff:</b> Container startet und stirbt. Suchen in Last State, Exit Code, <code>logs --previous</code>.</li>
+  <li><b>Running, aber 0/1 READY:</b> Readiness Probe scheitert. Suchen in Probe-Events und App-Health-Endpoint.</li>
+  <li><b>Evicted:</b> Node unter Druck (Memory, Disk). Suchen in Node-Conditions und QoS.</li>
+  <li><b>OOMKilled:</b> eigenes Limit überschritten. Suchen in Metriken zum Speicherverbrauch.</li>
+</ul>
+
+<h2>6. In der Produktion</h2>
+<ol>
+  <li><b>Liveness zu streng:</b> Unter Last antwortet <code>/health</code> langsam, Liveness tötet gesunde Pods. Ergebnis: Kaskade von Neustarts. Lösung: Liveness nur für „hängt fest“, grosszügige Timeouts, Startup Probe für langsamen Start, keine Abhängigkeiten in Liveness.</li>
+  <li><b>JVM OOMKilled:</b> Heap plus Metaspace plus Threads plus Direct Memory über dem Limit. Lösung: <code>-XX:MaxRAMPercentage</code> (z. B. 75), Limit an echte Messung anpassen.</li>
+  <li><b>Pending bei Lastspitzen:</b> Requests zu hoch oder Autoscaler zu langsam. Lösung: Requests messen und anpassen, Node-Autoscaling (z. B. Karpenter), Prioritäten.</li>
+  <li><b>ImagePullBackOff nach Release:</b> Tag nicht gepusht oder Pipeline-Reihenfolge falsch. Lösung: Deploy erst nach erfolgreichem Push, Images per Digest oder unveränderlichem Tag.</li>
+  <li><b>Docker-Hub-Rate-Limit:</b> Viele Nodes ziehen gleichzeitig. Lösung: eigene Registry (ACR) als Quelle oder Cache.</li>
+  <li><b>DNS-Timeouts sporadisch:</b> UDP-Conntrack-Rennen oder überlastetes CoreDNS. Lösung: CoreDNS skalieren, NodeLocal DNSCache, FQDN mit Punkt am Ende für externe Namen.</li>
+  <li><b>Exit 0 in CrashLoop:</b> Der Prozess endet normal, z. B. Hintergrundprozess ohne Vordergrund. Ein Deployment startet ihn trotzdem neu. Lösung: Prozess im Vordergrund oder Job statt Deployment.</li>
+</ol>
+
+<h2>7. Diagnose: Werkzeuge und Befehle</h2>
+<ul>
+  <li><code>kubectl get pods -o wide</code>, <code>-w</code> zum Beobachten.</li>
+  <li><code>kubectl describe pod &lt;pod&gt;</code>: State, Last State, Exit Code, Events.</li>
+  <li><code>kubectl logs &lt;pod&gt; -c &lt;container&gt; --previous</code>: Logs des letzten gestorbenen Containers. <code>--all-containers</code> für Init- und Sidecar-Container.</li>
+  <li><code>kubectl get events -n &lt;ns&gt; --sort-by=.lastTimestamp</code> oder <code>kubectl events --for pod/&lt;pod&gt;</code>.</li>
+  <li><code>kubectl top pod</code> / <code>kubectl top node</code>: aktueller Verbrauch (braucht metrics-server).</li>
+  <li><code>kubectl describe node &lt;node&gt;</code>: Allocatable, Allocated resources, Taints, Conditions (MemoryPressure, DiskPressure).</li>
+  <li><code>kubectl debug -it &lt;pod&gt; --image=busybox:1.36 --target=&lt;container&gt;</code>: Shell neben distroless-Container.</li>
+  <li><code>kubectl debug node/&lt;node&gt; -it --image=ubuntu</code>, dann <code>chroot /host</code>, <code>crictl ps</code>, <code>journalctl -u kubelet</code>.</li>
+  <li>DNS: <code>kubectl exec -it &lt;pod&gt; -- nslookup kubernetes.default</code>, <code>cat /etc/resolv.conf</code>, CoreDNS-Logs.</li>
+  <li>AKS: <code>az aks check-acr --name &lt;cluster&gt; -g &lt;rg&gt; --acr &lt;acr&gt;.azurecr.io</code> prüft den Pull aus ACR.</li>
+  <li>Prometheus: <code>kube_pod_container_status_restarts_total</code>, <code>kube_pod_container_status_last_terminated_reason</code> für Alarme.</li>
+</ul>
+
+<h2>8. Senior-Punkte</h2>
+<div class="senior">
+<ol>
+  <li><b>Ein fester Pfad schlägt Raten.</b> Status → Last State → Events → Logs. Unter Druck spart das die meiste Zeit.</li>
+  <li><b>Erst stabilisieren, dann analysieren.</b> Rollback per Git (z. B. <code>git revert</code> mit ArgoCD), dann in Ruhe die Ursache suchen.</li>
+  <li><b>Kein Patchen im Cluster.</b> Mit GitOps überschreibt Self-Heal manuelle Änderungen ohnehin. Der Fix gehört in Git.</li>
+  <li><b>Probes sind Betriebsdesign.</b> Falsche Liveness-Probes verursachen mehr Ausfälle, als sie verhindern.</li>
+  <li><b>Limits nach Messung,</b> nicht nach Gefühl. Memory-Limit = Request ist für Speicher meist richtig; CPU-Limits verursachen Throttling.</li>
+  <li><b>Alarme auf Symptome:</b> Restarts, Pending-Dauer, OOMKilled-Grund. Nicht erst warten, bis Nutzer melden.</li>
+</ol>
+</div>
+
+<h2>9. Aus dem Projekt</h2>
+<p>„Bei MATCH wurde in der CI der SQL-Server-Testcontainer OOM-killed, weil Test-Collections parallel liefen; wir haben den Container auf 2 GB begrenzt, vor den Tests Speicher auf dem Build-Server freigemacht, beim Start schnell scheitern lassen und die schweren Collections seriell ausgeführt.“ <span class="small">(Prüfen und durch dein echtes Beispiel ersetzen.)</span></p>
+
+<h2>10. Fallen</h2>
+<div class="trap">
+<ul>
+  <li>„CrashLoopBackOff ist der Fehler.“ → <b>Falsch.</b> Es ist nur die Wartezeit. Der Fehler steht im Last State und in <code>logs --previous</code>.</li>
+  <li>„<code>kubectl logs</code> zeigt den Absturz.“ → <b>Oft nicht.</b> Es zeigt den neuen Container. Den alten zeigt <code>--previous</code>.</li>
+  <li>„Exit 137 heisst immer OOM.“ → <b>Falsch.</b> 137 ist SIGKILL. Auch ein Kill nach der Grace Period gibt 137. Reason <code>OOMKilled</code> prüfen.</li>
+  <li>„Pending heisst, der Cluster ist voll.“ → <b>Nicht immer.</b> Auch Taints, Affinity, PVC oder Quota.</li>
+  <li>„Der Scheduler schaut auf den echten Verbrauch.“ → <b>Falsch.</b> Er plant nach Requests.</li>
+  <li>„Readiness-Fehler starten den Pod neu.“ → <b>Falsch.</b> Nur Liveness startet neu. Readiness nimmt nur den Traffic weg.</li>
+</ul>
+</div>
+
+<h2>11. Fragen</h2>
+<details><summary>Wie gehen Sie bei einem kaputten Pod vor?</summary><p>kubectl get pods, dann describe für Last State und Events, dann logs --previous. Bei Bedarf kubectl debug.</p></details>
+<details><summary>Was bedeutet CrashLoopBackOff?</summary><p>Der Container startet und endet immer wieder. Der Kubelet wartet zwischen Neustarts immer länger, bis maximal 5 Minuten.</p></details>
+<details><summary>Wie lange ist der Backoff?</summary><p>10 s, dann verdoppelt, Deckel 300 s. Nach 10 Minuten stabilem Lauf beginnt er wieder bei 10 s.</p></details>
+<details><summary>Ist CrashLoopBackOff eine Pod-Phase?</summary><p>Nein. Es ist der Waiting-Reason eines Containers. Die Phase ist meist Running.</p></details>
+<details><summary>Warum logs --previous?</summary><p>Ohne den Schalter zeigt kubectl den aktuellen, frisch gestarteten Container. Die Absturzmeldung steht im vorherigen.</p></details>
+<details><summary>Was bedeutet Exit Code 137?</summary><p>128 + 9, also SIGKILL. Meist OOMKilled, aber auch ein Kill nach abgelaufener Grace Period.</p></details>
+<details><summary>Was bedeutet Exit Code 143?</summary><p>128 + 15, also SIGTERM. Der Container wurde regulär gestoppt und hat sich beendet.</p></details>
+<details><summary>OOMKilled vs Evicted?</summary><p>OOMKilled: Container über seinem Memory-Limit, der Kernel tötet ihn. Evicted: Node hat zu wenig Ressourcen, der Kubelet entfernt Pods nach QoS.</p></details>
+<details><summary>Warum ist ein Pod Pending?</summary><p>Kein Node passt: zu wenig CPU/Memory für die Requests, Taints, Affinity, ungebundenes PVC oder Quota. Die FailedScheduling-Events nennen den Grund pro Node.</p></details>
+<details><summary>Ein Node hat 10 % Last, trotzdem Insufficient cpu. Warum?</summary><p>Der Scheduler zählt Requests, nicht Verbrauch. Die Requests der Pods füllen den Node schon.</p></details>
+<details><summary>ErrImagePull vs ImagePullBackOff?</summary><p>ErrImagePull ist der erste Fehlschlag. ImagePullBackOff heisst, der Kubelet wartet vor dem nächsten Versuch.</p></details>
+<details><summary>Typische Ursachen für ImagePullBackOff?</summary><p>Falscher Name oder Tag, fehlende Pull-Berechtigung, Rate Limit, Proxy oder TLS, falsche CPU-Architektur.</p></details>
+<details><summary>Wie zieht AKS Images aus ACR ohne Secret?</summary><p>Die Kubelet-Identität des Clusters bekommt die Rolle AcrPull auf der Registry. Prüfen mit az aks check-acr.</p></details>
+<details><summary>Was ist CreateContainerConfigError?</summary><p>Ein referenziertes Secret, eine ConfigMap oder ein Key darin fehlt. Die Events nennen den Namen.</p></details>
+<details><summary>Liveness vs Readiness vs Startup Probe?</summary><p>Liveness startet neu, Readiness steuert Traffic, Startup schützt langsame Starts und blockiert die anderen Probes, bis sie gelingt.</p></details>
+<details><summary>Wie verursacht eine Probe CrashLoopBackOff?</summary><p>Eine zu strenge Liveness Probe tötet den Container immer wieder. Events zeigen „failed liveness probe, will be restarted“.</p></details>
+<details><summary>Wie debuggen Sie ein distroless Image ohne Shell?</summary><p>kubectl debug mit Ephemeral Container und --target. Er teilt den Prozess-Namespace und bringt eigene Tools mit.</p></details>
+<details><summary>Was macht kubectl debug --copy-to?</summary><p>Es legt eine Kopie des Pods an, z. B. mit anderem Command oder Image. So debuggt man, ohne den Original-Pod zu ändern.</p></details>
+<details><summary>Wie debuggen Sie einen Node?</summary><p>kubectl debug node/&lt;name&gt; startet einen Pod im Host-Namespace mit Node-Dateisystem unter /host. Dort crictl und Kubelet-Logs.</p></details>
+<details><summary>Wie prüfen Sie DNS im Pod?</summary><p>nslookup kubernetes.default und den Service-Namen, /etc/resolv.conf lesen, CoreDNS-Pods und Logs prüfen, NetworkPolicy für Port 53 prüfen.</p></details>
+<details><summary>Was bedeutet ndots:5?</summary><p>Namen mit weniger als 5 Punkten probiert der Resolver zuerst mit allen Suchdomains. Externe Namen erzeugen so mehrere unnötige Anfragen.</p></details>
+<details><summary>Warum sieht man alte Events nicht mehr?</summary><p>Events sind kurzlebig, standardmässig ca. eine Stunde. Für später braucht es einen Event-Exporter oder Logging.</p></details>
+<details><summary>Ein Pod hängt in Terminating. Was tun?</summary><p>Finalizer und Node-Zustand prüfen. Erst die Ursache lösen, nur notfalls --force --grace-period=0.</p></details>
+<details><summary>Welche Alarme setzen Sie für Pods?</summary><p>Restarts über Zeit, letzter Abbruchgrund OOMKilled, Pods lange Pending, Deployments mit fehlenden Replicas.</p></details>
+<details><summary>Szenario: Ein Java-Service geht nach jedem Lasttest in CrashLoopBackOff mit Exit 137. Wie gehen Sie vor?</summary><p>describe zeigt OOMKilled. Ich vergleiche Speicher-Metriken mit dem Limit, setze MaxRAMPercentage und ein gemessenes Limit. Dann Lasttest wiederholen.</p></details>
+<details><summary>Szenario: Nach einem Release bleiben alle neuen Pods in ImagePullBackOff. Was prüfen Sie?</summary><p>Events lesen: not found oder unauthorized. Tag in der Registry prüfen, Pipeline-Reihenfolge, AcrPull-Rolle mit az aks check-acr. Sofort-Massnahme: Rollback per Git.</p></details>
+<details><summary>Szenario: Spark-Pods bleiben bei Lastspitzen Pending. Was ist Ihre Analyse?</summary><p>FailedScheduling-Events zeigen Insufficient cpu/memory. Ich prüfe, ob der Node-Autoscaler neue Nodes startet, ob Requests realistisch sind und ob Taints oder Affinity passen.</p></details>
+
+</body>
+</html>

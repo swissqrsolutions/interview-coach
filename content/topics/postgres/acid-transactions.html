@@ -1,0 +1,267 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ACID und Transaktionen</title>
+<style>
+  body { font: 17px/1.55 -apple-system, system-ui, sans-serif; max-width: 760px; margin: 0 auto; padding: 16px; color: #1d1d1f; }
+  h1 { font-size: 28px; margin: 8px 0 4px; }
+  h2 { font-size: 21px; margin: 32px 0 8px; padding-top: 12px; border-top: 2px solid #e5e5ea; }
+  .kern { background: #eef6ff; border-left: 4px solid #0a66c2; padding: 10px 14px; border-radius: 6px; }
+  .senior { background: #f0faf0; border-left: 4px solid #2e7d32; padding: 10px 14px; border-radius: 6px; }
+  .trap { background: #fff4f2; border-left: 4px solid #c62828; padding: 10px 14px; border-radius: 6px; }
+  code { background: #f2f2f7; padding: 1px 5px; border-radius: 4px; font-size: 15px; }
+  pre { background: #1e1e1e; color: #e6e6e6; padding: 12px; border-radius: 8px; overflow-x: auto; font-size: 13.5px; line-height: 1.45; }
+  svg { width: 100%; height: auto; display: block; margin: 10px 0; }
+  ol li, ul li { margin: 4px 0; }
+  details { border: 1px solid #e5e5ea; border-radius: 8px; padding: 8px 12px; margin: 6px 0; }
+  summary { font-weight: 600; cursor: pointer; }
+  details p { margin: 6px 0 2px; }
+  .small { color: #6e6e73; font-size: 14px; }
+</style>
+</head>
+<body>
+
+<h1>ACID und Transaktionen</h1>
+<p class="small">PostgreSQL · Tier 1 · Quellen: PostgreSQL 17 Doku: Tutorial „Transactions“, „Reliability and the Write-Ahead Log“ (WAL, Asynchronous Commit, WAL Configuration), SQL-Befehle <code>BEGIN</code>, <code>COMMIT</code>, <code>ROLLBACK</code>, <code>SAVEPOINT</code>, <code>SET CONSTRAINTS</code>, <code>PREPARE TRANSACTION</code>, „Client Connection Defaults“ (<code>idle_in_transaction_session_timeout</code>, <code>transaction_timeout</code>), psql-Doku (<code>AUTOCOMMIT</code>, <code>ON_ERROR_ROLLBACK</code>)</p>
+
+<div class="kern">
+<b>Kern:</b> Eine <b>Transaktion</b> ist eine Gruppe von Befehlen, die ganz oder gar nicht wirkt. <b>ACID</b> heisst Atomicity, Consistency, Isolation, Durability. PostgreSQL erreicht <b>Atomicity und Durability mit dem WAL</b>, <b>Isolation mit MVCC</b> und <b>Consistency mit Constraints</b>.
+</div>
+
+<h2>1. Wo sitzt die Transaktion?</h2>
+<svg viewBox="0 0 720 320" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="a" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="10" y="20" width="160" height="60" rx="8" fill="#fff" stroke="#555"/><text x="90" y="44" text-anchor="middle" font-weight="700">Client</text><text x="90" y="64" text-anchor="middle" font-size="12">BEGIN … COMMIT</text>
+  <line x1="170" y1="50" x2="228" y2="50" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="230" y="20" width="200" height="60" rx="8" fill="#dbe9fb" stroke="#0a66c2"/><text x="330" y="44" text-anchor="middle" font-weight="700">Backend-Prozess</text><text x="330" y="64" text-anchor="middle" font-size="12">xid · Snapshot · Locks</text>
+  <rect x="460" y="8" width="250" height="160" rx="12" fill="#f7f7fa" stroke="#999" stroke-dasharray="5 4"/><text x="585" y="28" text-anchor="middle" font-weight="700">Shared Memory</text>
+  <rect x="475" y="40" width="220" height="48" rx="8" fill="#fff" stroke="#555"/><text x="585" y="60" text-anchor="middle">Shared Buffers</text><text x="585" y="78" text-anchor="middle" font-size="12">Datenseiten (8 kB), geändert = dirty</text>
+  <rect x="475" y="104" width="220" height="48" rx="8" fill="#fff" stroke="#555"/><text x="585" y="124" text-anchor="middle">WAL Buffers</text><text x="585" y="142" text-anchor="middle" font-size="12">Änderungsprotokoll</text>
+  <line x1="430" y1="45" x2="473" y2="60" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <line x1="430" y1="65" x2="473" y2="122" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <line x1="585" y1="152" x2="585" y2="218" stroke="#c62828" stroke-width="2" marker-end="url(#a)"/><text x="592" y="190" font-size="12" fill="#c62828">fsync beim COMMIT</text>
+  <rect x="475" y="220" width="220" height="48" rx="8" fill="#0a66c2"/><text x="585" y="242" text-anchor="middle" fill="#fff" font-weight="700">WAL-Dateien</text><text x="585" y="259" text-anchor="middle" fill="#fff" font-size="12">pg_wal/ auf Disk</text>
+  <rect x="230" y="220" width="200" height="48" rx="8" fill="#fff" stroke="#555"/><text x="330" y="242" text-anchor="middle">Datendateien</text><text x="330" y="259" text-anchor="middle" font-size="12">base/ (später, Checkpoint)</text>
+  <line x1="510" y1="88" x2="400" y2="218" stroke="#999" stroke-width="1.5" stroke-dasharray="5 4" marker-end="url(#a)"/>
+  <rect x="10" y="220" width="190" height="48" rx="8" fill="#e8f5e9" stroke="#2e7d32"/><text x="105" y="242" text-anchor="middle">pg_xact (CLOG)</text><text x="105" y="259" text-anchor="middle" font-size="12">Status je xid: committed?</text>
+  <line x1="300" y1="80" x2="140" y2="218" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <text x="360" y="300" text-anchor="middle" font-size="12">Durchgezogen: sofort · gestrichelt: später durch Checkpointer / Background Writer</text>
+</svg>
+<ol>
+  <li><b>Client:</b> schickt <code>BEGIN</code>, Befehle und <code>COMMIT</code>. Beispiel: JDBC mit <code>setAutoCommit(false)</code>.</li>
+  <li><b>Backend-Prozess:</b> ein Betriebssystem-Prozess pro Verbindung. Er hält die <b>xid</b> (Transaction ID), den Snapshot und die Locks.</li>
+  <li><b>Shared Buffers:</b> der Seiten-Cache. Änderungen landen zuerst hier als <b>dirty pages</b>, also geänderte, noch nicht geschriebene Seiten.</li>
+  <li><b>WAL Buffers:</b> Puffer für das <b>WAL</b> (Write-Ahead Log), das Protokoll aller Änderungen.</li>
+  <li><b>WAL-Dateien:</b> liegen in <code>pg_wal/</code>. Beim <code>COMMIT</code> wird das WAL bis zum Commit-Eintrag auf Disk geschrieben (<b>fsync</b>).</li>
+  <li><b>Datendateien:</b> Die Tabellen selbst. Der <b>Checkpointer</b> schreibt dirty pages erst später.</li>
+  <li><b>pg_xact:</b> speichert für jede xid zwei Bits: in progress, committed, aborted oder sub-committed.</li>
+</ol>
+
+<h2>2. Die Reise eines COMMIT (die Geschichte zum Merken)</h2>
+<svg viewBox="0 0 720 330" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="b" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="10" y="20" width="160" height="60" rx="10" fill="#eee" stroke="#777"/><text x="90" y="44" text-anchor="middle" font-weight="700">1. BEGIN</text><text x="90" y="63" text-anchor="middle" font-size="12">nur virtuelle xid</text>
+  <line x1="170" y1="50" x2="198" y2="50" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="200" y="20" width="160" height="60" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="280" y="44" text-anchor="middle" font-weight="700">2. erstes UPDATE</text><text x="280" y="63" text-anchor="middle" font-size="12">echte xid = 801</text>
+  <line x1="360" y1="50" x2="388" y2="50" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="390" y="20" width="320" height="60" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="550" y="44" text-anchor="middle" font-weight="700">3. Seite ändern + WAL-Record</text><text x="550" y="63" text-anchor="middle" font-size="12">neue Zeilenversion mit xmin = 801</text>
+  <line x1="550" y1="80" x2="550" y2="128" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="390" y="130" width="320" height="60" rx="10" fill="#fff" stroke="#555"/><text x="550" y="154" text-anchor="middle" font-weight="700">4. COMMIT: Commit-Record ins WAL</text><text x="550" y="173" text-anchor="middle" font-size="12">synchronous_commit = on</text>
+  <line x1="390" y1="160" x2="342" y2="160" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="160" y="130" width="180" height="60" rx="10" fill="#0a66c2"/><text x="250" y="154" text-anchor="middle" fill="#fff" font-weight="700">5. WAL flush</text><text x="250" y="173" text-anchor="middle" fill="#fff" font-size="12">fsync bis Commit-LSN</text>
+  <line x1="250" y1="190" x2="250" y2="238" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="160" y="240" width="180" height="60" rx="10" fill="#e8f5e9" stroke="#2e7d32"/><text x="250" y="264" text-anchor="middle" font-weight="700">6. pg_xact</text><text x="250" y="283" text-anchor="middle" font-size="12">801 = committed</text>
+  <line x1="340" y1="270" x2="388" y2="270" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="390" y="240" width="160" height="60" rx="10" fill="#e8f5e9" stroke="#2e7d32"/><text x="470" y="264" text-anchor="middle" font-weight="700">7. Locks frei</text><text x="470" y="283" text-anchor="middle" font-size="12">„COMMIT“ an Client</text>
+  <rect x="570" y="240" width="140" height="60" rx="10" fill="#fff" stroke="#999" stroke-dasharray="5 4"/><text x="640" y="264" text-anchor="middle" font-weight="700">8. Checkpoint</text><text x="640" y="283" text-anchor="middle" font-size="12">Seiten später</text>
+</svg>
+<ol>
+  <li><b>BEGIN:</b> Die Transaktion startet. Sie hat nur eine <b>virtuelle xid</b>, also eine billige lokale ID. Reine Lese-Transaktionen bleiben so.</li>
+  <li><b>Erstes UPDATE:</b> Jetzt bekommt die Transaktion eine echte <b>xid</b>, z. B. 801. Sie zählt gegen den 32-Bit-Zähler.</li>
+  <li><b>Seite ändern:</b> PostgreSQL schreibt eine <b>neue Zeilenversion</b> mit <code>xmin = 801</code> in die Seite. Die alte bekommt <code>xmax = 801</code>. Zuerst kommt ein <b>WAL-Record</b>, dann die Seite. Daher „Write-Ahead“.</li>
+  <li><b>COMMIT:</b> Ein <b>Commit-Record</b> kommt ins WAL.</li>
+  <li><b>WAL flush:</b> Das WAL wird bis zur <b>LSN</b> (Log Sequence Number, Position im WAL) des Commit-Records auf Disk gezwungen. Ab hier ist die Transaktion <b>durable</b>.</li>
+  <li><b>pg_xact:</b> Der Status von 801 wird „committed“. Ab jetzt sehen neue Snapshots die Zeile.</li>
+  <li><b>Locks frei:</b> Row Locks und Table Locks werden erst jetzt freigegeben. Der Client bekommt „COMMIT“.</li>
+  <li><b>Checkpoint:</b> Die Datenseiten schreibt der Checkpointer irgendwann später. Bei einem Crash spielt PostgreSQL das WAL ab dem letzten Checkpoint neu ab (<b>Redo</b>).</li>
+</ol>
+<p><b>ROLLBACK</b> ist billig: PostgreSQL markiert die xid als „aborted“. Die neuen Versionen bleiben als tote Zeilen liegen. VACUUM räumt sie später weg.</p>
+
+<h2>3. Beispiel: Atomarität und Savepoints</h2>
+<pre>CREATE TABLE konto (id int PRIMARY KEY, saldo numeric CHECK (saldo &gt;= 0));
+INSERT INTO konto VALUES (1, 100), (2, 0);
+
+-- A) Überweisung 150 von 1 nach 2: der zweite Schritt scheitert
+BEGIN;
+UPDATE konto SET saldo = saldo + 150 WHERE id = 2;
+UPDATE konto SET saldo = saldo - 150 WHERE id = 1;   -- verletzt CHECK
+SELECT * FROM konto;
+COMMIT;
+SELECT * FROM konto ORDER BY id;
+
+-- B) Savepoint: nur einen Teil zurückrollen
+BEGIN;
+INSERT INTO konto VALUES (3, 10);
+SAVEPOINT s1;
+INSERT INTO konto VALUES (3, 20);                    -- doppelter Key
+ROLLBACK TO SAVEPOINT s1;
+INSERT INTO konto VALUES (4, 20);
+COMMIT;
+SELECT * FROM konto ORDER BY id;</pre>
+<pre>BEGIN
+UPDATE 1
+ERROR:  new row for relation "konto" violates check constraint "konto_saldo_check"
+DETAIL:  Failing row contains (1, -50).
+ERROR:  current transaction is aborted, commands ignored until end of transaction block
+ROLLBACK
+ id | saldo
+----+-------
+  1 |   100
+  2 |     0
+(2 rows)
+
+BEGIN
+INSERT 0 1
+SAVEPOINT
+ERROR:  duplicate key value violates unique constraint "konto_pkey"
+DETAIL:  Key (id)=(3) already exists.
+ROLLBACK
+INSERT 0 1
+COMMIT
+ id | saldo
+----+-------
+  1 |   100
+  2 |     0
+  3 |    10
+  4 |    20
+(4 rows)</pre>
+<p class="small">Erwartetes Ergebnis (laut Doku, nicht ausgeführt), psql mit PostgreSQL 17.</p>
+<ol>
+  <li>Der erste <code>UPDATE</code> klappt. Der zweite verletzt den <b>CHECK-Constraint</b>. Das ist <b>Consistency</b>: Die Datenbank lehnt den ungültigen Zustand ab.</li>
+  <li>Nach dem Fehler ist die Transaktion im Zustand <b>aborted</b>. Jeder weitere Befehl liefert SQLSTATE <code>25P02</code>.</li>
+  <li><code>COMMIT</code> auf eine abgebrochene Transaktion macht ein <b>ROLLBACK</b>. psql zeigt darum „ROLLBACK“. Das ist <b>Atomicity</b>: Konto 2 hat wieder 0.</li>
+  <li>In B fängt <code>ROLLBACK TO SAVEPOINT s1</code> den Fehler auf. Zeile 3 aus der Zeit vor dem Savepoint bleibt erhalten.</li>
+  <li><code>ROLLBACK TO SAVEPOINT</code> zeigt in psql auch „ROLLBACK“, rollt aber nur bis <code>s1</code> zurück.</li>
+</ol>
+
+<h2>4. Details, die Interviewer fragen</h2>
+<ol>
+  <li><b>Atomicity:</b> Alle Änderungen gelten oder keine. PostgreSQL braucht dafür kein Undo-Log. Ein Abort setzt nur den Status in pg_xact auf „aborted“. Die Zeilen werden dadurch unsichtbar.</li>
+  <li><b>Consistency:</b> Die Datenbank geht von einem gültigen Zustand in den nächsten. Sie prüft <b>Constraints</b>: <code>PRIMARY KEY</code>, <code>UNIQUE</code>, <code>FOREIGN KEY</code>, <code>CHECK</code>, <code>NOT NULL</code>, <code>EXCLUDE</code>. Geschäftsregeln ohne Constraint muss die Anwendung sichern.</li>
+  <li><b>Deferred Constraints:</b> Ein Constraint mit <code>DEFERRABLE INITIALLY DEFERRED</code> wird erst beim <code>COMMIT</code> geprüft. Beispiel: zwei Zeilen, die gegenseitig per Foreign Key aufeinander zeigen. <code>CHECK</code> und <code>NOT NULL</code> sind nie deferrable.</li>
+  <li><b>Isolation:</b> Parallele Transaktionen stören sich nicht, je nach <b>Isolation Level</b>. Standard ist <b>Read Committed</b>. PostgreSQL nutzt dafür <b>MVCC</b>: Leser blockieren keine Schreiber.</li>
+  <li><b>Durability:</b> Nach „COMMIT“ überlebt die Änderung einen Crash. Grund: Der Commit-Record steht per <code>fsync</code> im WAL. Bei Neustart spielt <b>Crash Recovery</b> das WAL ab.</li>
+  <li><b>WAL-Regel:</b> Eine Datenseite darf erst auf Disk, wenn ihr WAL-Record schon auf Disk ist. So kann Recovery jede Änderung wiederholen.</li>
+  <li><b>full_page_writes:</b> Nach jedem Checkpoint schreibt PostgreSQL bei der ersten Änderung die <b>ganze Seite</b> ins WAL. Das schützt vor <b>torn pages</b>, also halb geschriebenen Seiten. Standard: <code>on</code>.</li>
+  <li><b>synchronous_commit:</b> Mit <code>off</code> wartet der COMMIT nicht auf den fsync. Bei einem Crash fehlen höchstens die Commits der letzten ca. 3 × <code>wal_writer_delay</code> (Standard 200 ms). Die Datenbank bleibt aber konsistent. Pro Transaktion setzbar.</li>
+  <li><b>fsync = off:</b> Das ist etwas ganz anderes. Ein Crash kann die Datenbank <b>korrupt</b> machen. Nie in Produktion.</li>
+  <li><b>Autocommit:</b> Ohne <code>BEGIN</code> ist jeder Befehl eine eigene Transaktion. psql, JDBC und die meisten Treiber starten im Autocommit-Modus. Spring <code>@Transactional</code> schaltet ihn pro Methode aus.</li>
+  <li><b>Savepoint:</b> Ein <b>Savepoint</b> ist ein Zwischenstand in einer Transaktion. <code>ROLLBACK TO SAVEPOINT</code> verwirft nur die Arbeit danach. Intern ist das eine <b>Subtransaktion</b> mit eigener Sub-xid.</li>
+  <li><b>Versteckte Subtransaktionen:</b> Ein <code>EXCEPTION</code>-Block in PL/pgSQL startet einen Savepoint. Der JDBC-Treiber mit <code>autosave=always</code> setzt vor jedem Befehl einen. psql mit <code>ON_ERROR_ROLLBACK</code> auch.</li>
+  <li><b>Subtransaktions-Overflow:</b> Pro Backend merkt sich PostgreSQL bis zu 64 Sub-xids im Shared Memory. Darüber muss jeder Snapshot in <code>pg_subtrans</code> nachschlagen. Das bremst stark, vor allem auf Replicas.</li>
+  <li><b>Transaktionale DDL:</b> <code>CREATE TABLE</code>, <code>ALTER TABLE</code>, <code>DROP</code> lassen sich zurückrollen. Ausnahmen: <code>CREATE INDEX CONCURRENTLY</code>, <code>CREATE DATABASE</code>, <code>VACUUM</code>. Sie laufen nicht in einem Transaktionsblock.</li>
+  <li><b>Lange Transaktionen:</b> Eine offene Transaktion hält ihren Snapshot. VACUUM darf dann keine Zeilen entfernen, die sie noch sehen könnte. Folge: <b>Bloat</b>. Dazu hält sie alle Locks bis zum Ende.</li>
+  <li><b>idle in transaction:</b> Eine Session mit offenem <code>BEGIN</code>, die nichts tut. Gegenmittel: <code>idle_in_transaction_session_timeout</code>. Neu in PostgreSQL 17: <code>transaction_timeout</code> begrenzt die ganze Transaktion.</li>
+  <li><b>Two-Phase Commit:</b> <code>PREPARE TRANSACTION</code> speichert eine Transaktion für einen späteren <code>COMMIT PREPARED</code>. Das braucht ein externer Transaktionsmanager (XA). Standard: <code>max_prepared_transactions = 0</code>, also aus.</li>
+</ol>
+
+<h2>5. Vergleich</h2>
+<ul>
+  <li><b>PostgreSQL:</b> MVCC mit alten Versionen in der Tabelle. Kein Undo-Log. Rollback ist billig, VACUUM räumt auf.</li>
+  <li><b>Oracle, MySQL InnoDB:</b> Ändern die Zeile an Ort und Stelle. Die alte Version kommt ins <b>Undo-Log</b>. Ein grosser Rollback ist dort teuer.</li>
+  <li><b>SQL Server:</b> Standard Read Committed mit Locks. Leser warten auf Schreiber. Erst mit <code>READ_COMMITTED_SNAPSHOT</code> gibt es Versionen im tempdb.</li>
+  <li><b>synchronous_commit = on vs off:</b> on = keine verlorenen Commits. off = schneller, aber kleines Verlustfenster. Beide sind konsistent.</li>
+  <li><b>Savepoint vs neue Transaktion:</b> Ein Savepoint teilt Snapshot und Locks mit der Haupttransaktion. Eine neue Transaktion (z. B. <code>REQUIRES_NEW</code> in Spring) braucht eine zweite Verbindung.</li>
+  <li><b>ACID vs BASE:</b> <b>BASE</b> (Basically Available, Soft state, Eventually consistent) beschreibt viele verteilte NoSQL-Systeme. Sie tauschen Isolation gegen Verfügbarkeit.</li>
+  <li><b>Lokale Transaktion vs Saga:</b> Über Service-Grenzen gibt es keine ACID-Transaktion. Dort helfen <b>Outbox</b> und <b>Saga</b> mit Kompensation.</li>
+</ul>
+
+<h2>6. In der Produktion</h2>
+<ol>
+  <li><b>Bloat durch vergessene Transaktion:</b> Ein Tool lässt <code>BEGIN</code> offen. Tabellen wachsen, Abfragen werden langsam. Lösung: <code>idle_in_transaction_session_timeout</code> setzen, z. B. 5 min. Ursache im Code beheben.</li>
+  <li><b>Lock-Stau durch lange Transaktion:</b> Ein Batch hält Row Locks über Minuten. Andere Requests warten. Lösung: in kleinen Häppchen committen, z. B. 1000 Zeilen pro Transaktion.</li>
+  <li><b>„current transaction is aborted“ im Log:</b> Die Anwendung fängt einen SQL-Fehler und macht weiter. Jeder Folgebefehl scheitert. Lösung: Rollback machen oder gezielt Savepoints nutzen.</li>
+  <li><b>Langsam auf Replicas durch Subtransaktionen:</b> Viele Savepoints pro Transaktion (z. B. <code>autosave=always</code>, Schleifen mit <code>EXCEPTION</code>). Wait Event <code>SubtransSLRU</code>. Lösung: Savepoints vermeiden, Fehler vorher prüfen.</li>
+  <li><b>Hohe Commit-Latenz:</b> Viele kleine Transaktionen warten je auf einen fsync. Lösung: Arbeit bündeln, schnellere Disks, oder <code>synchronous_commit = off</code> für unkritische Daten wie Logs.</li>
+  <li><b>Verwaiste prepared Transactions:</b> Sie halten Locks und blockieren VACUUM, auch nach Neustart. Lösung: <code>pg_prepared_xacts</code> prüfen, mit <code>ROLLBACK PREPARED</code> aufräumen.</li>
+</ol>
+
+<h2>7. Diagnose: Werkzeuge und Abfragen</h2>
+<pre>-- Älteste offene Transaktionen
+SELECT pid, usename, state, now() - xact_start AS dauer, left(query, 60)
+FROM pg_stat_activity
+WHERE xact_start IS NOT NULL
+ORDER BY xact_start;
+
+-- Sessions, die "idle in transaction" sind
+SELECT pid, now() - state_change AS idle_seit FROM pg_stat_activity
+WHERE state = 'idle in transaction';</pre>
+<ul>
+  <li><code>pg_stat_activity</code>: Spalten <code>xact_start</code>, <code>state</code>, <code>backend_xid</code>, <code>backend_xmin</code>.</li>
+  <li><code>pg_stat_database</code>: <code>xact_commit</code>, <code>xact_rollback</code>. Viele Rollbacks zeigen Fehler in der Anwendung.</li>
+  <li><code>pg_prepared_xacts</code>: offene Two-Phase-Transaktionen.</li>
+  <li><code>pg_current_xact_id()</code> und <code>pg_current_snapshot()</code>: eigene xid und eigener Snapshot.</li>
+  <li><code>pg_stat_wal</code>: WAL-Menge, Anzahl Syncs, Sync-Zeit.</li>
+  <li><code>pg_terminate_backend(pid)</code>: beendet eine hängende Session. Ihre Transaktion wird zurückgerollt.</li>
+  <li><code>log_min_duration_statement</code> und <code>log_lock_waits = on</code>: lange Befehle und Lock-Wartezeiten ins Log.</li>
+</ul>
+
+<h2>8. Senior-Punkte</h2>
+<div class="senior">
+<ol>
+  <li><b>Transaktionen kurz halten.</b> Kein HTTP-Aufruf, keine Benutzereingabe, kein Datei-Upload innerhalb einer Transaktion.</li>
+  <li><b>Die Transaktionsgrenze ist eine Design-Entscheidung.</b> Sie gehört in die Service-Schicht, nicht in jedes Repository.</li>
+  <li><b>Durability ist einstellbar.</b> <code>synchronous_commit = off</code> pro Transaktion ist ein bewusster Tausch: Durchsatz gegen ein kleines Verlustfenster.</li>
+  <li><b>Constraints in die Datenbank.</b> Nur sie sind bei parallelen Requests sicher. Ein Check im Code allein hat eine Race Condition.</li>
+  <li><b>Retries brauchen Idempotenz.</b> Ist das COMMIT-Ergebnis unklar (Verbindung weg), weiss der Client nicht, ob es geklappt hat. Nur idempotente Operationen darf man blind wiederholen.</li>
+  <li><b>ACID endet an der Datenbank.</b> Über Services hinweg: Outbox, Saga, idempotente Consumer.</li>
+</ol>
+</div>
+
+<h2>9. Aus dem Projekt</h2>
+<p>„Bei MATCH ist die Statistik ‚replace instead of add‘: Ein Retry rechnet den ganzen Tag neu und überschreibt ihn, darum zählt nichts doppelt. Das Iceberg-Schreiben ist atomar: DELETE und APPEND einer Nachricht laufen in einer Transaktion.“ <span class="small">(Prüfen und durch dein echtes Beispiel ersetzen. Das sind Iceberg-Transaktionen, nicht PostgreSQL. PostgreSQL direkt: Person-Service bei BAG DigiSanté mit eigener Datenbank pro Tenant und Flyway.)</span></p>
+
+<h2>10. Fallen</h2>
+<div class="trap">
+<ul>
+  <li>„COMMIT schreibt die Tabellen auf Disk.“ → <b>Falsch.</b> COMMIT schreibt nur das WAL. Die Seiten kommen später mit dem Checkpoint.</li>
+  <li>„Ein Rollback kostet so viel wie die Transaktion.“ → <b>Falsch</b> in PostgreSQL. Er setzt nur den Status. Die toten Zeilen räumt VACUUM weg.</li>
+  <li>„Ohne BEGIN gibt es keine Transaktion.“ → <b>Falsch.</b> Im Autocommit ist jeder Befehl eine eigene Transaktion.</li>
+  <li>„Nach einem Fehler kann ich in der Transaktion weitermachen.“ → <b>Falsch.</b> Sie ist aborted. Nur ROLLBACK oder ROLLBACK TO SAVEPOINT helfen.</li>
+  <li>„synchronous_commit = off kann die Datenbank korrupt machen.“ → <b>Falsch.</b> Nur die letzten Commits können fehlen. Korrupt macht <code>fsync = off</code>.</li>
+  <li>„Consistency in ACID ist dasselbe wie im CAP-Theorem.“ → <b>Falsch.</b> ACID: Regeln und Constraints gelten. CAP: alle Knoten sehen denselben Wert.</li>
+  <li>„DDL ist nie transaktional.“ → <b>Falsch</b> für PostgreSQL. Fast jede DDL kann man zurückrollen.</li>
+</ul>
+</div>
+
+<h2>11. Fragen</h2>
+<details><summary>Was bedeutet ACID?</summary><p>Atomicity: ganz oder gar nicht. Consistency: nur gültige Zustände. Isolation: parallele Transaktionen stören sich nicht. Durability: nach COMMIT crash-sicher.</p></details>
+<details><summary>Wie setzt PostgreSQL Atomicity um?</summary><p>Jede Zeilenversion trägt die xid. Bei Abort wird die xid in pg_xact als aborted markiert. Damit sind alle ihre Versionen auf einen Schlag unsichtbar.</p></details>
+<details><summary>Wie setzt PostgreSQL Durability um?</summary><p>Mit dem WAL. Beim COMMIT wird das WAL bis zum Commit-Record per fsync geschrieben. Nach einem Crash spielt Recovery das WAL ab.</p></details>
+<details><summary>Was ist das WAL?</summary><p>Das Write-Ahead Log protokolliert jede Änderung, bevor die Datenseite geschrieben wird. Es dient für Crash Recovery, Replikation und Point-in-Time Recovery.</p></details>
+<details><summary>Warum schreibt COMMIT nicht die Datenseiten?</summary><p>Das WAL wird sequenziell geschrieben, Seiten liegen verstreut. Ein sequenzieller fsync ist viel schneller. Die Seiten schreibt der Checkpointer gebündelt.</p></details>
+<details><summary>Was ist ein Checkpoint?</summary><p>Ein Punkt, an dem alle dirty pages auf Disk sind. Recovery muss nur ab dem letzten Checkpoint abspielen. Gesteuert von checkpoint_timeout und max_wal_size.</p></details>
+<details><summary>Was macht Consistency konkret?</summary><p>Die Datenbank prüft Constraints wie PRIMARY KEY, FOREIGN KEY und CHECK. Eine Verletzung bricht den Befehl ab.</p></details>
+<details><summary>Was ist ein Deferred Constraint?</summary><p>Ein Constraint, der erst beim COMMIT geprüft wird. Man deklariert ihn als DEFERRABLE. Typisch für zyklische Foreign Keys oder das Tauschen eindeutiger Werte.</p></details>
+<details><summary>Was ist Autocommit?</summary><p>Jeder Befehl ohne BEGIN ist eine eigene Transaktion und wird sofort committed. Treiber wie JDBC starten so.</p></details>
+<details><summary>Was ist ein Savepoint?</summary><p>Ein Zwischenstand in einer Transaktion. ROLLBACK TO SAVEPOINT verwirft nur die Arbeit danach. Intern eine Subtransaktion.</p></details>
+<details><summary>Was passiert nach einem Fehler in einer Transaktion?</summary><p>Sie ist aborted. Jeder weitere Befehl gibt einen Fehler (25P02). COMMIT wird zu ROLLBACK.</p></details>
+<details><summary>Warum sind lange Transaktionen schlecht?</summary><p>Sie halten ihren Snapshot, darum kann VACUUM tote Zeilen nicht entfernen. Sie halten Locks und blockieren andere. Und Replicas können Konflikte bekommen.</p></details>
+<details><summary>Was ist „idle in transaction“?</summary><p>Eine Session mit offener Transaktion, die nichts tut. Oft ein Bug im Code oder Pool. Gegenmittel: idle_in_transaction_session_timeout.</p></details>
+<details><summary>Was ist neu in PostgreSQL 17 für Transaktionen?</summary><p>Der Parameter transaction_timeout. Er bricht eine Transaktion ab, die insgesamt länger als erlaubt läuft.</p></details>
+<details><summary>Was ist der Unterschied zwischen synchronous_commit = off und fsync = off?</summary><p>synchronous_commit = off verliert höchstens die letzten Commits, bleibt aber konsistent. fsync = off kann die ganze Datenbank korrupt machen.</p></details>
+<details><summary>Wann bekommt eine Transaktion eine xid?</summary><p>Erst bei der ersten Schreiboperation. Reine Leser haben nur eine virtuelle xid. Das spart xids und verlangsamt den Wraparound.</p></details>
+<details><summary>Ist DDL in PostgreSQL transaktional?</summary><p>Ja, meistens. CREATE TABLE und ALTER TABLE kann man zurückrollen. Ausnahmen sind z. B. CREATE INDEX CONCURRENTLY und CREATE DATABASE.</p></details>
+<details><summary>Was sind die Risiken von vielen Savepoints?</summary><p>Jeder Savepoint mit Schreibzugriff bekommt eine Sub-xid. Über 64 pro Transaktion läuft der Cache über. Snapshots werden dann langsam, besonders auf Replicas.</p></details>
+<details><summary>Was ist Two-Phase Commit in PostgreSQL?</summary><p>PREPARE TRANSACTION speichert eine fertige Transaktion. Später entscheidet COMMIT PREPARED oder ROLLBACK PREPARED. Vergessene prepared Transactions blockieren VACUUM.</p></details>
+<details><summary>Wie hängen Spring @Transactional und PostgreSQL zusammen?</summary><p>Spring schaltet Autocommit auf der Verbindung aus und ruft am Methodenende commit oder rollback. Standard-Rollback nur bei RuntimeException.</p></details>
+<details><summary>Was ist, wenn die Verbindung beim COMMIT abreisst?</summary><p>Der Client weiss nicht, ob der COMMIT durch ist. Die Operation muss idempotent sein oder man prüft den Zustand vor einem Retry.</p></details>
+<details><summary>Kann man über zwei Microservices eine ACID-Transaktion haben?</summary><p>Praktisch nein. 2PC ist möglich, aber blockierend und selten. Üblich sind Outbox, Saga und idempotente Consumer.</p></details>
+<details><summary>Szenario: Eine Tabelle wächst stark, obwohl die Zeilenzahl gleich bleibt. Woran denken Sie?</summary><p>An eine lange oder vergessene Transaktion, die VACUUM blockiert. Prüfen mit pg_stat_activity (xact_start, backend_xmin). Session beenden und Timeouts setzen.</p></details>
+<details><summary>Szenario: Im Log steht tausendfach „current transaction is aborted“. Was ist los?</summary><p>Die Anwendung fängt einen SQL-Fehler und nutzt dieselbe Transaktion weiter. Den ersten Fehler im Log suchen. Danach rollback machen oder einen Savepoint nutzen.</p></details>
+<details><summary>Szenario: Ein Import mit 10 Mio. Zeilen in einer Transaktion blockiert alles. Was tun Sie?</summary><p>In Batches committen, z. B. je 10 000 Zeilen, mit Wiederaufsetzpunkt. Für reinen Import COPY nutzen. Das Ganze idempotent machen, damit ein Neustart sicher ist.</p></details>
+
+</body>
+</html>

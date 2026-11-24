@@ -1,0 +1,221 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Consumer Groups und Rebalancing</title>
+<style>
+  body { font: 17px/1.55 -apple-system, system-ui, sans-serif; max-width: 760px; margin: 0 auto; padding: 16px; color: #1d1d1f; }
+  h1 { font-size: 28px; margin: 8px 0 4px; }
+  h2 { font-size: 21px; margin: 32px 0 8px; padding-top: 12px; border-top: 2px solid #e5e5ea; }
+  .kern { background: #eef6ff; border-left: 4px solid #0a66c2; padding: 10px 14px; border-radius: 6px; }
+  .senior { background: #f0faf0; border-left: 4px solid #2e7d32; padding: 10px 14px; border-radius: 6px; }
+  .trap { background: #fff4f2; border-left: 4px solid #c62828; padding: 10px 14px; border-radius: 6px; }
+  code { background: #f2f2f7; padding: 1px 5px; border-radius: 4px; font-size: 15px; }
+  pre { background: #1e1e1e; color: #e6e6e6; padding: 12px; border-radius: 8px; overflow-x: auto; font-size: 13.5px; line-height: 1.45; }
+  svg { width: 100%; height: auto; display: block; margin: 10px 0; }
+  ol li, ul li { margin: 4px 0; }
+  details { border: 1px solid #e5e5ea; border-radius: 8px; padding: 8px 12px; margin: 6px 0; }
+  summary { font-weight: 600; cursor: pointer; }
+  details p { margin: 6px 0 2px; }
+  .small { color: #6e6e73; font-size: 14px; }
+</style>
+</head>
+<body>
+
+<h1>Consumer Groups und Rebalancing</h1>
+<p class="small">Kafka · Tier 1 · Quellen: Apache Kafka 4.x Documentation (Consumer Configs, Consumer Rebalance Protocol, Upgrade Notes 4.0/4.2), KIP-345, KIP-429, KIP-848, KIP-932, Confluent Developer Docs, Spring for Apache Kafka Reference</p>
+
+<div class="kern">
+<b>Kern:</b> Eine <b>Consumer Group</b> ist eine Menge von Consumern mit derselben <code>group.id</code>, die sich die Partitionen eines Topics teilen. Jede Partition gehört zu genau einem Consumer der Gruppe. Ein <b>Rebalance</b> verteilt die Partitionen neu, wenn Consumer kommen, gehen oder hängen.
+</div>
+
+<h2>1. Wo sitzt was?</h2>
+<svg viewBox="0 0 720 320" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="a" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="10" y="20" width="200" height="280" rx="12" fill="#f7f7fa" stroke="#999"/><text x="110" y="42" text-anchor="middle" font-weight="700">Topic steuerfall</text>
+  <rect x="35" y="60" width="150" height="36" rx="6" fill="#fff" stroke="#555"/><text x="110" y="83" text-anchor="middle">P0</text>
+  <rect x="35" y="106" width="150" height="36" rx="6" fill="#fff" stroke="#555"/><text x="110" y="129" text-anchor="middle">P1</text>
+  <rect x="35" y="152" width="150" height="36" rx="6" fill="#fff" stroke="#555"/><text x="110" y="175" text-anchor="middle">P2</text>
+  <rect x="35" y="198" width="150" height="36" rx="6" fill="#fff" stroke="#555"/><text x="110" y="221" text-anchor="middle">P3</text>
+  <rect x="270" y="20" width="200" height="280" rx="12" fill="#dbe9fb" stroke="#0a66c2"/><text x="370" y="42" text-anchor="middle" font-weight="700">Group „deklaration“</text>
+  <rect x="295" y="70" width="150" height="50" rx="8" fill="#fff" stroke="#555"/><text x="370" y="92" text-anchor="middle">Consumer A</text><text x="370" y="110" text-anchor="middle" font-size="12">P0, P1</text>
+  <rect x="295" y="140" width="150" height="50" rx="8" fill="#fff" stroke="#555"/><text x="370" y="162" text-anchor="middle">Consumer B</text><text x="370" y="180" text-anchor="middle" font-size="12">P2, P3</text>
+  <rect x="295" y="210" width="150" height="50" rx="8" fill="#eee" stroke="#777"/><text x="370" y="232" text-anchor="middle">Consumer C</text><text x="370" y="250" text-anchor="middle" font-size="12">nichts zu tun?</text>
+  <line x1="185" y1="78" x2="293" y2="92" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <line x1="185" y1="124" x2="293" y2="100" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <line x1="185" y1="170" x2="293" y2="162" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <line x1="185" y1="216" x2="293" y2="172" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="530" y="40" width="180" height="90" rx="10" fill="#0a66c2"/><text x="620" y="66" text-anchor="middle" fill="#fff" font-weight="700">Group Coordinator</text><text x="620" y="86" text-anchor="middle" fill="#fff" font-size="12">ein Broker pro Gruppe</text><text x="620" y="104" text-anchor="middle" fill="#fff" font-size="12">Mitglieder, Epoch,</text><text x="620" y="120" text-anchor="middle" fill="#fff" font-size="12">Zuweisung</text>
+  <line x1="470" y1="110" x2="528" y2="95" stroke="#0a66c2" stroke-width="2" stroke-dasharray="5 4" marker-end="url(#a)"/><text x="498" y="140" font-size="12" fill="#0a66c2">Heartbeat</text>
+  <rect x="530" y="190" width="180" height="70" rx="10" fill="#e8f5e9" stroke="#2e7d32"/><text x="620" y="215" text-anchor="middle" font-weight="700">__consumer_offsets</text><text x="620" y="236" text-anchor="middle" font-size="12">committete Offsets</text>
+  <line x1="620" y1="130" x2="620" y2="188" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+</svg>
+<ol>
+  <li><b>Consumer Group:</b> alle Consumer mit gleicher <code>group.id</code>. Beispiel: drei Pods des Service <code>deklaration</code>.</li>
+  <li><b>Zuweisung (Assignment):</b> welcher Consumer welche Partitionen liest. Beispiel: A hat P0 und P1.</li>
+  <li><b>Group Coordinator:</b> ein Broker, der die Gruppe verwaltet. Welcher es ist, bestimmt ein Hash der <code>group.id</code> auf eine Partition von <code>__consumer_offsets</code>.</li>
+  <li><b>Heartbeat:</b> ein regelmässiges Lebenszeichen an den Coordinator. Fehlt es, gilt der Consumer als tot.</li>
+  <li><b>Mehr Consumer als Partitionen:</b> Der Rest ist untätig. Beispiel: 4 Partitionen, 5 Pods → 1 Pod liest nichts.</li>
+  <li><b>Mehrere Gruppen:</b> Jede Gruppe liest das ganze Topic unabhängig, mit eigenen Offsets. Beispiel: Gruppe <code>deklaration</code> und Gruppe <code>audit</code>.</li>
+</ol>
+
+<h2>2. Die Reise eines Rebalance (die Geschichte zum Merken)</h2>
+<svg viewBox="0 0 720 330" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="b" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <text x="180" y="20" text-anchor="middle" font-weight="700">Classic (Join/Sync)</text>
+  <text x="540" y="20" text-anchor="middle" font-weight="700">Consumer-Protokoll (KIP-848)</text>
+  <rect x="20" y="35" width="320" height="50" rx="10" fill="#eee" stroke="#777"/><text x="180" y="57" text-anchor="middle">1. Neuer Consumer: JoinGroup</text><text x="180" y="75" text-anchor="middle" font-size="12">alle müssen neu joinen</text>
+  <line x1="180" y1="85" x2="180" y2="103" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="20" y="105" width="320" height="50" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="180" y="127" text-anchor="middle">2. Leader-Consumer rechnet</text><text x="180" y="145" text-anchor="middle" font-size="12">Assignor im Client</text>
+  <line x1="180" y1="155" x2="180" y2="173" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="20" y="175" width="320" height="50" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="180" y="197" text-anchor="middle">3. SyncGroup verteilt</text><text x="180" y="215" text-anchor="middle" font-size="12">Barriere für alle</text>
+  <line x1="180" y1="225" x2="180" y2="243" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="20" y="245" width="320" height="60" rx="10" fill="#fff4f2" stroke="#c62828"/><text x="180" y="268" text-anchor="middle">Eager: alle geben alles ab</text><text x="180" y="288" text-anchor="middle" font-size="12">Cooperative: nur Wechsel, 2 Runden</text>
+  <rect x="380" y="35" width="320" height="50" rx="10" fill="#eee" stroke="#777"/><text x="540" y="57" text-anchor="middle">1. Heartbeat meldet neuen Member</text><text x="540" y="75" text-anchor="middle" font-size="12">Group Epoch +1</text>
+  <line x1="540" y1="85" x2="540" y2="103" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="380" y="105" width="320" height="50" rx="10" fill="#0a66c2"/><text x="540" y="127" text-anchor="middle" fill="#fff">2. Broker rechnet Zielzuweisung</text><text x="540" y="145" text-anchor="middle" fill="#fff" font-size="12">uniform oder range</text>
+  <line x1="540" y1="155" x2="540" y2="173" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="380" y="175" width="320" height="50" rx="10" fill="#0a66c2"/><text x="540" y="197" text-anchor="middle" fill="#fff">3. Jeder Member gleicht ab</text><text x="540" y="215" text-anchor="middle" fill="#fff" font-size="12">einzeln, per Heartbeat</text>
+  <line x1="540" y1="225" x2="540" y2="243" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="380" y="245" width="320" height="60" rx="10" fill="#e8f5e9" stroke="#2e7d32"/><text x="540" y="268" text-anchor="middle">Nur betroffene Partitionen</text><text x="540" y="288" text-anchor="middle" font-size="12">wandern; der Rest liest weiter</text>
+</svg>
+<ol>
+  <li><b>Auslöser:</b> Ein neuer Pod startet, ein Pod stirbt, oder ein Consumer ruft <code>poll()</code> zu lange nicht auf. Auch neue Partitionen oder ein neues Topic per Pattern lösen ihn aus.</li>
+  <li><b>Classic, Schritt Join:</b> Der Coordinator verlangt von allen ein <b>JoinGroup</b>. Ein Consumer wird <b>Group Leader</b> und bekommt die Mitgliederliste.</li>
+  <li><b>Classic, Schritt Assign:</b> Der Group Leader rechnet die Zuweisung im Client, mit dem <b>Assignor</b> aus <code>partition.assignment.strategy</code>.</li>
+  <li><b>Classic, Schritt Sync:</b> Per <b>SyncGroup</b> bekommen alle ihre Partitionen. Das ist eine Barriere: Ein langsamer Consumer hält alle auf.</li>
+  <li><b>Eager vs Cooperative:</b> Bei <b>eager</b> geben alle zuerst alle Partitionen ab. Die ganze Gruppe steht still (<b>Stop-the-World</b>). Bei <b>cooperative</b> (KIP-429) gibt jeder nur ab, was wandert. Dafür braucht es eine zweite Runde.</li>
+  <li><b>Neues Protokoll (KIP-848):</b> Der <b>Broker</b> rechnet die Zuweisung. Jeder Member gleicht seinen Stand über Heartbeats ab. Es gibt keine globale Barriere mehr. GA seit Kafka 4.0, im Client mit <code>group.protocol=consumer</code>.</li>
+  <li><b>Ende:</b> Der neue Besitzer einer Partition liest ab dem letzten <b>committeten Offset</b>. Was der alte Besitzer verarbeitet, aber nicht committet hat, kommt nochmal.</li>
+</ol>
+
+<h2>3. Beispiel: Gruppe und Lag ansehen</h2>
+<pre>$ bin/kafka-consumer-groups.sh --bootstrap-server localhost:9092 --describe --group deklaration
+$ bin/kafka-consumer-groups.sh --bootstrap-server localhost:9092 --describe --group deklaration --state</pre>
+<pre>GROUP        TOPIC       PARTITION  CURRENT-OFFSET  LOG-END-OFFSET  LAG   CONSUMER-ID       HOST         CLIENT-ID
+deklaration  steuerfall  0          1520            1520            0     consumer-1-a1...  /10.0.1.12   consumer-1
+deklaration  steuerfall  1          1498            1503            5     consumer-1-a1...  /10.0.1.12   consumer-1
+deklaration  steuerfall  2          880             4210            3330  consumer-2-b7...  /10.0.1.13   consumer-2
+deklaration  steuerfall  3          1610            1611            1     consumer-2-b7...  /10.0.1.13   consumer-2
+
+GROUP        COORDINATOR (ID)   ASSIGNMENT-STRATEGY  STATE   #MEMBERS
+deklaration  broker-2:9092 (2)  uniform              Stable  2</pre>
+<p class="small">Erwartetes Ergebnis (laut Doku, nicht ausgeführt). Spalten gekürzt, Zahlen erfunden zur Erklärung.</p>
+<ol>
+  <li><b>LAG</b> = <code>LOG-END-OFFSET − CURRENT-OFFSET</code>. Das ist die Anzahl Records, die die Gruppe noch nicht committet hat.</li>
+  <li>P2 hat Lag 3330, die anderen fast 0. Das spricht für eine <b>heisse Partition</b> oder einen langsamen Record, nicht für zu wenig Consumer.</li>
+  <li><code>ASSIGNMENT-STRATEGY uniform</code> zeigt das neue Protokoll mit Broker-Assignor. Bei classic stünde z. B. <code>range</code> oder <code>cooperative-sticky</code>.</li>
+  <li><code>STATE Stable</code> heisst: kein Rebalance läuft. Andere Zustände sind z. B. <code>PreparingRebalance</code> (classic), <code>Reconciling</code> (neues Protokoll), <code>Empty</code>.</li>
+</ol>
+<pre># Spring Boot: neues Protokoll und statische Mitgliedschaft
+spring.kafka.consumer:
+  group-id: deklaration
+  properties:
+    group.protocol: consumer           # KIP-848, Broker 4.0+
+    group.instance.id: ${HOSTNAME}     # z. B. StatefulSet-Pod-Name
+    max.poll.interval.ms: 300000
+spring.kafka.listener.concurrency: 2   # 2 Consumer-Threads pro Pod</pre>
+<p class="small">Beispielkonfiguration, nicht ausgeführt. <code>group.instance.id</code> muss pro Consumer-Thread eindeutig sein; Spring Kafka hängt bei Concurrency &gt; 1 ein Suffix an.</p>
+
+<h2>4. Details, die Interviewer fragen</h2>
+<ol>
+  <li><b>Range Assignor:</b> teilt pro Topic die Partitionen in zusammenhängende Bereiche. Bei vielen Topics bekommen die ersten Consumer mehr. Gut für Co-Partitioning (gleiche Partitionsnummer, gleicher Consumer).</li>
+  <li><b>RoundRobin Assignor:</b> verteilt alle Partitionen reihum. Gleichmässig, aber nicht stabil über Rebalances.</li>
+  <li><b>Sticky Assignor:</b> gleichmässig und behält möglichst die alte Zuweisung. Er ist aber noch eager.</li>
+  <li><b>CooperativeSticky Assignor:</b> sticky plus cooperative. Nur wandernde Partitionen werden abgegeben.</li>
+  <li><b>Standard im Client:</b> <code>partition.assignment.strategy</code> = <code>[RangeAssignor, CooperativeStickyAssignor]</code>. Genutzt wird Range. Der Wechsel auf Cooperative braucht zwei Rolling Restarts.</li>
+  <li><b>Neues Protokoll (KIP-848):</b> Client-Assignoren gibt es dort nicht. Man wählt mit <code>group.remote.assignor</code> zwischen <code>uniform</code> (Standard) und <code>range</code>. Der Standard im Client bleibt <code>group.protocol=classic</code>.</li>
+  <li><b>Timeouts im neuen Protokoll:</b> <code>session.timeout.ms</code> und <code>heartbeat.interval.ms</code> im Client gelten dort nicht. Der Broker steuert sie über <code>group.consumer.session.timeout.ms</code> und <code>group.consumer.heartbeat.interval.ms</code>.</li>
+  <li><b>session.timeout.ms (classic):</b> Ohne Heartbeat in 45 s (Standard) wirft der Coordinator den Consumer raus. Der Heartbeat-Thread läuft im Hintergrund, unabhängig von <code>poll()</code>.</li>
+  <li><b>max.poll.interval.ms:</b> die maximale Zeit zwischen zwei <code>poll()</code>-Aufrufen (Standard 5 min). Wird sie überschritten, verlässt der Consumer die Gruppe selbst. Das erkennt einen hängenden Verarbeitungs-Thread.</li>
+  <li><b>max.poll.records:</b> wie viele Records ein <code>poll()</code> höchstens liefert (Standard 500). Weniger Records pro Poll senken das Risiko, <code>max.poll.interval.ms</code> zu reissen.</li>
+  <li><b>Static Membership (KIP-345):</b> <code>group.instance.id</code> gibt dem Consumer eine feste Identität. Ein Neustart innerhalb des Session-Timeouts löst keinen Rebalance aus. Passt gut zu StatefulSets.</li>
+  <li><b>ConsumerRebalanceListener:</b> <code>onPartitionsRevoked</code> ist der Ort, um Offsets zu committen oder State zu speichern. <code>onPartitionsAssigned</code> lädt State oder setzt Positionen per <code>seek</code>.</li>
+  <li><b>Consumer ist nicht thread-sicher:</b> Ein <code>KafkaConsumer</code> gehört genau einem Thread. Parallelität kommt über mehrere Consumer, z. B. Spring <code>concurrency</code>.</li>
+  <li><b>Generation / Epoch:</b> Jeder Rebalance erhöht die Generation (classic) oder Epoch (neu). Ein Commit mit alter Generation wird abgelehnt: <code>CommitFailedException</code>.</li>
+  <li><b>Lag:</b> der Abstand zwischen Log-Ende und committetem Offset, pro Partition. Steigender Lag heisst: Der Consumer ist langsamer als der Producer.</li>
+</ol>
+
+<h2>5. Vergleich</h2>
+<ul>
+  <li><b>Eager:</b> alle Partitionen weg, dann neu verteilen. Einfach, aber die Gruppe steht still.</li>
+  <li><b>Cooperative (classic):</b> nur wandernde Partitionen werden abgegeben. Kein Stillstand für den Rest, aber zwei Runden und weiterhin eine Barriere.</li>
+  <li><b>Consumer-Protokoll (KIP-848):</b> Broker rechnet, kein globaler Sync, jeder Member gleicht einzeln ab. Schneller und robuster bei grossen Gruppen. Braucht Broker 4.0+ und einen aktuellen Java-Client.</li>
+  <li><b>Static Membership:</b> keine Rebalances bei kurzen Neustarts. Preis: Ein wirklich toter Consumer wird erst nach dem Session-Timeout ersetzt.</li>
+  <li><b>Share Groups (KIP-932, „Queues for Kafka“):</b> mehrere Consumer lesen dieselbe Partition, mit Ack pro Record. Keine Reihenfolge-Garantie. Produktionsreif seit Kafka 4.2.</li>
+</ul>
+
+<h2>6. In der Produktion</h2>
+<ol>
+  <li><b>Rebalance-Sturm:</b> Die Verarbeitung eines Batches dauert länger als <code>max.poll.interval.ms</code>. Der Consumer fliegt raus, ein anderer verarbeitet dieselben Records, auch er fliegt raus. Lösung: <code>max.poll.records</code> senken, Verarbeitung schneller, Timeout erhöhen.</li>
+  <li><b>Rolling Deployment löst viele Rebalances aus:</b> Jeder Pod-Neustart stoppt die Gruppe kurz. Lösung: Cooperative oder das neue Protokoll, Static Membership.</li>
+  <li><b>Mehr Pods, aber kein Mehr-Durchsatz:</b> Es gibt nur so viele aktive Consumer wie Partitionen. Lösung: mehr Partitionen oder parallele Verarbeitung im Consumer (z. B. Confluent Parallel Consumer).</li>
+  <li><b>Duplikate nach Rebalance:</b> Der alte Besitzer hat verarbeitet, aber nicht committet. Lösung: in <code>onPartitionsRevoked</code> committen und idempotent verarbeiten.</li>
+  <li><b>CommitFailedException:</b> Der Consumer war schon nicht mehr in der Gruppe. Lösung: Ursache für zu lange Verarbeitung finden.</li>
+  <li><b>Lag steigt nur auf einer Partition:</b> heisser Key oder ein „Gift“-Record, der immer wieder scheitert. Lösung: Key-Verteilung prüfen, Dead Letter Topic.</li>
+</ol>
+
+<h2>7. Diagnose: Werkzeuge und Befehle</h2>
+<ul>
+  <li><code>kafka-consumer-groups.sh --describe --group g</code>: Offsets und Lag pro Partition.</li>
+  <li><code>--describe --members --verbose</code>: welche Member welche Partitionen haben.</li>
+  <li><code>--describe --state</code>: Zustand, Coordinator, Assignor, Anzahl Member.</li>
+  <li><b>Consumer-Metriken:</b> <code>records-lag-max</code>, <code>rebalance-rate-per-hour</code>, <code>last-rebalance-seconds-ago</code>, <code>time-between-poll-max</code>, <code>last-poll-seconds-ago</code>.</li>
+  <li><b>Client-Logs:</b> Meldungen wie „consumer poll timeout has expired“ oder „Revoke previously assigned partitions“.</li>
+  <li><b>Lag-Monitoring:</b> Prometheus mit einem Kafka-Exporter, Grafana-Alarm auf steigenden Lag statt auf absoluten Wert.</li>
+</ul>
+
+<h2>8. Senior-Punkte</h2>
+<div class="senior">
+<ol>
+  <li><b>Partitionen begrenzen die Parallelität.</b> Skalierung plant man beim Topic-Design, nicht erst beim Autoscaling.</li>
+  <li><b>Rebalances sind normal,</b> aber teuer. Ziel: wenige und kurze. Mittel: neues Protokoll, Cooperative, Static Membership.</li>
+  <li><b>Jeder Rebalance kann Duplikate bringen.</b> Darum ist idempotente Verarbeitung Pflicht, nicht Kür.</li>
+  <li><b>Autoscaling nach Lag</b> (z. B. KEDA) passt gut, aber nur bis zur Partitionsanzahl. Jeder Scale-Schritt kostet einen Rebalance.</li>
+  <li><b>Das neue Protokoll schrittweise einführen:</b> erst Broker 4.x, dann Clients mit <code>group.protocol=consumer</code>. Eine Gruppe kann online von classic migrieren.</li>
+  <li><b>Lag ist die wichtigste Consumer-Metrik.</b> Ein Alarm auf Lag-Trend fängt hängende und zu langsame Consumer.</li>
+</ol>
+</div>
+
+<h2>9. Aus dem Projekt</h2>
+<p>„Bei BIT DAZiT liefen Spring-Boot-Microservices als Kafka-Consumer, um Events aus anderen Fachsystemen zu verarbeiten; jeder Service las mit seiner eigenen Consumer Group.“ <span class="small">(Prüfen und durch dein echtes Beispiel ersetzen. Assignor, Static Membership oder KIP-848 nur nennen, wenn ihr das wirklich eingesetzt habt.)</span></p>
+
+<h2>10. Fallen</h2>
+<div class="trap">
+<ul>
+  <li>„Mehr Consumer bringen immer mehr Durchsatz.“ → <b>Falsch.</b> Höchstens so viele aktive Consumer wie Partitionen.</li>
+  <li>„Zwei Consumer einer Gruppe lesen dieselbe Partition.“ → <b>Falsch</b> in normalen Gruppen. Nur Share Groups erlauben das.</li>
+  <li>„Heartbeats beweisen, dass der Consumer arbeitet.“ → <b>Falsch.</b> Der Heartbeat-Thread läuft separat. Hänger erkennt <code>max.poll.interval.ms</code>.</li>
+  <li>„CooperativeSticky ist der Standard.“ → <b>Falsch.</b> Range steht zuerst in der Liste und wird genutzt.</li>
+  <li>„KIP-848 ist in 4.0 automatisch im Client aktiv.“ → <b>Falsch.</b> Auf dem Broker ja, im Client braucht es <code>group.protocol=consumer</code>.</li>
+  <li>„Ein Rebalance verliert Daten.“ → Normalerweise nicht. Er erzeugt eher Duplikate, weil ab dem letzten Commit gelesen wird.</li>
+</ul>
+</div>
+
+<h2>11. Fragen</h2>
+<details><summary>Was ist eine Consumer Group?</summary><p>Consumer mit gleicher <code>group.id</code>, die sich die Partitionen teilen. Jede Partition hat genau einen Besitzer in der Gruppe.</p></details>
+<details><summary>Was passiert mit mehr Consumern als Partitionen?</summary><p>Die überzähligen Consumer bekommen nichts. Sie dienen höchstens als Reserve.</p></details>
+<details><summary>Was ist ein Rebalance?</summary><p>Die Neuverteilung der Partitionen in einer Gruppe, wenn sich Mitglieder oder Partitionen ändern.</p></details>
+<details><summary>Was löst einen Rebalance aus?</summary><p>Ein Consumer kommt oder geht, ein Heartbeat fehlt, <code>max.poll.interval.ms</code> wird überschritten, oder Partitionen bzw. passende Topics ändern sich.</p></details>
+<details><summary>Was ist der Group Coordinator?</summary><p>Ein Broker, der eine Gruppe verwaltet: Mitglieder, Heartbeats, Zuweisung und Offsets.</p></details>
+<details><summary>Eager vs Cooperative Rebalancing?</summary><p>Eager: alle geben alles ab, Stillstand. Cooperative: nur wandernde Partitionen werden abgegeben, in zwei Runden.</p></details>
+<details><summary>Was ist neu an KIP-848?</summary><p>Der Broker rechnet die Zuweisung. Members gleichen einzeln per Heartbeat ab. Keine globale Barriere mehr. GA seit Kafka 4.0.</p></details>
+<details><summary>Wie aktiviert man das neue Protokoll?</summary><p>Broker 4.0+, im Client <code>group.protocol=consumer</code>. Assignor über <code>group.remote.assignor</code>: uniform oder range.</p></details>
+<details><summary>Welche Client-Einstellungen gelten im neuen Protokoll nicht?</summary><p><code>session.timeout.ms</code>, <code>heartbeat.interval.ms</code> und eigene Client-Assignoren. Der Broker steuert das.</p></details>
+<details><summary>Was ist der Unterschied zwischen session.timeout.ms und max.poll.interval.ms?</summary><p>Session: Lebt der Prozess (Heartbeat)? Poll-Intervall: Kommt der Verarbeitungs-Thread voran?</p></details>
+<details><summary>Was ist Static Membership?</summary><p>Eine feste <code>group.instance.id</code> pro Consumer. Ein kurzer Neustart löst keinen Rebalance aus.</p></details>
+<details><summary>Welche Assignoren gibt es im classic-Protokoll?</summary><p>Range, RoundRobin, Sticky und CooperativeSticky. Standard ist Range, mit CooperativeSticky als zweiter Option.</p></details>
+<details><summary>Wie wechselt man von Range auf CooperativeSticky?</summary><p>Erster Rolling Restart: beide Assignoren, CooperativeSticky zuerst. Zweiter Rolling Restart: nur CooperativeSticky.</p></details>
+<details><summary>Wozu dient der ConsumerRebalanceListener?</summary><p>In <code>onPartitionsRevoked</code> Offsets committen oder State sichern. In <code>onPartitionsAssigned</code> State laden oder seeken.</p></details>
+<details><summary>Ist der KafkaConsumer thread-sicher?</summary><p>Nein. Ein Consumer pro Thread. Nur <code>wakeup()</code> darf ein anderer Thread aufrufen.</p></details>
+<details><summary>Was ist Consumer Lag?</summary><p>Log-End-Offset minus committeter Offset, pro Partition. Er zeigt, wie weit die Gruppe hinterher ist.</p></details>
+<details><summary>Was ist eine CommitFailedException?</summary><p>Ein Commit nach dem Verlust der Partitionen, meist wegen zu langer Verarbeitung. Der Commit gehört zu einer alten Generation.</p></details>
+<details><summary>Was sind Share Groups?</summary><p>Queue-artige Gruppen (KIP-932): mehrere Consumer pro Partition, Ack pro Record, keine Reihenfolge. Produktionsreif seit Kafka 4.2.</p></details>
+<details><summary>Wie skaliert man Consumer in Kubernetes?</summary><p>Mehr Pods bis zur Partitionsanzahl, z. B. mit KEDA nach Lag. Jede Änderung löst einen Rebalance aus.</p></details>
+<details><summary>Szenario: Nach jedem Deployment gibt es Minuten mit hohem Lag und Duplikaten. Was tun Sie?</summary><p>Jeder Pod-Neustart löst Rebalances aus. Lösung: neues Protokoll oder Cooperative, Static Membership, Commit in <code>onPartitionsRevoked</code>, sauberes Shutdown mit <code>close()</code>.</p></details>
+<details><summary>Szenario: Consumer werden ständig aus der Gruppe geworfen, im Log steht „poll timeout has expired“. Warum?</summary><p>Die Verarbeitung eines Polls dauert länger als <code>max.poll.interval.ms</code>. Lösung: <code>max.poll.records</code> senken, langsame Aufrufe (DB, HTTP) beschleunigen, Timeout bewusst erhöhen.</p></details>
+<details><summary>Szenario: Sie haben 6 Partitionen und skalieren von 6 auf 12 Pods. Der Lag sinkt nicht. Warum?</summary><p>6 Pods sind untätig. Mehr Durchsatz geht nur über mehr Partitionen oder parallele Verarbeitung im Consumer.</p></details>
+
+</body>
+</html>

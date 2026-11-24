@@ -1,0 +1,228 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NgRx Effects</title>
+<style>
+  body { font: 17px/1.55 -apple-system, system-ui, sans-serif; max-width: 760px; margin: 0 auto; padding: 16px; color: #1d1d1f; }
+  h1 { font-size: 28px; margin: 8px 0 4px; }
+  h2 { font-size: 21px; margin: 32px 0 8px; padding-top: 12px; border-top: 2px solid #e5e5ea; }
+  .kern { background: #eef6ff; border-left: 4px solid #0a66c2; padding: 10px 14px; border-radius: 6px; }
+  .senior { background: #f0faf0; border-left: 4px solid #2e7d32; padding: 10px 14px; border-radius: 6px; }
+  .trap { background: #fff4f2; border-left: 4px solid #c62828; padding: 10px 14px; border-radius: 6px; }
+  code { background: #f2f2f7; padding: 1px 5px; border-radius: 4px; font-size: 15px; }
+  pre { background: #1e1e1e; color: #e6e6e6; padding: 12px; border-radius: 8px; overflow-x: auto; font-size: 13.5px; line-height: 1.45; }
+  svg { width: 100%; height: auto; display: block; margin: 10px 0; }
+  ol li, ul li { margin: 4px 0; }
+  details { border: 1px solid #e5e5ea; border-radius: 8px; padding: 8px 12px; margin: 6px 0; }
+  summary { font-weight: 600; cursor: pointer; }
+  details p { margin: 6px 0 2px; }
+  .small { color: #6e6e73; font-size: 14px; }
+</style>
+</head>
+<body>
+
+<h1>NgRx Effects</h1>
+<p class="small">Angular Signals + NgRx · Tier 1 · Quellen: ngrx.io Guide „@ngrx/effects“ (Overview, Lifecycle, Testing, Operators), ngrx.io API <code>createEffect</code>, <code>provideEffects</code>, <code>provideMockActions</code>, <code>@ngrx/operators</code> (<code>concatLatestFrom</code>, <code>tapResponse</code>), RxJS-Doku zu <code>switchMap</code>/<code>mergeMap</code>/<code>concatMap</code>/<code>exhaustMap</code></p>
+
+<div class="kern">
+<b>Kern:</b> Ein <b>Effect</b> ist ein Observable-Strom, der auf <b>Actions</b> hört, einen <b>Seiteneffekt</b> ausführt (HTTP, Router, Storage) und meist neue Actions zurückgibt. Effects halten Komponenten und Reducer <b>frei von Seiteneffekten</b>. Die wichtigsten Entscheidungen sind der <b>Flattening-Operator</b> und das <b>Error Handling</b> im inneren Observable.
+</div>
+
+<h2>1. Wo sitzen Effects?</h2>
+<svg viewBox="0 0 720 300" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="a" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="10" y="110" width="130" height="60" rx="8" fill="#fff" stroke="#555"/><text x="75" y="145" text-anchor="middle" font-weight="700">Component</text>
+  <rect x="190" y="110" width="130" height="60" rx="8" fill="#0a66c2"/><text x="255" y="136" text-anchor="middle" fill="#fff" font-weight="700">Actions$</text><text x="255" y="154" text-anchor="middle" fill="#fff" font-size="12">nach Reducer</text>
+  <rect x="380" y="20" width="150" height="56" rx="8" fill="#fff" stroke="#555"/><text x="455" y="53" text-anchor="middle" font-weight="700">Reducer → State</text>
+  <rect x="380" y="200" width="150" height="76" rx="8" fill="#2e7d32"/><text x="455" y="228" text-anchor="middle" fill="#fff" font-weight="700">Effect</text><text x="455" y="248" text-anchor="middle" fill="#fff" font-size="12">ofType → switchMap</text><text x="455" y="264" text-anchor="middle" fill="#fff" font-size="12">→ map / catchError</text>
+  <rect x="580" y="210" width="130" height="56" rx="8" fill="#fff" stroke="#555"/><text x="645" y="236" text-anchor="middle" font-weight="700">API / Router</text><text x="645" y="254" text-anchor="middle" font-size="12">Seiteneffekt</text>
+  <line x1="140" y1="140" x2="188" y2="140" stroke="#555" stroke-width="2" marker-end="url(#a)"/><text x="164" y="130" text-anchor="middle" font-size="12">dispatch</text>
+  <line x1="320" y1="130" x2="378" y2="56" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <line x1="320" y1="150" x2="378" y2="222" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <line x1="530" y1="238" x2="578" y2="238" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <path d="M380,266 C300,290 255,240 255,172" fill="none" stroke="#2e7d32" stroke-width="2" stroke-dasharray="6 4" marker-end="url(#a)"/><text x="290" y="290" font-size="12" fill="#2e7d32">neue Action</text>
+</svg>
+<ol>
+  <li><b>Actions$:</b> der Strom aller Actions, <b>nachdem</b> die Reducer sie verarbeitet haben. Beispiel: <code>inject(Actions)</code>.</li>
+  <li><b>ofType:</b> filtert den Strom auf bestimmte Actions. Beispiel: <code>ofType(ProductsPageActions.opened)</code>.</li>
+  <li><b>Flattening-Operator:</b> startet den inneren Seiteneffekt pro Action. Beispiel: <code>switchMap(() =&gt; api.load())</code>.</li>
+  <li><b>Ergebnis:</b> eine neue Action, die der Store automatisch dispatcht. Beispiel: <code>loadSuccess({ products })</code>.</li>
+  <li><b>EffectsRunner:</b> NgRx abonniert alle registrierten Effects beim Start (<code>provideEffects</code>).</li>
+</ol>
+
+<h2>2. Die Reise eines Ladevorgangs (die Geschichte zum Merken)</h2>
+<svg viewBox="0 0 720 290" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="b" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker><marker id="r" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#c62828"/></marker></defs>
+  <rect x="10" y="30" width="140" height="64" rx="10" fill="#0a66c2"/><text x="80" y="58" text-anchor="middle" fill="#fff" font-weight="700">1. opened</text><text x="80" y="78" text-anchor="middle" fill="#fff" font-size="12">loading: true</text>
+  <line x1="150" y1="62" x2="188" y2="62" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="190" y="30" width="140" height="64" rx="10" fill="#fff" stroke="#555"/><text x="260" y="58" text-anchor="middle" font-weight="700">2. ofType</text><text x="260" y="78" text-anchor="middle" font-size="12">passt</text>
+  <line x1="330" y1="62" x2="368" y2="62" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="370" y="30" width="150" height="64" rx="10" fill="#2e7d32"/><text x="445" y="58" text-anchor="middle" fill="#fff" font-weight="700">3. switchMap</text><text x="445" y="78" text-anchor="middle" fill="#fff" font-size="12">HTTP starten</text>
+  <line x1="520" y1="62" x2="568" y2="62" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="570" y="30" width="140" height="64" rx="10" fill="#fff" stroke="#555"/><text x="640" y="58" text-anchor="middle" font-weight="700">4. Server</text><text x="640" y="78" text-anchor="middle" font-size="12">200 oder 500</text>
+  <line x1="610" y1="94" x2="540" y2="168" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <line x1="670" y1="94" x2="670" y2="168" stroke="#c62828" stroke-width="2" marker-end="url(#r)"/>
+  <rect x="400" y="170" width="160" height="64" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="480" y="198" text-anchor="middle" font-weight="700">5a. map</text><text x="480" y="218" text-anchor="middle" font-size="12">loadSuccess</text>
+  <rect x="580" y="170" width="130" height="64" rx="10" fill="#fff4f2" stroke="#c62828"/><text x="645" y="198" text-anchor="middle" font-weight="700">5b. catchError</text><text x="645" y="218" text-anchor="middle" font-size="12">loadFailure</text>
+  <line x1="400" y1="202" x2="232" y2="202" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="10" y="170" width="220" height="64" rx="10" fill="#fff" stroke="#555"/><text x="120" y="198" text-anchor="middle" font-weight="700">6. Store dispatcht</text><text x="120" y="218" text-anchor="middle" font-size="12">Reducer: loading false</text>
+  <text x="360" y="270" text-anchor="middle" font-size="12">Der äussere Strom (Actions$) lebt weiter. Nur der innere Strom endet.</text>
+</svg>
+<ol>
+  <li><b>Action.</b> Die Seite dispatcht <code>opened</code>. Der Reducer setzt <code>loading: true</code>.</li>
+  <li><b>Filter.</b> Der Effect sieht die Action im <code>Actions</code>-Strom. <code>ofType</code> lässt sie durch.</li>
+  <li><b>Innerer Strom.</b> <code>switchMap</code> startet den HTTP-Call als <b>inneres Observable</b>. Kommt vorher ein zweites <code>opened</code>, bricht es den ersten Call ab.</li>
+  <li><b>Antwort.</b> Der Server antwortet mit Daten oder einem Fehler.</li>
+  <li><b>Erfolg oder Fehler.</b> <code>map</code> macht aus Daten <code>loadSuccess</code>. <code>catchError</code> <b>im inneren Strom</b> macht aus dem Fehler <code>loadFailure</code>.</li>
+  <li><b>Zurück in den Store.</b> NgRx dispatcht die neue Action. Der Reducer setzt <code>loading: false</code>. Der Effect wartet auf das nächste <code>opened</code>.</li>
+</ol>
+
+<h2>3. Beispiel: funktionaler Effect mit Fehlerbehandlung und Test</h2>
+<pre>// products.effects.ts
+import { inject } from '@angular/core';
+import { Actions, createEffect, ofType } from '@ngrx/effects';
+import { Router } from '@angular/router';
+import { catchError, exhaustMap, map, of, switchMap, tap, concatMap } from 'rxjs';
+
+export const loadProducts = createEffect(
+  (actions$ = inject(Actions), api = inject(ProductsApi)) =&gt;
+    actions$.pipe(
+      ofType(ProductsPageActions.opened, ProductsPageActions.searchChanged),
+      switchMap(() =&gt; api.load().pipe(                       // cancel stale reads
+        map(products =&gt; ProductsApiActions.loadSuccess({ products })),
+        catchError((e: HttpErrorResponse) =&gt;               // INSIDE the inner pipe
+          of(ProductsApiActions.loadFailure({ error: e.message })))))),
+  { functional: true });
+
+export const saveProduct = createEffect(
+  (actions$ = inject(Actions), api = inject(ProductsApi)) =&gt;
+    actions$.pipe(ofType(ProductFormActions.saveClicked),
+      concatMap(({ product }) =&gt; api.save(product).pipe(     // keep order, no loss
+        map(saved =&gt; ProductsApiActions.saveSuccess({ product: saved })),
+        catchError(e =&gt; of(ProductsApiActions.saveFailure({ error: e.message })))))),
+  { functional: true });
+
+export const navigateAfterSave = createEffect(
+  (actions$ = inject(Actions), router = inject(Router)) =&gt;
+    actions$.pipe(ofType(ProductsApiActions.saveSuccess),
+      tap(() =&gt; router.navigate(['/products']))),
+  { functional: true, dispatch: false });
+
+// app.config.ts
+import * as productsEffects from './products.effects';
+providers: [provideStore(), provideState(productsFeature), provideEffects(productsEffects)]
+
+// products.effects.spec.ts
+it('maps API error to loadFailure', () =&gt; {
+  const api = { load: () =&gt; throwError(() =&gt; ({ message: 'boom' })) } as any;
+  const actions$ = of(ProductsPageActions.opened());
+  loadProducts(actions$ as any, api).subscribe(a =&gt; console.log(a));
+});</pre>
+<pre>{ error: 'boom', type: '[Products API] Load Failure' }</pre>
+<p class="small">Erwartetes Ergebnis (laut Doku, nicht ausgeführt). NgRx 20, Angular 20.</p>
+<ol>
+  <li>Funktionale Effects mit <code>{ functional: true }</code> sind einfache Funktionen. Abhängigkeiten kommen als Default-Parameter mit <code>inject()</code>.</li>
+  <li>Im Test übergibt man eigene Werte statt <code>inject()</code>. Kein TestBed nötig.</li>
+  <li><code>catchError</code> sitzt <b>im</b> <code>switchMap</code>. Der Fehler beendet nur den inneren HTTP-Strom, der Effect lebt weiter.</li>
+  <li><code>saveProduct</code> nutzt <code>concatMap</code>: Speichern darf nicht abgebrochen werden und soll in Reihenfolge laufen.</li>
+  <li><code>dispatch: false</code>: Der Navigations-Effect gibt keine Action zurück. Ohne diese Option würde NgRx die <code>tap</code>-Ausgabe (die Action selbst) erneut dispatchen, eine Endlosschleife.</li>
+</ol>
+
+<h2>4. Details, die Interviewer fragen</h2>
+<ol>
+  <li><b>switchMap:</b> Bricht den vorherigen inneren Strom ab. Für <b>Lesen</b> und Suche, wo nur die neueste Antwort zählt. Nie für Schreiben: Ein abgebrochener Request kann trotzdem am Server angekommen sein.</li>
+  <li><b>concatMap:</b> Wartet, bis der vorherige fertig ist, dann der nächste. Für <b>Schreiben in Reihenfolge</b>, z. B. Speichern derselben Entität.</li>
+  <li><b>mergeMap:</b> Alle parallel, Reihenfolge der Antworten offen. Für <b>unabhängige Schreibvorgänge</b>, z. B. mehrere verschiedene Einträge löschen.</li>
+  <li><b>exhaustMap:</b> Ignoriert neue Actions, solange einer läuft. Für <b>Login</b> oder „Bezahlen“-Doppelklick.</li>
+  <li><b>catchError-Position:</b> Im äusseren Strom beendet ein Fehler den ganzen Effect. NgRx resubscribed dann zwar (bis zu 10 Mal, <code>useEffectsErrorHandler</code>), aber das ist ein Notnagel, kein Design.</li>
+  <li><b>catchError gibt ein Observable zurück:</b> <code>of(failureAction)</code>, nicht die Action direkt.</li>
+  <li><b>tapResponse</b> aus <code>@ngrx/operators</code>: verbindet <code>tap</code> und <code>catchError</code> sicher. Vor allem in ComponentStore und SignalStore-<code>rxMethod</code> üblich.</li>
+  <li><b>State im Effect lesen:</b> <code>concatLatestFrom(() =&gt; store.select(selectQuery))</code> aus <code>@ngrx/operators</code>. Es liest den Selector erst, wenn die Action kommt (lazy), anders als <code>withLatestFrom</code>.</li>
+  <li><b>dispatch: false:</b> Für Effects ohne Ergebnis-Action: Navigation, Logging, <code>localStorage</code>, Snackbar.</li>
+  <li><b>Klassenbasierte Effects:</b> <code>@Injectable() class ProductsEffects { load$ = createEffect(() =&gt; ...) }</code>. Funktionale Effects sind die neuere, kürzere Form. Beides wird mit <code>provideEffects</code> registriert.</li>
+  <li><b>Lifecycle:</b> <code>ROOT_EFFECTS_INIT</code> wird dispatcht, wenn Root-Effects bereit sind. Effects in einer Lazy Route starten erst beim Laden der Route.</li>
+  <li><b>Lifecycle-Hooks:</b> <code>OnInitEffects</code> (Action beim Start dispatchen), <code>OnRunEffects</code> (Effects nur in einem Zeitfenster laufen lassen, z. B. nach Login).</li>
+  <li><b>Nicht-Action-Quellen:</b> Effects können auch auf <code>interval</code>, WebSocket oder Router-Events hören, nicht nur auf Actions.</li>
+  <li><b>Testing:</b> <code>provideMockActions(() =&gt; actions$)</code> mit TestBed, oder funktional mit direkten Parametern. Für Timing: Marble-Tests mit <code>TestScheduler</code>.</li>
+  <li><b>Eine Action rein, eine Action raus:</b> Effects sollten nicht mehrere Actions hintereinander „orchestrieren“. Lieber mehrere Reducer auf eine Erfolgs-Action hören lassen.</li>
+</ol>
+
+<h2>5. Vergleich</h2>
+<ul>
+  <li><b>switchMap vs exhaustMap:</b> switchMap nimmt immer den neuesten Auslöser. exhaustMap behält den ersten und ignoriert neue.</li>
+  <li><b>concatMap vs mergeMap:</b> concatMap seriell, sichere Reihenfolge. mergeMap parallel, schneller, keine Reihenfolge.</li>
+  <li><b>Effect vs Service-Aufruf in der Komponente:</b> Effect entkoppelt die Komponente vom HTTP. Die Komponente dispatcht nur ein Ereignis. Preis: mehr Indirektion.</li>
+  <li><b>Effects vs SignalStore <code>rxMethod</code>:</b> Gleiches RxJS-Muster, aber rxMethod ist eine direkte Methode am Store, ohne Actions.</li>
+  <li><b>Funktional vs klassenbasiert:</b> Funktional ist kürzer und einfacher zu testen. Klassen erlauben Lifecycle-Interfaces wie <code>OnInitEffects</code>.</li>
+</ul>
+
+<h2>6. In der Produktion</h2>
+<ol>
+  <li><b>Effect stirbt nach erstem Fehler:</b> <code>catchError</code> steht im äusseren Strom. Danach reagiert der Effect nach 10 Fehlern gar nicht mehr. Lösung: <code>catchError</code> in den inneren Strom.</li>
+  <li><b>Doppelte Bestellungen:</b> <code>mergeMap</code> bei „Bestellen“, Nutzer klickt zweimal. Lösung: <code>exhaustMap</code> plus Button deaktivieren plus Idempotenz-Key am Server.</li>
+  <li><b>Verlorene Speichervorgänge:</b> <code>switchMap</code> beim Speichern, schnelle Folge-Speicherungen brechen ab. Lösung: <code>concatMap</code>.</li>
+  <li><b>Endlosschleife:</b> Effect gibt dieselbe Action zurück, die er filtert, oder <code>dispatch: false</code> fehlt bei <code>tap</code>. Browser hängt. Lösung: <code>dispatch: false</code> setzen, Actions sauber trennen.</li>
+  <li><b>Veraltete Daten im Effect:</b> <code>withLatestFrom</code> mit einem Selector, der früh abonniert. Lösung: <code>concatLatestFrom</code>.</li>
+  <li><b>Effect nicht registriert:</b> Funktion geschrieben, aber nicht in <code>provideEffects</code>. Nichts passiert, kein Fehler. Lösung: Registrierung prüfen, DevTools zeigen fehlende Success-Action.</li>
+</ol>
+
+<h2>7. Diagnose: Werkzeuge und Befehle</h2>
+<ul>
+  <li><b>Redux DevTools:</b> zeigt, ob nach <code>opened</code> ein <code>loadSuccess</code> oder <code>loadFailure</code> folgt, oder gar nichts.</li>
+  <li><b>Netzwerk-Tab:</b> „canceled“-Requests zeigen <code>switchMap</code>-Abbrüche. Doppelte POSTs zeigen <code>mergeMap</code>.</li>
+  <li><code>tap({ next: console.log, error: console.error, complete: () =&gt; console.log('done') })</code>: Ein „done“ im äusseren Strom heisst, der Effect ist tot.</li>
+  <li><code>provideMockActions</code>, <code>provideMockStore</code> und Marble-Tests (<code>TestScheduler.run</code>) für Timing-Fehler.</li>
+  <li><code>@ngrx/eslint-plugin</code>: Regeln <code>avoid-cyclic-effects</code>, <code>no-multiple-actions-in-effects</code>, <code>prefer-concat-latest-from</code>.</li>
+</ul>
+
+<h2>8. Senior-Punkte</h2>
+<div class="senior">
+<ol>
+  <li><b>Operator-Wahl ist eine Fachentscheidung.</b> „Was soll passieren, wenn der Nutzer zweimal klickt?“ Das beantwortet der Fachbereich, nicht RxJS.</li>
+  <li><b>Fehler sind Actions.</b> Jeder Seiteneffekt hat eine Failure-Action. So zeigt die UI Fehler über den Store, und das Log ist vollständig.</li>
+  <li><b>Server-seitige Idempotenz</b> ist nötig, auch mit exhaustMap. Client-Abbruch stoppt keinen Request, der schon unterwegs ist.</li>
+  <li><b>Effects klein halten:</b> eine Verantwortung pro Effect. Orchestrierung über Ereignisse, nicht über Ketten in einem Effect.</li>
+  <li><b>Testbarkeit:</b> Funktionale Effects mit injizierten Parametern testet man ohne TestBed. Das senkt die Hürde für Tests im Team.</li>
+</ol>
+</div>
+
+<h2>9. Aus dem Projekt</h2>
+<p>„NgRx Effects habe ich noch nicht produktiv eingesetzt. Die Operator-Wahl kenne ich aber aus RxJS-Services bei CARIAD (Angular 14), z. B. <code>switchMap</code> für das Laden von Dashboard-Daten. In einem NgRx-Projekt würde ich dieselbe Logik in funktionale Effects mit Failure-Actions verschieben.“ <span class="small">(Prüfen und durch dein echtes Beispiel ersetzen.)</span></p>
+
+<h2>10. Fallen</h2>
+<div class="trap">
+<ul>
+  <li>„catchError am Ende der Effect-Pipe reicht.“ → <b>Falsch.</b> Dann endet der äussere Strom. catchError gehört in den inneren Strom.</li>
+  <li>„switchMap ist immer richtig.“ → Nein. Für Schreiben kann es Requests abbrechen, die der Server schon verarbeitet.</li>
+  <li>„exhaustMap verhindert doppelte Bestellungen sicher.“ → Nur im Client. Der Server braucht Idempotenz.</li>
+  <li>„Ein Effect ohne Action-Ergebnis geht einfach so.“ → Nur mit <code>dispatch: false</code>. Sonst wird der Wert dispatcht.</li>
+  <li>„Effects laufen vor dem Reducer.“ → Nein. Sie sehen die Action nach dem Reducer.</li>
+</ul>
+</div>
+
+<h2>11. Fragen</h2>
+<details><summary>Was ist ein NgRx Effect?</summary><p>Ein Observable-Strom, der auf Actions hört, Seiteneffekte ausführt und meist neue Actions zurückgibt. Er hält Reducer und Komponenten rein.</p></details>
+<details><summary>Was macht createEffect?</summary><p>Es registriert einen Strom als Effect mit Metadaten wie <code>dispatch</code>, <code>functional</code> und <code>useEffectsErrorHandler</code>.</p></details>
+<details><summary>Was ist ein funktionaler Effect?</summary><p>Ein Effect als Funktion mit <code>{ functional: true }</code>. Abhängigkeiten kommen per <code>inject()</code> als Default-Parameter.</p></details>
+<details><summary>Was macht ofType?</summary><p>Es filtert den Actions-Strom auf einen oder mehrere Action-Typen und typisiert das Ergebnis.</p></details>
+<details><summary>Wann switchMap?</summary><p>Für Lesen und Suche: Nur das neueste Ergebnis zählt, alte Requests werden abgebrochen.</p></details>
+<details><summary>Wann concatMap?</summary><p>Für Schreiben, wenn Reihenfolge wichtig ist und nichts verloren gehen darf.</p></details>
+<details><summary>Wann mergeMap?</summary><p>Für unabhängige, parallele Vorgänge, z. B. mehrere verschiedene Einträge löschen.</p></details>
+<details><summary>Wann exhaustMap?</summary><p>Wenn neue Auslöser ignoriert werden sollen, solange einer läuft. Beispiel: Login, Bezahlen.</p></details>
+<details><summary>Wo gehört catchError hin?</summary><p>In den inneren Strom, im Flattening-Operator. Dort beendet ein Fehler nur den einen Request, nicht den Effect.</p></details>
+<details><summary>Was passiert, wenn der äussere Strom einen Fehler hat?</summary><p>Der Effect endet. NgRx resubscribed standardmässig bis zu 10 Mal, danach ist er tot.</p></details>
+<details><summary>Was ist dispatch: false?</summary><p>Eine Option für Effects ohne Ergebnis-Action, z. B. Navigation oder Logging. Sonst würde NgRx das Ergebnis dispatchen.</p></details>
+<details><summary>Wie liest ein Effect State?</summary><p>Mit <code>concatLatestFrom(() =&gt; store.select(sel))</code>. Es liest lazy beim Eintreffen der Action.</p></details>
+<details><summary>Was ist tapResponse?</summary><p>Ein Operator aus <code>@ngrx/operators</code>, der next, error und finalize sicher behandelt, ohne den Strom zu beenden.</p></details>
+<details><summary>Wie registriert man Effects?</summary><p>Mit <code>provideEffects(...)</code> in <code>app.config.ts</code> oder in den Providers einer Lazy Route.</p></details>
+<details><summary>Wie testet man einen Effect?</summary><p>Funktional: Effect-Funktion mit eigenem <code>actions$</code> und Mock-Service aufrufen. Mit TestBed: <code>provideMockActions</code>. Für Timing Marble-Tests.</p></details>
+<details><summary>Was sind OnInitEffects und OnRunEffects?</summary><p>Interfaces für Klassen-Effects. OnInitEffects dispatcht beim Start eine Action. OnRunEffects steuert, wann die Effects laufen.</p></details>
+<details><summary>Darf ein Effect mehrere Actions zurückgeben?</summary><p>Technisch ja. Besser ist eine Erfolgs-Action, auf die mehrere Reducer hören. Das bleibt nachvollziehbar.</p></details>
+<details><summary>Szenario: Nach dem ersten Serverfehler lädt die Seite nie wieder. Ursache?</summary><p><code>catchError</code> steht im äusseren Strom, der Effect ist beendet. catchError in den inneren Strom verschieben und eine Failure-Action zurückgeben.</p></details>
+<details><summary>Szenario: Kunden erhalten Bestellungen doppelt. Was prüfen Sie im Effect?</summary><p>Ob <code>mergeMap</code> genutzt wird. Auf <code>exhaustMap</code> wechseln, Button während des Requests sperren und am Server einen Idempotenz-Key prüfen.</p></details>
+<details><summary>Szenario: Nach dem Speichern friert der Browser ein, DevTools zeigen tausende gleiche Actions. Warum?</summary><p>Ein Effect gibt die gefilterte Action selbst zurück, oft ein <code>tap</code> ohne <code>dispatch: false</code>. Option setzen oder eine eigene Ergebnis-Action zurückgeben.</p></details>
+
+</body>
+</html>

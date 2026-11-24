@@ -1,0 +1,248 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Fehler, Retries, Dead Letter Topic</title>
+<style>
+  body { font: 17px/1.55 -apple-system, system-ui, sans-serif; max-width: 760px; margin: 0 auto; padding: 16px; color: #1d1d1f; }
+  h1 { font-size: 28px; margin: 8px 0 4px; }
+  h2 { font-size: 21px; margin: 32px 0 8px; padding-top: 12px; border-top: 2px solid #e5e5ea; }
+  .kern { background: #eef6ff; border-left: 4px solid #0a66c2; padding: 10px 14px; border-radius: 6px; }
+  .senior { background: #f0faf0; border-left: 4px solid #2e7d32; padding: 10px 14px; border-radius: 6px; }
+  .trap { background: #fff4f2; border-left: 4px solid #c62828; padding: 10px 14px; border-radius: 6px; }
+  code { background: #f2f2f7; padding: 1px 5px; border-radius: 4px; font-size: 15px; }
+  pre { background: #1e1e1e; color: #e6e6e6; padding: 12px; border-radius: 8px; overflow-x: auto; font-size: 13.5px; line-height: 1.45; }
+  svg { width: 100%; height: auto; display: block; margin: 10px 0; }
+  ol li, ul li { margin: 4px 0; }
+  details { border: 1px solid #e5e5ea; border-radius: 8px; padding: 8px 12px; margin: 6px 0; }
+  summary { font-weight: 600; cursor: pointer; }
+  details p { margin: 6px 0 2px; }
+  .small { color: #6e6e73; font-size: 14px; }
+</style>
+</head>
+<body>
+
+<h1>Fehler, Retries, Dead Letter Topic</h1>
+<p class="small">Kafka · Tier 1 · Quellen: Spring for Apache Kafka Reference 4.x (Handling Exceptions: DefaultErrorHandler, DeadLetterPublishingRecoverer, ErrorHandlingDeserializer; Non-Blocking Retries: How the Pattern Works, Topic Naming, DLT Strategies, Configuration), Apache Kafka 4.x Documentation (Consumer Configs <code>max.poll.interval.ms</code>; Kafka Connect error reporting; Share Groups), KIP-932</p>
+
+<div class="kern">
+<b>Kern:</b> Ein <b>Dead Letter Topic (DLT)</b> ist ein eigenes Topic für Nachrichten, die ein Consumer nicht verarbeiten kann. Es löst das Problem der <b>Poison Message</b>: Eine fehlerhafte Nachricht blockiert sonst die ganze Partition oder geht still verloren. Davor stehen <b>Retries</b>, entweder <b>blocking</b> im Consumer oder <b>non-blocking</b> über Retry-Topics.
+</div>
+
+<h2>1. Wo sitzt die Fehlerbehandlung?</h2>
+<svg viewBox="0 0 720 320" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="a" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker><marker id="ra" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#c62828"/></marker></defs>
+  <rect x="10" y="30" width="130" height="60" rx="8" fill="#fff" stroke="#555"/><text x="75" y="56" text-anchor="middle" font-weight="700">orders</text><text x="75" y="74" text-anchor="middle" font-size="12">Haupt-Topic</text>
+  <line x1="140" y1="60" x2="178" y2="60" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="180" y="20" width="200" height="80" rx="8" fill="#dbe9fb" stroke="#0a66c2"/><text x="280" y="42" text-anchor="middle" font-weight="700">Listener-Container</text><text x="280" y="62" text-anchor="middle" font-size="12">ErrorHandlingDeserializer</text><text x="280" y="80" text-anchor="middle" font-size="12">@KafkaListener</text>
+  <line x1="280" y1="100" x2="280" y2="138" stroke="#c62828" stroke-width="2" marker-end="url(#ra)"/><text x="292" y="124" font-size="12" fill="#c62828">Exception</text>
+  <rect x="180" y="140" width="200" height="70" rx="8" fill="#0a66c2"/><text x="280" y="168" text-anchor="middle" fill="#fff" font-weight="700">DefaultErrorHandler</text><text x="280" y="188" text-anchor="middle" fill="#fff" font-size="12">BackOff · retryable?</text>
+  <line x1="380" y1="175" x2="438" y2="175" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="440" y="140" width="130" height="70" rx="8" fill="#fff" stroke="#555"/><text x="505" y="168" text-anchor="middle" font-weight="700">Recoverer</text><text x="505" y="188" text-anchor="middle" font-size="12">DeadLetterPublishing</text>
+  <line x1="570" y1="175" x2="598" y2="175" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="600" y="140" width="110" height="70" rx="8" fill="#fff4f2" stroke="#c62828"/><text x="655" y="168" text-anchor="middle" font-weight="700">orders-dlt</text><text x="655" y="188" text-anchor="middle" font-size="12">+ Fehler-Header</text>
+  <line x1="655" y1="210" x2="655" y2="248" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="440" y="250" width="270" height="60" rx="8" fill="#e8f5e9" stroke="#2e7d32"/><text x="575" y="274" text-anchor="middle" font-weight="700">Alarm · Analyse · Replay</text><text x="575" y="294" text-anchor="middle" font-size="12">zurück nach orders, nach dem Fix</text>
+  <path d="M440,280 C100,280 75,200 75,92" fill="none" stroke="#2e7d32" stroke-width="2" stroke-dasharray="6 4" marker-end="url(#a)"/>
+  <rect x="440" y="20" width="270" height="80" rx="8" fill="#f7f7fa" stroke="#999" stroke-dasharray="5 4"/><text x="575" y="44" text-anchor="middle" font-weight="700">Alternative: non-blocking</text><text x="575" y="64" text-anchor="middle" font-size="12">orders-retry-1000 → -retry-2000</text><text x="575" y="82" text-anchor="middle" font-size="12">→ orders-dlt (@RetryableTopic)</text>
+</svg>
+<ol>
+  <li><b>ErrorHandlingDeserializer:</b> Er umhüllt den echten Deserializer. Ein kaputtes Byte-Format wird so ein Fehler pro Record, statt <code>poll()</code> zu blockieren.</li>
+  <li><b>Listener:</b> Die Fachlogik wirft eine Exception, z. B. Validierung fehlgeschlagen oder DB nicht erreichbar.</li>
+  <li><b>DefaultErrorHandler:</b> Er entscheidet: noch einmal versuchen (mit <b>BackOff</b>, also Wartezeit) oder aufgeben. Manche Exceptions gelten als nicht retryable.</li>
+  <li><b>Recoverer:</b> Nach dem letzten Versuch ruft der Handler den <b>Recoverer</b> auf. Der <code>DeadLetterPublishingRecoverer</code> schreibt den Record ins DLT.</li>
+  <li><b>DLT:</b> Standardname in Spring Kafka 4.x: <code>&lt;topic&gt;-dlt</code>, gleiche Partition. Header enthalten Original-Topic, Partition, Offset und Exception.</li>
+  <li><b>Danach:</b> Der Offset wird committet, die Partition läuft weiter. Ein Alarm meldet das DLT. Nach dem Fix spielt man die Nachricht zurück (<b>Replay</b>).</li>
+</ol>
+
+<h2>2. Die Reise einer Poison Message</h2>
+<svg viewBox="0 0 720 330" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="b" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker><marker id="r" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#c62828"/></marker></defs>
+  <rect x="10" y="30" width="140" height="70" rx="10" fill="#eee" stroke="#777"/><text x="80" y="58" text-anchor="middle" font-weight="700">1. Versuch 1</text><text x="80" y="78" text-anchor="middle" font-size="12">Offset 42 scheitert</text>
+  <line x1="150" y1="65" x2="188" y2="65" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="190" y="30" width="160" height="70" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="270" y="58" text-anchor="middle" font-weight="700">2. Seek + BackOff</text><text x="270" y="78" text-anchor="middle" font-size="12">Partition wartet</text>
+  <line x1="350" y1="65" x2="388" y2="65" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="390" y="30" width="150" height="70" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="465" y="58" text-anchor="middle" font-weight="700">3. Versuch 2, 3</text><text x="465" y="78" text-anchor="middle" font-size="12">scheitern wieder</text>
+  <path d="M465,30 C465,0 270,0 270,28" fill="none" stroke="#555" stroke-width="1.5" stroke-dasharray="5 4" marker-end="url(#b)"/>
+  <line x1="540" y1="65" x2="578" y2="65" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="580" y="30" width="130" height="70" rx="10" fill="#0a66c2"/><text x="645" y="58" text-anchor="middle" fill="#fff" font-weight="700">4. Recoverer</text><text x="645" y="78" text-anchor="middle" fill="#fff" font-size="12">publiziert ins DLT</text>
+  <line x1="645" y1="100" x2="645" y2="158" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="520" y="160" width="190" height="70" rx="10" fill="#e8f5e9" stroke="#2e7d32"/><text x="615" y="188" text-anchor="middle" font-weight="700">5. Commit 43</text><text x="615" y="208" text-anchor="middle" font-size="12">Offset 43 läuft weiter</text>
+  <line x1="520" y1="195" x2="432" y2="195" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="270" y="160" width="160" height="70" rx="10" fill="#fff4f2" stroke="#c62828"/><text x="350" y="188" text-anchor="middle" font-weight="700">6. Alarm</text><text x="350" y="208" text-anchor="middle" font-size="12">DLT-Offset steigt</text>
+  <line x1="270" y1="195" x2="182" y2="195" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="10" y="160" width="170" height="70" rx="10" fill="#fff" stroke="#555"/><text x="95" y="188" text-anchor="middle" font-weight="700">7. Fix + Replay</text><text x="95" y="208" text-anchor="middle" font-size="12">idempotenter Consumer</text>
+  <text x="360" y="270" text-anchor="middle" fill="#c62828" font-size="13">Ohne DLT: endlose Retries blockieren die Partition</text>
+  <text x="360" y="290" text-anchor="middle" fill="#c62828" font-size="13">oder der Record wird nach 10 Versuchen nur geloggt und ist weg.</text>
+</svg>
+<ol>
+  <li><b>Versuch 1:</b> Der Listener bekommt Offset 42 und wirft eine Exception.</li>
+  <li><b>Seek und BackOff:</b> Der <code>DefaultErrorHandler</code> setzt die Position per <b>Seek</b> auf 42 zurück. Der Thread wartet die BackOff-Zeit ab. Die ganze Partition steht so lange still.</li>
+  <li><b>Weitere Versuche:</b> Der Consumer holt Offset 42 erneut. Ohne eigene Config sind es 10 Versuche ohne Pause (<code>FixedBackOff(0, 9)</code>).</li>
+  <li><b>Recoverer:</b> Sind die Versuche aufgebraucht, schreibt der <code>DeadLetterPublishingRecoverer</code> den Record ins DLT. Gelingt das nicht, wirft er, und der Record wird erneut versucht.</li>
+  <li><b>Commit:</b> Danach gilt der Record als behandelt (<code>ackAfterHandle=true</code>). Der Offset 43 wird gelesen.</li>
+  <li><b>Alarm:</b> Ein Monitoring sieht neue Nachrichten im DLT und meldet sich beim Team.</li>
+  <li><b>Fix und Replay:</b> Das Team behebt den Fehler und schickt die Nachricht zurück ins Haupt-Topic. Der Consumer muss idempotent sein, denn sie kann schon teilweise gewirkt haben.</li>
+</ol>
+
+<h2>3. Beispiel: Spring Kafka mit Blocking Retry und DLT</h2>
+<pre>// application.yml (Auszug)
+spring.kafka.consumer:
+  key-deserializer:   org.springframework.kafka.support.serializer.ErrorHandlingDeserializer
+  value-deserializer: org.springframework.kafka.support.serializer.ErrorHandlingDeserializer
+  properties:
+    spring.deserializer.value.delegate.class: org.springframework.kafka.support.serializer.JsonDeserializer
+
+// Konfiguration: 3 Versuche (1 + 2 Retries), 1 s Pause, dann DLT
+@Bean
+DefaultErrorHandler errorHandler(KafkaTemplate&lt;Object, Object&gt; template) {
+  var recoverer = new DeadLetterPublishingRecoverer(template);   // → orders-dlt, gleiche Partition
+  var handler = new DefaultErrorHandler(recoverer, new FixedBackOff(1000L, 2L));
+  handler.addNotRetryableExceptions(ValidationException.class);   // sofort ins DLT
+  return handler;   // Spring Boot hängt ihn an die Container Factory
+}
+
+@KafkaListener(topics = "orders", groupId = "billing")
+void on(Order order) { billing.process(order); }</pre>
+<pre>Erwartete Log-Folge für einen Record mit DB-Timeout (Offset 42):
+  Versuch 1 → Exception → Seek auf orders-0@42, 1 s Pause
+  Versuch 2 → Exception → Seek auf orders-0@42, 1 s Pause
+  Versuch 3 → Exception → Recoverer: publiziert nach orders-dlt-0
+  Commit orders-0@43, Verarbeitung läuft weiter
+
+Erwartete Header im DLT-Record:
+  kafka_dlt-original-topic=orders  kafka_dlt-original-partition=0
+  kafka_dlt-original-offset=42     kafka_dlt-exception-fqcn=...TimeoutException
+  kafka_dlt-exception-message=...  kafka_dlt-exception-stacktrace=...</pre>
+<p class="small">Erwartetes Ergebnis (laut Spring-Kafka-Doku, nicht ausgeführt). Ältere Spring-Kafka-Versionen nutzten den Suffix <code>.DLT</code> statt <code>-dlt</code>.</p>
+<ol>
+  <li><code>ErrorHandlingDeserializer</code> fängt Deserialisierungsfehler. Sie gelten als nicht retryable und gehen direkt ins DLT, mit den Original-Bytes.</li>
+  <li><code>FixedBackOff(1000, 2)</code> heisst: 2 Retries im Abstand von 1 s, also 3 Versuche total.</li>
+  <li><code>ValidationException</code> ist ein <b>permanenter Fehler</b>: Wiederholen hilft nie. Darum sofort ins DLT.</li>
+  <li>Das DLT muss mindestens so viele Partitionen haben wie <code>orders</code>, sonst scheitert der Recoverer.</li>
+</ol>
+<pre>// Variante non-blocking: Retry-Topics statt Warten im Consumer
+@RetryableTopic(attempts = "4", backOff = @BackOff(delay = 1000, multiplier = 2.0),
+                exclude = ValidationException.class)
+@KafkaListener(topics = "orders", groupId = "billing")
+void on(Order order) { billing.process(order); }
+
+@DltHandler
+void dlt(Order order, @Header(KafkaHeaders.RECEIVED_TOPIC) String topic) { alerting.store(order, topic); }</pre>
+<p class="small">Erwartetes Ergebnis (laut Doku, nicht ausgeführt): Spring legt <code>orders-retry-1000</code>, <code>orders-retry-2000</code>, <code>orders-retry-4000</code> und <code>orders-dlt</code> an. Das Haupt-Topic läuft sofort weiter. Die Doku warnt: Die Reihenfolge des Topics geht dabei verloren.</p>
+
+<h2>4. Details, die Interviewer fragen</h2>
+<ol>
+  <li><b>Poison Message:</b> Eine <b>Poison Message</b> ist eine Nachricht, die bei jedem Versuch scheitert. Ohne Grenze blockiert sie die Partition für immer.</li>
+  <li><b>Transient vs permanent:</b> Ein <b>transienter Fehler</b> verschwindet von selbst (Timeout, DB kurz weg). Retry hilft. Ein <b>permanenter Fehler</b> bleibt (falsches Format, Validierung). Retry verschwendet nur Zeit.</li>
+  <li><b>Kafka hat kein eingebautes DLQ:</b> Der Broker kennt keine Fehler. Ein DLT ist ein normales Topic, das die Client-Bibliothek befüllt.</li>
+  <li><b>DefaultErrorHandler-Standard:</b> <code>FixedBackOff(0, 9)</code>, also 10 Versuche ohne Pause. Danach loggt der Standard-Recoverer den Record auf ERROR und überspringt ihn. Ohne DLT ist die Nachricht dann weg.</li>
+  <li><b>Nicht retryable per Standard:</b> <code>DeserializationException</code>, <code>MessageConversionException</code>, <code>ConversionException</code>, <code>MethodArgumentResolutionException</code>, <code>NoSuchMethodException</code>, <code>ClassCastException</code>. Eigene kommen mit <code>addNotRetryableExceptions</code> dazu.</li>
+  <li><b>Blocking Retry:</b> Der Thread schläft während des BackOffs, die Partition steht. Vorteil: Reihenfolge bleibt. Nachteil: Ein Fehler stoppt den ganzen Fluss dieser Partition.</li>
+  <li><b>BackOff und max.poll.interval.ms:</b> Der Consumer muss innerhalb von <code>max.poll.interval.ms</code> (Standard 5 min) wieder <code>poll()</code> aufrufen. Sonst verlässt er die Gruppe und es gibt einen Rebalance. Lange Pausen darum nur pro Versuch kurz halten oder <code>ContainerPausingBackOffHandler</code> nutzen.</li>
+  <li><b>Non-blocking Retry (<code>@RetryableTopic</code>):</b> Der Record geht in ein Retry-Topic mit Fälligkeits-Zeitstempel. Der Retry-Consumer pausiert die Partition, bis er fällig ist. Das Haupt-Topic läuft sofort weiter.</li>
+  <li><b>Preis von non-blocking:</b> Die Reihenfolge ist weg. Dazu kommen mehr Topics, mehr Consumer und mehr Betrieb.</li>
+  <li><b>Topic-Namen:</b> Suffixe <code>-retry</code> und <code>-dlt</code>. Standard ist der Delay im Namen (<code>-retry-1000</code>). Seit Spring Kafka 4.1 nutzt eine feste Pause standardmässig ein einziges Retry-Topic.</li>
+  <li><b>DLT-Strategien:</b> <code>ALWAYS_RETRY_ON_ERROR</code> (Standard: scheitert der DLT-Handler, geht der Record zurück ins DLT), <code>FAIL_ON_ERROR</code>, <code>NO_DLT</code>.</li>
+  <li><b>Deserialisierungsfehler:</b> Ohne <code>ErrorHandlingDeserializer</code> scheitert schon <code>poll()</code>. Der Listener sieht den Record nie. Mit ihm landet der Fehler im Header, und der Record geht mit den Original-Bytes ins DLT.</li>
+  <li><b>DLT-Header:</b> <code>kafka_dlt-original-topic</code>, <code>-original-partition</code>, <code>-original-offset</code>, <code>-exception-fqcn</code>, <code>-exception-message</code>, <code>-exception-stacktrace</code>. Damit findet man Ursache und Herkunft.</li>
+  <li><b>Batch-Listener:</b> Der Listener wirft <code>BatchListenerFailedException</code> mit dem Index. Dann committet der Handler die Records davor und behandelt nur den fehlerhaften.</li>
+  <li><b><code>Error</code> vs <code>RuntimeException</code>:</b> Der <code>DefaultErrorHandler</code> behandelt nur Exceptions. Ein <code>Error</code> (z. B. <code>OutOfMemoryError</code>) beendet den Consumer.</li>
+  <li><b>Kafka Connect:</b> <code>errors.tolerance=all</code> und <code>errors.deadletterqueue.topic.name</code> schreiben fehlerhafte Records eines Sink-Connectors in ein DLQ-Topic.</li>
+  <li><b>Share Groups (Kafka 4.2 produktionsreif):</b> Records werden einzeln bestätigt. Nach <code>group.share.delivery.attempt.limit</code> Versuchen (Standard 5) archiviert Kafka sie. Ein DLT gibt es dort nicht automatisch.</li>
+</ol>
+
+<h2>5. Vergleich</h2>
+<ul>
+  <li><b>Blocking Retry (DefaultErrorHandler):</b> einfach, Reihenfolge bleibt, aber die Partition steht. Gut für kurze transiente Fehler.</li>
+  <li><b>Non-blocking Retry (@RetryableTopic):</b> Haupt-Topic läuft weiter, lange Pausen möglich. Aber keine Reihenfolge, mehr Topics.</li>
+  <li><b>Nur DLT, keine Retries:</b> für permanente Fehler wie Validierung und Deserialisierung.</li>
+  <li><b>Log and skip (Standard ohne Recoverer):</b> Durchsatz bleibt, aber die Nachricht ist verloren. Nur für unwichtige Daten.</li>
+  <li><b>Pause der ganzen Verarbeitung:</b> Container stoppen, bis ein abhängiges System zurück ist. Gut, wenn alle Nachrichten den gleichen Fehler hätten.</li>
+  <li><b>RabbitMQ:</b> <b>Dead Letter Exchange</b> eingebaut. Quorum Queues haben seit 4.0 ein <code>delivery-limit</code> von 20.</li>
+  <li><b>Azure Service Bus:</b> DLQ als Sub-Queue eingebaut. Nach <code>MaxDeliveryCount</code> (Standard 10) wandert die Nachricht dorthin.</li>
+  <li><b>Event Hubs:</b> kein DLQ, wie Kafka. Der Consumer muss Fehler selbst in ein Topic oder einen Speicher schreiben.</li>
+</ul>
+
+<h2>6. In der Produktion</h2>
+<ol>
+  <li><b>Consumer hängt seit Stunden auf einem Offset:</b> Poison Message mit endlosen Retries. Lösung: Retry-Grenze und DLT. Permanente Fehler als nicht retryable markieren.</li>
+  <li><b>Nachrichten verschwinden still:</b> Der Standard loggt nach 10 Versuchen und springt weiter. Lösung: <code>DeadLetterPublishingRecoverer</code> immer konfigurieren.</li>
+  <li><b>Endlose Rebalances:</b> Die BackOff-Summe überschreitet <code>max.poll.interval.ms</code>. Lösung: kürzere Pausen, weniger Versuche, oder non-blocking Retry.</li>
+  <li><b>Recoverer scheitert:</b> Das DLT fehlt oder hat weniger Partitionen. Lösung: DLT mit gleicher Partitionszahl anlegen, nicht auf Auto-Create verlassen.</li>
+  <li><b>DLT voll, niemand schaut:</b> Das DLT ist ein Datenfriedhof. Lösung: Alarm bei jedem neuen Eintrag, ein Owner, ein Runbook für Analyse und Replay.</li>
+  <li><b>Replay erzeugt Doppel-Buchungen:</b> Die Nachricht hatte schon teilweise gewirkt. Lösung: idempotenter Consumer (Dedup-Tabelle oder fachlicher Schlüssel).</li>
+  <li><b>Replay überschreibt neuere Daten:</b> Das alte Event kommt nach neueren Events desselben Keys. Lösung: Versionsprüfung im Consumer, Replay mit Original-Key.</li>
+  <li><b>Retention läuft ab:</b> Das DLT hat die gleiche kurze Retention wie das Haupt-Topic. Lösung: längere Retention für DLTs, z. B. 14–30 Tage.</li>
+  <li><b>Personendaten im DLT:</b> Payload und Stacktrace enthalten sensible Daten. Lösung: gleiche ACLs und Verschlüsselung wie das Haupt-Topic, Exception-Message nicht mit Payload füllen.</li>
+</ol>
+
+<h2>7. Diagnose: Werkzeuge und Befehle</h2>
+<ul>
+  <li><code>kafka-consumer-groups.sh --describe --group billing</code>: steht <code>CURRENT-OFFSET</code> fest und <code>LAG</code> wächst auf einer Partition, hängt eine Poison Message.</li>
+  <li><code>kafka-get-offsets.sh --topic orders-dlt</code>: End-Offsets des DLT. Steigen sie, gibt es neue Fehler.</li>
+  <li><code>kafka-console-consumer.sh --topic orders-dlt --from-beginning --property print.headers=true</code>: Fehler-Header lesen.</li>
+  <li><b>Micrometer/Prometheus:</b> Spring-Kafka-Listener-Metriken (<code>spring.kafka.listener</code> mit <code>result=failure</code>), Consumer-Lag pro Partition, Rate ins DLT.</li>
+  <li><b>Alarm:</b> DLT-End-Offset steigt → Ticket. Lag einer Partition wächst, Offset steht → Poison Message.</li>
+  <li><b>Logs:</b> Original-Topic, Partition, Offset und Key in jede Fehlermeldung. Dazu Trace-ID per OpenTelemetry.</li>
+  <li><b>Replay-Werkzeug:</b> Ein kleiner Service oder Admin-Endpoint liest aus dem DLT und schreibt mit Original-Key zurück. Notfall: Console Consumer mit <code>--max-messages</code> plus Console Producer.</li>
+</ul>
+
+<h2>8. Senior-Punkte</h2>
+<div class="senior">
+<ol>
+  <li><b>Fehler klassifizieren, bevor man konfiguriert.</b> Transient → Retry mit BackOff. Permanent → sofort DLT. Infrastruktur ganz weg → Container pausieren.</li>
+  <li><b>Blocking vs non-blocking ist ein Tausch</b> zwischen Reihenfolge und Durchsatz. Für Zustandsänderungen einer Entity meist blocking.</li>
+  <li><b>Ein DLT ohne Prozess ist nutzlos.</b> Es braucht Owner, Alarm, Runbook und ein Replay-Werkzeug.</li>
+  <li><b>Replay setzt Idempotenz voraus.</b> Jeder Consumer muss eine Nachricht zweimal vertragen.</li>
+  <li><b>Retries nach unten abstimmen:</b> Die Summe aller Retries darf nicht länger dauern, als das Geschäft warten kann. Und nicht länger als <code>max.poll.interval.ms</code> pro Pause.</li>
+  <li><b>Retry-Stürme vermeiden:</b> Ist ein Downstream-System weg, scheitert jede Nachricht. Dann lieber pausieren oder einen Circuit Breaker nutzen, statt alles ins DLT zu schieben.</li>
+</ol>
+</div>
+
+<h2>9. Aus dem Projekt</h2>
+<p>„Bei DigiSanté verarbeitet eine eigene Event-Hub-Function das Defender-Scan-Ergebnis und gibt die Datei frei oder löscht sie; ein Fehler dort darf nie zur Freigabe führen.“ <span class="small">(Prüfen und durch dein echtes Beispiel ersetzen: Wie wurden Fehler und Wiederholungen in dieser Function behandelt? Für Kafka bei DAZiT nur nennen, was ihr wirklich für Retries und DLT hattet.)</span></p>
+
+<h2>10. Fallen</h2>
+<div class="trap">
+<ul>
+  <li>„Kafka hat eine Dead Letter Queue.“ → <b>Falsch.</b> Der Broker hat keine. Spring Kafka oder Kafka Connect schreiben ein normales Topic.</li>
+  <li>„Spring Kafka wiederholt standardmässig endlos.“ → <b>Falsch.</b> 10 Versuche, dann loggen und überspringen.</li>
+  <li>„Mehr Retries machen das System robuster.“ → <b>Falsch</b> bei permanenten Fehlern. Sie blockieren nur länger.</li>
+  <li>„@RetryableTopic behält die Reihenfolge.“ → <b>Falsch.</b> Spätere Nachrichten laufen am Retry vorbei.</li>
+  <li>„Deserialisierungsfehler landen im Listener.“ → <b>Falsch.</b> Ohne <code>ErrorHandlingDeserializer</code> scheitert schon <code>poll()</code>.</li>
+  <li>„Replay ist einfach Copy-Paste ins Haupt-Topic.“ → <b>Falsch.</b> Ohne Idempotenz und Versionsprüfung entstehen Duplikate und veraltete Zustände.</li>
+</ul>
+</div>
+
+<h2>11. Fragen</h2>
+<details><summary>Was ist eine Poison Message?</summary><p>Eine Nachricht, die bei jedem Versuch scheitert. Ohne Grenze blockiert sie die Partition für immer.</p></details>
+<details><summary>Was ist ein Dead Letter Topic?</summary><p>Ein normales Topic für Nachrichten, die nicht verarbeitet werden konnten. Es enthält den Original-Record plus Fehler-Header.</p></details>
+<details><summary>Hat der Kafka-Broker eine DLQ?</summary><p>Nein. Die Client-Bibliothek, z. B. Spring Kafka oder Kafka Connect, schreibt das DLT.</p></details>
+<details><summary>Was macht der DefaultErrorHandler ohne Konfiguration?</summary><p>10 Versuche ohne Pause, dann loggt er den Record auf ERROR und überspringt ihn. Die Nachricht ist dann verloren.</p></details>
+<details><summary>Wie hängen Sie ein DLT an?</summary><p>Mit einem <code>DeadLetterPublishingRecoverer</code> im <code>DefaultErrorHandler</code>. Standardziel: <code>&lt;topic&gt;-dlt</code>, gleiche Partition.</p></details>
+<details><summary>Warum braucht das DLT gleich viele Partitionen?</summary><p>Der Recoverer schreibt standardmässig in dieselbe Partitionsnummer. Fehlt sie, scheitert das Publizieren.</p></details>
+<details><summary>Was ist der Unterschied zwischen transientem und permanentem Fehler?</summary><p>Transient verschwindet von selbst, Retry hilft. Permanent bleibt, Retry ist sinnlos. Darum permanente Fehler sofort ins DLT.</p></details>
+<details><summary>Welche Exceptions sind standardmässig nicht retryable?</summary><p>Unter anderem DeserializationException, MessageConversionException, ConversionException und ClassCastException. Eigene ergänzt man mit addNotRetryableExceptions.</p></details>
+<details><summary>Was ist Blocking Retry?</summary><p>Der Consumer versucht denselben Record nach einer Pause erneut. Die Partition steht so lange, die Reihenfolge bleibt.</p></details>
+<details><summary>Was ist Non-blocking Retry?</summary><p>Der Record geht in ein Retry-Topic und wird später erneut verarbeitet. Das Haupt-Topic läuft weiter, aber die Reihenfolge ist weg.</p></details>
+<details><summary>Wie funktioniert die Verzögerung bei @RetryableTopic?</summary><p>Der Record trägt einen Fälligkeits-Zeitstempel. Der Retry-Consumer pausiert die Partition, bis er fällig ist.</p></details>
+<details><summary>Welche Topics legt @RetryableTopic an?</summary><p>Retry-Topics mit Suffix <code>-retry</code> (meist mit Delay im Namen) und ein <code>-dlt</code>. Bei fester Pause seit 4.1 nur ein Retry-Topic.</p></details>
+<details><summary>Was passiert bei einem Deserialisierungsfehler?</summary><p>Ohne ErrorHandlingDeserializer scheitert poll() und der Consumer kommt nicht weiter. Mit ihm geht der Record mit den Original-Bytes direkt ins DLT.</p></details>
+<details><summary>Warum ist max.poll.interval.ms bei Retries wichtig?</summary><p>Wartet der Consumer zu lange ohne poll(), gilt er als tot. Es gibt einen Rebalance, und der Record kommt woanders wieder.</p></details>
+<details><summary>Welche Header schreibt Spring ins DLT?</summary><p>Original-Topic, Partition, Offset, Zeitstempel, Exception-Klasse, Message und Stacktrace.</p></details>
+<details><summary>Was passiert, wenn der DLT-Handler selbst scheitert?</summary><p>Standard ALWAYS_RETRY_ON_ERROR: Der Record geht zurück ins DLT. Ausnahme: fatale Exceptions wie Deserialisierungsfehler.</p></details>
+<details><summary>Wie überwachen Sie ein DLT?</summary><p>Alarm, sobald der End-Offset steigt. Dazu Dashboard mit Rate ins DLT, Owner und Runbook.</p></details>
+<details><summary>Wie spielen Sie Nachrichten aus dem DLT zurück?</summary><p>Nach dem Fix liest ein Replay-Werkzeug das DLT und schreibt mit Original-Key ins Haupt-Topic. Voraussetzung: idempotenter Consumer.</p></details>
+<details><summary>Was ist das Risiko beim Replay?</summary><p>Duplikate, wenn die Nachricht schon teilweise gewirkt hat. Und veraltete Zustände, wenn neuere Events desselben Keys schon verarbeitet sind.</p></details>
+<details><summary>Wie behandeln Sie Fehler in einem Batch-Listener?</summary><p>Mit BatchListenerFailedException und dem Index. Dann werden die Records davor committet und nur der fehlerhafte behandelt.</p></details>
+<details><summary>Wie macht Kafka Connect Fehlerbehandlung?</summary><p>Mit <code>errors.tolerance=all</code> und <code>errors.deadletterqueue.topic.name</code> schreibt ein Sink-Connector fehlerhafte Records in ein DLQ-Topic.</p></details>
+<details><summary>Wie unterscheidet sich Service Bus?</summary><p>Service Bus hat eine eingebaute Dead-Letter-Sub-Queue. Nach MaxDeliveryCount (Standard 10) wandert die Nachricht automatisch dorthin.</p></details>
+<details><summary>Was tun, wenn ein Downstream-System komplett ausfällt?</summary><p>Nicht alles ins DLT schieben. Container pausieren oder Circuit Breaker nutzen und nach Rückkehr weitermachen.</p></details>
+<details><summary>Szenario: Der Consumer-Lag einer Partition wächst seit einer Stunde, der Offset steht fest. Was tun Sie?</summary><p>Wahrscheinlich eine Poison Message mit endlosen Retries. Den Record per Offset ansehen, Retry-Grenze und DLT konfigurieren, den Fehlertyp als nicht retryable markieren.</p></details>
+<details><summary>Szenario: Fachbereich meldet fehlende Bestellungen, im Log stehen nur ERROR-Zeilen. Was ist passiert?</summary><p>Der Standard-Recoverer hat nach 10 Versuchen geloggt und übersprungen. Lösung: DLT einrichten, Offsets aus dem Log nehmen und die Records gezielt neu lesen.</p></details>
+<details><summary>Szenario: Nach einem Bugfix liegen 5000 Nachrichten im DLT. Wie gehen Sie vor?</summary><p>Erst Ursache und Idempotenz prüfen. Dann klein starten: wenige Records zurückspielen, Ergebnis prüfen, dann den Rest mit begrenzter Rate. Neuere Zustände per Version schützen.</p></details>
+
+</body>
+</html>

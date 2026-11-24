@@ -1,0 +1,231 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Performance-Tuning: Konfiguration und Abfragen</title>
+<style>
+  body { font: 17px/1.55 -apple-system, system-ui, sans-serif; max-width: 760px; margin: 0 auto; padding: 16px; color: #1d1d1f; }
+  h1 { font-size: 28px; margin: 8px 0 4px; }
+  h2 { font-size: 21px; margin: 32px 0 8px; padding-top: 12px; border-top: 2px solid #e5e5ea; }
+  .kern { background: #eef6ff; border-left: 4px solid #0a66c2; padding: 10px 14px; border-radius: 6px; }
+  .senior { background: #f0faf0; border-left: 4px solid #2e7d32; padding: 10px 14px; border-radius: 6px; }
+  .trap { background: #fff4f2; border-left: 4px solid #c62828; padding: 10px 14px; border-radius: 6px; }
+  code { background: #f2f2f7; padding: 1px 5px; border-radius: 4px; font-size: 15px; }
+  pre { background: #1e1e1e; color: #e6e6e6; padding: 12px; border-radius: 8px; overflow-x: auto; font-size: 13.5px; line-height: 1.45; }
+  svg { width: 100%; height: auto; display: block; margin: 10px 0; }
+  ol li, ul li { margin: 4px 0; }
+  details { border: 1px solid #e5e5ea; border-radius: 8px; padding: 8px 12px; margin: 6px 0; }
+  summary { font-weight: 600; cursor: pointer; }
+  details p { margin: 6px 0 2px; }
+  .small { color: #6e6e73; font-size: 14px; }
+</style>
+</head>
+<body>
+
+<h1>Performance-Tuning: Konfiguration und Abfragen</h1>
+<p class="small">PostgreSQL · Quellen: PostgreSQL 17 Doku (19.4 Resource Consumption, 19.5 WAL/Checkpoints, 19.7 Query Planning, 19.8 Logging, 28.5 WAL Configuration, F.32 pg_stat_statements, F.4 auto_explain, 11.8 Partial Indexes, 14.4 Populating a Database, 27.2 pg_stat_checkpointer), pgJDBC Doku (reWriteBatchedInserts), Hibernate ORM 6 User Guide (Fetching, Batching)</p>
+
+<div class="kern">
+<b>Kern:</b> <b>Performance-Tuning</b> in PostgreSQL ist ein Kreislauf: messen, die teuerste Abfrage finden, gezielt verbessern, wieder messen. Die meisten Gewinne kommen aus <b>Abfragen und Indizes</b>, nicht aus Konfiguration. Die Konfiguration setzt nur den Rahmen: Speicher (<code>shared_buffers</code>, <code>work_mem</code>) und Schreiblast (Checkpoints).
+</div>
+
+<h2>1. Wo sitzen die Stellschrauben?</h2>
+<svg viewBox="0 0 720 330" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="a" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="10" y="20" width="170" height="70" rx="8" fill="#fff" stroke="#555"/><text x="95" y="46" text-anchor="middle" font-weight="700">App / ORM</text><text x="95" y="66" text-anchor="middle" font-size="12">N+1 · Batching</text><text x="95" y="82" text-anchor="middle" font-size="12">Pool-Grösse</text>
+  <line x1="180" y1="55" x2="228" y2="55" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="230" y="10" width="480" height="310" rx="12" fill="#f7f7fa" stroke="#999" stroke-dasharray="5 4"/><text x="470" y="30" text-anchor="middle" font-weight="700">PostgreSQL 17</text>
+  <rect x="250" y="40" width="200" height="64" rx="8" fill="#dbe9fb" stroke="#0a66c2"/><text x="350" y="64" text-anchor="middle" font-weight="700">Planner</text><text x="350" y="84" text-anchor="middle" font-size="12">effective_cache_size</text><text x="350" y="99" text-anchor="middle" font-size="11">random_page_cost</text>
+  <rect x="470" y="40" width="220" height="64" rx="8" fill="#dbe9fb" stroke="#0a66c2"/><text x="580" y="64" text-anchor="middle" font-weight="700">Backend (pro Verbindung)</text><text x="580" y="84" text-anchor="middle" font-size="12">work_mem pro Sort/Hash</text>
+  <rect x="250" y="124" width="440" height="56" rx="8" fill="#0a66c2"/><text x="470" y="148" text-anchor="middle" fill="#fff" font-weight="700">shared_buffers (Page-Cache von PostgreSQL)</text><text x="470" y="168" text-anchor="middle" fill="#fff" font-size="12">8-kB-Seiten, geteilt von allen Backends</text>
+  <rect x="250" y="200" width="200" height="56" rx="8" fill="#fff" stroke="#555"/><text x="350" y="224" text-anchor="middle" font-weight="700">WAL + Checkpointer</text><text x="350" y="243" text-anchor="middle" font-size="12">max_wal_size</text>
+  <rect x="470" y="200" width="220" height="56" rx="8" fill="#fff" stroke="#555"/><text x="580" y="224" text-anchor="middle" font-weight="700">VACUUM / CREATE INDEX</text><text x="580" y="243" text-anchor="middle" font-size="12">maintenance_work_mem</text>
+  <rect x="250" y="270" width="440" height="40" rx="8" fill="#e8f5e9" stroke="#2e7d32"/><text x="470" y="295" text-anchor="middle">OS-Page-Cache → Disk</text>
+  <line x1="470" y1="180" x2="470" y2="198" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <line x1="470" y1="256" x2="470" y2="268" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+</svg>
+<ol>
+  <li><b>App / ORM:</b> bestimmt, <b>wie viele</b> Abfragen kommen. N+1 und fehlendes Batching kosten hier am meisten.</li>
+  <li><b>Planner:</b> wählt den Ausführungsplan. Beispiel: <code>effective_cache_size</code> sagt ihm, wie viel Cache es insgesamt gibt.</li>
+  <li><b>Backend:</b> ein Prozess pro Verbindung. <code>work_mem</code> gilt pro Sortier- oder Hash-Operation darin.</li>
+  <li><b>shared_buffers:</b> der eigene Cache von PostgreSQL für Tabellen- und Indexseiten. Alle Backends teilen ihn.</li>
+  <li><b>WAL und Checkpointer:</b> Jede Änderung geht zuerst ins <b>WAL</b> (Write-Ahead Log). Der Checkpointer schreibt geänderte Seiten periodisch auf Disk.</li>
+  <li><b>Wartung:</b> <code>VACUUM</code>, <code>CREATE INDEX</code> und FK-Prüfungen nutzen <code>maintenance_work_mem</code>.</li>
+  <li><b>OS-Page-Cache:</b> PostgreSQL liest über den Cache des Betriebssystems. Daten liegen oft doppelt: in shared_buffers und im OS-Cache.</li>
+</ol>
+
+<h2>2. Die Reise einer Tuning-Runde</h2>
+<svg viewBox="0 0 720 300" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="b" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="10" y="20" width="160" height="70" rx="10" fill="#eee" stroke="#777"/><text x="90" y="48" text-anchor="middle" font-weight="700">1. Symptom</text><text x="90" y="68" text-anchor="middle" font-size="12">p99 steigt, CPU 90 %</text>
+  <line x1="170" y1="55" x2="198" y2="55" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="200" y="20" width="160" height="70" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="280" y="48" text-anchor="middle" font-weight="700">2. Top-Abfragen</text><text x="280" y="68" text-anchor="middle" font-size="12">pg_stat_statements</text>
+  <line x1="360" y1="55" x2="388" y2="55" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="390" y="20" width="160" height="70" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="470" y="48" text-anchor="middle" font-weight="700">3. Plan lesen</text><text x="470" y="68" text-anchor="middle" font-size="12">EXPLAIN ANALYZE</text>
+  <line x1="550" y1="55" x2="578" y2="55" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="580" y="20" width="130" height="70" rx="10" fill="#0a66c2"/><text x="645" y="48" text-anchor="middle" fill="#fff" font-weight="700">4. Ursache</text><text x="645" y="68" text-anchor="middle" fill="#fff" font-size="12">Index? N+1? Sort?</text>
+  <line x1="645" y1="90" x2="645" y2="138" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="470" y="140" width="240" height="70" rx="10" fill="#e8f5e9" stroke="#2e7d32"/><text x="590" y="166" text-anchor="middle" font-weight="700">5. Eine Änderung</text><text x="590" y="186" text-anchor="middle" font-size="12">Index, Abfrage, work_mem</text>
+  <line x1="470" y1="175" x2="378" y2="175" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="200" y="140" width="176" height="70" rx="10" fill="#fff" stroke="#555"/><text x="288" y="166" text-anchor="middle" font-weight="700">6. Neu messen</text><text x="288" y="186" text-anchor="middle" font-size="12">Reset, vergleichen</text>
+  <path d="M200,175 C90,175 90,120 90,92" fill="none" stroke="#555" stroke-width="2" stroke-dasharray="6 4" marker-end="url(#b)"/>
+  <text x="70" y="240" font-size="12">nächste Runde</text>
+</svg>
+<ol>
+  <li><b>Symptom:</b> Das Monitoring zeigt steigende Latenz oder hohe DB-CPU. Noch keine Vermutung, nur Fakten.</li>
+  <li><b>Top-Abfragen finden:</b> <code>pg_stat_statements</code> sortiert nach <code>total_exec_time</code>. Die Abfrage mit der grössten <b>Gesamtzeit</b> zählt, nicht die langsamste Einzelabfrage.</li>
+  <li><b>Plan lesen:</b> <code>EXPLAIN (ANALYZE, BUFFERS)</code> mit echten Parametern. Man sucht Seq Scans auf grossen Tabellen, falsche Zeilenschätzungen und Sorts auf Disk.</li>
+  <li><b>Ursache benennen:</b> fehlender Index, N+1 aus dem ORM, zu kleiner <code>work_mem</code>, alte Statistiken.</li>
+  <li><b>Eine Änderung:</b> genau eine. Sonst weiss man nicht, was geholfen hat.</li>
+  <li><b>Neu messen:</b> <code>pg_stat_statements_reset()</code>, Last abwarten, Werte vergleichen. Dann die nächste Abfrage.</li>
+</ol>
+
+<h2>3. Beispiel: von pg_stat_statements zum Partial Index</h2>
+<pre>-- postgresql.conf: shared_preload_libraries = 'pg_stat_statements'  (Neustart)
+CREATE EXTENSION IF NOT EXISTS pg_stat_statements;
+
+SELECT left(query, 60) AS query, calls,
+       round(total_exec_time) AS total_ms,
+       round(mean_exec_time, 2) AS mean_ms,
+       shared_blks_read
+FROM pg_stat_statements
+ORDER BY total_exec_time DESC
+LIMIT 3;</pre>
+<pre>                            query                             |  calls  | total_ms | mean_ms | shared_blks_read
+--------------------------------------------------------------+---------+----------+---------+------------------
+ SELECT * FROM orders WHERE status = $1 ORDER BY created_at L |   48210 |   612400 |   12.70 |          9120334
+ SELECT * FROM order_item WHERE order_id = $1                 | 2410500 |   180770 |    0.07 |            21004
+ UPDATE orders SET status = $1 WHERE id = $2                  |   51022 |    20410 |    0.40 |             3310</pre>
+<pre>-- nur 0,5 % der Bestellungen sind 'OPEN', aber genau diese werden ständig gesucht
+CREATE INDEX CONCURRENTLY orders_open_created_idx
+  ON orders (created_at) WHERE status = 'OPEN';
+ANALYZE orders;
+
+EXPLAIN (ANALYZE, BUFFERS)
+SELECT * FROM orders WHERE status = 'OPEN' ORDER BY created_at LIMIT 50;</pre>
+<pre> Limit  (actual time=0.031..0.145 rows=50 loops=1)
+   Buffers: shared hit=53
+   ->  Index Scan using orders_open_created_idx on orders  (actual rows=50 loops=1)
+ Planning Time: 0.210 ms
+ Execution Time: 0.170 ms</pre>
+<p class="small">Erwartetes Ergebnis (laut Doku, nicht ausgeführt). Zahlen sind ein typisches Beispiel, Plan gekürzt.</p>
+<ol>
+  <li>Zeile 1 kostet die meiste Gesamtzeit. Hohe <code>shared_blks_read</code> heisst: Sie liest viele Seiten von Disk oder OS-Cache. Das deutet auf einen Seq Scan.</li>
+  <li>Zeile 2 ist einzeln schnell (0,07 ms), läuft aber 2,4 Mio. Mal. Das ist das Muster von <b>N+1</b>: eine Abfrage pro Bestellung.</li>
+  <li>Der <b>Partial Index</b> enthält nur Zeilen mit <code>status = 'OPEN'</code>. Er ist winzig und liefert die Zeilen schon sortiert.</li>
+  <li>Der Planer nutzt ihn nur, wenn die Abfrage die Bedingung <b>beweisbar</b> enthält. Mit Parameter <code>status = $1</code> beim <b>Generic Plan</b> klappt das nicht.</li>
+  <li><code>CONCURRENTLY</code> baut den Index ohne Schreibsperre. Er dauert länger und läuft nicht in einer Transaktion.</li>
+</ol>
+
+<h2>4. Details, die Interviewer fragen</h2>
+<ol>
+  <li><b>shared_buffers</b> (Standard 128 MB): der Cache von PostgreSQL. Die Doku nennt für einen dedizierten Server mit ≥ 1 GB RAM 25 % als Startwert. Mehr als 40 % hilft selten, weil der OS-Cache auch arbeitet. Änderung braucht einen Neustart.</li>
+  <li><b>effective_cache_size</b> (Standard 4 GB): reserviert <b>keinen</b> Speicher. Es sagt dem Planer, wie viel Cache (shared_buffers plus OS) etwa verfügbar ist. Hoch heisst: Index Scans werden attraktiver. Üblich: 50–75 % des RAM.</li>
+  <li><b>work_mem</b> (Standard 4 MB): Speicher pro Sortier- oder Hash-Operation, bevor auf Disk ausgelagert wird. Eine Abfrage kann mehrere solche Knoten haben, plus parallele Worker. Hash-Operationen dürfen <code>work_mem × hash_mem_multiplier</code> (Standard 2.0) nutzen.</li>
+  <li><b>work_mem gezielt:</b> lieber pro Session oder Rolle erhöhen: <code>SET work_mem = '256MB'</code> für einen Report, oder <code>ALTER ROLE reporting SET work_mem = ...</code>. Global hoch ist bei vielen Verbindungen gefährlich.</li>
+  <li><b>maintenance_work_mem</b> (Standard 64 MB): Speicher für <code>VACUUM</code>, <code>CREATE INDEX</code> und <code>ALTER TABLE ADD FOREIGN KEY</code>. Höher macht Index-Builds schneller. Autovacuum nutzt <code>autovacuum_work_mem</code> pro Worker, sonst diesen Wert.</li>
+  <li><b>PostgreSQL 17 und VACUUM:</b> Seit 17 speichert VACUUM tote Tupel in einer neuen, kompakten Struktur. Das alte Limit von 1 GB Speicher dafür fällt weg. Grosse Tabellen brauchen weniger Index-Durchläufe.</li>
+  <li><b>Checkpoint:</b> Ein <b>Checkpoint</b> schreibt alle geänderten Seiten (dirty pages) auf Disk. Danach kann altes WAL weg. Ausgelöst durch <code>checkpoint_timeout</code> (Standard 5 min) oder durch WAL-Menge über <code>max_wal_size</code> (Standard 1 GB).</li>
+  <li><b>Checkpoint-Spitzen:</b> Zu häufige Checkpoints erzeugen I/O-Spitzen und viele <b>Full Page Writes</b> (die erste Änderung einer Seite nach einem Checkpoint schreibt die ganze Seite ins WAL). <code>checkpoint_completion_target = 0.9</code> verteilt das Schreiben über 90 % des Intervalls.</li>
+  <li><b>Checkpoint-Warnung:</b> Das Log meldet <code>checkpoints are occurring too frequently</code>. Lösung: <code>max_wal_size</code> erhöhen. In PostgreSQL 17 zeigt <code>pg_stat_checkpointer</code> (<code>num_timed</code> vs. <code>num_requested</code>) das an. Früher stand es in <code>pg_stat_bgwriter</code>.</li>
+  <li><b>random_page_cost</b> (Standard 4.0): Kosten eines zufälligen Seitenzugriffs relativ zu sequenziell (1.0). Auf SSD oft 1.1. Sonst unterschätzt der Planer Index Scans.</li>
+  <li><b>pg_stat_statements:</b> Eine Extension, die normalisierte Abfragen mit Aufrufen, Zeiten, Zeilen und Block-I/O sammelt. Braucht <code>shared_preload_libraries</code>. Mit <code>track_io_timing = on</code> sieht man auch I/O-Zeit.</li>
+  <li><b>Slow Query Log:</b> <code>log_min_duration_statement = '500ms'</code> loggt jede Abfrage ab 500 ms mit Dauer. <b>auto_explain</b> loggt zusätzlich den Plan (<code>auto_explain.log_min_duration</code>). <code>log_analyze</code> dort kostet Overhead auf jeder Abfrage.</li>
+  <li><b>N+1:</b> Das ORM lädt eine Liste (1 Abfrage) und dann pro Element eine Beziehung (N Abfragen). Ursache: Lazy Loading in einer Schleife. Lösungen: <code>JOIN FETCH</code>, <code>@EntityGraph</code>, oder <code>hibernate.default_batch_fetch_size</code> (lädt per <code>IN (...)</code>).</li>
+  <li><b>Batching beim Schreiben:</b> <code>hibernate.jdbc.batch_size = 50</code> plus <code>order_inserts = true</code>. Mit <code>GenerationType.IDENTITY</code> schaltet Hibernate Insert-Batching ab. Lösung: <code>SEQUENCE</code> mit <code>allocationSize</code>.</li>
+  <li><b>reWriteBatchedInserts=true:</b> pgJDBC schreibt einen Batch aus Einzel-Inserts in mehrzeilige <code>INSERT ... VALUES (...), (...)</code> um. Weniger Roundtrips.</li>
+  <li><b>COPY:</b> der schnellste Weg für Massenimport. Dazu Indizes und FKs vorher entfernen und danach anlegen, laut Doku „Populating a Database“.</li>
+  <li><b>Partial Index:</b> Ein Index nur über Zeilen, die eine <code>WHERE</code>-Bedingung erfüllen. Gut für seltene, oft gesuchte Werte wie <code>status = 'OPEN'</code> oder <code>deleted_at IS NULL</code>. Auch für <b>partial unique</b>: eindeutig nur unter aktiven Zeilen.</li>
+</ol>
+
+<h2>5. Vergleich</h2>
+<ul>
+  <li><b>shared_buffers vs. effective_cache_size:</b> das eine reserviert Speicher, das andere ist nur ein Hinweis an den Planer.</li>
+  <li><b>work_mem vs. maintenance_work_mem:</b> pro Abfrage-Operation vs. pro Wartungsoperation. Der zweite darf viel grösser sein, weil es wenige gleichzeitig gibt.</li>
+  <li><b>pg_stat_statements vs. Slow Query Log:</b> Summen über alle Aufrufe vs. einzelne langsame Ausführungen. N+1 sieht man nur im ersten.</li>
+  <li><b>EXPLAIN vs. EXPLAIN ANALYZE:</b> geschätzter Plan vs. wirklich ausgeführt mit echten Zeiten. ANALYZE führt auch <code>UPDATE</code>/<code>DELETE</code> aus, also in eine Transaktion mit <code>ROLLBACK</code> packen.</li>
+  <li><b>Partial Index vs. voller Index:</b> kleiner, schneller zu pflegen, aber nur für passende Abfragen nutzbar.</li>
+  <li><b>JOIN FETCH vs. Batch Fetch:</b> eine Abfrage mit Join (Gefahr: kartesisches Produkt bei mehreren Collections) vs. wenige <code>IN</code>-Abfragen.</li>
+</ul>
+
+<h2>6. In der Produktion</h2>
+<ol>
+  <li><b>Out of Memory durch work_mem:</b> Jemand setzt global <code>work_mem = 1GB</code>. 200 Verbindungen mit je mehreren Hash Joins sprengen den RAM. Der OOM-Killer beendet ein Backend, PostgreSQL startet alle Prozesse neu. Lösung: global klein, pro Rolle oder Session gross.</li>
+  <li><b>Sort auf Disk:</b> Im Plan steht <code>Sort Method: external merge Disk: 120MB</code>. Lösung: <code>work_mem</code> für diese Abfrage erhöhen oder einen Index, der die Sortierung liefert.</li>
+  <li><b>I/O-Spitzen alle paar Minuten:</b> Checkpoints wegen zu kleinem <code>max_wal_size</code> bei hoher Schreiblast. Lösung: <code>max_wal_size</code> erhöhen (z. B. 4–16 GB), Log und <code>pg_stat_checkpointer</code> prüfen.</li>
+  <li><b>N+1 nach Release:</b> Eine neue Ansicht greift auf eine Lazy-Collection zu. Abfragen pro Request springen von 3 auf 300. Lösung: Fetch-Plan korrigieren, und in Tests die Anzahl Statements prüfen (z. B. Hibernate Statistics).</li>
+  <li><b>Falscher Plan nach Datenwachstum:</b> Statistiken sind alt, der Planer schätzt 10 Zeilen statt 1 Mio. Lösung: <code>ANALYZE</code>, Autovacuum-Analyse-Schwellen pro Tabelle anpassen, bei korrelierten Spalten <code>CREATE STATISTICS</code>.</li>
+  <li><b>Langsamer Bulk-Import:</b> Einzel-Inserts mit Autocommit. Lösung: Batching, eine Transaktion pro Batch, oder <code>COPY</code>.</li>
+  <li><b>Cloud-Managed:</b> In Azure Flexible Server setzt man Parameter über Server-Parameter, nicht über die Datei. Manche (z. B. <code>shared_buffers</code>) brauchen einen Neustart.</li>
+</ol>
+
+<h2>7. Diagnose: Werkzeuge und Abfragen</h2>
+<ul>
+  <li><code>SELECT query, calls, total_exec_time, mean_exec_time, rows, shared_blks_hit, shared_blks_read FROM pg_stat_statements ORDER BY total_exec_time DESC LIMIT 10;</code></li>
+  <li><b>Cache-Hit-Ratio:</b> <code>SELECT sum(blks_hit) * 100.0 / sum(blks_hit + blks_read) FROM pg_stat_database;</code>. Bei OLTP meist über 99 %.</li>
+  <li><code>EXPLAIN (ANALYZE, BUFFERS, SETTINGS)</code>: echter Plan, Seitenzugriffe und geänderte Einstellungen.</li>
+  <li><code>pg_stat_user_tables</code>: <code>seq_scan</code> vs. <code>idx_scan</code>, <code>n_dead_tup</code>, <code>last_autoanalyze</code>.</li>
+  <li><code>pg_stat_user_indexes</code> mit <code>idx_scan = 0</code>: ungenutzte Indizes, die nur Writes kosten.</li>
+  <li><code>SELECT * FROM pg_stat_checkpointer;</code> (PostgreSQL 17): geplante vs. erzwungene Checkpoints.</li>
+  <li><code>log_checkpoints = on</code> (Standard seit 15), <code>log_temp_files = 0</code> (loggt jede Temp-Datei, also Sorts auf Disk), <code>log_min_duration_statement</code>, <code>auto_explain</code>.</li>
+  <li><code>SHOW work_mem;</code>, <code>SELECT name, setting, source FROM pg_settings WHERE source &lt;&gt; 'default';</code>: was wirklich gesetzt ist.</li>
+  <li><b>Azure:</b> Query Store und Intelligent Performance (Index-Empfehlungen) in Flexible Server.</li>
+</ul>
+
+<h2>8. Senior-Punkte</h2>
+<div class="senior">
+<ol>
+  <li><b>Abfragen vor Konfiguration.</b> Ein Index oder ein behobenes N+1 bringt oft Faktor 100. Ein Parameter selten mehr als Faktor 2.</li>
+  <li><b>Gesamtzeit zählt.</b> Eine 0,1-ms-Abfrage, die 10 Mio. Mal läuft, kostet mehr als ein 10-s-Report.</li>
+  <li><b>work_mem ist ein Multiplikator:</b> Verbindungen × Operationen × Worker. Darum global konservativ, gezielt grosszügig.</li>
+  <li><b>Eine Änderung pro Runde,</b> mit Vorher-Nachher-Zahlen. Sonst wird Tuning Aberglaube.</li>
+  <li><b>Jeder Index kostet Writes,</b> WAL und VACUUM-Zeit. Partial Indexes sind oft der beste Kompromiss.</li>
+  <li><b>Statement-Anzahl in Tests prüfen.</b> N+1 ist ein Regressionsthema und gehört in die CI, nicht nur ins Monitoring.</li>
+</ol>
+</div>
+
+<h2>9. Aus dem Projekt</h2>
+<p>„Bei NABODAT habe ich mit Hibernate auf PostgreSQL/PostGIS gearbeitet und Datentabellen auf Lazy Loading umgestellt, damit nur die sichtbare Seite geladen wird.“ <span class="small">(Prüfen und durch dein echtes Beispiel ersetzen. Konkrete Tuning-Zahlen oder pg_stat_statements-Einsatz stehen nicht im Profil.)</span></p>
+
+<h2>10. Fallen</h2>
+<div class="trap">
+<ul>
+  <li>„effective_cache_size reserviert Speicher.“ → <b>Falsch.</b> Es ist nur eine Schätzung für den Planer.</li>
+  <li>„work_mem ist der Speicher pro Verbindung.“ → <b>Falsch.</b> Pro Sort- oder Hash-Operation, also oft mehrfach pro Abfrage.</li>
+  <li>„shared_buffers so gross wie möglich.“ → <b>Falsch.</b> PostgreSQL nutzt auch den OS-Cache. Über 40 % des RAM hilft selten.</li>
+  <li>„Die langsamste Abfrage zuerst optimieren.“ → <b>Meist falsch.</b> Die mit der grössten Gesamtzeit zuerst.</li>
+  <li>„Ein Partial Index wird immer genutzt.“ → <b>Falsch.</b> Nur wenn der Planer beweisen kann, dass die Abfrage-Bedingung den Index-Prädikat impliziert.</li>
+  <li>„Hibernate batcht Inserts automatisch.“ → <b>Falsch.</b> Nur mit <code>jdbc.batch_size</code>, und nicht mit IDENTITY-IDs.</li>
+</ul>
+</div>
+
+<h2>11. Fragen</h2>
+<details><summary>Wie gehen Sie bei einer langsamen PostgreSQL-Datenbank vor?</summary><p>pg_stat_statements nach Gesamtzeit sortieren, Top-Abfrage mit EXPLAIN (ANALYZE, BUFFERS) prüfen, eine gezielte Änderung, neu messen.</p></details>
+<details><summary>Was ist shared_buffers und wie setzen Sie es?</summary><p>Der eigene Seiten-Cache von PostgreSQL, Standard 128 MB. Startwert etwa 25 % des RAM auf einem dedizierten Server, Neustart nötig.</p></details>
+<details><summary>Was macht effective_cache_size?</summary><p>Es sagt dem Planer, wie viel Cache insgesamt verfügbar ist. Es reserviert nichts und beeinflusst, ob Index Scans günstig wirken.</p></details>
+<details><summary>Was ist work_mem und warum ist es gefährlich?</summary><p>Speicher pro Sort- oder Hash-Operation. Er kann pro Abfrage mehrfach und pro Verbindung anfallen. Global hoch führt zu OOM.</p></details>
+<details><summary>Wie erkennen Sie, dass work_mem zu klein ist?</summary><p>EXPLAIN ANALYZE zeigt „external merge Disk“ oder Hash Batches &gt; 1. log_temp_files loggt Temp-Dateien.</p></details>
+<details><summary>Wofür ist maintenance_work_mem?</summary><p>Für VACUUM, CREATE INDEX und ADD FOREIGN KEY. Höher macht diese Operationen schneller, Standard 64 MB.</p></details>
+<details><summary>Was ist ein Checkpoint?</summary><p>Alle geänderten Seiten werden auf Disk geschrieben, danach kann altes WAL entfernt werden. Ausgelöst durch Zeit oder WAL-Menge.</p></details>
+<details><summary>Was tun bei „checkpoints are occurring too frequently“?</summary><p>max_wal_size erhöhen, damit Checkpoints zeitgesteuert statt mengengesteuert kommen. checkpoint_completion_target bei 0.9 lassen.</p></details>
+<details><summary>Was ist checkpoint_completion_target?</summary><p>Der Anteil des Intervalls, über den der Checkpoint seine Writes verteilt. Standard 0.9, das glättet I/O.</p></details>
+<details><summary>Wie richten Sie pg_stat_statements ein?</summary><p>shared_preload_libraries = 'pg_stat_statements', Neustart, CREATE EXTENSION. Optional track_io_timing = on.</p></details>
+<details><summary>Welche Spalten von pg_stat_statements schauen Sie an?</summary><p>calls, total_exec_time, mean_exec_time, rows, shared_blks_hit und shared_blks_read. Viele calls mit kleiner mean deuten auf N+1.</p></details>
+<details><summary>Wie richten Sie ein Slow Query Log ein?</summary><p>log_min_duration_statement auf z. B. 500 ms. Mit auto_explain zusätzlich den Plan langsamer Abfragen loggen.</p></details>
+<details><summary>Was ist das N+1-Problem?</summary><p>Eine Abfrage lädt N Elemente, dann folgt pro Element eine weitere Abfrage. Ursache meist Lazy Loading in einer Schleife.</p></details>
+<details><summary>Wie lösen Sie N+1 in Hibernate?</summary><p>JOIN FETCH oder @EntityGraph für den Use Case, oder default_batch_fetch_size für IN-Abfragen. Danach Statement-Anzahl im Test prüfen.</p></details>
+<details><summary>Wie machen Sie Inserts mit Hibernate schnell?</summary><p>jdbc.batch_size und order_inserts setzen, SEQUENCE statt IDENTITY, pgJDBC reWriteBatchedInserts=true. Für Massenimport COPY.</p></details>
+<details><summary>Warum verhindert IDENTITY das Insert-Batching?</summary><p>Hibernate braucht die ID sofort nach jedem Insert. Bei IDENTITY liefert erst die DB sie, also muss jeder Insert einzeln laufen.</p></details>
+<details><summary>Was ist ein Partial Index?</summary><p>Ein Index nur über Zeilen mit einer WHERE-Bedingung. Klein und schnell für seltene, oft gesuchte Werte.</p></details>
+<details><summary>Wann nutzt der Planer einen Partial Index nicht?</summary><p>Wenn die Abfrage-Bedingung das Index-Prädikat nicht beweisbar impliziert, z. B. bei einem Parameter im Generic Plan.</p></details>
+<details><summary>Warum random_page_cost auf SSD senken?</summary><p>Zufälliger Zugriff ist auf SSD fast so billig wie sequenzieller. Mit 4.0 unterschätzt der Planer Index Scans.</p></details>
+<details><summary>Was ist bei EXPLAIN ANALYZE auf einem UPDATE zu beachten?</summary><p>Es führt das UPDATE wirklich aus. Darum in BEGIN … ROLLBACK packen.</p></details>
+<details><summary>Was hat sich in PostgreSQL 17 für VACUUM geändert?</summary><p>Eine neue Speicherstruktur für tote Tupel braucht viel weniger Speicher. Das 1-GB-Limit fällt weg.</p></details>
+<details><summary>Wo sehen Sie Checkpoint-Statistiken in PostgreSQL 17?</summary><p>In pg_stat_checkpointer mit num_timed und num_requested. Vorher in pg_stat_bgwriter.</p></details>
+<details><summary>Szenario: Die DB-CPU ist bei 90 %, aber keine Abfrage ist langsamer als 50 ms. Was tun Sie?</summary><p>pg_stat_statements nach total_exec_time und calls. Wahrscheinlich eine sehr häufige kleine Abfrage, z. B. N+1. Lösung im ORM oder mit Caching.</p></details>
+<details><summary>Szenario: Alle 5 Minuten gibt es Latenzspitzen bei hoher Schreiblast. Woran denken Sie?</summary><p>An Checkpoints und Full Page Writes. Log und pg_stat_checkpointer prüfen, max_wal_size erhöhen, completion_target 0.9.</p></details>
+<details><summary>Szenario: Nach dem Erhöhen von work_mem stürzt die DB nachts ab. Warum?</summary><p>Viele parallele Batch-Abfragen mit mehreren Hash-Knoten haben den RAM überschritten, der OOM-Killer griff. work_mem global senken und nur pro Rolle oder Session erhöhen.</p></details>
+
+</body>
+</html>

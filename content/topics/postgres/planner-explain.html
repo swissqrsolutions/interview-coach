@@ -1,0 +1,260 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Query Planner und EXPLAIN</title>
+<style>
+  body { font: 17px/1.55 -apple-system, system-ui, sans-serif; max-width: 760px; margin: 0 auto; padding: 16px; color: #1d1d1f; }
+  h1 { font-size: 28px; margin: 8px 0 4px; }
+  h2 { font-size: 21px; margin: 32px 0 8px; padding-top: 12px; border-top: 2px solid #e5e5ea; }
+  .kern { background: #eef6ff; border-left: 4px solid #0a66c2; padding: 10px 14px; border-radius: 6px; }
+  .senior { background: #f0faf0; border-left: 4px solid #2e7d32; padding: 10px 14px; border-radius: 6px; }
+  .trap { background: #fff4f2; border-left: 4px solid #c62828; padding: 10px 14px; border-radius: 6px; }
+  code { background: #f2f2f7; padding: 1px 5px; border-radius: 4px; font-size: 15px; }
+  pre { background: #1e1e1e; color: #e6e6e6; padding: 12px; border-radius: 8px; overflow-x: auto; font-size: 13.5px; line-height: 1.45; }
+  svg { width: 100%; height: auto; display: block; margin: 10px 0; }
+  ol li, ul li { margin: 4px 0; }
+  details { border: 1px solid #e5e5ea; border-radius: 8px; padding: 8px 12px; margin: 6px 0; }
+  summary { font-weight: 600; cursor: pointer; }
+  details p { margin: 6px 0 2px; }
+  .small { color: #6e6e73; font-size: 14px; }
+</style>
+</head>
+<body>
+
+<h1>Query Planner und EXPLAIN ANALYZE</h1>
+<p class="small">PostgreSQL · Tier 1 · Quellen: PostgreSQL 17 Doku, Kapitel 14 „Performance Tips“ (14.1 Using EXPLAIN, 14.2 Statistics Used by the Planner), Kapitel 76 „How the Planner Uses Statistics“, <code>EXPLAIN</code>, <code>ANALYZE</code>, <code>CREATE STATISTICS</code>, Kapitel 19.7 „Query Planning“ (Cost Constants), Appendix F: <code>pg_stat_statements</code>, <code>auto_explain</code></p>
+
+<div class="kern">
+<b>Kern:</b> Der <b>Query Planner</b> ist der Teil von PostgreSQL, der für eine SQL-Abfrage den billigsten <b>Ausführungsplan</b> sucht. Er schätzt Kosten mit <b>Statistiken</b> über die Daten. <b>EXPLAIN ANALYZE</b> führt die Abfrage aus und zeigt Schätzung und Wirklichkeit nebeneinander. Fast jedes langsame SQL ist eine <b>falsche Zeilenschätzung</b> oder ein fehlender Index.
+</div>
+
+<h2>1. Wo sitzt der Planner?</h2>
+<svg viewBox="0 0 720 300" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="a" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="10" y="30" width="110" height="50" rx="8" fill="#fff" stroke="#555"/><text x="65" y="60" text-anchor="middle">SQL-Text</text>
+  <line x1="120" y1="55" x2="148" y2="55" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="150" y="30" width="110" height="50" rx="8" fill="#eee" stroke="#777"/><text x="205" y="52" text-anchor="middle">Parser</text><text x="205" y="70" text-anchor="middle" font-size="12">Syntax, Namen</text>
+  <line x1="260" y1="55" x2="288" y2="55" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="290" y="30" width="110" height="50" rx="8" fill="#eee" stroke="#777"/><text x="345" y="52" text-anchor="middle">Rewriter</text><text x="345" y="70" text-anchor="middle" font-size="12">Views, Rules</text>
+  <line x1="400" y1="55" x2="428" y2="55" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="430" y="20" width="140" height="70" rx="8" fill="#0a66c2"/><text x="500" y="48" text-anchor="middle" fill="#fff" font-weight="700">Planner</text><text x="500" y="68" text-anchor="middle" fill="#fff" font-size="12">billigster Plan</text>
+  <line x1="570" y1="55" x2="598" y2="55" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="600" y="30" width="110" height="50" rx="8" fill="#dbe9fb" stroke="#0a66c2"/><text x="655" y="52" text-anchor="middle">Executor</text><text x="655" y="70" text-anchor="middle" font-size="12">Baum ausführen</text>
+  <rect x="330" y="150" width="200" height="60" rx="8" fill="#e8f5e9" stroke="#2e7d32"/><text x="430" y="174" text-anchor="middle" font-weight="700">Statistiken</text><text x="430" y="194" text-anchor="middle" font-size="12">pg_class, pg_statistic</text>
+  <line x1="460" y1="150" x2="480" y2="92" stroke="#2e7d32" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="80" y="150" width="200" height="60" rx="8" fill="#fff" stroke="#555"/><text x="180" y="174" text-anchor="middle" font-weight="700">ANALYZE</text><text x="180" y="194" text-anchor="middle" font-size="12">Stichprobe (Autovacuum)</text>
+  <line x1="280" y1="180" x2="328" y2="180" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="560" y="150" width="150" height="60" rx="8" fill="#fff" stroke="#555"/><text x="635" y="174" text-anchor="middle" font-weight="700">Cost-Parameter</text><text x="635" y="194" text-anchor="middle" font-size="12">random_page_cost …</text>
+  <line x1="600" y1="150" x2="540" y2="92" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="440" y="240" width="270" height="50" rx="8" fill="#fff4f2" stroke="#c62828"/><text x="575" y="261" text-anchor="middle" font-weight="700">pg_stat_statements · auto_explain</text><text x="575" y="279" text-anchor="middle" font-size="12">messen und loggen, was der Executor tut</text>
+  <line x1="680" y1="80" x2="680" y2="238" stroke="#c62828" stroke-width="2" stroke-dasharray="5 4" marker-end="url(#a)"/>
+</svg>
+<ol>
+  <li><b>Parser</b>: prüft die Syntax und löst Tabellen- und Spaltennamen auf.</li>
+  <li><b>Rewriter</b>: ersetzt Views durch ihre Definition und wendet Rules an.</li>
+  <li><b>Planner</b> (auch Optimizer): erzeugt mögliche Pläne und berechnet für jeden die <b>Kosten</b>. Er nimmt den billigsten.</li>
+  <li><b>Statistiken</b>: <code>ANALYZE</code> liest eine Stichprobe und speichert Verteilungen in <code>pg_statistic</code> (lesbar über <code>pg_stats</code>). Zeilen- und Page-Zahl stehen in <code>pg_class</code>.</li>
+  <li><b>Cost-Parameter</b>: Gewichte wie <code>seq_page_cost</code> und <code>random_page_cost</code> übersetzen Arbeit in Kosten.</li>
+  <li><b>Executor</b>: führt den Plan als Baum von Knoten aus. Jeder Knoten liefert Zeilen an seinen Eltern-Knoten.</li>
+  <li><b>pg_stat_statements</b> und <b>auto_explain</b>: Extensions, die messen, welche Abfragen in der Produktion teuer sind und welchen Plan sie hatten.</li>
+</ol>
+
+<h2>2. Die Reise einer Abfrage durch den Planner (die Geschichte zum Merken)</h2>
+<svg viewBox="0 0 720 320" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="b" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker><marker id="r" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#c62828"/></marker></defs>
+  <rect x="10" y="20" width="160" height="64" rx="10" fill="#e8f5e9" stroke="#2e7d32"/><text x="90" y="46" text-anchor="middle" font-weight="700">1. Selektivität</text><text x="90" y="66" text-anchor="middle" font-size="12">wie viele Zeilen?</text>
+  <line x1="170" y1="52" x2="198" y2="52" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="200" y="20" width="160" height="64" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="280" y="46" text-anchor="middle" font-weight="700">2. Scan-Pfade</text><text x="280" y="66" text-anchor="middle" font-size="12">Seq · Index · Bitmap</text>
+  <line x1="360" y1="52" x2="388" y2="52" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="390" y="20" width="160" height="64" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="470" y="46" text-anchor="middle" font-weight="700">3. Joins</text><text x="470" y="66" text-anchor="middle" font-size="12">Reihenfolge, Algorithmus</text>
+  <line x1="550" y1="52" x2="578" y2="52" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="580" y="20" width="130" height="64" rx="10" fill="#0a66c2"/><text x="645" y="46" text-anchor="middle" fill="#fff" font-weight="700">4. Billigster</text><text x="645" y="66" text-anchor="middle" fill="#fff" font-size="12">Plan gewinnt</text>
+  <line x1="645" y1="84" x2="645" y2="138" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="470" y="140" width="240" height="64" rx="10" fill="#fff" stroke="#555"/><text x="590" y="166" text-anchor="middle" font-weight="700">5. Executor</text><text x="590" y="186" text-anchor="middle" font-size="12">Blätter zuerst, Zeilen fliessen nach oben</text>
+  <line x1="470" y1="172" x2="392" y2="172" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="150" y="140" width="240" height="64" rx="10" fill="#fff" stroke="#555"/><text x="270" y="166" text-anchor="middle" font-weight="700">6. EXPLAIN ANALYZE</text><text x="270" y="186" text-anchor="middle" font-size="12">rows geschätzt vs actual</text>
+  <path d="M270,204 C270,290 90,290 90,86" fill="none" stroke="#c62828" stroke-width="2" stroke-dasharray="6 4" marker-end="url(#r)"/>
+  <text x="300" y="268" fill="#c62828" font-weight="700">Faktor 10+ daneben?</text>
+  <text x="300" y="288" fill="#c62828" font-size="12">→ Statistiken reparieren (ANALYZE, Target, CREATE STATISTICS)</text>
+</svg>
+<ol>
+  <li><b>Selektivität schätzen.</b> Die Abfrage <code>WHERE city = 'Bern' AND zip = '3011'</code> kommt an. Der Planner liest in <code>pg_stats</code>: Anteil von <code>'Bern'</code> und Anteil von <code>'3011'</code>. Er nimmt an, dass beide unabhängig sind, und multipliziert.</li>
+  <li><b>Scan-Pfade bauen.</b> Für jede Tabelle rechnet er <b>Seq Scan</b>, <b>Index Scan</b>, <b>Index-Only Scan</b> und <b>Bitmap Scan</b> durch. Wenige Zeilen: Index. Viele: Seq Scan. Dazwischen: Bitmap.</li>
+  <li><b>Joins planen.</b> Er probiert Join-Reihenfolgen und für jedes Paar <b>Nested Loop</b>, <b>Hash Join</b> und <b>Merge Join</b>. Bis 8 Tabellen sucht er (fast) vollständig (<code>join_collapse_limit</code>). Ab 12 Tabellen nimmt er einen genetischen Algorithmus (<b>GEQO</b>).</li>
+  <li><b>Billigster Plan gewinnt.</b> Jeder Pfad hat Kosten in abstrakten Einheiten. Der Planner wählt den Plan mit den kleinsten Gesamtkosten (bei <code>LIMIT</code> zählen auch die Startkosten).</li>
+  <li><b>Executor läuft.</b> Der Plan ist ein Baum. Die Blätter (Scans) liefern Zeilen nach oben, an Joins, Sorts und Aggregate.</li>
+  <li><b>EXPLAIN ANALYZE prüft.</b> Geschätzt 10 Zeilen, tatsächlich 1000? Die Annahme „unabhängig“ war falsch. Weil alle höheren Knoten auf dieser Zahl bauen, war vielleicht der ganze Plan falsch. Der Weg zurück führt zu den Statistiken.</li>
+</ol>
+
+<h2>3. Beispiel: eine falsche Schätzung finden und reparieren</h2>
+<pre>-- 1 Mio. Adressen: 100 Städte, jede mit 10 eigenen PLZ
+-- city und zip sind abhängig: die PLZ bestimmt die Stadt
+CREATE TABLE addr (id int, city text, zip text);
+ANALYZE addr;
+
+EXPLAIN (ANALYZE, BUFFERS)
+SELECT * FROM addr WHERE city = 'Bern' AND zip = '3011';
+
+CREATE STATISTICS addr_city_zip (dependencies) ON city, zip FROM addr;
+ANALYZE addr;
+
+EXPLAIN (ANALYZE, BUFFERS)
+SELECT * FROM addr WHERE city = 'Bern' AND zip = '3011';</pre>
+<pre>-- vorher
+Seq Scan on addr  (cost=0.00..20406.00 rows=10 width=20)
+                  (actual time=0.412..61.310 rows=1000 loops=1)
+  Filter: ((city = 'Bern'::text) AND (zip = '3011'::text))
+  Rows Removed by Filter: 999000
+  Buffers: shared hit=5406
+Planning Time: 0.110 ms
+Execution Time: 61.402 ms
+
+-- nachher
+Seq Scan on addr  (cost=0.00..20406.00 rows=1000 width=20)
+                  (actual time=0.398..60.870 rows=1000 loops=1)
+  ...</pre>
+<p class="small">Erwartetes Ergebnis (laut Doku, nicht ausgeführt). Das Muster stammt aus der Doku, Kapitel 14.2.2 „Extended Statistics“ (Beispiel mit Stadt und PLZ).</p>
+<ol>
+  <li><b>cost=0.00..20406.00</b>: Startkosten (bis zur ersten Zeile) und Gesamtkosten. Rechnung: 5406 Pages × <code>seq_page_cost</code> 1.0 + 1 Mio. Zeilen × <code>cpu_tuple_cost</code> 0.01 + 2 Bedingungen × 1 Mio. × <code>cpu_operator_cost</code> 0.0025 = 5406 + 10000 + 5000.</li>
+  <li><b>rows=10</b> geschätzt: 1/100 (Stadt) × 1/1000 (PLZ) × 1 Mio. = 10. Tatsächlich sind es <b>1000</b>. Faktor 100 daneben.</li>
+  <li><b>Rows Removed by Filter</b>: 999 000 Zeilen gelesen und verworfen. Ein Index auf <code>zip</code> wäre hier die nächste Massnahme.</li>
+  <li><b>Buffers: shared hit=5406</b>: alle Pages kamen aus dem Cache (<code>shared_buffers</code>). <code>read=</code> wären Zugriffe auf Platte oder OS-Cache.</li>
+  <li>Nach <code>CREATE STATISTICS ... (dependencies)</code> kennt der Planner die Abhängigkeit. Die Schätzung ist jetzt <b>1000</b>. Allein ändert das hier nichts. Steht die Tabelle aber in einem Join, wählt der Planner mit 10 Zeilen oft einen <b>Nested Loop</b>, der bei 1000 Zeilen viel zu teuer wird.</li>
+</ol>
+
+<h2>4. Details, die Interviewer fragen</h2>
+<ol>
+  <li><b>Statistiken pro Spalte</b> (<code>pg_stats</code>): <code>null_frac</code> (Anteil NULL), <code>n_distinct</code> (Anzahl verschiedener Werte), <code>most_common_vals</code> und <code>most_common_freqs</code> (häufigste Werte, <b>MCV</b>), <code>histogram_bounds</code> (Verteilung der übrigen Werte), <code>correlation</code> (physische Ordnung vs Wertordnung).</li>
+  <li><b>Stichprobe</b>: <code>ANALYZE</code> liest 300 × <code>default_statistics_target</code> Zeilen. Standard 100, also 30 000 Zeilen. Pro Spalte erhöhbar: <code>ALTER TABLE t ALTER COLUMN c SET STATISTICS 1000</code>.</li>
+  <li><b>Autovacuum macht ANALYZE</b>, wenn sich etwa 10 % der Zeilen geändert haben (<code>autovacuum_analyze_scale_factor</code> 0.1 + Schwelle 50). Bei riesigen Tabellen ist das zu selten. Nach grossen Bulk-Loads immer selbst <code>ANALYZE</code>.</li>
+  <li><b>Unabhängigkeits-Annahme</b>: Mehrere Bedingungen werden multipliziert. Bei abhängigen Spalten ist die Schätzung zu klein. Lösung: <b>Extended Statistics</b> mit <code>CREATE STATISTICS</code>: <code>dependencies</code>, <code>ndistinct</code> (für <code>GROUP BY</code>), <code>mcv</code> (häufige Kombinationen).</li>
+  <li><b>Kostenmodell</b>: Einheiten sind abstrakt, Basis ist ein sequenzieller Page-Read = 1.0. <code>random_page_cost</code> 4.0, <code>cpu_tuple_cost</code> 0.01, <code>cpu_index_tuple_cost</code> 0.005, <code>cpu_operator_cost</code> 0.0025. Auf SSDs setzt man <code>random_page_cost</code> oft auf ca. 1.1.</li>
+  <li><b>effective_cache_size</b> (Standard 4 GB): Schätzung, wie viel Cache insgesamt da ist (shared_buffers + OS-Cache). Sie reserviert keinen Speicher. Höher heisst: Index Scans werden billiger geschätzt.</li>
+  <li><b>Startkosten vs Gesamtkosten</b>: <code>cost=a..b</code>. <code>a</code> = Kosten bis zur ersten Zeile, <code>b</code> = bis zur letzten. Ein <code>Sort</code> hat hohe Startkosten. Bei <code>LIMIT</code> gewinnen Pläne mit kleinen Startkosten.</li>
+  <li><b>Seq Scan</b>: liest die ganze Tabelle der Reihe nach. Billig pro Page, gut bei vielen Treffern. Ab ca. 5–10 % der Zeilen oft schneller als ein Index (Faustregel, hängt von <code>correlation</code> ab).</li>
+  <li><b>Index Scan</b>: Abstieg im Index, dann pro Treffer ein Heap-Zugriff. Gut bei wenigen Zeilen und für sortierte Ausgabe.</li>
+  <li><b>Bitmap Heap Scan</b>: Erst <b>Bitmap Index Scan</b> (TIDs sammeln), dann Heap in Page-Reihenfolge lesen. <code>Recheck Cond</code> zeigt die Prüfung im Heap. <code>Heap Blocks: lossy=</code> heisst: <code>work_mem</code> zu klein, die Bitmap merkt sich nur ganze Pages.</li>
+  <li><b>Plan bottom-up lesen</b>: Der am tiefsten eingerückte Knoten läuft zuerst. Kosten und Zeiten eines Knotens <b>enthalten</b> seine Kinder. Die eigene Zeit = eigene Zeit minus Zeit der Kinder.</li>
+  <li><b>loops</b>: <code>actual time</code> und <code>rows</code> sind <b>pro Durchlauf</b>. Bei <code>loops=1000</code> gilt: Gesamt = Wert × 1000. Typisch auf der Innenseite eines Nested Loop.</li>
+  <li><b>Schätzung vs Wirklichkeit</b>: Der wichtigste Blick in jedem Plan. Wo <code>rows</code> geschätzt und <code>actual rows</code> zum ersten Mal stark auseinander gehen, beginnt das Problem.</li>
+  <li><b>BUFFERS</b>: <code>shared hit</code> (aus Cache), <code>read</code> (von Platte/OS), <code>dirtied</code>, <code>written</code>, <code>temp read/written</code> (Spill auf Platte). In PostgreSQL 17 muss man <code>BUFFERS</code> angeben, ab 18 ist es bei <code>ANALYZE</code> Standard.</li>
+  <li><b>Weitere Optionen</b>: <code>VERBOSE</code> (Ausgabespalten), <code>SETTINGS</code> (geänderte Parameter), <code>WAL</code>, <code>FORMAT JSON</code>, <code>GENERIC_PLAN</code> (seit 16, für Abfragen mit <code>$1</code>), <code>SERIALIZE</code> und <code>MEMORY</code> (neu in 17).</li>
+  <li><b>EXPLAIN ANALYZE führt aus</b>: Ein <code>DELETE</code> löscht wirklich. Darum <code>BEGIN; EXPLAIN ANALYZE ...; ROLLBACK;</code>. Die Zeitmessung selbst kostet etwas Overhead.</li>
+  <li><b>Typische Warnzeichen</b>: <code>Sort Method: external merge Disk: ...</code> (work_mem zu klein), <code>Rows Removed by Filter</code> sehr gross (Index fehlt), <code>Heap Fetches</code> hoch bei Index-Only Scan, Nested Loop mit grossem <code>loops</code>.</li>
+  <li><b>Prepared Statements</b>: Die ersten 5 Ausführungen bekommen einen <b>Custom Plan</b> mit den echten Werten. Danach kann PostgreSQL einen <b>Generic Plan</b> nehmen, ohne Werte. Bei schiefen Daten ist der schlecht. Steuerbar mit <code>plan_cache_mode</code>.</li>
+  <li><b>Keine Hints</b>: PostgreSQL hat keine Optimizer-Hints im Kern. <code>enable_seqscan = off</code> und ähnliche Schalter sind nur für Tests. Die Extension <code>pg_hint_plan</code> gibt es, ist aber ein Notbehelf.</li>
+  <li><b>JIT</b>: Ab <code>jit_above_cost</code> (100 000) kompiliert PostgreSQL Ausdrücke mit LLVM. Bei falsch hoher Schätzung kostet JIT mehr Zeit, als er spart. Sichtbar im Abschnitt <code>JIT:</code> im Plan.</li>
+  <li><b>pg_stat_statements</b>: Sammelt pro normalisierter Abfrage <code>calls</code>, <code>total_exec_time</code>, <code>mean_exec_time</code>, <code>rows</code>, <code>shared_blks_hit/read</code>, <code>temp_blks_written</code>. Braucht <code>shared_preload_libraries</code> und einen Neustart.</li>
+  <li><b>auto_explain</b>: Loggt den Plan jeder Abfrage über <code>auto_explain.log_min_duration</code>. Mit <code>log_analyze</code> echte Zahlen, aber Overhead für alle Abfragen. <code>log_timing = off</code> und <code>sample_rate</code> senken ihn.</li>
+</ol>
+
+<h2>5. Vergleich</h2>
+<ul>
+  <li><b>EXPLAIN:</b> nur Plan und Schätzung. Führt nichts aus. Sicher in der Produktion.</li>
+  <li><b>EXPLAIN ANALYZE:</b> führt aus, zeigt echte Zeiten und Zeilen. Für DML in einer Transaktion mit <code>ROLLBACK</code>.</li>
+  <li><b>EXPLAIN (ANALYZE, BUFFERS):</b> dazu Cache-Treffer und Platten-Reads. Der Standard für echte Analyse.</li>
+  <li><b>pg_stat_statements:</b> welche Abfragen insgesamt am meisten Zeit kosten. Kein Plan.</li>
+  <li><b>auto_explain:</b> der Plan einer langsamen Abfrage, so wie er in der Produktion lief.</li>
+  <li><b>pg_stat_activity:</b> was gerade jetzt läuft und worauf es wartet.</li>
+  <li><b>PostgreSQL vs Oracle/SQL Server:</b> Die anderen haben Hints und gespeicherte Pläne (Plan Baselines, Query Store). PostgreSQL plant jede Abfrage neu und setzt auf gute Statistiken.</li>
+</ul>
+
+<h2>6. In der Produktion</h2>
+<ol>
+  <li><b>Plötzlich langsam nach Bulk-Load:</b> Statistiken veraltet, Planner denkt „Tabelle fast leer“. Lösung: <code>ANALYZE</code> direkt nach dem Laden im ETL-Job.</li>
+  <li><b>Abfrage auf neue Daten langsam:</b> Werte ausserhalb des Histogramms (z. B. heute) werden unterschätzt. Lösung: öfter ANALYZE für die Tabelle (<code>autovacuum_analyze_scale_factor</code> pro Tabelle senken).</li>
+  <li><b>Nested Loop über Millionen Zeilen:</b> Eine Schätzung von 1 Zeile macht ihn billig, in Wirklichkeit läuft er 1 Mio. Mal. Lösung: Schätzung reparieren (Extended Statistics, Abfrage umschreiben).</li>
+  <li><b>Schnell in psql, langsam in der App:</b> Die App nutzt Prepared Statements mit Generic Plan. Lösung: <code>EXPLAIN (GENERIC_PLAN)</code> prüfen, eventuell <code>plan_cache_mode = force_custom_plan</code> für diese Rolle.</li>
+  <li><b>Sort oder Hash auf Platte:</b> <code>work_mem</code> zu klein. Lösung: für diese Abfrage oder Session erhöhen, nicht global blind.</li>
+  <li><b>JIT macht kurze Abfragen langsam:</b> Lösung: <code>jit = off</code> für OLTP oder Schwellen erhöhen.</li>
+  <li><b>Unklar, welche Abfrage die Last macht:</b> Lösung: <code>pg_stat_statements</code> nach <code>total_exec_time</code> sortieren und oben anfangen.</li>
+</ol>
+
+<h2>7. Diagnose: Werkzeuge und Abfragen</h2>
+<pre>-- Top 10 nach Gesamtzeit
+SELECT calls, round(total_exec_time) AS total_ms, round(mean_exec_time, 1) AS mean_ms,
+       rows, shared_blks_read, temp_blks_written, left(query, 80)
+FROM pg_stat_statements ORDER BY total_exec_time DESC LIMIT 10;
+
+-- Statistiken einer Spalte ansehen
+SELECT n_distinct, most_common_vals, correlation
+FROM pg_stats WHERE tablename = 'orders' AND attname = 'status';
+
+-- wann zuletzt analysiert
+SELECT relname, last_analyze, last_autoanalyze, n_mod_since_analyze
+FROM pg_stat_user_tables ORDER BY n_mod_since_analyze DESC;
+
+-- postgresql.conf
+shared_preload_libraries = 'pg_stat_statements,auto_explain'
+auto_explain.log_min_duration = '500ms'
+auto_explain.log_analyze = on
+auto_explain.log_buffers = on
+auto_explain.log_timing = off</pre>
+<ul>
+  <li><code>EXPLAIN (ANALYZE, BUFFERS, SETTINGS)</code>: der Standard-Befehl für eine einzelne Abfrage.</li>
+  <li><code>track_io_timing = on</code>: zeigt <code>I/O Timings</code> im Plan und in <code>pg_stat_statements</code>.</li>
+  <li>Visualisierung: <b>explain.depesz.com</b> oder <b>explain.dalibo.com</b> machen grosse Pläne lesbar.</li>
+  <li><code>SET enable_nestloop = off</code> nur in einer Test-Session: zeigt, ob ein anderer Plan wirklich schneller wäre.</li>
+</ul>
+
+<h2>8. Senior-Punkte</h2>
+<div class="senior">
+<ol>
+  <li><b>Erst die Schätzung, dann der Index.</b> Ich suche den ersten Knoten, wo geschätzte und echte Zeilen stark abweichen. Dort liegt die Ursache, nicht beim langsamsten Knoten oben.</li>
+  <li><b>Optimiere nach Gesamtlast.</b> Eine Abfrage mit 5 ms und 1 Mio. Aufrufen pro Tag zählt mehr als ein Report mit 30 s. Darum <code>pg_stat_statements</code> nach <code>total_exec_time</code>.</li>
+  <li><b>Statistiken sind Betrieb.</b> ANALYZE nach Bulk-Loads gehört in jede ETL-Pipeline.</li>
+  <li><b>Keine Hints, sondern bessere Informationen:</b> Extended Statistics, höheres Statistics Target, passende Indizes, umgeschriebene Abfrage.</li>
+  <li><b>Cost-Parameter an die Hardware anpassen:</b> <code>random_page_cost</code> für SSD, <code>effective_cache_size</code> realistisch. Einmal richtig, dann in Ruhe lassen.</li>
+  <li><b>auto_explain in der Produktion,</b> mit Sampling und Schwelle. Sonst sieht man den Plan der langsamen Ausführung nie.</li>
+</ol>
+</div>
+
+<h2>9. Aus dem Projekt</h2>
+<p>„Mit PostgreSQL habe ich als Backend bei CARIAD und NABODAT gearbeitet; tiefe Planner-Analyse mit EXPLAIN ANALYZE ist im Profil nicht belegt. Am nächsten dran ist MATCH: Dort habe ich Iceberg-Partitionierung mit Partition Pruning eingesetzt, also dafür gesorgt, dass die Engine nur die nötigen Daten liest.“ <span class="small">(Prüfen und durch dein echtes Beispiel ersetzen.)</span></p>
+
+<h2>10. Fallen</h2>
+<div class="trap">
+<ul>
+  <li>„EXPLAIN ANALYZE ist harmlos.“ → <b>Falsch.</b> Es führt die Abfrage aus. Ein <code>DELETE</code> löscht. Immer in <code>BEGIN ... ROLLBACK</code>.</li>
+  <li>„Die Kosten sind Millisekunden.“ → <b>Falsch.</b> Sie sind abstrakte Einheiten, Basis ist ein sequenzieller Page-Read.</li>
+  <li>„actual time ist die Gesamtzeit des Knotens.“ → <b>Falsch</b> bei <code>loops &gt; 1</code>. Sie ist pro Durchlauf.</li>
+  <li>„Der langsamste Knoten ist die Ursache.“ → <b>Oft falsch.</b> Die Ursache ist meist eine falsche Schätzung weiter unten.</li>
+  <li>„Ein Seq Scan im Plan ist ein Fehler.“ → <b>Falsch.</b> Bei vielen Treffern ist er die beste Wahl.</li>
+  <li>„Autovacuum hält die Statistiken immer aktuell.“ → <b>Falsch.</b> Erst nach ca. 10 % Änderungen, und nach Bulk-Loads zu spät.</li>
+  <li>„Mit <code>enable_seqscan = off</code> repariere ich die Abfrage.“ → <b>Falsch.</b> Das ist ein Test-Schalter für die Session, keine Lösung.</li>
+</ul>
+</div>
+
+<h2>11. Fragen</h2>
+<details><summary>Was macht der Query Planner?</summary><p>Er erzeugt mögliche Ausführungspläne und berechnet ihre Kosten mit Statistiken. Er wählt den billigsten Plan.</p></details>
+<details><summary>Welche Statistiken nutzt er?</summary><p>Aus pg_class die Zahl der Zeilen und Pages. Aus pg_statistic pro Spalte: NULL-Anteil, n_distinct, häufigste Werte, Histogramm und Korrelation.</p></details>
+<details><summary>Was macht ANALYZE?</summary><p>Es liest eine Stichprobe (300 × default_statistics_target Zeilen) und aktualisiert die Statistiken. Es ändert keine Daten.</p></details>
+<details><summary>Wie funktioniert das Kostenmodell?</summary><p>Jede Operation hat ein Gewicht: sequenzieller Page-Read 1.0, zufälliger 4.0, CPU pro Zeile 0.01. Der Planner summiert und nimmt den kleinsten Wert.</p></details>
+<details><summary>Was bedeuten die zwei Kosten-Zahlen?</summary><p>Startkosten bis zur ersten Zeile und Gesamtkosten bis zur letzten. Bei LIMIT sind niedrige Startkosten wichtig.</p></details>
+<details><summary>Wann wählt der Planner Seq Scan, Index Scan oder Bitmap Scan?</summary><p>Wenige Zeilen: Index Scan. Viele Zeilen: Seq Scan. Dazwischen oder bei mehreren Bedingungen mit OR/AND: Bitmap Scan.</p></details>
+<details><summary>Wie lesen Sie einen Plan?</summary><p>Von innen nach aussen, von unten nach oben. Der am tiefsten eingerückte Knoten läuft zuerst. Ein Knoten enthält die Zeit seiner Kinder.</p></details>
+<details><summary>Was bedeutet loops?</summary><p>Wie oft der Knoten lief. actual time und rows gelten pro Durchlauf. Gesamt = Wert × loops.</p></details>
+<details><summary>Worauf achten Sie zuerst in EXPLAIN ANALYZE?</summary><p>Auf den Unterschied zwischen geschätzten und echten Zeilen. Der erste grosse Unterschied von unten ist meist die Ursache.</p></details>
+<details><summary>Was zeigt BUFFERS?</summary><p>Wie viele Pages aus dem Cache (hit) und von Platte (read) kamen, und temporäre Dateien. So sieht man I/O statt nur Zeit.</p></details>
+<details><summary>Warum schätzt der Planner bei zwei Bedingungen oft zu wenig?</summary><p>Er nimmt an, dass Spalten unabhängig sind, und multipliziert die Anteile. Bei abhängigen Spalten wie Stadt und PLZ ist das zu klein.</p></details>
+<details><summary>Was ist CREATE STATISTICS?</summary><p>Extended Statistics über mehrere Spalten: dependencies, ndistinct und mcv. Damit kennt der Planner Abhängigkeiten zwischen Spalten.</p></details>
+<details><summary>Wann sollte man default_statistics_target erhöhen?</summary><p>Bei Spalten mit sehr ungleicher Verteilung oder vielen verschiedenen Werten. Am besten nur pro Spalte, weil ANALYZE und Planung teurer werden.</p></details>
+<details><summary>Warum ist eine Abfrage in psql schnell, aber in der App langsam?</summary><p>Oft durch Prepared Statements mit Generic Plan, der die echten Werte nicht kennt. Andere Gründe: andere Parameter-Typen oder Session-Einstellungen.</p></details>
+<details><summary>Was ist ein Generic Plan?</summary><p>Ein Plan ohne konkrete Parameterwerte. PostgreSQL wechselt nach 5 Ausführungen dazu, wenn er nicht viel teurer scheint. plan_cache_mode steuert das.</p></details>
+<details><summary>Was bedeutet „Sort Method: external merge Disk“?</summary><p>Der Sort passte nicht in work_mem und lief über temporäre Dateien. Lösung: work_mem für diese Abfrage erhöhen oder weniger Zeilen sortieren.</p></details>
+<details><summary>Was ist Heap Blocks lossy im Bitmap Scan?</summary><p>Die Bitmap passte nicht in work_mem und merkt sich nur ganze Pages. Dann muss jede Zeile dieser Pages neu geprüft werden.</p></details>
+<details><summary>Hat PostgreSQL Optimizer-Hints?</summary><p>Nicht im Kern. Man verbessert Statistiken, Indizes oder die Abfrage. pg_hint_plan ist eine Extension als Notbehelf.</p></details>
+<details><summary>Was ist pg_stat_statements?</summary><p>Eine Extension, die pro normalisierter Abfrage Aufrufe, Zeiten, Zeilen und Buffer-Zugriffe sammelt. Sie zeigt, welche Abfragen die Last machen.</p></details>
+<details><summary>Was ist auto_explain?</summary><p>Eine Extension, die den Plan langsamer Abfragen automatisch ins Log schreibt. Mit log_analyze inklusive echter Zahlen, aber mit Overhead.</p></details>
+<details><summary>Wie viele Tabellen plant PostgreSQL vollständig?</summary><p>Bis join_collapse_limit (8) sucht er die Reihenfolge ausführlich. Ab geqo_threshold (12) Tabellen nutzt er den genetischen Optimizer GEQO.</p></details>
+<details><summary>Was macht random_page_cost?</summary><p>Es gewichtet zufällige Page-Reads, Standard 4.0. Auf SSDs setzt man es oft auf ca. 1.1. Dann wählt der Planner öfter Index Scans.</p></details>
+<details><summary>Was ist effective_cache_size?</summary><p>Eine Schätzung des gesamten Caches für den Planner. Sie reserviert keinen Speicher, macht aber Index Scans günstiger.</p></details>
+<details><summary>Wie testen Sie EXPLAIN ANALYZE auf einem UPDATE sicher?</summary><p>In einer Transaktion: BEGIN, EXPLAIN ANALYZE UPDATE ..., ROLLBACK. Auf einer Kopie der Produktionsdaten, nicht der Produktion.</p></details>
+<details><summary>Szenario: Ein Report war gestern 2 s, heute 5 min, ohne Code-Änderung. Was tun Sie?</summary><p>EXPLAIN (ANALYZE, BUFFERS) und Schätzungen prüfen. Oft hat sich der Plan durch neue Statistiken oder gewachsene Daten geändert. ANALYZE, last_autoanalyze prüfen, eventuell Extended Statistics.</p></details>
+<details><summary>Szenario: Die DB-CPU ist dauernd hoch, aber keine Abfrage ist einzeln langsam. Was tun Sie?</summary><p>pg_stat_statements nach total_exec_time sortieren. Oft ist es eine schnelle Abfrage mit Millionen Aufrufen, z. B. N+1 aus dem ORM. Lösung: Abfrage bündeln oder cachen.</p></details>
+<details><summary>Szenario: Nach einem nächtlichen Bulk-Import sind Abfragen am Morgen langsam, später wieder schnell. Warum?</summary><p>Die Statistiken sind bis zum Autoanalyze veraltet. Lösung: ANALYZE als letzter Schritt im Import-Job.</p></details>
+
+</body>
+</html>

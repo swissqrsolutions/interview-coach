@@ -1,0 +1,237 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Normalisierung und Denormalisierung</title>
+<style>
+  body { font: 17px/1.55 -apple-system, system-ui, sans-serif; max-width: 760px; margin: 0 auto; padding: 16px; color: #1d1d1f; }
+  h1 { font-size: 28px; margin: 8px 0 4px; }
+  h2 { font-size: 21px; margin: 32px 0 8px; padding-top: 12px; border-top: 2px solid #e5e5ea; }
+  .kern { background: #eef6ff; border-left: 4px solid #0a66c2; padding: 10px 14px; border-radius: 6px; }
+  .senior { background: #f0faf0; border-left: 4px solid #2e7d32; padding: 10px 14px; border-radius: 6px; }
+  .trap { background: #fff4f2; border-left: 4px solid #c62828; padding: 10px 14px; border-radius: 6px; }
+  code { background: #f2f2f7; padding: 1px 5px; border-radius: 4px; font-size: 15px; }
+  pre { background: #1e1e1e; color: #e6e6e6; padding: 12px; border-radius: 8px; overflow-x: auto; font-size: 13.5px; line-height: 1.45; }
+  svg { width: 100%; height: auto; display: block; margin: 10px 0; }
+  ol li, ul li { margin: 4px 0; }
+  details { border: 1px solid #e5e5ea; border-radius: 8px; padding: 8px 12px; margin: 6px 0; }
+  summary { font-weight: 600; cursor: pointer; }
+  details p { margin: 6px 0 2px; }
+  .small { color: #6e6e73; font-size: 14px; }
+</style>
+</head>
+<body>
+
+<h1>Normalisierung und Denormalisierung</h1>
+<p class="small">PostgreSQL · Quellen: PostgreSQL 17 Doku (5.5 Constraints, 8.14 JSON Types, CREATE/REFRESH MATERIALIZED VIEW, 11.9 Index-Only Scans, 65.4 GIN), E. F. Codd / Standard-Definitionen der Normalformen</p>
+
+<div class="kern">
+<b>Kern:</b> <b>Normalisierung</b> ist das Aufteilen von Daten in Tabellen, sodass jede Tatsache <b>genau einmal</b> gespeichert ist. Sie verhindert <b>Anomalien</b> beim Einfügen, Ändern und Löschen. <b>Denormalisierung</b> speichert bewusst doppelt, um Lesezugriffe schneller zu machen, und bezahlt dafür mit Aufwand für Konsistenz.
+</div>
+
+<h2>1. Wo sitzt Normalisierung?</h2>
+<svg viewBox="0 0 720 300" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="a" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="10" y="20" width="200" height="60" rx="8" fill="#fff" stroke="#555"/><text x="110" y="45" text-anchor="middle" font-weight="700">Fachmodell</text><text x="110" y="64" text-anchor="middle" font-size="12">Kunde, Bestellung, Produkt</text>
+  <line x1="210" y1="50" x2="258" y2="50" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="260" y="20" width="200" height="60" rx="8" fill="#0a66c2"/><text x="360" y="45" text-anchor="middle" fill="#fff" font-weight="700">Normalisiertes Schema</text><text x="360" y="64" text-anchor="middle" fill="#fff" font-size="12">3NF · Schreib-Wahrheit</text>
+  <line x1="460" y1="50" x2="508" y2="50" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="510" y="20" width="200" height="60" rx="8" fill="#fff" stroke="#555"/><text x="610" y="45" text-anchor="middle" font-weight="700">OLTP-Schreibpfad</text><text x="610" y="64" text-anchor="middle" font-size="12">INSERT · UPDATE · FK</text>
+  <line x1="360" y1="80" x2="360" y2="128" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <text x="372" y="110" font-size="12">bewusst ableiten</text>
+  <rect x="20" y="130" width="210" height="60" rx="8" fill="#e8f5e9" stroke="#2e7d32"/><text x="125" y="155" text-anchor="middle" font-weight="700">Materialized View</text><text x="125" y="174" text-anchor="middle" font-size="12">vorberechnete Aggregate</text>
+  <rect x="255" y="130" width="210" height="60" rx="8" fill="#e8f5e9" stroke="#2e7d32"/><text x="360" y="155" text-anchor="middle" font-weight="700">Redundante Spalte</text><text x="360" y="174" text-anchor="middle" font-size="12">per Trigger gepflegt</text>
+  <rect x="490" y="130" width="210" height="60" rx="8" fill="#e8f5e9" stroke="#2e7d32"/><text x="595" y="155" text-anchor="middle" font-weight="700">JSONB-Spalte</text><text x="595" y="174" text-anchor="middle" font-size="12">flexible Attribute</text>
+  <line x1="125" y1="190" x2="125" y2="238" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <line x1="360" y1="190" x2="360" y2="238" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <line x1="595" y1="190" x2="595" y2="238" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="20" y="240" width="680" height="44" rx="8" fill="#f7f7fa" stroke="#999"/><text x="360" y="267" text-anchor="middle">Lesepfad: Reports, Dashboards, APIs mit wenig Joins</text>
+</svg>
+<ol>
+  <li><b>Fachmodell:</b> Entitäten und Beziehungen aus der Fachlichkeit, z. B. Kunde bestellt Produkt.</li>
+  <li><b>Normalisiertes Schema:</b> Das Modell als Tabellen in 3NF. Es ist die <b>Quelle der Wahrheit</b>.</li>
+  <li><b>Schreibpfad:</b> Alle Änderungen gehen in die normalisierten Tabellen. Constraints und Foreign Keys schützen sie.</li>
+  <li><b>Abgeleitete Strukturen:</b> Materialized Views, redundante Spalten oder JSONB dienen dem Lesen. Sie sind Kopien, keine Wahrheit.</li>
+  <li><b>Lesepfad:</b> Reports und APIs lesen die schnellen Kopien, wenn Joins zu teuer sind.</li>
+</ol>
+
+<h2>2. Die Reise einer flachen Tabelle bis 3NF</h2>
+<svg viewBox="0 0 720 320" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="b" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="10" y="20" width="160" height="80" rx="10" fill="#fff4f2" stroke="#c62828"/><text x="90" y="46" text-anchor="middle" font-weight="700">0NF</text><text x="90" y="66" text-anchor="middle" font-size="12">Spalte "produkte"</text><text x="90" y="84" text-anchor="middle" font-size="12">= "Tee, Kaffee"</text>
+  <line x1="170" y1="60" x2="198" y2="60" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="200" y="20" width="160" height="80" rx="10" fill="#eee" stroke="#777"/><text x="280" y="46" text-anchor="middle" font-weight="700">1NF</text><text x="280" y="66" text-anchor="middle" font-size="12">atomare Werte</text><text x="280" y="84" text-anchor="middle" font-size="12">1 Zeile pro Position</text>
+  <line x1="360" y1="60" x2="388" y2="60" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="390" y="20" width="160" height="80" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="470" y="46" text-anchor="middle" font-weight="700">2NF</text><text x="470" y="66" text-anchor="middle" font-size="12">ganzer Schlüssel</text><text x="470" y="84" text-anchor="middle" font-size="12">Produktname raus</text>
+  <line x1="550" y1="60" x2="578" y2="60" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="580" y="20" width="130" height="80" rx="10" fill="#0a66c2"/><text x="645" y="46" text-anchor="middle" fill="#fff" font-weight="700">3NF</text><text x="645" y="66" text-anchor="middle" fill="#fff" font-size="12">nichts als</text><text x="645" y="84" text-anchor="middle" fill="#fff" font-size="12">der Schlüssel</text>
+  <line x1="645" y1="100" x2="645" y2="148" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="470" y="150" width="240" height="70" rx="10" fill="#e8f5e9" stroke="#2e7d32"/><text x="590" y="176" text-anchor="middle" font-weight="700">BCNF</text><text x="590" y="196" text-anchor="middle" font-size="12">jede Determinante ist</text><text x="590" y="212" text-anchor="middle" font-size="12">ein Kandidatenschlüssel</text>
+  <line x1="470" y1="185" x2="378" y2="185" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="100" y="150" width="276" height="70" rx="10" fill="#fff" stroke="#555"/><text x="238" y="176" text-anchor="middle" font-weight="700">Messen: zu viele Joins?</text><text x="238" y="196" text-anchor="middle" font-size="12">EXPLAIN ANALYZE, pg_stat_statements</text><text x="238" y="212" text-anchor="middle" font-size="12">nur dann denormalisieren</text>
+  <line x1="238" y1="220" x2="238" y2="258" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="100" y="260" width="276" height="50" rx="10" fill="#e8f5e9" stroke="#2e7d32"/><text x="238" y="290" text-anchor="middle">gezielte Kopie + Pflege-Regel</text>
+</svg>
+<ol>
+  <li><b>Start (0NF):</b> Eine Tabelle <code>bestellung</code> hat die Spalte <code>produkte = 'Tee, Kaffee'</code>. Man kann nicht nach einem Produkt filtern oder einen FK setzen.</li>
+  <li><b>1NF:</b> Jede Zelle hat einen <b>atomaren Wert</b>, also genau einen Wert. Jede Position wird eine eigene Zeile. Schlüssel: <code>(bestell_id, produkt_id)</code>.</li>
+  <li><b>2NF:</b> Kein Nicht-Schlüssel-Attribut hängt nur von einem <b>Teil</b> des zusammengesetzten Schlüssels ab. <code>produktname</code> hängt nur an <code>produkt_id</code>. Er wandert in die Tabelle <code>produkt</code>.</li>
+  <li><b>3NF:</b> Kein Nicht-Schlüssel-Attribut hängt von einem anderen Nicht-Schlüssel-Attribut ab. Das heisst <b>transitive Abhängigkeit</b>. <code>kunde_ort</code> hängt an <code>kunde_id</code>, nicht an der Bestellung. Er wandert in <code>kunde</code>.</li>
+  <li><b>BCNF:</b> Jede <b>Determinante</b> (Spalte, die eine andere bestimmt) ist ein Kandidatenschlüssel. Das ist selten anders als 3NF. Es betrifft Tabellen mit mehreren überlappenden Kandidatenschlüsseln.</li>
+  <li><b>Messen:</b> Erst wenn ein Lesepfad nachweislich zu langsam ist, wird gezielt denormalisiert. Jede Kopie bekommt eine klare Pflege-Regel.</li>
+</ol>
+
+<h2>3. Beispiel: Update-Anomalie und die Lösung</h2>
+<pre>-- flach (verletzt 3NF): Kundenort steht in jeder Bestellung
+CREATE TABLE bestellung_flach (
+  id        bigint PRIMARY KEY,
+  kunde_id  bigint NOT NULL,
+  kunde_ort text   NOT NULL,
+  betrag    numeric(10,2) NOT NULL
+);
+INSERT INTO bestellung_flach VALUES
+  (1, 7, 'Bern', 50), (2, 7, 'Bern', 80), (3, 7, 'Bern', 20);
+
+-- Kunde zieht um, aber nur eine Zeile wird geändert
+UPDATE bestellung_flach SET kunde_ort = 'Thun' WHERE id = 1;
+SELECT DISTINCT kunde_id, kunde_ort FROM bestellung_flach;
+
+-- normalisiert (3NF)
+CREATE TABLE kunde (id bigint PRIMARY KEY, ort text NOT NULL);
+CREATE TABLE bestellung (
+  id       bigint PRIMARY KEY,
+  kunde_id bigint NOT NULL REFERENCES kunde(id),
+  betrag   numeric(10,2) NOT NULL
+);
+CREATE INDEX ON bestellung (kunde_id);   -- FK-Spalte wird NICHT automatisch indiziert
+
+-- Lesesicht für Reports, vorberechnet
+CREATE MATERIALIZED VIEW umsatz_pro_ort AS
+  SELECT k.ort, sum(b.betrag) AS umsatz
+  FROM bestellung b JOIN kunde k ON k.id = b.kunde_id
+  GROUP BY k.ort;
+CREATE UNIQUE INDEX ON umsatz_pro_ort (ort);
+REFRESH MATERIALIZED VIEW CONCURRENTLY umsatz_pro_ort;</pre>
+<pre> kunde_id | kunde_ort
+----------+-----------
+        7 | Bern
+        7 | Thun
+(2 rows)</pre>
+<p class="small">Erwartetes Ergebnis (laut Doku, nicht ausgeführt). Die Reihenfolge der Zeilen ist ohne ORDER BY nicht garantiert.</p>
+<ol>
+  <li>Der gleiche Kunde hat plötzlich zwei Orte. Das ist eine <b>Update-Anomalie</b>: Eine Tatsache steht mehrfach und wird nur teilweise geändert.</li>
+  <li>Im 3NF-Schema steht der Ort genau einmal in <code>kunde</code>. Ein einziges <code>UPDATE</code> reicht.</li>
+  <li>PostgreSQL legt für einen <b>Foreign Key</b> keinen Index auf der referenzierenden Spalte an. Ohne Index werden Joins und <code>DELETE</code> auf <code>kunde</code> langsam.</li>
+  <li>Die <b>Materialized View</b> speichert das Join-Ergebnis physisch. <code>REFRESH ... CONCURRENTLY</code> blockiert Leser nicht, braucht aber einen <b>UNIQUE-Index</b> auf der View.</li>
+</ol>
+
+<h2>4. Details, die Interviewer fragen</h2>
+<ol>
+  <li><b>Funktionale Abhängigkeit:</b> A → B heisst, ein Wert von A bestimmt genau einen Wert von B. Beispiel: <code>kunde_id → ort</code>. Alle Normalformen sind Regeln über diese Abhängigkeiten.</li>
+  <li><b>Die drei Anomalien:</b>
+    <ul>
+      <li><b>Einfüge-Anomalie:</b> Man kann eine Tatsache nicht speichern, ohne eine andere zu erfinden. Beispiel: Ein neues Produkt geht nicht ohne Bestellung.</li>
+      <li><b>Update-Anomalie:</b> Eine Tatsache steht mehrfach. Man ändert eine Kopie und vergisst die anderen.</li>
+      <li><b>Lösch-Anomalie:</b> Man löscht die letzte Bestellung und verliert dabei den Kundenort.</li>
+    </ul></li>
+  <li><b>Merksatz 3NF:</b> Jedes Attribut hängt „vom Schlüssel, vom ganzen Schlüssel und von nichts als dem Schlüssel“ ab. 1NF, 2NF und 3NF in einem Satz.</li>
+  <li><b>BCNF-Beispiel:</b> Tabelle <code>(student, fach, dozent)</code>. Jeder Dozent lehrt genau ein Fach. <code>dozent → fach</code>, aber <code>dozent</code> ist kein Schlüssel. Lösung: <code>(dozent, fach)</code> und <code>(student, dozent)</code> trennen.</li>
+  <li><b>Arrays in PostgreSQL:</b> Ein Array-Typ verletzt formal 1NF. Er ist trotzdem nützlich für Tags. Mit einem <b>GIN-Index</b> (invertierter Index für Elemente) ist <code>tags @&gt; '{a}'</code> schnell.</li>
+  <li><b>Materialized View:</b> Ein <b>Snapshot</b> einer Abfrage, physisch gespeichert. PostgreSQL aktualisiert sie <b>nie automatisch</b>. Man ruft <code>REFRESH</code> per Cron, <code>pg_cron</code> oder nach einem Batch auf. Ein Refresh berechnet immer alles neu, nicht inkrementell.</li>
+  <li><b>REFRESH ohne CONCURRENTLY:</b> nimmt einen <b>ACCESS EXCLUSIVE</b>-Lock. Leser warten. Mit <code>CONCURRENTLY</code> rechnet PostgreSQL neu und wendet nur die Differenz an. Das ist langsamer, aber ohne Leseblockade.</li>
+  <li><b>JSONB:</b> Ein <b>binäres JSON-Format</b>, zerlegt gespeichert, Schlüssel sortiert, Duplikate entfernt. Es ist schnell abfragbar. <code>json</code> speichert dagegen den Text unverändert.</li>
+  <li><b>JSONB-Indizes:</b> GIN mit <code>jsonb_ops</code> (Standard) unterstützt <code>?</code>, <code>?|</code>, <code>?&amp;</code>, <code>@&gt;</code> und JSONPath. <code>jsonb_path_ops</code> unterstützt nur <code>@&gt;</code> und JSONPath, ist aber kleiner und schneller. Für einen einzelnen Schlüssel: B-Tree auf einem Ausdruck, z. B. <code>((attrs-&gt;&gt;'farbe'))</code>.</li>
+  <li><b>JSONB-Grenzen:</b> keine Foreign Keys auf innere Werte, kein Typ-Check ohne <code>CHECK</code>, und der Planer hat <b>keine Statistiken</b> über innere Schlüssel. Jede Änderung schreibt den ganzen Wert neu. Grosse Werte landen im <b>TOAST</b> (ausgelagerter Speicher für grosse Werte).</li>
+  <li><b>Redundante Spalte mit Trigger:</b> Beispiel <code>bestellung.summe</code> als Summe der Positionen. Ein Trigger hält sie aktuell. Aber: Gleichzeitige Inserts in Positionen müssen die Bestellzeile sperren, sonst stimmt die Summe nicht.</li>
+  <li><b>Generated Columns:</b> <code>GENERATED ALWAYS AS (...) STORED</code> berechnet einen Wert aus Spalten der <b>gleichen Zeile</b>. Das ist sichere Denormalisierung ohne Trigger. Andere Tabellen kann sie nicht lesen.</li>
+  <li><b>Surrogate vs. natürlicher Schlüssel:</b> Ein <b>Surrogate Key</b> (z. B. <code>bigint GENERATED ALWAYS AS IDENTITY</code>) ändert sich nie. Der natürliche Schlüssel (z. B. AHV-Nummer) bekommt zusätzlich einen <code>UNIQUE</code>-Constraint.</li>
+</ol>
+
+<h2>5. Vergleich</h2>
+<ul>
+  <li><b>Normalisiert (3NF):</b> keine Anomalien, kleine Zeilen, billige Writes. Lesen braucht Joins.</li>
+  <li><b>Denormalisierte Spalte:</b> schnelles Lesen ohne Join. Jeder Write muss mehrere Stellen pflegen.</li>
+  <li><b>Materialized View:</b> schnelle Aggregate, Daten sind so alt wie der letzte Refresh. Refresh kostet einen kompletten Neuaufbau.</li>
+  <li><b>Normale View:</b> nur gespeicherte Abfrage, immer aktuell, kein Geschwindigkeitsgewinn.</li>
+  <li><b>JSONB:</b> flexibles Schema, ein Read ohne Join. Keine FKs, schwache Statistiken, Validierung in der App.</li>
+  <li><b>Star-Schema (Data Warehouse):</b> bewusst denormalisierte Dimensionen um eine Faktentabelle. Optimiert für Analyse, nicht für OLTP.</li>
+  <li><b>Separates Lesemodell (CQRS):</b> Events oder CDC füllen eine eigene Lese-Datenbank. Maximal entkoppelt, aber <b>eventual consistency</b>.</li>
+</ul>
+
+<h2>6. In der Produktion</h2>
+<ol>
+  <li><b>Inkonsistente Kopien:</b> Eine redundante Spalte wird in einem Codepfad vergessen. Lösung: Pflege an einer Stelle (Trigger oder Generated Column) und ein nächtlicher Abgleich-Job.</li>
+  <li><b>Refresh blockiert Dashboards:</b> <code>REFRESH MATERIALIZED VIEW</code> ohne <code>CONCURRENTLY</code> sperrt Leser minutenlang. Lösung: UNIQUE-Index anlegen und <code>CONCURRENTLY</code> nutzen.</li>
+  <li><b>Materialized View zu alt:</b> Der Cron-Job ist ausgefallen, Zahlen stimmen nicht. Lösung: Refresh-Zeitpunkt speichern und im Dashboard anzeigen, Alarm bei Verzug.</li>
+  <li><b>JSONB-Abfragen langsam:</b> Der Planer schätzt Filter auf JSON-Schlüssel falsch und wählt einen schlechten Plan. Lösung: häufig gefilterte Schlüssel als echte Spalte oder Generated Column herausziehen und indizieren.</li>
+  <li><b>JSONB-Bloat:</b> Ein grosses Dokument bekommt kleine Updates. Jede Änderung schreibt das ganze Dokument neu, TOAST und WAL wachsen. Lösung: veränderliche Teile in eigene Spalten oder Tabellen.</li>
+  <li><b>Langsames DELETE auf Elterntabelle:</b> Der FK prüft jede Kindtabelle per Sequential Scan. Lösung: Index auf jede FK-Spalte.</li>
+</ol>
+
+<h2>7. Diagnose: Werkzeuge und Abfragen</h2>
+<ul>
+  <li><code>EXPLAIN (ANALYZE, BUFFERS)</code>: zeigt, ob Joins wirklich teuer sind, bevor man denormalisiert.</li>
+  <li><code>pg_stat_statements</code>: welche Leseabfragen am meisten Gesamtzeit kosten.</li>
+  <li>Duplikate finden: <code>SELECT kunde_id FROM bestellung_flach GROUP BY kunde_id HAVING count(DISTINCT kunde_ort) &gt; 1;</code></li>
+  <li>FKs ohne Index finden: <code>pg_constraint</code> (<code>contype = 'f'</code>) mit <code>pg_index</code> vergleichen.</li>
+  <li><code>pg_matviews</code>: alle Materialized Views und ob sie befüllt sind (<code>ispopulated</code>).</li>
+  <li><code>pg_column_size(attrs)</code> und <code>pg_total_relation_size('t')</code>: Grösse von JSONB-Werten und TOAST.</li>
+  <li><code>pg_stats</code>: zeigt Statistiken pro Spalte. Für Schlüssel innerhalb von JSONB gibt es keine Zeilen.</li>
+</ul>
+
+<h2>8. Senior-Punkte</h2>
+<div class="senior">
+<ol>
+  <li><b>Normalisiert schreiben, denormalisiert lesen.</b> Die normalisierten Tabellen sind die Wahrheit. Jede Kopie ist abgeleitet und darf neu gebaut werden.</li>
+  <li><b>Denormalisierung ist eine Messentscheidung.</b> Erst EXPLAIN und Index prüfen. Oft fehlt nur ein Index, nicht ein Schema-Umbau.</li>
+  <li><b>Jede Kopie braucht einen Besitzer:</b> wer pflegt sie, wie aktuell muss sie sein, wie baut man sie neu.</li>
+  <li><b>JSONB ist für variable Attribute,</b> nicht für Kern-Felder. Was gefiltert, gejoint oder referenziert wird, wird eine Spalte.</li>
+  <li><b>BCNF ist selten das Ziel.</b> Manche BCNF-Zerlegungen verlieren Abhängigkeiten, die man dann nicht mehr mit Constraints prüfen kann. 3NF ist der übliche Standard.</li>
+  <li><b>Analytische Last gehört nicht in die OLTP-Datenbank.</b> Ab grossen Mengen ist ein eigener Lesespeicher besser als immer mehr Materialized Views.</li>
+</ol>
+</div>
+
+<h2>9. Aus dem Projekt</h2>
+<p>„Bei MATCH lagen Statistiken zuerst als zeilenweise Berechnung in SQL Server. Wir haben sie in eine vorberechnete Gold-Schicht pro Tag verschoben, die bei jedem Lauf komplett neu berechnet wird. Das ist dieselbe Idee wie eine Materialized View: abgeleitete Daten, neu baubar aus der Wahrheit.“ <span class="small">(Prüfen und durch dein echtes Beispiel ersetzen. Das war Iceberg/Spark, nicht PostgreSQL.)</span></p>
+
+<h2>10. Fallen</h2>
+<div class="trap">
+<ul>
+  <li>„Normalisierung macht Abfragen schneller.“ → <b>Falsch.</b> Sie macht Daten konsistent und Writes billig. Reads brauchen mehr Joins.</li>
+  <li>„Eine Materialized View aktualisiert sich selbst.“ → <b>Falsch.</b> Nur per <code>REFRESH</code>, und der baut alles neu.</li>
+  <li>„Ein Foreign Key legt einen Index an.“ → <b>Falsch.</b> Nur die referenzierte Seite braucht einen UNIQUE-Index. Die FK-Spalte muss man selbst indizieren.</li>
+  <li>„JSONB ersetzt ein Schema.“ → <b>Falsch.</b> Das Schema wandert in den Anwendungscode. Ohne CHECK gibt es keine Validierung.</li>
+  <li>„3NF heisst: keine Redundanz überhaupt.“ → <b>Falsch.</b> 3NF entfernt Redundanz durch funktionale Abhängigkeiten. Mehrwertige Abhängigkeiten behandelt erst 4NF.</li>
+  <li>„Denormalisieren ist schlechtes Design.“ → <b>Falsch.</b> Es ist ein legitimer Trade-off, wenn er gemessen und gepflegt ist.</li>
+</ul>
+</div>
+
+<h2>11. Fragen</h2>
+<details><summary>Was ist Normalisierung?</summary><p>Das Aufteilen von Daten in Tabellen, sodass jede Tatsache genau einmal steht. Ziel: keine Anomalien beim Einfügen, Ändern und Löschen.</p></details>
+<details><summary>Was verlangt die 1NF?</summary><p>Atomare Werte in jeder Zelle und keine wiederholten Gruppen. Jede Zeile ist über einen Schlüssel eindeutig.</p></details>
+<details><summary>Was verlangt die 2NF?</summary><p>1NF, und kein Nicht-Schlüssel-Attribut hängt nur von einem Teil eines zusammengesetzten Schlüssels ab. Bei einem einspaltigen Schlüssel ist 1NF automatisch 2NF.</p></details>
+<details><summary>Was verlangt die 3NF?</summary><p>2NF, und keine transitiven Abhängigkeiten. Nicht-Schlüssel-Attribute hängen nur vom Schlüssel ab, nicht voneinander.</p></details>
+<details><summary>Was ist BCNF und wann unterscheidet sie sich von 3NF?</summary><p>Jede Determinante muss ein Kandidatenschlüssel sein. Der Unterschied tritt nur bei mehreren überlappenden Kandidatenschlüsseln auf.</p></details>
+<details><summary>Nennen Sie die drei Anomalien.</summary><p>Einfüge-, Update- und Lösch-Anomalie. Alle entstehen, weil eine Tatsache mehrfach oder an der falschen Stelle gespeichert ist.</p></details>
+<details><summary>Was ist eine funktionale Abhängigkeit?</summary><p>A → B: Ein Wert von A bestimmt genau einen Wert von B. Beispiel: kunde_id → ort.</p></details>
+<details><summary>Wann denormalisieren Sie?</summary><p>Wenn ein gemessener, wichtiger Lesepfad zu langsam ist und Indizes nicht reichen. Dann gezielt, mit klarer Pflege-Regel.</p></details>
+<details><summary>Was ist eine Materialized View?</summary><p>Eine Abfrage, deren Ergebnis physisch gespeichert ist. Sie wird nur per REFRESH aktualisiert und dann komplett neu berechnet.</p></details>
+<details><summary>Was macht REFRESH MATERIALIZED VIEW CONCURRENTLY?</summary><p>Es rechnet neu und wendet nur die Differenz an, ohne Leser zu blockieren. Es braucht einen UNIQUE-Index auf der View und ist langsamer.</p></details>
+<details><summary>View oder Materialized View?</summary><p>Die View ist immer aktuell, aber nicht schneller. Die Materialized View ist schnell, aber so alt wie der letzte Refresh.</p></details>
+<details><summary>json oder jsonb?</summary><p>jsonb fast immer: binär, indizierbar, schnelle Operatoren. json nur, wenn der exakte Originaltext mit Reihenfolge und Duplikaten erhalten bleiben muss.</p></details>
+<details><summary>Wie indizieren Sie JSONB?</summary><p>GIN mit jsonb_ops für viele Operatoren, jsonb_path_ops für @&gt; kleiner und schneller. Für einen Schlüssel ein B-Tree-Ausdrucksindex auf attrs-&gt;&gt;'key'.</p></details>
+<details><summary>Welche Nachteile hat JSONB?</summary><p>Keine FKs und kein Typ-Check auf inneren Werten. Keine Planer-Statistiken pro Schlüssel. Jede Änderung schreibt das ganze Dokument neu.</p></details>
+<details><summary>Wann ist JSONB eine gute Wahl?</summary><p>Für variable, selten gefilterte Attribute, z. B. Produkteigenschaften je Kategorie oder externe Payloads. Kern-Felder bleiben Spalten.</p></details>
+<details><summary>Legt ein Foreign Key einen Index an?</summary><p>Nein, nicht auf der FK-Spalte. Ohne Index werden Joins und DELETE auf der Elterntabelle langsam.</p></details>
+<details><summary>Wie halten Sie eine redundante Spalte konsistent?</summary><p>Mit einer Generated Column, wenn die Quelle in derselben Zeile liegt. Sonst mit einem Trigger und passendem Locking, plus Abgleich-Job.</p></details>
+<details><summary>Was ist eine Generated Column?</summary><p>Eine Spalte, die PostgreSQL aus anderen Spalten derselben Zeile berechnet und speichert. Sie kann keine anderen Tabellen lesen.</p></details>
+<details><summary>Verletzt ein Array-Typ die 1NF?</summary><p>Formal ja. Praktisch ist er für Tags mit GIN-Index brauchbar, solange keine FKs auf die Elemente nötig sind.</p></details>
+<details><summary>Surrogate Key oder natürlicher Schlüssel?</summary><p>Meist Surrogate Key als Primärschlüssel, weil er sich nie ändert. Der natürliche Schlüssel bekommt einen UNIQUE-Constraint.</p></details>
+<details><summary>Was ist ein Star-Schema?</summary><p>Eine Faktentabelle mit denormalisierten Dimensionstabellen. Es ist für Analyse optimiert, nicht für OLTP-Writes.</p></details>
+<details><summary>Szenario: Ein Dashboard braucht 8 Sekunden wegen eines 5-Tabellen-Joins mit Aggregation. Was tun Sie?</summary><p>Erst EXPLAIN ANALYZE: fehlen Indizes? Wenn die Aggregation selbst teuer ist und Minuten-Verzug ok ist: Materialized View mit UNIQUE-Index und REFRESH CONCURRENTLY per Job.</p></details>
+<details><summary>Szenario: Kunden haben in Rechnungen verschiedene Adressen für dieselbe Bestellung. Woran denken Sie?</summary><p>An eine Update-Anomalie durch eine redundante Adress-Spalte. Lösung: Adresse normalisieren, oder bewusst als Snapshot pro Rechnung speichern und das dokumentieren.</p></details>
+<details><summary>Szenario: Das Team will alles in eine JSONB-Spalte legen, „weil das Schema sich oft ändert“. Wie reagieren Sie?</summary><p>Stabile, gefilterte und referenzierte Felder als Spalten mit Constraints. Nur wirklich variable Teile in JSONB, mit GIN-Index und CHECK. Schema-Änderungen per Migration sind in PostgreSQL billig.</p></details>
+
+</body>
+</html>
