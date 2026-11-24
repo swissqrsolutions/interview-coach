@@ -33,7 +33,7 @@ Copy their `<head>`/`<style>` block, classes (`.kern`, `.senior`, `.trap`, `.sma
 - Diagrams: inline SVG, boxes and arrows, max ~8 boxes, short labels, drawn yourself.
 
 ## Facts
-- Current versions as of November 2026. Check the official release page first and use the version that is current TODAY (e.g. Angular 22 active / 21 LTS, Kubernetes 1.37, Spring Boot 4, Java 25 LTS). Mention older versions only where interviewers still ask about the difference.
+- Current versions as of November 2026. Check the official release page first and use the version that is current TODAY (e.g. Angular 22 active / 21 LTS, Kubernetes 1.37, Spring Boot 4.2 / Framework 7.1, Java 25 LTS, PostgreSQL 19, Kafka 4.4). Mention older versions only where interviewers still ask about the difference.
 - Official docs and specs only (list them under the title in the `.small` line). No outdated tutorials as sources.
 - QUALITY RULE: every version number, default value, limit and "since X" claim must be checked with WebFetch on the official page. If you cannot confirm it, either drop it or write it without the number. Do not leave "from memory" facts in the page.
 - Before finishing, re-read each page once as an interviewer: is every answer correct, complete, and current? Fix what is wrong.

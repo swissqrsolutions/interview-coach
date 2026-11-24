@@ -1,0 +1,250 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Method Security</title>
+<style>
+  body { font: 17px/1.55 -apple-system, system-ui, sans-serif; max-width: 760px; margin: 0 auto; padding: 16px; color: #1d1d1f; }
+  h1 { font-size: 28px; margin: 8px 0 4px; }
+  h2 { font-size: 21px; margin: 32px 0 8px; padding-top: 12px; border-top: 2px solid #e5e5ea; }
+  .kern { background: #eef6ff; border-left: 4px solid #0a66c2; padding: 10px 14px; border-radius: 6px; }
+  .senior { background: #f0faf0; border-left: 4px solid #2e7d32; padding: 10px 14px; border-radius: 6px; }
+  .trap { background: #fff4f2; border-left: 4px solid #c62828; padding: 10px 14px; border-radius: 6px; }
+  code { background: #f2f2f7; padding: 1px 5px; border-radius: 4px; font-size: 15px; }
+  pre { background: #1e1e1e; color: #e6e6e6; padding: 12px; border-radius: 8px; overflow-x: auto; font-size: 13.5px; line-height: 1.45; }
+  svg { width: 100%; height: auto; display: block; margin: 10px 0; }
+  ol li, ul li { margin: 4px 0; }
+  details { border: 1px solid #e5e5ea; border-radius: 8px; padding: 8px 12px; margin: 6px 0; }
+  summary { font-weight: 600; cursor: pointer; }
+  details p { margin: 6px 0 2px; }
+  .small { color: #6e6e73; font-size: 14px; }
+</style>
+</head>
+<body>
+
+<h1>Method Security: @PreAuthorize</h1>
+<p class="small">Spring · Tier 2 · Quellen: Spring Security 7.2 Reference („Method Security“), Spring Boot 4.2 Reference (Security), PostgreSQL 17 Doku („Row Security Policies“)</p>
+
+<div class="kern">
+<b>Kern:</b> <b>Method Security</b> ist Autorisierung direkt an Java-Methoden, z. B. mit <code>@PreAuthorize("hasRole('ADMIN')")</code>. Sie löst das Problem, dass URL-Regeln keine Fachlogik kennen: „Darf Anna <b>dieses</b> Konto sehen?“. Spring Security setzt sie mit <b>AOP-Proxies</b> und einem <b>AuthorizationManager</b> pro Annotation um.
+</div>
+
+<h2>1. Wo sitzt Method Security?</h2>
+<svg viewBox="0 0 720 290" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="a" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="10" y="20" width="160" height="56" rx="8" fill="#fff" stroke="#555"/><text x="90" y="44" text-anchor="middle" font-weight="700">Filter Chain</text><text x="90" y="62" text-anchor="middle" font-size="12">Login · URL-Regeln</text>
+  <line x1="170" y1="48" x2="208" y2="48" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="210" y="20" width="130" height="56" rx="8" fill="#fff" stroke="#555"/><text x="275" y="52" text-anchor="middle">Controller</text>
+  <line x1="340" y1="48" x2="378" y2="48" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="380" y="10" width="330" height="170" rx="12" fill="#f7f7fa" stroke="#999" stroke-dasharray="5 4"/><text x="545" y="30" text-anchor="middle" font-weight="700">Proxy der Service-Bean</text>
+  <rect x="395" y="42" width="140" height="50" rx="8" fill="#dbe9fb" stroke="#0a66c2"/><text x="465" y="62" text-anchor="middle" font-size="13" font-weight="700">@PreFilter 100</text><text x="465" y="80" text-anchor="middle" font-size="12">Parameter filtern</text>
+  <rect x="555" y="42" width="140" height="50" rx="8" fill="#0a66c2"/><text x="625" y="62" text-anchor="middle" font-size="13" fill="#fff" font-weight="700">@PreAuthorize 200</text><text x="625" y="80" text-anchor="middle" font-size="12" fill="#fff">vor dem Aufruf</text>
+  <rect x="395" y="112" width="140" height="50" rx="8" fill="#dbe9fb" stroke="#0a66c2"/><text x="465" y="132" text-anchor="middle" font-size="13" font-weight="700">@PostAuthorize</text><text x="465" y="150" text-anchor="middle" font-size="12">prüft returnObject</text>
+  <rect x="555" y="112" width="140" height="50" rx="8" fill="#dbe9fb" stroke="#0a66c2"/><text x="625" y="132" text-anchor="middle" font-size="13" font-weight="700">@PostFilter</text><text x="625" y="150" text-anchor="middle" font-size="12">Ergebnis filtern</text>
+  <line x1="545" y1="180" x2="545" y2="208" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="440" y="210" width="210" height="50" rx="8" fill="#fff" stroke="#555"/><text x="545" y="240" text-anchor="middle">echte Service-Methode</text>
+  <rect x="10" y="130" width="330" height="80" rx="8" fill="#e8f5e9" stroke="#2e7d32"/><text x="175" y="152" text-anchor="middle" font-weight="700">SecurityContextHolder</text><text x="175" y="172" text-anchor="middle" font-size="12">Authentication: Name, Authorities</text><text x="175" y="190" text-anchor="middle" font-size="12">gesetzt von der Filter Chain</text>
+  <line x1="340" y1="160" x2="393" y2="140" stroke="#2e7d32" stroke-width="1.5" stroke-dasharray="4 3" marker-end="url(#a)"/>
+</svg>
+<ol>
+  <li><b>Filter Chain:</b> Sie meldet den Benutzer an und prüft grobe URL-Regeln. Beispiel: <code>/api/**</code> braucht Login.</li>
+  <li><b>SecurityContextHolder:</b> Er hält das <b>Authentication</b>-Objekt mit Name und Rechten (<b>Authorities</b>) für den aktuellen Thread.</li>
+  <li><b>Proxy:</b> <code>@EnableMethodSecurity</code> sorgt dafür, dass Spring um annotierte Beans einen Proxy baut. Der Proxy hat einen <b>Interceptor</b> pro Annotation.</li>
+  <li><b>Reihenfolge:</b> Jeder Interceptor hat eine Order. <code>@PreFilter</code> hat 100, <code>@PreAuthorize</code> 200. Die Post-Interceptoren laufen nach der Methode.</li>
+  <li><b>Echte Methode:</b> Sie läuft nur, wenn alle Pre-Prüfungen bestehen. Alle Annotations zusammen sind ein logisches UND.</li>
+</ol>
+
+<h2>2. Die Reise eines Aufrufs von readAccount(7)</h2>
+<svg viewBox="0 0 720 300" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="b" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker><marker id="r" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#c62828"/></marker></defs>
+  <rect x="10" y="20" width="150" height="60" rx="10" fill="#eee" stroke="#777"/><text x="85" y="45" text-anchor="middle" font-weight="700">1. Proxy</text><text x="85" y="65" text-anchor="middle" font-size="12">fängt Aufruf ab</text>
+  <line x1="160" y1="50" x2="198" y2="50" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="200" y="20" width="160" height="60" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="280" y="45" text-anchor="middle" font-weight="700">2. SpEL bauen</text><text x="280" y="65" text-anchor="middle" font-size="12">#id · authentication</text>
+  <line x1="360" y1="50" x2="398" y2="50" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="400" y="20" width="160" height="60" rx="10" fill="#0a66c2"/><text x="480" y="45" text-anchor="middle" fill="#fff" font-weight="700">3. Entscheidung</text><text x="480" y="65" text-anchor="middle" fill="#fff" font-size="12">AuthorizationManager</text>
+  <line x1="560" y1="50" x2="598" y2="50" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="600" y="20" width="110" height="60" rx="10" fill="#fff" stroke="#555"/><text x="655" y="45" text-anchor="middle" font-weight="700">4. Methode</text><text x="655" y="65" text-anchor="middle" font-size="12">lädt Konto</text>
+  <line x1="655" y1="80" x2="655" y2="128" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="470" y="130" width="240" height="60" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="590" y="155" text-anchor="middle" font-weight="700">5. Post-Prüfung</text><text x="590" y="175" text-anchor="middle" font-size="12">returnObject.owner == name?</text>
+  <line x1="480" y1="80" x2="300" y2="128" stroke="#c62828" stroke-width="2" marker-end="url(#r)"/>
+  <rect x="140" y="130" width="250" height="60" rx="10" fill="#fff4f2" stroke="#c62828"/><text x="265" y="155" text-anchor="middle" font-weight="700">6. Nein: AccessDenied</text><text x="265" y="175" text-anchor="middle" font-size="12">Event + Exception</text>
+  <line x1="265" y1="190" x2="265" y2="228" stroke="#c62828" stroke-width="2" marker-end="url(#r)"/>
+  <rect x="140" y="230" width="250" height="56" rx="10" fill="#fff" stroke="#555"/><text x="265" y="254" text-anchor="middle" font-weight="700">7. ExceptionTranslationFilter</text><text x="265" y="273" text-anchor="middle" font-size="12">→ 403 (oder 401 ohne Login)</text>
+  <line x1="470" y1="170" x2="392" y2="170" stroke="#c62828" stroke-width="2" marker-end="url(#r)"/>
+</svg>
+<ol>
+  <li><b>Proxy:</b> Der Controller ruft <code>accountService.readAccount(7)</code>. In Wahrheit ruft er den Proxy. Der Proxy startet den Interceptor von <code>@PreAuthorize</code>.</li>
+  <li><b>SpEL bauen:</b> Der <b>MethodSecurityExpressionHandler</b> liest den Ausdruck. Er baut einen Kontext mit <code>authentication</code>, den Parametern (<code>#id</code>) und Beans (<code>@authz</code>).</li>
+  <li><b>Entscheidung:</b> Der <b>PreAuthorizeAuthorizationManager</b> wertet aus. Er liest das Authentication-Objekt erst, wenn der Ausdruck es braucht (ein <code>Supplier</code>).</li>
+  <li><b>Methode:</b> Bei „ja“ läuft die echte Methode und lädt das Konto aus der DB.</li>
+  <li><b>Post-Prüfung:</b> <code>@PostAuthorize</code> prüft das Ergebnis als <code>returnObject</code>. Gehört das Konto Anna nicht, wird das Ergebnis nicht zurückgegeben.</li>
+  <li><b>Ablehnung:</b> Spring publiziert ein <code>AuthorizationDeniedEvent</code> und wirft eine <code>AccessDeniedException</code>.</li>
+  <li><b>Antwort:</b> Im Web-Request macht der <b>ExceptionTranslationFilter</b> daraus 403. In einem Batch-Job oder Kafka-Listener muss Ihr Code die Exception selbst behandeln.</li>
+</ol>
+
+<h2>3. Beispiel: Regeln an Service-Methoden</h2>
+<pre>@Configuration
+@EnableMethodSecurity                 // Pre/Post an, @Secured und JSR-250 aus
+class SecurityConfig { }
+
+@Target({METHOD, TYPE}) @Retention(RUNTIME)
+@PreAuthorize("hasRole('{value}')")   // Template, braucht AnnotationTemplateExpressionDefaults-Bean
+@interface HasRole { String value(); }
+
+@Service
+class AccountService {
+  @PreAuthorize("@authz.canRead(#id, authentication)")    // eigene Bean "authz"
+  Account readAccount(Long id) { ... }
+
+  @PostAuthorize("returnObject.owner == authentication.name")
+  Account readOwn(Long id) { ... }
+
+  @HasRole("ADMIN")
+  void close(Long id) { ... }
+}
+
+@Test @WithMockUser(username = "ben")
+void benCannotReadAnnasAccount() {
+  assertThrows(AccessDeniedException.class, () -&gt; service.readOwn(1L));
+}</pre>
+<pre>GET /accounts/1   (Benutzer ben, Konto gehört anna)
+HTTP/1.1 403 Forbidden
+
+GET /accounts/1   (Benutzer anna)
+HTTP/1.1 200 OK   {"id":1,"owner":"anna","balance":100}
+
+Test benCannotReadAnnasAccount: PASSED</pre>
+<p class="small">Erwartetes Ergebnis (laut Doku, nicht ausgeführt). Spring Security 7.2, Spring Boot 4.2.</p>
+<p>Die Alternative für Listen: nicht <code>@PostFilter</code> im Speicher, sondern Filtern in der Datenbank. Hier mit <b>Row-Level Security</b> in PostgreSQL:</p>
+<pre>alter table demo_method_security.account enable row level security;
+create policy own_rows on demo_method_security.account
+  using (owner = current_setting('app.username'));
+
+begin; set local role app_user; set local app.username='anna';
+select * from demo_method_security.account;
+ id | owner | balance
+----+-------+---------
+  1 | anna  |     100
+  3 | anna  |     300
+(2 rows)
+
+begin; set local role app_user; set local app.username='ben';
+select * from demo_method_security.account where id=1;
+ id | owner | balance
+----+-------+---------
+(0 rows)</pre>
+<p class="small">Echte Ausgabe, PostgreSQL 17.12 (Schema <code>demo_method_security</code>, Rolle <code>app_user</code>, danach gelöscht).</p>
+<ol>
+  <li><code>@authz.canRead(...)</code> ruft eine Spring-Bean. So bleibt komplexe Logik testbar in Java statt in langem SpEL.</li>
+  <li><code>@PostAuthorize</code> braucht das Ergebnis. Die Methode läuft also immer, auch bei „nein“. Darum nur für lesende Methoden.</li>
+  <li><code>@HasRole("ADMIN")</code> ist eine <b>Meta-Annotation</b> mit Template. Sie spart Wiederholung und Tippfehler in Strings.</li>
+  <li>Ben sieht Annas Konto in der DB gar nicht: 0 Zeilen statt 403. Die DB filtert auch Listen und Paging korrekt.</li>
+  <li>Die Rolle <code>app_user</code> ist kein Superuser. Der Tabellen-Besitzer und Superuser umgehen RLS ohne <code>FORCE ROW LEVEL SECURITY</code>.</li>
+</ol>
+
+<h2>4. Details, die Interviewer fragen</h2>
+<ol>
+  <li><b>@EnableMethodSecurity:</b> Ersetzt das veraltete <code>@EnableGlobalMethodSecurity</code>. Standard: <code>prePostEnabled = true</code>. <code>securedEnabled</code> und <code>jsr250Enabled</code> muss man einschalten. Spring Boot schaltet Method Security <b>nicht</b> automatisch ein.</li>
+  <li><b>Vier Pre/Post-Annotations:</b> <code>@PreAuthorize</code> prüft vorher. <code>@PostAuthorize</code> prüft das Ergebnis. <code>@PreFilter</code> filtert eine Collection im Parameter (<code>filterObject</code>). <code>@PostFilter</code> filtert die zurückgegebene Collection.</li>
+  <li><b>@Secured und @RolesAllowed:</b> Ältere Annotations ohne SpEL. Die Doku empfiehlt <code>@PreAuthorize</code>.</li>
+  <li><b>hasRole vs hasAuthority:</b> <code>hasRole('ADMIN')</code> sucht die Authority <code>ROLE_ADMIN</code>. <code>hasAuthority('SCOPE_read')</code> vergleicht genau. Falscher Präfix ist der häufigste 403-Grund.</li>
+  <li><b>Parameter in SpEL:</b> <code>#id</code> braucht den Parameternamen. Er kommt aus <code>@P</code>, <code>@Param</code> oder dem Compiler-Flag <code>-parameters</code>. Der Spring-Boot-Parent (Maven) und das Gradle-Plugin setzen das Flag.</li>
+  <li><b>Beans in SpEL:</b> <code>@authz.decide(#root)</code> ruft eine Bean. Sie kann <code>boolean</code>, <code>null</code> (enthält sich), eine <code>AuthorizationDecision</code> oder einen <code>AuthorizationManager</code> liefern.</li>
+  <li><b>Klasse vs Methode:</b> Eine Annotation an der Klasse gilt für alle Methoden. Eine Annotation an der Methode ersetzt die der Klasse. Methoden ohne Annotation sind <b>nicht</b> geschützt.</li>
+  <li><b>Interfaces:</b> Annotations an Interfaces werden geerbt. Erbt eine Klasse widersprüchliche Annotations von zwei Interfaces, scheitert der Start.</li>
+  <li><b>Gleiche Annotation zweimal:</b> Zwei <code>@PreAuthorize</code> an einer Methode gehen nicht. Man kombiniert mit <code>and</code>/<code>or</code> oder ruft eine Bean.</li>
+  <li><b>Self-Invocation:</b> Ein Aufruf über <code>this</code> geht am Proxy vorbei. Die Prüfung fällt still weg. Lösung: Methode in eine andere Bean oder <code>mode = AdviceMode.ASPECTJ</code>.</li>
+  <li><b>@AuthorizeReturnObject:</b> Spring gibt einen Proxy des Ergebnisses zurück. Dann gelten die Annotations an dessen Gettern, z. B. <code>@PreAuthorize</code> an <code>getEmail()</code>.</li>
+  <li><b>@HandleAuthorizationDenied:</b> Statt einer Exception liefert ein <code>MethodAuthorizationDeniedHandler</code> einen Ersatzwert, z. B. <code>null</code> oder <code>"***"</code>. Gut zum Maskieren einzelner Felder.</li>
+  <li><b>Templates:</b> Mit einer <code>AnnotationTemplateExpressionDefaults</code>-Bean werden Platzhalter wie <code>{value}</code> in Meta-Annotations ersetzt.</li>
+  <li><b>Eigene Logik:</b> Ein eigener <code>AuthorizationManager&lt;MethodInvocation&gt;</code> ersetzt SpEL ganz. Ein eigener <code>MethodSecurityExpressionHandler</code> (als <code>static @Bean</code>) bringt z. B. eine <code>RoleHierarchy</code>.</li>
+  <li><b>@PostAuthorize und @Transactional:</b> Die Methode ist schon gelaufen. Hat sie geschrieben, ist die Änderung vielleicht schon passiert. Die Doku warnt ausdrücklich davor.</li>
+</ol>
+
+<h2>5. Vergleich</h2>
+<ul>
+  <li><b>URL-Regeln in der Filter Chain:</b> grob, schnell, vor jedem Controller. Kennen keine Daten. Gut als Grundschutz: „alles unter <code>/admin</code> nur für Admins“.</li>
+  <li><b>@PreAuthorize:</b> fein, an Fachmethoden, kennt Parameter. Gilt auch, wenn der Service von Kafka oder einem Job gerufen wird.</li>
+  <li><b>@PostAuthorize:</b> für „gehört dieses Objekt dem Benutzer?“, wenn man das Objekt erst laden muss.</li>
+  <li><b>@PostFilter:</b> filtert im Speicher. Teuer bei grossen Listen und kaputt mit Paging (Seite hat dann weniger Einträge).</li>
+  <li><b>Filtern in der Query:</b> <code>where owner = :user</code> oder Row-Level Security in der DB. Richtig für Listen und Paging.</li>
+  <li><b>Spring Security ACL:</b> Rechte pro Objekt in eigenen Tabellen. Mächtig, aber schwer. Heute selten erste Wahl.</li>
+  <li><b>Externe Policy-Engine</b> (z. B. OPA): Regeln zentral für viele Services. Mehr Betrieb, mehr Latenz.</li>
+</ul>
+
+<h2>6. In der Produktion</h2>
+<ol>
+  <li><b>Regeln greifen nicht:</b> <code>@EnableMethodSecurity</code> fehlt. Alle Annotations werden still ignoriert. Lösung: Annotation setzen und einen Negativ-Test pro Regel schreiben.</li>
+  <li><b>Neue Methode ohne Schutz:</b> Jemand fügt eine Methode ohne Annotation hinzu. Sie ist offen. Lösung: Annotation an der Klasse als Standard, plus URL-Regel als zweite Linie.</li>
+  <li><b>Paging kaputt mit @PostFilter:</b> Eine Seite mit 20 Einträgen zeigt nach dem Filter 3. Lösung: in der Query filtern.</li>
+  <li><b>403 trotz richtiger Rolle:</b> Das Token liefert <code>ADMIN</code>, die Regel sucht <code>ROLE_ADMIN</code>. Lösung: Authorities-Mapping prüfen, <code>hasAuthority</code> oder den Converter anpassen.</li>
+  <li><b>Kein Benutzer in @Async:</b> Der neue Thread hat keinen SecurityContext. <code>@PreAuthorize</code> wirft dann eine Exception. Lösung: <code>DelegatingSecurityContextAsyncTaskExecutor</code>.</li>
+  <li><b>Langsame Regeln:</b> <code>@authz</code> fragt bei jedem Aufruf die DB. Bei einer Liste mit 1000 Objekten sind das 1000 Abfragen. Lösung: Rechte einmal laden oder in der Query prüfen.</li>
+</ol>
+
+<h2>7. Diagnose</h2>
+<ul>
+  <li><code>logging.level.org.springframework.security=TRACE</code>: zeigt, welcher AuthorizationManager mit welchem Ergebnis entscheidet.</li>
+  <li><b><code>AuthorizationDeniedEvent</code></b> mit einem <code>@EventListener</code> loggen: wer, welche Methode, welche Regel. Gut für Audit.</li>
+  <li><code>AopUtils.isAopProxy(bean)</code> oder Debugger: Ist die Bean überhaupt ein Proxy?</li>
+  <li><b>Tests:</b> <code>@WithMockUser(roles = "ADMIN")</code>, <code>@WithMockUser(username = "ben")</code>, und <code>assertThrows(AccessDeniedException.class, …)</code>.</li>
+  <li><b>Actuator <code>/actuator/beans</code>:</b> Sind die Method-Security-Advisors registriert?</li>
+  <li><b>PostgreSQL:</b> <code>select * from pg_policies</code> zeigt RLS-Policies, falls man in der DB filtert.</li>
+</ul>
+
+<h2>8. Senior-Punkte</h2>
+<div class="senior">
+<ol>
+  <li><b>Defense in Depth:</b> URL-Regeln als Grundschutz, Method Security für Fachregeln, Query-Filter für Listen. Eine Ebene allein reicht nicht.</li>
+  <li><b>Regeln an den Service, nicht an den Controller.</b> So gelten sie auch für Kafka, Jobs und andere Einstiegspunkte.</li>
+  <li><b>Wenig SpEL, viel Java:</b> Komplexe Regeln in eine Bean (<code>@authz</code>) oder einen <code>AuthorizationManager</code>. SpEL-Strings prüft kein Compiler.</li>
+  <li><b>Deny by default:</b> Annotation an der Klasse oder Architektur-Test (z. B. ArchUnit), der jede öffentliche Service-Methode prüft.</li>
+  <li><b>Listen gehören in die Datenbank gefiltert.</b> <code>@PostFilter</code> nur für kleine Mengen.</li>
+  <li><b>404 statt 403</b> für fremde Objekte, wenn schon die Existenz geheim ist. Das ist eine bewusste Entscheidung.</li>
+</ol>
+</div>
+
+<h2>9. Aus dem Projekt</h2>
+<p>„Bei DigiSanté hat der Person-Service pro Mandant eine eigene PostgreSQL-Datenbank. Die Trennung der Daten passiert also schon in der Infrastruktur, nicht erst in einer Annotation.“ <span class="small">(Prüfen und durch dein echtes Beispiel ersetzen. <code>@PreAuthorize</code> in einem Projekt ist im Profil nicht belegt; ehrlich sagen und auf Keycloak/JWT-Erfahrung bei MATCH, CARIAD und DigiSanté verweisen.)</span></p>
+
+<h2>10. Fallen</h2>
+<div class="trap">
+<ul>
+  <li>„Spring Boot aktiviert @PreAuthorize automatisch.“ → <b>Falsch.</b> Ohne <code>@EnableMethodSecurity</code> passiert nichts.</li>
+  <li>„@PostAuthorize verhindert, dass die Methode läuft.“ → <b>Falsch.</b> Sie läuft immer. Nur das Ergebnis wird blockiert.</li>
+  <li>„Zwei @PreAuthorize an einer Methode werden kombiniert.“ → <b>Falsch.</b> Das ist nicht unterstützt. Mit <code>and</code> kombinieren.</li>
+  <li>„Ein interner Aufruf ist auch geprüft.“ → <b>Falsch.</b> Self-Invocation umgeht den Proxy.</li>
+  <li>„@PostFilter ist ein guter Weg für Listen.“ → <b>Nur für kleine Listen.</b> Es filtert im Speicher und bricht Paging.</li>
+  <li>„hasRole('ROLE_ADMIN') ist korrekt.“ → <b>Unnötig.</b> <code>hasRole</code> setzt den Präfix selbst. Ohne Präfix: <code>hasAuthority</code>.</li>
+</ul>
+</div>
+
+<h2>11. Fragen</h2>
+<details><summary>Was ist Method Security?</summary><p>Autorisierung an einzelnen Methoden mit Annotations wie <code>@PreAuthorize</code>. Sie ergänzt URL-Regeln um fachliche Prüfungen mit Parametern und Ergebnissen.</p></details>
+<details><summary>Wie aktivieren Sie Method Security?</summary><p>Mit <code>@EnableMethodSecurity</code> an einer Konfigurationsklasse. Pre/Post-Annotations sind dann an, <code>@Secured</code> und JSR-250 nur mit eigenem Flag.</p></details>
+<details><summary>Wie funktioniert @PreAuthorize technisch?</summary><p>Spring baut einen AOP-Proxy. Ein Interceptor wertet den SpEL-Ausdruck mit einem AuthorizationManager aus. Bei „nein“ wirft er eine AccessDeniedException.</p></details>
+<details><summary>@PreAuthorize vs @PostAuthorize?</summary><p>Pre prüft vor dem Aufruf mit Parametern. Post prüft nach dem Aufruf mit dem Ergebnis <code>returnObject</code>, die Methode läuft also immer.</p></details>
+<details><summary>Was machen @PreFilter und @PostFilter?</summary><p>Sie filtern Collections im Parameter oder im Ergebnis mit <code>filterObject</code>. Das passiert im Speicher.</p></details>
+<details><summary>Warum ist @PostFilter mit Paging problematisch?</summary><p>Die DB liefert eine volle Seite, der Filter entfernt danach Einträge. Die Seite ist zu kurz, und die Gesamtzahl stimmt nicht.</p></details>
+<details><summary>@Secured vs @PreAuthorize?</summary><p><code>@Secured</code> kennt nur Rollen-Namen, kein SpEL. <code>@PreAuthorize</code> kann Parameter, Beans und Logik nutzen und ist die Empfehlung.</p></details>
+<details><summary>hasRole vs hasAuthority?</summary><p><code>hasRole('X')</code> sucht <code>ROLE_X</code>. <code>hasAuthority('X')</code> sucht genau <code>X</code>, z. B. <code>SCOPE_read</code>.</p></details>
+<details><summary>Wie greifen Sie in SpEL auf Parameter zu?</summary><p>Mit <code>#name</code>. Der Name kommt aus <code>@P</code>, <code>@Param</code> oder dem Compiler-Flag <code>-parameters</code>.</p></details>
+<details><summary>Wie nutzen Sie eine Bean in einer Regel?</summary><p>Mit <code>@beanName.methode(...)</code>, z. B. <code>@authz.canRead(#id, authentication)</code>. Die Logik ist dann normales, testbares Java.</p></details>
+<details><summary>Was passiert bei einer Annotation an Klasse und Methode?</summary><p>Die Methoden-Annotation gewinnt. Die Klassen-Annotation gilt für alle anderen Methoden.</p></details>
+<details><summary>Warum wirkt @PreAuthorize bei Self-Invocation nicht?</summary><p>Der Aufruf über <code>this</code> geht nicht durch den Proxy. Lösung: eigene Bean oder AspectJ-Modus.</p></details>
+<details><summary>Welche Exception kommt bei Ablehnung, und was sieht der Client?</summary><p><code>AccessDeniedException</code>. Im Web macht der ExceptionTranslationFilter daraus 403, oder 401, wenn niemand angemeldet ist.</p></details>
+<details><summary>Was ist eine Meta-Annotation in Spring Security?</summary><p>Eine eigene Annotation wie <code>@IsAdmin</code>, die <code>@PreAuthorize</code> trägt. Mit Templates auch mit Parametern, z. B. <code>@HasRole("ADMIN")</code>.</p></details>
+<details><summary>Was macht @AuthorizeReturnObject?</summary><p>Es gibt einen Proxy des Ergebnisses zurück. Annotations an dessen Methoden werden dann auch geprüft, z. B. an <code>getEmail()</code>.</p></details>
+<details><summary>Was macht @HandleAuthorizationDenied?</summary><p>Es ersetzt die Exception durch einen Wert aus einem <code>MethodAuthorizationDeniedHandler</code>. So kann man Felder maskieren statt den ganzen Request abzulehnen.</p></details>
+<details><summary>Warum @PostAuthorize nicht auf schreibenden Methoden?</summary><p>Die Methode ist schon gelaufen. Die Änderung kann schon geschrieben sein, bevor die Prüfung scheitert.</p></details>
+<details><summary>Wie testen Sie Method Security?</summary><p>Mit <code>@WithMockUser</code> und einem Aufruf der Bean über den Spring-Kontext. Für jede Regel einen positiven und einen negativen Test.</p></details>
+<details><summary>Wie bekommt ein @Async-Thread den Benutzer?</summary><p>Mit <code>DelegatingSecurityContextAsyncTaskExecutor</code> oder einer Context-Propagation. Sonst ist der SecurityContext leer.</p></details>
+<details><summary>Wann ersetzen Sie SpEL durch einen eigenen AuthorizationManager?</summary><p>Wenn die Regel komplex ist, wiederverwendet wird oder Abhängigkeiten braucht. Java ist typisiert und testbar.</p></details>
+<details><summary>Was ist Row-Level Security?</summary><p>Eine Datenbank-Funktion, die Zeilen pro Benutzer filtert. PostgreSQL setzt dafür Policies auf eine Tabelle; jede Query sieht nur erlaubte Zeilen.</p></details>
+<details><summary>Szenario: Ein Pentest zeigt, dass Benutzer fremde Rechnungen per ID lesen können. Was ändern Sie?</summary><p>Eine Besitz-Prüfung an der Service-Methode, z. B. <code>@PostAuthorize</code> oder besser eine Query mit <code>owner = :user</code>. Dazu ein Negativ-Test pro Endpoint, eventuell 404 statt 403.</p></details>
+<details><summary>Szenario: Alle @PreAuthorize-Regeln sind nach einem Refactoring wirkungslos, Tests sind grün. Woran liegt es?</summary><p>Wahrscheinlich fehlt <code>@EnableMethodSecurity</code>, oder die Aufrufe laufen jetzt intern über <code>this</code>. Die Tests prüfen nur den Erfolgsfall; es fehlen Negativ-Tests.</p></details>
+<details><summary>Szenario: Eine Liste zeigt pro Seite mal 20, mal 4 Einträge. Was ist los?</summary><p>Vermutlich filtert <code>@PostFilter</code> nach dem Paging im Speicher. Lösung: in der Query oder per Row-Level Security filtern.</p></details>
+
+</body>
+</html>

@@ -1,0 +1,231 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Flyway und Liquibase</title>
+<style>
+  body { font: 17px/1.55 -apple-system, system-ui, sans-serif; max-width: 760px; margin: 0 auto; padding: 16px; color: #1d1d1f; }
+  h1 { font-size: 28px; margin: 8px 0 4px; }
+  h2 { font-size: 21px; margin: 32px 0 8px; padding-top: 12px; border-top: 2px solid #e5e5ea; }
+  .kern { background: #eef6ff; border-left: 4px solid #0a66c2; padding: 10px 14px; border-radius: 6px; }
+  .senior { background: #f0faf0; border-left: 4px solid #2e7d32; padding: 10px 14px; border-radius: 6px; }
+  .trap { background: #fff4f2; border-left: 4px solid #c62828; padding: 10px 14px; border-radius: 6px; }
+  code { background: #f2f2f7; padding: 1px 5px; border-radius: 4px; font-size: 15px; }
+  pre { background: #1e1e1e; color: #e6e6e6; padding: 12px; border-radius: 8px; overflow-x: auto; font-size: 13.5px; line-height: 1.45; }
+  svg { width: 100%; height: auto; display: block; margin: 10px 0; }
+  ol li, ul li { margin: 4px 0; }
+  details { border: 1px solid #e5e5ea; border-radius: 8px; padding: 8px 12px; margin: 6px 0; }
+  summary { font-weight: 600; cursor: pointer; }
+  details p { margin: 6px 0 2px; }
+  .small { color: #6e6e73; font-size: 14px; }
+</style>
+</head>
+<body>
+
+<h1>Flyway und Liquibase</h1>
+<p class="small">Hibernate · Tier 1 · Quellen: Flyway-Doku (Redgate: Migrations, Repeatable/Undo Migrations, Transaction Handling, Settings <code>cleanDisabled</code>, <code>validateOnMigrate</code>, <code>outOfOrder</code>), Flyway-Quellcode (<code>flyway_schema_history</code>, PostgreSQL Advisory Lock), Liquibase-Doku (Changeset), Spring Boot Reference (Database Initialization), Introduction to Hibernate 7 (Kap. 2.7), PostgreSQL 17 Doku (ALTER TABLE, CREATE INDEX)</p>
+
+<div class="kern">
+<b>Kern:</b> Flyway und Liquibase sind Werkzeuge für <b>Schema-Migrationen</b>: versionierte Änderungsskripte, die jede Datenbank genau einmal und in fester Reihenfolge bekommt. Sie lösen das Problem, dass Code und Schema in allen Umgebungen gleich sein müssen. Hibernate erzeugt in Produktion kein Schema, es <b>prüft</b> es nur (<code>ddl-auto=validate</code>). Ohne Ausfall geht das nur mit <b>Expand/Contract</b>: Schema erst erweitern, Code umstellen, Altes später entfernen.
+</div>
+
+<h2>1. Wo sitzen die Migrationen?</h2>
+<svg viewBox="0 0 720 290" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="a" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="10" y="20" width="170" height="110" rx="8" fill="#fff" stroke="#555"/><text x="95" y="42" text-anchor="middle" font-weight="700">Git-Repo</text><text x="95" y="66" text-anchor="middle" font-size="12">db/migration/</text><text x="95" y="86" text-anchor="middle" font-size="12">V1__init.sql</text><text x="95" y="104" text-anchor="middle" font-size="12">V2__add_email.sql</text><text x="95" y="122" text-anchor="middle" font-size="12">R__views.sql</text>
+  <line x1="180" y1="75" x2="238" y2="75" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="240" y="20" width="200" height="110" rx="8" fill="#0a66c2"/><text x="340" y="48" text-anchor="middle" fill="#fff" font-weight="700">Flyway migrate</text><text x="340" y="72" text-anchor="middle" fill="#fff" font-size="12">beim App-Start oder</text><text x="340" y="90" text-anchor="middle" fill="#fff" font-size="12">als Job vor dem Deploy</text><text x="340" y="110" text-anchor="middle" fill="#fff" font-size="12">Advisory Lock</text>
+  <line x1="440" y1="75" x2="498" y2="75" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="500" y="20" width="210" height="110" rx="8" fill="#fff" stroke="#555"/><text x="605" y="44" text-anchor="middle" font-weight="700">PostgreSQL</text><text x="605" y="68" text-anchor="middle" font-size="12">Tabellen</text><text x="605" y="88" text-anchor="middle" font-size="12">flyway_schema_history</text><text x="605" y="106" text-anchor="middle" font-size="12">(Version, Checksum, Erfolg)</text>
+  <line x1="605" y1="130" x2="605" y2="178" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="440" y="180" width="270" height="90" rx="8" fill="#dbe9fb" stroke="#0a66c2"/><text x="575" y="204" text-anchor="middle" font-weight="700">Hibernate beim Start</text><text x="575" y="226" text-anchor="middle" font-size="12">ddl-auto=validate</text><text x="575" y="246" text-anchor="middle" font-size="12">Mapping passt zum Schema? sonst Abbruch</text>
+  <rect x="10" y="180" width="380" height="90" rx="8" fill="#f7f7fa" stroke="#999"/><text x="200" y="204" text-anchor="middle" font-weight="700">Spring Boot Reihenfolge</text><text x="200" y="228" text-anchor="middle" font-size="12">Flyway / Liquibase laufen zuerst,</text><text x="200" y="248" text-anchor="middle" font-size="12">die EntityManagerFactory wartet darauf</text>
+</svg>
+<ol>
+  <li><b>Migrations-Skripte:</b> liegen im Repo neben dem Code, Default in Spring Boot: <code>classpath:db/migration</code>.</li>
+  <li><b>Flyway migrate:</b> liest die Skripte, vergleicht mit der History-Tabelle und führt nur neue aus. Auf PostgreSQL nimmt Flyway einen <b>Advisory Lock</b>. So migrieren zwei Pods nicht gleichzeitig.</li>
+  <li><b>flyway_schema_history:</b> eine Zeile pro Migration: Version, Beschreibung, <b>Checksum</b>, Erfolg.</li>
+  <li><b>Spring Boot:</b> Die EntityManagerFactory hängt von Flyway bzw. Liquibase ab. Darum ist das Schema fertig, bevor Hibernate startet.</li>
+  <li><b>Hibernate validate:</b> prüft Tabellen und Spalten gegen das Mapping. Bei Abweichung startet die App nicht.</li>
+</ol>
+
+<h2>2. Die Reise einer Spalten-Umbenennung ohne Ausfall (die Geschichte zum Merken)</h2>
+<svg viewBox="0 0 720 280" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="b" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="10" y="30" width="160" height="90" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="90" y="56" text-anchor="middle" font-weight="700">1 Expand</text><text x="90" y="78" text-anchor="middle" font-size="12">V5: neue Spalte</text><text x="90" y="96" text-anchor="middle" font-size="12">email (nullable)</text>
+  <line x1="170" y1="75" x2="188" y2="75" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="190" y="30" width="160" height="90" rx="10" fill="#fff" stroke="#555"/><text x="270" y="56" text-anchor="middle" font-weight="700">2 App v2</text><text x="270" y="78" text-anchor="middle" font-size="12">schreibt alt + neu</text><text x="270" y="96" text-anchor="middle" font-size="12">liest alt</text>
+  <line x1="350" y1="75" x2="368" y2="75" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="370" y="30" width="160" height="90" rx="10" fill="#fff" stroke="#555"/><text x="450" y="56" text-anchor="middle" font-weight="700">3 Backfill</text><text x="450" y="78" text-anchor="middle" font-size="12">alte Zeilen kopieren</text><text x="450" y="96" text-anchor="middle" font-size="12">in Blöcken</text>
+  <line x1="530" y1="75" x2="548" y2="75" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="550" y="30" width="160" height="90" rx="10" fill="#fff" stroke="#555"/><text x="630" y="56" text-anchor="middle" font-weight="700">4 App v3</text><text x="630" y="78" text-anchor="middle" font-size="12">liest + schreibt</text><text x="630" y="96" text-anchor="middle" font-size="12">nur neu</text>
+  <line x1="630" y1="120" x2="630" y2="168" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="470" y="170" width="240" height="80" rx="10" fill="#0a66c2"/><text x="590" y="198" text-anchor="middle" fill="#fff" font-weight="700">5 Contract</text><text x="590" y="220" text-anchor="middle" fill="#fff" font-size="12">V7: alte Spalte löschen,</text><text x="590" y="238" text-anchor="middle" fill="#fff" font-size="12">NOT NULL setzen</text>
+  <rect x="10" y="170" width="420" height="80" rx="10" fill="#f7f7fa" stroke="#999"/><text x="220" y="196" text-anchor="middle" font-weight="700">Regel</text><text x="220" y="218" text-anchor="middle" font-size="12">Jede Schema-Version passt zur alten UND zur neuen App.</text><text x="220" y="236" text-anchor="middle" font-size="12">Im Rolling Update laufen beide gleichzeitig.</text>
+</svg>
+<ol>
+  <li><b>Expand:</b> Migration V5 fügt <code>email</code> hinzu, nullable, ohne Default-Berechnung. Die alte App ignoriert die Spalte.</li>
+  <li><b>App v2:</b> schreibt in beide Spalten und liest noch die alte. Während des Rolling Updates laufen v1 und v2 parallel. Beide funktionieren.</li>
+  <li><b>Backfill:</b> Ein Job kopiert alte Werte in Blöcken (z. B. 10 000 Zeilen pro Transaktion). So gibt es keine riesige Transaktion und keine langen Sperren.</li>
+  <li><b>App v3:</b> liest und schreibt nur noch die neue Spalte.</li>
+  <li><b>Contract:</b> Erst ein späteres Release löscht die alte Spalte und setzt <code>NOT NULL</code>. Ein Rollback auf v3 bleibt möglich.</li>
+</ol>
+
+<h2>3. Beispiel: was Migrationen in PostgreSQL sperren</h2>
+<pre>-- Spalte mit konstantem Default vs. volatile Default: wird die Tabelle neu geschrieben?
+select relfilenode from pg_class where relname='book';
+vorher: 17177
+alter table book add column status text not null default 'NEW';
+nach konstantem Default: 17177
+alter table book add column token double precision not null default random();
+nach volatile Default: 17223</pre>
+<p class="small">Echte Ausgabe, PostgreSQL 17.12 (Ausgabe mit <code>psql -At</code>, Beschriftung im SELECT).</p>
+<pre>-- Index in einer Migration
+begin;
+create index concurrently book_title_idx on book(title);
+ERROR:  CREATE INDEX CONCURRENTLY cannot run inside a transaction block
+
+create index concurrently book_title_idx on book(title);   -- ohne Transaktion
+CREATE INDEX</pre>
+<p class="small">Echte Ausgabe, PostgreSQL 17.12.</p>
+<pre>-- Lock-Warteschlange: Sitzung 1 hat eine offene Lese-Transaktion auf book,
+-- Sitzung 2 startet ALTER TABLE, Sitzung 3 will nur lesen
+select pid, pg_blocking_pids(pid) as blockiert_von, wait_event_type as warten, query
+from pg_stat_activity where datname='hib_demo' and pid&lt;&gt;pg_backend_pid();
+ pid | blockiert_von | warten  |                 query
+-----+---------------+---------+---------------------------------------
+ 456 | {}            | Timeout | select pg_sleep(6)
+ 463 | {456}         | Lock    | alter table book add column isbn text
+ 470 | {463}         | Lock    | select count(*) from book where id=1
+
+-- dieselbe Migration mit lock_timeout
+set lock_timeout='1s';
+alter table book add column ean text;
+ERROR:  canceling statement due to lock timeout
+real    0m1.327s
+
+-- Constraint ohne langen Scan unter starker Sperre
+alter table book add constraint book_price_pos check (price &gt; 0) not valid;
+ALTER TABLE
+alter table book validate constraint book_price_pos;
+ALTER TABLE</pre>
+<p class="small">Echte Ausgabe, PostgreSQL 17.12.</p>
+<ol>
+  <li><b>Konstanter Default:</b> <code>relfilenode</code> bleibt gleich. PostgreSQL speichert den Default nur in den Metadaten. Das geht in Millisekunden.</li>
+  <li><b>Volatile Default</b> (<code>random()</code>, <code>clock_timestamp()</code>): neue Datei, die ganze Tabelle wird unter <code>ACCESS EXCLUSIVE</code> Sperre neu geschrieben. Bei grossen Tabellen ein Ausfall.</li>
+  <li><b>CONCURRENTLY</b> baut den Index ohne Schreib-Sperre, darf aber nicht in einer Transaktion laufen. Flyway packt jede Migration in eine Transaktion. Darum: eigene Migration mit Script-Config <code>executeInTransaction=false</code>.</li>
+  <li><b>Lock-Warteschlange:</b> <code>ALTER TABLE</code> wartet auf die offene Transaktion. Alle <b>neuen</b> Leser warten hinter dem ALTER. Eine schnelle Migration legt so die ganze Tabelle lahm.</li>
+  <li><b>lock_timeout</b> in der Migration bricht nach 1 s ab, statt alle Leser zu blockieren. Danach erneut versuchen.</li>
+  <li><b>NOT VALID + VALIDATE:</b> Das Hinzufügen prüft alte Zeilen nicht. VALIDATE prüft danach mit einer schwächeren Sperre, bei der Schreiben weiter geht.</li>
+</ol>
+
+<h2>4. Details, die Interviewer fragen</h2>
+<ol>
+  <li><b>Versioned Migration</b> (<code>V2__add_email.sql</code>): läuft genau einmal, in Versions-Reihenfolge. Nach dem Ausführen nie mehr ändern. Flyway prüft die Checksum (<code>validateOnMigrate</code>, Default <code>true</code>).</li>
+  <li><b>Repeatable Migration</b> (<code>R__views.sql</code>): keine Version, nur Checksum. Läuft erneut, sobald sich die Checksum ändert. Immer <b>nach</b> allen versionierten. Gut für Views, Funktionen, Grants.</li>
+  <li><b>Undo Migration</b> (<code>U2__add_email.sql</code>): nur in Flyway Teams. In der Praxis rollt man meist <b>vorwärts</b> mit einer neuen Version zurück.</li>
+  <li><b>outOfOrder</b> (Default <code>false</code>): Eine V3, die nach V4 gemergt wurde, läuft dann nicht. Mit <code>true</code> läuft sie trotzdem.</li>
+  <li><b>cleanDisabled</b> (Default <code>true</code>): <code>flyway clean</code> löscht alle Objekte im Schema. In Produktion muss es aus bleiben.</li>
+  <li><b>Transaktionen:</b> Flyway führt jede Migration in einer eigenen Transaktion aus. PostgreSQL kann DDL transaktional zurückrollen. Ein Fehler hinterlässt also kein halbes Schema.</li>
+  <li><b>Baseline:</b> Für eine bestehende Datenbank ohne History: <code>baseline</code> markiert den Ist-Stand als Version X.</li>
+  <li><b>Spring Boot:</b> Für PostgreSQL braucht Flyway zusätzlich das Modul <code>org.flywaydb:flyway-database-postgresql</code>.</li>
+  <li><b>Liquibase:</b> Ein <b>Changelog</b> (SQL, XML, YAML oder JSON) enthält <b>Changesets</b>. Ein Changeset ist eindeutig über <code>author:id</code> plus Dateipfad. Liquibase führt es einmal aus, ausser mit <code>runOnChange</code> oder <code>runAlways</code>. Tracking-Tabellen: <code>DATABASECHANGELOG</code> und <code>DATABASECHANGELOGLOCK</code>. Spring-Boot-Default: <code>db/changelog/db.changelog-master.yaml</code>.</li>
+  <li><b>ddl-auto in Spring Boot:</b> Werte <code>none</code>, <code>validate</code>, <code>update</code>, <code>create</code>, <code>create-drop</code>. Default: <code>create-drop</code> nur bei Embedded-DB ohne Flyway/Liquibase, sonst <code>none</code>.</li>
+</ol>
+
+<h2>5. Vergleich</h2>
+<ul>
+  <li><b>Flyway:</b> SQL-first, einfache Namenskonvention, wenig Konzepte. Gut, wenn das Team SQL schreibt und eine Datenbank-Marke nutzt.</li>
+  <li><b>Liquibase:</b> Changesets in XML/YAML/JSON oder SQL, datenbank-neutral formulierbar. Eingebaute Rollback-Definitionen, Contexts und Labels (z. B. nur in Test), Preconditions. Mehr Konzepte, mehr Flexibilität.</li>
+  <li><b>Hibernate <code>ddl-auto=update</code>:</b> kein Migrations-Werkzeug. Es löscht nie, benennt nicht um, kennt keine Reihenfolge und keine Daten-Migration. Nur für lokale Experimente.</li>
+  <li><b><code>ddl-auto=validate</code>:</b> ändert nichts, prüft nur. Richtig für Produktion zusammen mit Flyway oder Liquibase.</li>
+  <li><b>Migration beim App-Start vs eigener Job:</b> Start ist einfach. Ein Job (Kubernetes Job, Helm Hook, Init-Container) trennt Rechte und Zeitpunkt und blockiert keine Readiness Probes.</li>
+</ul>
+
+<h2>6. In der Produktion</h2>
+<ol>
+  <li><b>Checksum-Fehler beim Start:</b> Jemand hat eine schon ausgeführte V-Migration geändert. Fix: Änderung zurücknehmen und als neue Version schreiben. <code>flyway repair</code> nur, wenn die Änderung bewusst und harmlos war (z. B. Kommentar).</li>
+  <li><b>App blockiert nach Deployment:</b> Ein <code>ALTER TABLE</code> wartet auf eine lange Transaktion, alle Queries stauen sich dahinter. Fix: <code>SET lock_timeout</code> am Anfang der Migration, Retry, lange Transaktionen vorher prüfen.</li>
+  <li><b>Tabelle wird neu geschrieben:</b> Typänderung (<code>ALTER COLUMN TYPE</code>) oder volatile Default auf grosser Tabelle. Fix: Expand/Contract mit neuer Spalte und Backfill in Blöcken.</li>
+  <li><b>Rolling Update bricht alte Pods:</b> Migration löscht oder benennt eine Spalte um, alte Pods nutzen sie noch. Fix: Expand/Contract über mehrere Releases.</li>
+  <li><b>Fehlgeschlagene Migration auf einer Datenbank ohne transaktionales DDL:</b> halbes Schema. Auf PostgreSQL meist kein Problem, ausser bei nicht-transaktionalen Statements wie <code>CONCURRENTLY</code>. Fix: solche Statements allein in eine Migration.</li>
+  <li><b>Multi-Tenant: ein Tenant bleibt zurück.</b> Bei einer Datenbank pro Tenant scheitert die Migration nur für einen Tenant. Fix: pro Tenant migrieren, Ergebnis pro Tenant loggen und überwachen, fehlgeschlagene Tenants gezielt wiederholen.</li>
+</ol>
+<p><b>Per-Tenant-Migrationen</b> (eine Datenbank oder ein Schema pro Tenant):</p>
+<pre>// beim Anlegen eines Tenants und beim Start für alle Tenants
+Flyway.configure()
+      .dataSource(tenantDataSource)          // eigene DB pro Tenant
+      .locations("classpath:db/migration")
+      .load()
+      .migrate();</pre>
+<p class="small">Code-Skizze, nicht ausgeführt. Bei Schema-pro-Tenant stattdessen das Schema des Tenants konfigurieren.</p>
+<ol>
+  <li>Spring Boot migriert nur die Haupt-DataSource automatisch. Tenants braucht eigenen Code.</li>
+  <li>Neue Tenants: Datenbank anlegen, dann sofort migrieren, dann erst freigeben.</li>
+  <li>Bestehende Tenants: beim Deployment nacheinander oder begrenzt parallel migrieren. Viele Tenants machen das zu einer langen Operation.</li>
+  <li>Alle Tenants müssen dieselbe Version erreichen. Die App muss während des Rollouts mit alter und neuer Version umgehen können (Expand/Contract).</li>
+</ol>
+
+<h2>7. Diagnose: Werkzeuge und Befehle</h2>
+<ul>
+  <li><code>flyway info</code>: welche Migrationen ausgeführt, offen oder fehlgeschlagen sind. <code>flyway validate</code>: Checksums prüfen.</li>
+  <li><code>select version, description, checksum, success from flyway_schema_history order by installed_rank;</code></li>
+  <li>Liquibase: <code>liquibase status</code> und <code>liquibase history</code>. Hängender Lock: Zeile in <code>DATABASECHANGELOGLOCK</code> prüfen.</li>
+  <li>Während der Migration: <code>pg_stat_activity</code> mit <code>pg_blocking_pids(pid)</code> zeigt die Lock-Warteschlange.</li>
+  <li>Vorher testen: Migration gegen eine Kopie mit Produktions-Datenmenge (Testcontainers oder Staging). Laufzeit und Sperren messen.</li>
+  <li><code>spring.jpa.hibernate.ddl-auto=validate</code>: Abweichung zwischen Mapping und Schema fällt beim Start auf, nicht erst beim ersten Request.</li>
+</ul>
+
+<h2>8. Senior-Punkte</h2>
+<div class="senior">
+<ol>
+  <li><b>Schema ist Code.</b> Migrationen im Review, im CI gegen eine echte PostgreSQL getestet, nie von Hand in Produktion.</li>
+  <li><b>Vorwärts statt zurück.</b> Undo-Skripte für Daten sind selten korrekt. Besser: kleine Schritte, Backup, Fix als neue Version.</li>
+  <li><b>Jede Migration muss mit zwei App-Versionen funktionieren.</b> Das ist die Grundlage für Rolling Updates und Rollbacks.</li>
+  <li><b>Sperren mitdenken:</b> <code>lock_timeout</code> setzen, Indizes <code>CONCURRENTLY</code>, Constraints <code>NOT VALID</code>, Backfills in Blöcken.</li>
+  <li><b>Wo läuft die Migration?</b> Beim Start ist einfach, aber jeder Pod braucht DDL-Rechte. Ein eigener Job trennt Rechte und Verantwortung.</li>
+  <li><b>Multi-Tenant skaliert schlecht ohne Automatik:</b> Migration pro Tenant, Status pro Tenant, Alarm bei Abweichung.</li>
+</ol>
+</div>
+
+<h2>9. Aus dem Projekt</h2>
+<p>„Bei BAG DigiSanté hat der Personen-Service für jeden Tenant zur Laufzeit eine eigene PostgreSQL-Datenbank angelegt; Flyway-Migrationen liefen automatisch pro Tenant, mit voller Schema-Isolation. Bei MATCH gehört ein DB-Migrations-Job zum Helm-Chart des ganzen Stacks.“ <span class="small">(Prüfen und durch dein echtes Beispiel ersetzen.)</span></p>
+
+<h2>10. Fallen</h2>
+<div class="trap">
+<ul>
+  <li>„<code>ddl-auto=update</code> reicht für Produktion.“ → <b>Falsch.</b> Es löscht und benennt nichts um, kennt keine Daten-Migration und keine Reihenfolge. In Produktion <code>validate</code> plus Flyway/Liquibase.</li>
+  <li>„Eine ausgeführte Migration kann ich noch korrigieren.“ → Nein. Die Checksum bricht. Korrekturen sind eine neue Version.</li>
+  <li>„Eine Spalte hinzufügen ist immer harmlos.“ → Nur mit konstantem Default. Ein volatile Default schreibt die Tabelle neu. Und jedes ALTER braucht eine kurze, aber starke Sperre.</li>
+  <li>„Umbenennen ist eine Migration.“ → Bei Rolling Updates sind es mehrere Releases (Expand/Contract).</li>
+  <li>„Spring Boot migriert alle Tenant-Datenbanken.“ → Nur die konfigurierte DataSource. Tenants brauchen eigenen Code.</li>
+</ul>
+</div>
+
+<h2>11. Fragen</h2>
+<details><summary>Warum braucht man ein Migrations-Werkzeug?</summary><p>Damit jede Umgebung dieselben Schema-Änderungen genau einmal und in fester Reihenfolge bekommt. Das Schema ist dann versioniert wie Code.</p></details>
+<details><summary>Wie merkt sich Flyway, was schon gelaufen ist?</summary><p>In der Tabelle flyway_schema_history: Version, Beschreibung, Checksum und Erfolg pro Migration.</p></details>
+<details><summary>Was ist der Unterschied zwischen versioned und repeatable Migrations?</summary><p>Versioned (V) laufen genau einmal in Versions-Reihenfolge. Repeatable (R) laufen erneut, wenn sich ihre Checksum ändert, immer nach den versionierten.</p></details>
+<details><summary>Was passiert, wenn man eine ausgeführte Migration ändert?</summary><p>Die Checksum passt nicht mehr, und validate beim migrate bricht ab. Korrektur gehört in eine neue Version.</p></details>
+<details><summary>Wann nutzen Sie flyway repair?</summary><p>Um fehlgeschlagene Einträge zu entfernen oder Checksums nach einer bewussten, harmlosen Änderung neu zu setzen. Nicht als Routine.</p></details>
+<details><summary>Was ist der Unterschied zwischen Flyway und Liquibase?</summary><p>Flyway ist SQL-first und einfach. Liquibase hat Changesets in mehreren Formaten, Rollback-Definitionen, Contexts und Preconditions.</p></details>
+<details><summary>Wie identifiziert Liquibase einen Changeset?</summary><p>Über author:id plus Dateipfad. Ausgeführte Changesets stehen in DATABASECHANGELOG.</p></details>
+<details><summary>Welchen ddl-auto-Wert nutzen Sie in Produktion und warum?</summary><p>validate. Hibernate prüft das Schema, ändert aber nichts. Änderungen kommen nur über Flyway oder Liquibase.</p></details>
+<details><summary>Warum ist ddl-auto=update gefährlich?</summary><p>Es ist nicht versioniert, löscht nichts, kann nicht umbenennen und keine Daten migrieren. Ergebnisse hängen vom Zustand jeder Datenbank ab.</p></details>
+<details><summary>In welcher Reihenfolge starten Flyway und Hibernate in Spring Boot?</summary><p>Flyway oder Liquibase zuerst. Die EntityManagerFactory hängt davon ab und startet danach.</p></details>
+<details><summary>Was ist Expand/Contract?</summary><p>Erst das Schema erweitern, dann den Code umstellen, Altes erst in einem späteren Release entfernen. So passt jede Schema-Version zu alter und neuer App.</p></details>
+<details><summary>Wie benennen Sie eine Spalte ohne Ausfall um?</summary><p>Neue Spalte anlegen, App schreibt beide, Backfill in Blöcken, App liest neu, später alte Spalte löschen.</p></details>
+<details><summary>Warum blockiert ein schnelles ALTER TABLE manchmal alles?</summary><p>Es wartet auf eine starke Sperre hinter einer offenen Transaktion. Alle neuen Queries warten hinter dem ALTER. lock_timeout verhindert den Stau.</p></details>
+<details><summary>Wie legen Sie einen Index auf eine grosse Tabelle an?</summary><p>Mit CREATE INDEX CONCURRENTLY in einer eigenen Migration ohne Transaktion, in Flyway per executeInTransaction=false.</p></details>
+<details><summary>Wann schreibt PostgreSQL bei ADD COLUMN die Tabelle neu?</summary><p>Bei einem volatile Default wie random(). Ein konstanter Default steht nur in den Metadaten und ist sofort fertig.</p></details>
+<details><summary>Was bringt NOT VALID bei Constraints?</summary><p>Der Constraint gilt sofort für neue Zeilen, alte werden nicht geprüft. VALIDATE prüft sie danach mit schwächerer Sperre.</p></details>
+<details><summary>Was passiert, wenn zwei Pods gleichzeitig migrieren wollen?</summary><p>Flyway nimmt auf PostgreSQL einen Advisory Lock. Der zweite wartet und findet danach nichts mehr zu tun.</p></details>
+<details><summary>Migration beim App-Start oder als eigener Job?</summary><p>Start ist einfach. Ein Job trennt DDL-Rechte und Zeitpunkt und hält lange Migrationen aus den Readiness Probes heraus.</p></details>
+<details><summary>Wie migrieren Sie eine Datenbank pro Tenant?</summary><p>Programmatisch Flyway pro Tenant-DataSource: beim Anlegen des Tenants und beim Deployment für alle. Status pro Tenant loggen und überwachen.</p></details>
+<details><summary>Szenario: Nach einem Deployment hängen alle Requests, im pg_stat_activity wartet ein ALTER TABLE. Was tun Sie?</summary><p>Den Blockierer mit pg_blocking_pids finden, oft eine lange Transaktion, und beenden. Künftig lock_timeout in Migrationen und Retry.</p></details>
+<details><summary>Szenario: Die App startet nicht mehr: „Validate failed: Migration checksum mismatch“. Was ist passiert?</summary><p>Eine schon ausgeführte Migration wurde geändert. Änderung zurücknehmen und als neue Version liefern. repair nur bei bewusster, harmloser Änderung.</p></details>
+<details><summary>Szenario: Bei 200 Tenant-Datenbanken schlägt die Migration für 3 fehl. Wie gehen Sie vor?</summary><p>Fehler pro Tenant loggen, die 3 gezielt analysieren und neu migrieren. Die App muss alte und neue Schema-Version bis dahin unterstützen (Expand/Contract).</p></details>
+
+</body>
+</html>

@@ -1,0 +1,229 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Terraform</title>
+<style>
+  body { font: 17px/1.55 -apple-system, system-ui, sans-serif; max-width: 760px; margin: 0 auto; padding: 16px; color: #1d1d1f; }
+  h1 { font-size: 28px; margin: 8px 0 4px; }
+  h2 { font-size: 21px; margin: 32px 0 8px; padding-top: 12px; border-top: 2px solid #e5e5ea; }
+  .kern { background: #eef6ff; border-left: 4px solid #0a66c2; padding: 10px 14px; border-radius: 6px; }
+  .senior { background: #f0faf0; border-left: 4px solid #2e7d32; padding: 10px 14px; border-radius: 6px; }
+  .trap { background: #fff4f2; border-left: 4px solid #c62828; padding: 10px 14px; border-radius: 6px; }
+  code { background: #f2f2f7; padding: 1px 5px; border-radius: 4px; font-size: 15px; }
+  pre { background: #1e1e1e; color: #e6e6e6; padding: 12px; border-radius: 8px; overflow-x: auto; font-size: 13.5px; line-height: 1.45; }
+  svg { width: 100%; height: auto; display: block; margin: 10px 0; }
+  ol li, ul li { margin: 4px 0; }
+  details { border: 1px solid #e5e5ea; border-radius: 8px; padding: 8px 12px; margin: 6px 0; }
+  summary { font-weight: 600; cursor: pointer; }
+  details p { margin: 6px 0 2px; }
+  .small { color: #6e6e73; font-size: 14px; }
+</style>
+</head>
+<body>
+
+<h1>Terraform: State, Plan, Apply, Module, Drift</h1>
+<p class="small">GitOps · Tier 1 · Quellen: developer.hashicorp.com/terraform (Docs v1.17.x: Backend <code>azurerm</code>, Backend <code>s3</code>, CLI <code>plan</code>, CLI Workspaces, Import, <code>import</code>-Block, Manage sensitive data), releases.hashicorp.com/terraform (aktuell 1.17.2)</p>
+
+<div class="kern">
+<b>Kern:</b> Terraform ist ein <b>Infrastructure-as-Code</b>-Werkzeug: Man beschreibt Cloud-Ressourcen deklarativ in HCL, und Terraform erstellt, ändert oder löscht sie über die APIs der Provider. Der <b>State</b> merkt sich, welche echte Ressource zu welchem Block gehört. <b>plan</b> zeigt den Unterschied zwischen Code, State und Realität, <b>apply</b> setzt ihn um.
+</div>
+
+<h2>1. Wo sitzt Terraform?</h2>
+<svg viewBox="0 0 720 300" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="a" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="10" y="30" width="150" height="70" rx="8" fill="#fff" stroke="#555"/><text x="85" y="56" text-anchor="middle" font-weight="700">*.tf (HCL)</text><text x="85" y="76" text-anchor="middle" font-size="12">Soll-Zustand</text><text x="85" y="92" text-anchor="middle" font-size="12">im Git-Repo</text>
+  <line x1="160" y1="65" x2="218" y2="65" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="220" y="20" width="200" height="110" rx="10" fill="#0a66c2"/><text x="320" y="46" text-anchor="middle" fill="#fff" font-weight="700">Terraform Core</text><text x="320" y="68" text-anchor="middle" fill="#fff" font-size="12">Graph, Diff, Plan</text><text x="320" y="88" text-anchor="middle" fill="#fff" font-size="12">init · plan · apply</text>
+  <line x1="420" y1="65" x2="478" y2="65" stroke="#555" stroke-width="2" marker-end="url(#a)"/><text x="449" y="57" text-anchor="middle" font-size="11">gRPC</text>
+  <rect x="480" y="30" width="230" height="70" rx="8" fill="#fff" stroke="#555"/><text x="595" y="56" text-anchor="middle" font-weight="700">Provider (azurerm)</text><text x="595" y="76" text-anchor="middle" font-size="12">Plugin, spricht Azure-API</text>
+  <line x1="595" y1="100" x2="595" y2="168" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="480" y="170" width="230" height="70" rx="8" fill="#e8f5e9" stroke="#2e7d32"/><text x="595" y="196" text-anchor="middle" font-weight="700">Echte Ressourcen</text><text x="595" y="216" text-anchor="middle" font-size="12">AKS, VNet, ACR, Key Vault</text>
+  <line x1="320" y1="130" x2="320" y2="168" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="200" y="170" width="240" height="70" rx="8" fill="#fff4f2" stroke="#c62828"/><text x="320" y="196" text-anchor="middle" font-weight="700">State (Backend)</text><text x="320" y="216" text-anchor="middle" font-size="12">Blob Storage + Lock</text><text x="320" y="232" text-anchor="middle" font-size="12">enthält auch Secrets!</text>
+  <rect x="10" y="170" width="150" height="70" rx="8" fill="#fff" stroke="#555"/><text x="85" y="196" text-anchor="middle" font-weight="700">.terraform.lock.hcl</text><text x="85" y="216" text-anchor="middle" font-size="12">Provider-Versionen</text>
+  <text x="360" y="280" text-anchor="middle" font-size="12">plan = Code ↔ State ↔ Realität vergleichen</text>
+</svg>
+<ol>
+  <li><b>HCL-Dateien:</b> beschreiben den <b>Soll-Zustand</b>, z. B. einen AKS-Cluster. Sie liegen versioniert im Git-Repo.</li>
+  <li><b>Terraform Core:</b> liest den Code, baut einen <b>Abhängigkeitsgraph</b> und berechnet den Plan.</li>
+  <li><b>Provider:</b> ein Plugin pro Plattform. Beispiel: <code>azurerm</code> ruft die Azure-API auf.</li>
+  <li><b>State:</b> eine JSON-Datei, die Blöcke auf echte IDs abbildet. Sie liegt in einem <b>Remote Backend</b> mit <b>Lock</b>.</li>
+  <li><b>Lock-Datei:</b> <code>.terraform.lock.hcl</code> fixiert Provider-Versionen und Hashes. Sie gehört ins Repo.</li>
+</ol>
+
+<h2>2. Die Reise einer Änderung (die Geschichte zum Merken)</h2>
+<svg viewBox="0 0 720 280" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="b" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker><marker id="r" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#c62828"/></marker></defs>
+  <rect x="10" y="40" width="110" height="64" rx="10" fill="#eee" stroke="#777"/><text x="65" y="68" text-anchor="middle" font-weight="700">1. init</text><text x="65" y="88" text-anchor="middle" font-size="12">Backend, Provider</text>
+  <line x1="120" y1="72" x2="138" y2="72" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="140" y="40" width="110" height="64" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="195" y="68" text-anchor="middle" font-weight="700">2. Lock</text><text x="195" y="88" text-anchor="middle" font-size="12">State sperren</text>
+  <line x1="250" y1="72" x2="268" y2="72" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="270" y="40" width="110" height="64" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="325" y="68" text-anchor="middle" font-weight="700">3. refresh</text><text x="325" y="88" text-anchor="middle" font-size="12">Realität lesen</text>
+  <line x1="380" y1="72" x2="398" y2="72" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="400" y="40" width="110" height="64" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="455" y="68" text-anchor="middle" font-weight="700">4. plan</text><text x="455" y="88" text-anchor="middle" font-size="12">+ ~ − speichern</text>
+  <line x1="510" y1="72" x2="528" y2="72" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="530" y="40" width="80" height="64" rx="10" fill="#fff" stroke="#555"/><text x="570" y="68" text-anchor="middle" font-weight="700">5. Review</text><text x="570" y="88" text-anchor="middle" font-size="12">im PR</text>
+  <line x1="610" y1="72" x2="628" y2="72" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="630" y="40" width="80" height="64" rx="10" fill="#0a66c2"/><text x="670" y="68" text-anchor="middle" fill="#fff" font-weight="700">6. apply</text><text x="670" y="88" text-anchor="middle" fill="#fff" font-size="12">tfplan</text>
+  <path d="M670,104 C670,200 195,200 195,108" fill="none" stroke="#2e7d32" stroke-width="2" stroke-dasharray="6 4" marker-end="url(#b)"/>
+  <text x="430" y="196" text-anchor="middle" fill="#2e7d32" font-weight="700">7. neuen State schreiben, Lock freigeben</text>
+  <text x="360" y="240" text-anchor="middle" fill="#c62828" font-size="13">Zweiter Lauf gleichzeitig? → „Error acquiring the state lock“</text>
+</svg>
+<ol>
+  <li><b>init:</b> Ein Entwickler will den AKS-Nodepool von 3 auf 5 Nodes vergrössern. <code>terraform init</code> verbindet das Backend und lädt den Provider.</li>
+  <li><b>Lock:</b> Der Plan sperrt den State. Ein zweiter Lauf zur gleichen Zeit muss warten oder scheitert.</li>
+  <li><b>Refresh:</b> Terraform liest den echten Zustand aller Ressourcen über die API.</li>
+  <li><b>Plan:</b> Terraform vergleicht Code, State und Realität. Ergebnis: <code>~ update in-place</code> für den Nodepool. Der Plan wird mit <code>-out=tfplan</code> gespeichert.</li>
+  <li><b>Review:</b> Die Pipeline zeigt den Plan im Pull Request. Ein Mensch prüft besonders <code>destroy</code> und <code>replace</code>.</li>
+  <li><b>Apply:</b> <code>terraform apply tfplan</code> führt genau den geprüften Plan aus. Hat sich der State inzwischen geändert, lehnt Terraform den alten Plan ab.</li>
+  <li><b>Ende:</b> Terraform schreibt den neuen State und gibt den Lock frei.</li>
+</ol>
+
+<h2>3. Beispiel: AKS mit Remote State in Azure</h2>
+<pre>terraform {
+  required_version = "&gt;= 1.11"
+  required_providers {
+    azurerm = { source = "hashicorp/azurerm" }
+  }
+  backend "azurerm" {
+    use_oidc             = true          # Workload Identity Federation aus der Pipeline
+    use_azuread_auth     = true          # Entra ID statt Access Key
+    storage_account_name = "sttfstateprod"
+    container_name       = "tfstate"
+    key                  = "aks/prod.terraform.tfstate"
+  }
+}
+
+module "aks" {
+  source     = "./modules/aks"
+  name       = "aks-match-prod"
+  node_count = 5                          # vorher 3
+}</pre>
+<pre>$ terraform plan -out=tfplan -detailed-exitcode
+Acquiring state lock. This may take a few moments...
+module.aks.azurerm_kubernetes_cluster.this: Refreshing state... [id=/subscriptions/…/aks-match-prod]
+
+Terraform will perform the following actions:
+
+  # module.aks.azurerm_kubernetes_cluster.this will be updated in-place
+  ~ resource "azurerm_kubernetes_cluster" "this" {
+      ~ default_node_pool {
+          ~ node_count = 3 -&gt; 5
+        }
+    }
+
+Plan: 0 to add, 1 to change, 0 to destroy.
+Saved the plan to: tfplan
+$ echo $?
+2</pre>
+<p class="small">Erwartetes Ergebnis (laut Doku, nicht ausgeführt). Terraform ist hier nicht installiert; Format nach der CLI-Doku, gekürzt.</p>
+<ol>
+  <li>Der <b>Backend</b>-Block legt den State in Azure Blob Storage ab. Locking und Konsistenz-Prüfung macht das Backend nativ über Blob Storage.</li>
+  <li><code>use_oidc</code> und <code>use_azuread_auth</code>: Die Pipeline meldet sich ohne Secret an. Die Doku empfiehlt Entra ID statt Access Key.</li>
+  <li>Das <b>Modul</b> kapselt den AKS-Code. Die Wurzel übergibt nur Parameter.</li>
+  <li><code>~</code> heisst <b>in-place update</b>. <code>-/+</code> hiesse <b>replace</b>: löschen und neu bauen.</li>
+  <li><code>-detailed-exitcode</code> liefert 2 = „Änderungen vorhanden“. 0 = keine Änderung, 1 = Fehler. Gut für Drift-Checks in CI.</li>
+</ol>
+
+<h2>4. Details, die Interviewer fragen</h2>
+<ol>
+  <li><b>State:</b> Der <b>State</b> bildet jede Ressourcen-Adresse auf eine echte ID ab. Ohne State weiss Terraform nicht, was ihm gehört. Er enthält auch Attribute, oft mit Secrets.</li>
+  <li><b>Remote Backend und Locking:</b> Ein <b>Backend</b> speichert den State zentral. <b>Locking</b> verhindert zwei gleichzeitige Schreib-Läufe. <code>azurerm</code> lockt nativ über Blob Storage. Beim S3-Backend ist <code>use_lockfile</code> die neue Art; DynamoDB-Locking ist deprecated.</li>
+  <li><b>force-unlock:</b> Bricht ein Lauf ab, bleibt der Lock hängen. <code>terraform force-unlock &lt;LOCK_ID&gt;</code> löst ihn. Nur wenn sicher kein Lauf mehr aktiv ist.</li>
+  <li><b>Saved Plan:</b> <code>plan -out</code> speichert den Plan. <code>apply tfplan</code> führt genau diesen aus. Die Datei enthält Variablen, auch sensitive. Darum wie ein Secret behandeln.</li>
+  <li><b>Module:</b> Ein <b>Modul</b> ist ein Ordner mit <code>.tf</code>-Dateien und Variablen/Outputs. Root-Modul ruft Child-Module auf. Versionen pinnen (Registry: <code>version</code>, Git: <code>?ref=v1.2.0</code>).</li>
+  <li><b>count vs for_each:</b> <code>count</code> adressiert über Index. Ein entferntes Element in der Mitte verschiebt alle. <code>for_each</code> adressiert über Schlüssel und ist stabiler.</li>
+  <li><b>Drift:</b> <b>Drift</b> heisst, die Realität weicht vom Code ab, z. B. eine Änderung im Portal. <code>plan</code> zeigt sie. <code>plan -refresh-only</code> übernimmt die Realität nur in den State, ohne Ressourcen zu ändern.</li>
+  <li><b>Import:</b> Ein <code>import</code>-Block (<code>to</code>, <code>id</code>) bringt eine bestehende Ressource unter Terraform. <code>plan -generate-config-out=gen.tf</code> erzeugt den passenden <code>resource</code>-Block. Der Block läuft durch normales plan/apply und ist reviewbar; der alte Befehl <code>terraform import</code> ändert den State sofort.</li>
+  <li><b>Refactoring ohne Neubau:</b> Ein <code>moved</code>-Block benennt eine Ressource im Code um, ohne sie zu zerstören. Ein <code>removed</code>-Block nimmt sie aus dem State, ohne sie zu löschen.</li>
+  <li><b>Workspaces:</b> CLI-Workspaces sind mehrere States <b>einer</b> Konfiguration im <b>selben</b> Backend. Laut Doku keine geeignete Isolation für Umgebungen mit eigenen Rechten. Empfohlen: Module plus eigene Konfiguration und eigenes Backend pro Umgebung.</li>
+  <li><b>Secrets im State:</b> <code>sensitive = true</code> verbirgt Werte nur in der Ausgabe. Sie stehen trotzdem in State und Plan. <b>Ephemeral</b>-Werte (ab 1.10) und <b>write-only</b>-Argumente wie <code>password_wo</code> (ab 1.11) bleiben ganz aus dem State.</li>
+  <li><b>lifecycle:</b> <code>prevent_destroy</code> blockiert das Löschen. <code>ignore_changes</code> ignoriert bestimmte Attribute, z. B. vom Autoscaler gesetzte Node-Zahlen. <code>create_before_destroy</code> baut zuerst neu.</li>
+</ol>
+
+<h2>5. Vergleich</h2>
+<ul>
+  <li><b>Terraform:</b> Multi-Cloud, riesiges Provider-Ökosystem, eigener State. Lizenz: Business Source License (BSL), nicht mehr Open Source im engen Sinn.</li>
+  <li><b>OpenTofu:</b> Open-Source-Fork von Terraform (Linux Foundation), weitgehend kompatibel, MPL-Lizenz.</li>
+  <li><b>Bicep / ARM:</b> nur Azure, kein eigener State (Azure ist die Wahrheit), sofort neue Azure-Features.</li>
+  <li><b>Pulumi:</b> Infrastruktur in TypeScript, Python, Go, C#. Auch mit State.</li>
+  <li><b>Crossplane:</b> Infrastruktur als Kubernetes-Ressourcen, ständige Reconciliation wie GitOps.</li>
+  <li><b>Workspaces vs Verzeichnisse:</b> Workspaces teilen Code und Backend, schnell für Test-Kopien. Verzeichnisse pro Umgebung mit eigenem Backend und eigenen Rechten sind sicherer für dev/test/prod.</li>
+</ul>
+
+<h2>6. In der Produktion</h2>
+<ol>
+  <li><b>State-Lock hängt nach abgebrochener Pipeline:</b> Lösung: prüfen, dass kein Lauf aktiv ist, dann <code>force-unlock</code>. Pipeline so bauen, dass nur ein Lauf pro State gleichzeitig läuft.</li>
+  <li><b>Plan will den AKS-Cluster ersetzen:</b> Ein Attribut erzwingt <code>replace</code>. Lösung: Plan lesen, <code>prevent_destroy</code> setzen, Änderung anders lösen.</li>
+  <li><b>Drift durch Klicks im Portal:</b> Nächster Apply überschreibt sie oder scheitert. Lösung: täglicher Drift-Check mit <code>-detailed-exitcode</code>, Schreibrechte nur für die Pipeline.</li>
+  <li><b>Autoscaler kämpft mit Terraform:</b> Terraform setzt <code>node_count</code> immer wieder zurück. Lösung: <code>ignore_changes</code> für dieses Attribut.</li>
+  <li><b>Secrets im State-Blob:</b> Jeder mit Lesezugriff sieht Passwörter. Lösung: State-Zugriff per RBAC einschränken, Verschlüsselung, ephemeral/write-only, Secrets lieber in Key Vault erzeugen lassen.</li>
+  <li><b>Provider-Upgrade bricht Plan:</b> Lösung: Versionen pinnen, <code>.terraform.lock.hcl</code> committen, Upgrade bewusst mit <code>init -upgrade</code> in einem eigenen PR.</li>
+</ol>
+
+<h2>7. Diagnose: Werkzeuge und Befehle</h2>
+<ul>
+  <li><code>terraform plan -detailed-exitcode</code>: 0/1/2 für Drift-Checks in CI.</li>
+  <li><code>terraform plan -refresh-only</code>: zeigt nur, was sich draussen geändert hat.</li>
+  <li><code>terraform state list</code>, <code>state show &lt;addr&gt;</code>: was im State ist.</li>
+  <li><code>terraform validate</code>, <code>terraform fmt -check</code>: Syntax und Format in CI.</li>
+  <li><code>terraform graph</code>: Abhängigkeitsgraph.</li>
+  <li><code>TF_LOG=DEBUG</code>: detaillierte Logs, z. B. API-Aufrufe des Providers.</li>
+  <li><code>terraform providers lock</code>: Hashes für mehrere Plattformen (Windows-Entwickler, Linux-Agent) in die Lock-Datei schreiben.</li>
+</ul>
+
+<h2>8. Senior-Punkte</h2>
+<div class="senior">
+<ol>
+  <li><b>Der State ist das wertvollste Artefakt.</b> Remote, gesperrt, versioniert (Blob-Versioning), verschlüsselt, Zugriff minimal.</li>
+  <li><b>Kleine States:</b> Netzwerk, AKS und App-Infrastruktur getrennt. Kleinerer „Blast Radius“, schnellere Pläne.</li>
+  <li><b>Plan im PR, Apply nur aus der Pipeline.</b> Kein Apply vom Laptop gegen Produktion.</li>
+  <li><b>Umgebungen über Verzeichnisse und Backends trennen,</b> nicht über Workspaces, wenn Rechte verschieden sein müssen.</li>
+  <li><b>Terraform für Infrastruktur, GitOps für Workloads.</b> Terraform baut AKS; ArgoCD und Helm deployen in den Cluster.</li>
+  <li><b>Replace ist das Risiko.</b> Jeder <code>-/+</code> auf zustandsbehafteten Ressourcen braucht einen zweiten Blick.</li>
+</ol>
+</div>
+
+<h2>9. Aus dem Projekt</h2>
+<p>„Bei MATCH wird der AKS-Cluster mit Terraform bereitgestellt, die Workloads darauf kommen per Helm und ArgoCD; Images liegen in Azure Container Registry.“ <span class="small">(Prüfen und durch dein echtes Beispiel ersetzen. Backend-Typ und State-Aufteilung stehen nicht im Profil.)</span></p>
+
+<h2>10. Fallen</h2>
+<div class="trap">
+<ul>
+  <li>„<code>sensitive = true</code> hält das Secret aus dem State.“ → <b>Falsch.</b> Nur aus der Ausgabe. Aus dem State nur mit ephemeral oder write-only.</li>
+  <li>„Workspaces sind der Weg für dev/test/prod.“ → <b>Falsch</b> laut Doku, wenn Rechte und Credentials getrennt sein müssen. Eigene Konfiguration und Backend pro Umgebung.</li>
+  <li>„<code>terraform plan</code> ändert nie etwas.“ → Plan ändert keine Ressourcen, aber er sperrt den State und liest die API. Ein gespeicherter Plan enthält sensitive Daten.</li>
+  <li>„State-Datei lösche ich, dann fange ich neu an.“ → <b>Falsch.</b> Dann will Terraform alles neu erstellen, und die alten Ressourcen sind verwaist.</li>
+  <li>„count und for_each sind gleich.“ → <b>Falsch.</b> count adressiert über Index und kann beim Entfernen Ressourcen neu bauen.</li>
+  <li>„DynamoDB ist Pflicht für S3-Locking.“ → <b>Veraltet.</b> <code>use_lockfile</code> lockt in S3 selbst; DynamoDB-Locking ist deprecated.</li>
+</ul>
+</div>
+
+<h2>11. Fragen</h2>
+<details><summary>Was ist Terraform?</summary><p>Ein Infrastructure-as-Code-Werkzeug. Man beschreibt Ressourcen deklarativ in HCL, Terraform erstellt und ändert sie über Provider-APIs.</p></details>
+<details><summary>Wozu braucht Terraform den State?</summary><p>Er bildet jede Ressource im Code auf eine echte ID ab und speichert Attribute. Ohne State weiss Terraform nicht, was ihm gehört.</p></details>
+<details><summary>Warum Remote State?</summary><p>Damit Team und Pipeline denselben State nutzen, mit Lock, Versionierung und Zugriffskontrolle. Lokaler State geht verloren und kollidiert.</p></details>
+<details><summary>Was ist State Locking?</summary><p>Das Backend sperrt den State während eines Laufs. Ein zweiter Lauf wartet oder scheitert. So wird der State nicht korrupt.</p></details>
+<details><summary>Was ist der Unterschied zwischen plan und apply?</summary><p>plan berechnet und zeigt die Änderungen. apply führt sie aus. Mit plan -out und apply tfplan wird genau der geprüfte Plan angewendet.</p></details>
+<details><summary>Was bedeuten +, ~, -/+ und - im Plan?</summary><p>+ erstellen, ~ in-place ändern, -/+ ersetzen (löschen und neu), - löschen.</p></details>
+<details><summary>Was ist Drift und wie finden Sie ihn?</summary><p>Die Realität weicht vom Code ab, z. B. durch Klicks im Portal. plan zeigt ihn; -detailed-exitcode liefert 2 bei Änderungen.</p></details>
+<details><summary>Was macht <code>plan -refresh-only</code>?</summary><p>Es gleicht nur den State an die Realität an, ohne Ressourcen zu ändern. Nützlich nach Änderungen ausserhalb von Terraform.</p></details>
+<details><summary>Wie übernehmen Sie eine bestehende Ressource?</summary><p>Mit einem import-Block (to, id). plan -generate-config-out erzeugt den resource-Block. Danach normal plan und apply.</p></details>
+<details><summary>import-Block oder <code>terraform import</code>?</summary><p>Der Block läuft durch plan und Review und kann viele Ressourcen mit for_each importieren. Der Befehl ändert den State sofort ohne Plan.</p></details>
+<details><summary>Was ist ein Modul?</summary><p>Ein Ordner mit Terraform-Code, Variablen und Outputs. Man ruft ihn mehrfach mit anderen Parametern auf. Versionen pinnen.</p></details>
+<details><summary>count oder for_each?</summary><p>for_each, wenn Elemente einen stabilen Schlüssel haben. count adressiert über Index; Entfernen in der Mitte verschiebt Adressen.</p></details>
+<details><summary>Workspaces oder Verzeichnisse für Umgebungen?</summary><p>Verzeichnisse mit eigenem Backend, wenn Umgebungen getrennte Rechte brauchen. Workspaces teilen ein Backend und sind laut Doku keine Isolation.</p></details>
+<details><summary>Sind Secrets im State?</summary><p>Ja, oft im Klartext. sensitive verbirgt sie nur in der Ausgabe. Ephemeral-Werte und write-only-Argumente bleiben ganz aus State und Plan.</p></details>
+<details><summary>Was macht ein <code>moved</code>-Block?</summary><p>Er sagt Terraform, dass eine Ressource eine neue Adresse hat. So wird sie nicht gelöscht und neu erstellt.</p></details>
+<details><summary>Was ist <code>.terraform.lock.hcl</code>?</summary><p>Die Lock-Datei mit Provider-Versionen und Hashes. Sie gehört ins Repo, damit alle dieselben Provider nutzen.</p></details>
+<details><summary>Was macht <code>ignore_changes</code>?</summary><p>Terraform ignoriert Änderungen an bestimmten Attributen. Typisch für Werte, die ein Autoscaler oder ein anderes System setzt.</p></details>
+<details><summary>Wie schützen Sie eine Datenbank vor Löschung?</summary><p>lifecycle prevent_destroy, dazu Plan-Review in der Pipeline und Resource Locks in Azure.</p></details>
+<details><summary>Terraform oder Bicep für Azure?</summary><p>Bicep: nur Azure, kein State, neue Features sofort. Terraform: Multi-Cloud, ein Werkzeug für Azure, Kubernetes und mehr, dafür State-Verwaltung.</p></details>
+<details><summary>Szenario: Die Pipeline meldet „Error acquiring the state lock“. Was tun Sie?</summary><p>Prüfen, ob ein anderer Lauf aktiv ist. Wenn nicht, Lock-ID aus der Meldung nehmen und terraform force-unlock. Danach Parallel-Läufe in der Pipeline verhindern.</p></details>
+<details><summary>Szenario: Jemand hat im Portal die Node-Grösse geändert. Was passiert beim nächsten Apply?</summary><p>Der Plan zeigt Drift und will den Code-Stand wiederherstellen, eventuell mit Replace. Entscheiden: Code anpassen oder Änderung zurückdrehen. Danach Schreibrechte einschränken.</p></details>
+<details><summary>Szenario: Der Plan zeigt <code>-/+</code> für den AKS-Cluster nach einem harmlosen Refactoring. Was tun Sie?</summary><p>Nicht applyen. Wahrscheinlich hat sich die Adresse geändert: moved-Block ergänzen. Oder ein Attribut erzwingt Replace: Änderung anders lösen, prevent_destroy setzen.</p></details>
+
+</body>
+</html>

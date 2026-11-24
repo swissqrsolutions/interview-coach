@@ -1,0 +1,217 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Atomic-Klassen und CAS</title>
+<style>
+  body { font: 17px/1.55 -apple-system, system-ui, sans-serif; max-width: 760px; margin: 0 auto; padding: 16px; color: #1d1d1f; }
+  h1 { font-size: 28px; margin: 8px 0 4px; }
+  h2 { font-size: 21px; margin: 32px 0 8px; padding-top: 12px; border-top: 2px solid #e5e5ea; }
+  .kern { background: #eef6ff; border-left: 4px solid #0a66c2; padding: 10px 14px; border-radius: 6px; }
+  .senior { background: #f0faf0; border-left: 4px solid #2e7d32; padding: 10px 14px; border-radius: 6px; }
+  .trap { background: #fff4f2; border-left: 4px solid #c62828; padding: 10px 14px; border-radius: 6px; }
+  code { background: #f2f2f7; padding: 1px 5px; border-radius: 4px; font-size: 15px; }
+  pre { background: #1e1e1e; color: #e6e6e6; padding: 12px; border-radius: 8px; overflow-x: auto; font-size: 13.5px; line-height: 1.45; }
+  svg { width: 100%; height: auto; display: block; margin: 10px 0; }
+  ol li, ul li { margin: 4px 0; }
+  details { border: 1px solid #e5e5ea; border-radius: 8px; padding: 8px 12px; margin: 6px 0; }
+  summary { font-weight: 600; cursor: pointer; }
+  details p { margin: 6px 0 2px; }
+  .small { color: #6e6e73; font-size: 14px; }
+</style>
+</head>
+<body>
+
+<h1>Atomic-Klassen und Compare-and-Swap (CAS)</h1>
+<p class="small">Java · Tier 2 · Quellen: Java SE 25 API-Doku (<code>java.util.concurrent.atomic</code> Package Summary, <code>AtomicInteger</code>, <code>LongAdder</code>, <code>AtomicStampedReference</code>, <code>VarHandle</code>), JLS 21 Kapitel 17, JEP 193 (VarHandles)</p>
+
+<div class="kern">
+<b>Kern:</b> Atomic-Klassen sind Variablen, die man <b>ohne Lock</b> atomar ändern kann. Sie lösen das Problem, dass <code>count++</code> bei mehreren Threads Updates verliert. Innen nutzen sie <b>CAS</b> (Compare-and-Swap): „Setze den neuen Wert nur, wenn noch der alte Wert drin steht.“
+</div>
+
+<h2>1. Wo sitzen Atomic-Klassen?</h2>
+<svg viewBox="0 0 720 300" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="a" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="10" y="20" width="220" height="56" rx="8" fill="#fff" stroke="#555"/><text x="120" y="44" text-anchor="middle" font-weight="700">Dein Code</text><text x="120" y="63" text-anchor="middle" font-size="12">counter.incrementAndGet()</text>
+  <rect x="250" y="20" width="220" height="56" rx="8" fill="#fff" stroke="#555"/><text x="360" y="44" text-anchor="middle" font-weight="700">ConcurrentHashMap, AQS</text><text x="360" y="63" text-anchor="middle" font-size="12">Locks, Thread Pools</text>
+  <rect x="490" y="20" width="220" height="56" rx="8" fill="#fff" stroke="#555"/><text x="600" y="44" text-anchor="middle" font-weight="700">LongAdder</text><text x="600" y="63" text-anchor="middle" font-size="12">Zellen gegen Konkurrenz</text>
+  <line x1="120" y1="76" x2="300" y2="118" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <line x1="360" y1="76" x2="360" y2="118" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <line x1="600" y1="76" x2="420" y2="118" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="160" y="120" width="400" height="56" rx="8" fill="#0a66c2"/><text x="360" y="144" text-anchor="middle" fill="#fff" font-weight="700">Atomic* / VarHandle</text><text x="360" y="163" text-anchor="middle" fill="#fff" font-size="12">compareAndSet · getAndAdd · volatile-Semantik</text>
+  <line x1="360" y1="176" x2="360" y2="208" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="160" y="210" width="400" height="36" rx="8" fill="#eee" stroke="#777"/><text x="360" y="233" text-anchor="middle">JIT-Intrinsic</text>
+  <line x1="360" y1="246" x2="360" y2="262" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <text x="360" y="284" text-anchor="middle">CPU: ein atomarer Befehl (x86: LOCK CMPXCHG)</text>
+</svg>
+<ol>
+  <li><b>Dein Code</b> ruft z. B. <code>incrementAndGet()</code> auf. Kein <code>synchronized</code> nötig.</li>
+  <li><b>JDK-Bausteine</b> wie <code>ConcurrentHashMap</code> und <b>AQS</b> (die Basis von <code>ReentrantLock</code>) nutzen dieselbe CAS-Technik.</li>
+  <li><b>Atomic-Klassen und VarHandle:</b> Sie liefern atomare Lese-Ändere-Schreibe-Operationen mit <code>volatile</code>-Semantik.</li>
+  <li><b>JIT-Intrinsic:</b> Der JIT ersetzt den Aufruf durch fertigen CPU-Code.</li>
+  <li><b>CPU:</b> Ein einziger atomarer Befehl vergleicht und schreibt. Kein Betriebssystem, kein Parken von Threads.</li>
+</ol>
+
+<h2>2. Die Reise eines incrementAndGet() (die Geschichte zum Merken)</h2>
+<svg viewBox="0 0 720 300" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="b" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker><marker id="r" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#c62828"/></marker></defs>
+  <rect x="10" y="60" width="150" height="70" rx="10" fill="#eee" stroke="#777"/><text x="85" y="88" text-anchor="middle" font-weight="700">1. lesen</text><text x="85" y="110" text-anchor="middle" font-size="12">old = 41</text>
+  <line x1="160" y1="95" x2="208" y2="95" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="210" y="60" width="150" height="70" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="285" y="88" text-anchor="middle" font-weight="700">2. rechnen</text><text x="285" y="110" text-anchor="middle" font-size="12">new = 42</text>
+  <line x1="360" y1="95" x2="408" y2="95" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="410" y="60" width="150" height="70" rx="10" fill="#0a66c2"/><text x="485" y="88" text-anchor="middle" fill="#fff" font-weight="700">3. CAS</text><text x="485" y="110" text-anchor="middle" fill="#fff" font-size="12">ist noch 41 drin?</text>
+  <line x1="560" y1="95" x2="608" y2="95" stroke="#2e7d32" stroke-width="2" marker-end="url(#b)"/><text x="584" y="85" text-anchor="middle" font-size="12" fill="#2e7d32">ja</text>
+  <rect x="610" y="60" width="100" height="70" rx="10" fill="#e8f5e9" stroke="#2e7d32"/><text x="660" y="100" text-anchor="middle" font-weight="700">4. fertig</text>
+  <path d="M485,130 C485,230 85,230 85,132" fill="none" stroke="#c62828" stroke-width="2" stroke-dasharray="6 4" marker-end="url(#r)"/>
+  <text x="285" y="222" text-anchor="middle" fill="#c62828" font-weight="700">nein: anderer Thread war schneller</text>
+  <text x="285" y="242" text-anchor="middle" fill="#c62828" font-size="12">nichts geschrieben → neu lesen und neu versuchen (Spin)</text>
+</svg>
+<ol>
+  <li><b>Lesen:</b> Thread A liest den aktuellen Wert 41. Der Read ist <code>volatile</code>, also aktuell.</li>
+  <li><b>Rechnen:</b> Thread A berechnet lokal 42. Noch ist nichts geschrieben.</li>
+  <li><b>CAS:</b> Thread A sagt der CPU: „Schreibe 42, aber nur wenn noch 41 drin steht.“ Die CPU macht Vergleich und Schreiben in einem unteilbaren Schritt.</li>
+  <li><b>Erfolg:</b> Steht noch 41 drin, gewinnt Thread A. Der Wert ist 42.</li>
+  <li><b>Misserfolg:</b> Thread B hat inzwischen 42 geschrieben. Der CAS von A schlägt fehl und schreibt nichts. A liest neu (42), rechnet 43 und versucht es nochmals. Diese Schleife heisst <b>CAS-Loop</b> oder <b>Spin</b>.</li>
+  <li><b>Kein Thread blockiert:</b> Mindestens ein Thread kommt immer weiter. Das heisst <b>lock-free</b>.</li>
+</ol>
+
+<h2>3. Beispiel: Lost Updates, CAS-Fehlversuche, LongAdder, ABA</h2>
+<pre>static int plain = 0;
+AtomicInteger ai = new AtomicInteger();
+run(8 Threads, je 1_000_000×: plain++; ai.incrementAndGet());          // 1)
+
+do { old = v.get(); } while (!v.compareAndSet(old, old + 1));          // 2) Fehlversuche zählen
+
+8 Threads × 5_000_000: AtomicLong.incrementAndGet() vs LongAdder.increment()  // 3)
+
+ref.set("B"); ref.set("A"); ref.compareAndSet(seen, "C");              // 4) ABA
+stamped.compareAndSet("A", "C", alterStamp, alterStamp + 1);
+
+max.accumulateAndGet(x, Math::max); max.updateAndGet(x -&gt; x * 2);      // 5)</pre>
+<pre>1) plain=4580939 atomic=8000000 expected=8000000
+2) value=8000000 failedCAS=5460310
+3) run 1: AtomicLong 557 ms (40000000), LongAdder 60 ms (40000000)
+3) run 2: AtomicLong 535 ms (40000000), LongAdder 73 ms (40000000)
+3) run 3: AtomicLong 506 ms (40000000), LongAdder 31 ms (40000000)
+4) AtomicReference CAS A-&gt;C after A-B-A: true
+4) AtomicStampedReference CAS with old stamp 0: false (stamp now 2)
+5) max=9 updateAndGet(x*2)=18
+cores=16</pre>
+<p class="small">Echte Ausgabe, Oracle JDK 17.0.3 (16 Kerne, Windows). Die Zahlen bei 1) bis 3) ändern sich bei jedem Lauf. Java 21 und 25 verhalten sich gleich.</p>
+<ol>
+  <li><code>plain++</code> verliert fast 43 % der Updates. <code>AtomicInteger</code> verliert keinen.</li>
+  <li>Für 8 Mio. erfolgreiche CAS gab es 5,4 Mio. <b>Fehlversuche</b>. Jeder Fehlversuch ist verlorene CPU-Zeit. Das ist der Preis von CAS bei hoher Konkurrenz.</li>
+  <li><code>LongAdder</code> ist hier 7- bis 16-mal schneller als <code>AtomicLong</code>. Er verteilt die Threads auf mehrere Zellen.</li>
+  <li><b>ABA:</b> Der Wert ging A → B → A. Der normale CAS merkt das nicht und gelingt. Mit <code>AtomicStampedReference</code> zählt ein <b>Stamp</b> (Versionsnummer) mit. Der alte Stamp passt nicht mehr, der CAS schlägt fehl.</li>
+  <li><code>accumulateAndGet</code> und <code>updateAndGet</code> verstecken die CAS-Schleife. Die Funktion muss <b>ohne Seiteneffekte</b> sein, weil sie mehrmals laufen kann.</li>
+</ol>
+
+<h2>4. Details, die Interviewer fragen</h2>
+<ol>
+  <li><b>Was CAS garantiert:</b> Vergleich und Schreiben sind <b>ein</b> unteilbarer Schritt. <code>compareAndSet</code> hat die Memory-Wirkung von <code>VarHandle.compareAndSet</code>, also volatile Read und Write.</li>
+  <li><b>Sichtbarkeit:</b> <code>get()</code> wirkt wie ein volatile Read, <code>set()</code> wie ein volatile Write. Darum gilt happens-before zwischen den Threads.</li>
+  <li><b>Die Familie:</b>
+    <ul>
+      <li><code>AtomicBoolean</code>, <code>AtomicInteger</code>, <code>AtomicLong</code>, <code>AtomicReference</code>: eine Variable.</li>
+      <li><code>AtomicIntegerArray</code>, <code>AtomicLongArray</code>, <code>AtomicReferenceArray</code>: atomare Array-Elemente mit volatile-Semantik.</li>
+      <li><code>AtomicIntegerFieldUpdater</code> usw.: CAS auf ein <code>volatile</code>-Feld einer fremden Klasse, per Reflection. Spart ein Objekt pro Instanz.</li>
+      <li><code>AtomicStampedReference</code> (Referenz + int-Stamp) und <code>AtomicMarkableReference</code> (Referenz + boolean-Markierung): gegen ABA.</li>
+      <li><code>LongAdder</code>, <code>DoubleAdder</code>, <code>LongAccumulator</code>, <code>DoubleAccumulator</code>: verteilte Zähler.</li>
+    </ul></li>
+  <li><b>ABA-Problem:</b> Ein Wert wechselt von A nach B und zurück nach A. CAS vergleicht nur den Wert und merkt die Änderung nicht. Bei Zahlen ist das meist egal. Bei lock-freien Datenstrukturen mit wiederverwendeten Knoten ist es gefährlich.</li>
+  <li><b>LongAdder innen:</b> Er hat eine Basis-Variable und bei Konkurrenz ein Array von <b>Zellen</b>. Jeder Thread zählt in „seiner“ Zelle. <code>sum()</code> addiert alle Zellen. Das ist <b>kein atomarer Schnappschuss</b>, wenn gleichzeitig geschrieben wird.</li>
+  <li><b>LongAccumulator:</b> wie LongAdder, aber mit eigener Funktion, z. B. <code>Long::max</code>. Die Funktion muss assoziativ und ohne Seiteneffekte sein.</li>
+  <li><b>Kein equals/hashCode:</b> Atomic-Klassen überschreiben <code>equals</code> und <code>hashCode</code> nicht. Sie sind darum schlechte Map-Schlüssel. Sie sind kein Ersatz für <code>Integer</code>.</li>
+  <li><b>Schwächere Varianten (Java 9):</b> <code>weakCompareAndSetPlain</code> und <code>weakCompareAndSetVolatile</code> dürfen <b>grundlos fehlschlagen</b> (spurious failure). Sie gehören in eine Schleife. Das alte <code>weakCompareAndSet</code> ist seit Java 9 deprecated.</li>
+  <li><b>compareAndExchange (Java 9):</b> Liefert den tatsächlichen Wert (<b>witness value</b>) statt nur <code>true/false</code>. Das spart einen zusätzlichen Read.</li>
+  <li><b>lazySet / setRelease:</b> schreibt mit <b>Release</b>-Semantik, also ohne volle volatile-Barriere. Etwas billiger, wenn nur Reihenfolge zählt.</li>
+  <li><b>VarHandle (Java 9, JEP 193):</b> Ein <b>VarHandle</b> gibt CAS direkt auf ein normales Feld, ohne Atomic-Objekt. Das JDK selbst nutzt es intern. Für Anwendungs-Code reichen Atomic-Klassen.</li>
+  <li><b>Mehrere Variablen:</b> CAS schützt genau <b>eine</b> Variable. Zwei Felder zusammen brauchen einen Lock oder ein unveränderliches Objekt in einer <code>AtomicReference</code>.</li>
+</ol>
+
+<h2>5. Vergleich</h2>
+<ul>
+  <li><b>volatile:</b> nur Sichtbarkeit. Kein atomares <code>++</code>. Gut für ein Flag.</li>
+  <li><b>AtomicInteger / AtomicLong:</b> Sichtbarkeit plus atomare Updates einer Variable. Exakter Wert jederzeit lesbar.</li>
+  <li><b>LongAdder:</b> sehr schnell bei vielen schreibenden Threads. Mehr Speicher. <code>sum()</code> ist nicht exakt während Writes. Kein CAS von aussen.</li>
+  <li><b>synchronized / ReentrantLock:</b> schützt mehrere Variablen und längere Abläufe. Threads blockieren, dafür kein Spin.</li>
+  <li><b>AtomicReference mit unveränderlichem Objekt:</b> mehrere Felder als ein Objekt atomar austauschen (Copy-on-Write).</li>
+  <li><b>ConcurrentHashMap.merge / compute:</b> atomare Updates pro Schlüssel, z. B. Zähler pro Kategorie.</li>
+</ul>
+
+<h2>6. In der Produktion</h2>
+<ol>
+  <li><b>Hohe CPU durch Spin:</b> Viele Threads machen CAS auf dieselbe Variable. Die meisten Versuche scheitern. Lösung: <code>LongAdder</code>, Arbeit pro Thread sammeln, seltener zentral schreiben.</li>
+  <li><b>Check-then-act mit zwei Aufrufen:</b> <code>if (a.get() &lt; max) a.incrementAndGet();</code> ist nicht atomar. Zwei Threads gehen beide durch. Lösung: eine CAS-Schleife oder <code>updateAndGet</code>.</li>
+  <li><b>Seiteneffekte in updateAndGet:</b> Ein Log oder ein Remote-Call in der Funktion läuft bei Konkurrenz mehrfach. Lösung: reine Funktion, Seiteneffekt danach.</li>
+  <li><b>Zwei Atomics, die zusammengehören:</b> <code>min</code> und <code>max</code> als zwei <code>AtomicLong</code> sind zusammen nicht konsistent. Lösung: ein Record in einer <code>AtomicReference</code> oder ein Lock.</li>
+  <li><b>False Sharing:</b> Zwei heisse Atomics liegen in derselben <b>Cache Line</b> (meist 64 Bytes). Jeder Write macht die Cache Line der anderen Kerne ungültig. LongAdder polstert seine Zellen deshalb intern auf (<code>@Contended</code>).</li>
+  <li><b>Metriken:</b> Eigene Zähler sind selten nötig. Micrometer nutzt intern bereits passende Zähler.</li>
+</ol>
+
+<h2>7. Diagnose: Werkzeuge und Befehle</h2>
+<ul>
+  <li><b>async-profiler</b> oder <b>JFR</b> (Methoden-Profil): viel CPU-Zeit in <code>getAndAddInt</code>, <code>compareAndSet</code> oder einer eigenen CAS-Schleife zeigt Konkurrenz.</li>
+  <li><b>Thread Dump</b> (<code>jcmd &lt;pid&gt; Thread.print</code>): Spinnende Threads stehen auf <code>RUNNABLE</code>, nicht auf <code>BLOCKED</code>. Bei Locks wäre es umgekehrt.</li>
+  <li><b>jcstress</b> (OpenJDK): testet Nebenläufigkeit systematisch, z. B. ob ein Ablauf Updates verliert.</li>
+  <li><b>JMH</b>: misst <code>AtomicLong</code> gegen <code>LongAdder</code> mit <code>@Threads</code> korrekt, mit Warm-up.</li>
+  <li><b>Lasttest mit Zählervergleich:</b> Zähler gegen eine zweite Quelle prüfen, z. B. Access-Log.</li>
+</ul>
+
+<h2>8. Senior-Punkte</h2>
+<div class="senior">
+<ol>
+  <li><b>Lock-free heisst nicht kostenlos.</b> Bei hoher Konkurrenz verbrennt CAS CPU im Spin. Ein Lock parkt Threads und kann dann sogar besser sein.</li>
+  <li><b>Für Zähler LongAdder, für Zustand AtomicLong.</b> Braucht man den exakten Wert oder CAS, nimmt man AtomicLong.</li>
+  <li><b>Eine Variable, ein CAS.</b> Sobald zwei Werte zusammenpassen müssen, braucht es ein unveränderliches Objekt in einer AtomicReference oder einen Lock.</li>
+  <li><b>Eigene lock-freie Strukturen sind fast nie nötig.</b> Das JDK hat getestete: ConcurrentHashMap, ConcurrentLinkedQueue, LongAdder.</li>
+  <li><b>Atomics lösen nur Atomarität im Speicher.</b> Über mehrere Pods hinweg hilft nur die Datenbank, z. B. ein atomarer SQL-Update.</li>
+  <li><b>Erst messen.</b> Bei wenig Konkurrenz ist AtomicLong schnell genug und einfacher zu verstehen.</li>
+</ol>
+</div>
+
+<h2>9. Aus dem Projekt</h2>
+<p>„Bei MATCH lief das gleiche Prinzip wie CAS in der Datenbank: Spark beanspruchte Nachrichten atomar mit <code>UPDATE … OUTPUT INSERTED.*</code> von Pending auf Processing, damit zwei Läufe nie dieselbe Nachricht nehmen.“ <span class="small">(Prüfen und durch dein echtes Beispiel ersetzen. In-Memory-Atomics in Java aus einem echten Projekt sind im Profil nicht belegt.)</span></p>
+
+<h2>10. Fallen</h2>
+<div class="trap">
+<ul>
+  <li>„<code>volatile int</code> reicht für einen Zähler.“ → <b>Falsch.</b> <code>++</code> sind drei Schritte. Es braucht <code>AtomicInteger</code>, <code>LongAdder</code> oder einen Lock.</li>
+  <li>„Lock-free heisst wait-free.“ → <b>Falsch.</b> Lock-free garantiert nur, dass <b>ein</b> Thread weiterkommt. Ein einzelner Thread kann lange spinnen.</li>
+  <li>„CAS ist immer schneller als ein Lock.“ → <b>Falsch.</b> Bei starker Konkurrenz kosten die Fehlversuche viel CPU.</li>
+  <li>„<code>LongAdder.sum()</code> liefert einen exakten Stand.“ → <b>Falsch.</b> Während paralleler Writes ist es kein atomarer Schnappschuss.</li>
+  <li>„Zwei AtomicLong sind zusammen thread-sicher.“ → <b>Falsch.</b> Jede einzeln ja, zusammen nicht konsistent.</li>
+  <li>„AtomicInteger kann als Map-Schlüssel dienen.“ → <b>Falsch.</b> Kein eigenes <code>equals</code>/<code>hashCode</code>, und der Wert ändert sich.</li>
+</ul>
+</div>
+
+<h2>11. Fragen</h2>
+<details><summary>Was ist CAS?</summary><p>Compare-and-Swap: Schreibe den neuen Wert nur, wenn noch der erwartete alte Wert drin steht. Vergleich und Schreiben sind ein atomarer CPU-Befehl.</p></details>
+<details><summary>Was liefert compareAndSet zurück?</summary><p>true, wenn der Wert ersetzt wurde. false, wenn ein anderer Wert drin stand. Dann wurde nichts geschrieben.</p></details>
+<details><summary>Warum ist count++ nicht thread-sicher?</summary><p>Es sind drei Schritte: lesen, plus 1, schreiben. Zwei Threads können denselben alten Wert lesen. Ein Update geht verloren.</p></details>
+<details><summary>Wie funktioniert incrementAndGet intern?</summary><p>Lesen, neuen Wert berechnen, CAS. Schlägt der CAS fehl, nochmals. Auf x86 ersetzt der JIT das durch einen atomaren LOCK-Befehl.</p></details>
+<details><summary>Was ist der Unterschied zwischen volatile und AtomicInteger?</summary><p>volatile gibt nur Sichtbarkeit. AtomicInteger gibt Sichtbarkeit plus atomare Lese-Ändere-Schreibe-Operationen.</p></details>
+<details><summary>Was heisst lock-free?</summary><p>Kein Thread hält einen Lock. Mindestens ein Thread kommt immer weiter. Ein einzelner Thread kann aber mehrmals scheitern.</p></details>
+<details><summary>Was ist das ABA-Problem?</summary><p>Der Wert geht A → B → A. CAS sieht wieder A und gelingt, obwohl sich etwas geändert hat. Lösung: AtomicStampedReference mit Versionsnummer.</p></details>
+<details><summary>Wann ist ABA wirklich gefährlich?</summary><p>Bei lock-freien Datenstrukturen mit Zeigern, z. B. ein Stack, dessen Knoten wiederverwendet werden. Bei einem einfachen Zähler meist nicht.</p></details>
+<details><summary>Was ist LongAdder und wie funktioniert er?</summary><p>Ein Zähler mit Basis-Variable und Zellen. Bei Konkurrenz schreibt jeder Thread in eine eigene Zelle. sum() addiert alles.</p></details>
+<details><summary>AtomicLong oder LongAdder?</summary><p>LongAdder für Zähler mit vielen Schreibern. AtomicLong, wenn man den exakten Wert, CAS oder getAndIncrement für IDs braucht.</p></details>
+<details><summary>Kann man mit LongAdder eine eindeutige Sequenz-ID erzeugen?</summary><p>Nein. LongAdder hat kein getAndIncrement mit eindeutigem Ergebnis. Dafür AtomicLong.getAndIncrement.</p></details>
+<details><summary>Was machen updateAndGet und accumulateAndGet?</summary><p>Sie verstecken die CAS-Schleife und wenden eine Funktion an. Die Funktion muss seiteneffektfrei sein, weil sie mehrmals laufen kann.</p></details>
+<details><summary>Was ist weakCompareAndSet?</summary><p>Ein CAS, der grundlos fehlschlagen darf (spurious failure). Er ist nur in einer Schleife sinnvoll. Heute heissen die Varianten weakCompareAndSetPlain und weakCompareAndSetVolatile.</p></details>
+<details><summary>Was ist compareAndExchange?</summary><p>Ein CAS, der den tatsächlichen Wert zurückgibt statt nur true/false. Seit Java 9.</p></details>
+<details><summary>Was ist ein AtomicIntegerFieldUpdater?</summary><p>Er macht CAS auf ein volatile-int-Feld einer anderen Klasse. Er spart pro Instanz ein Atomic-Objekt. Heute ersetzt VarHandle ihn meist.</p></details>
+<details><summary>Was ist ein VarHandle?</summary><p>Ein typisierter Zugriff auf ein Feld oder Array-Element mit wählbaren Zugriffsarten und CAS. Seit Java 9, vor allem für Bibliotheks-Code.</p></details>
+<details><summary>Wie ändern Sie zwei Werte atomar ohne Lock?</summary><p>Beide in ein unveränderliches Objekt packen, z. B. einen Record. Dann in einer AtomicReference per CAS das ganze Objekt tauschen.</p></details>
+<details><summary>Warum sind Atomic-Klassen schlechte Map-Schlüssel?</summary><p>Sie überschreiben equals und hashCode nicht. Und ihr Wert soll sich ändern.</p></details>
+<details><summary>Was ist False Sharing?</summary><p>Zwei unabhängige heisse Variablen liegen in derselben Cache Line. Writes eines Kerns machen den Cache der anderen ungültig. LongAdder polstert seine Zellen dagegen.</p></details>
+<details><summary>Wann ist ein Lock besser als CAS?</summary><p>Bei sehr hoher Konkurrenz auf eine Variable, bei mehreren Variablen oder bei längeren Abläufen. Ein Lock parkt Threads statt CPU zu verbrennen.</p></details>
+<details><summary>Wie sieht spinnende Konkurrenz im Thread Dump aus?</summary><p>Viele Threads stehen RUNNABLE in derselben CAS-Methode. Bei einem Lock stünden sie BLOCKED oder WAITING.</p></details>
+<details><summary>Hilft AtomicLong bei mehreren Pods?</summary><p>Nein. Atomics wirken nur in einer JVM. Über Pods hinweg braucht es die Datenbank, z. B. einen atomaren UPDATE oder eine Sequenz.</p></details>
+<details><summary>Szenario: Ein Service mit einem globalen AtomicLong-Zähler hat unter Last hohe CPU. Was tun Sie?</summary><p>Profiler prüfen: viel Zeit im CAS heisst Konkurrenz. Zähler auf LongAdder umstellen. Wenn ein exakter Wert nötig ist: lokal sammeln und seltener zentral addieren.</p></details>
+<details><summary>Szenario: Ein Limit „max. 10 gleichzeitige Jobs“ mit get() und incrementAndGet() lässt manchmal 11 durch. Warum?</summary><p>Check-then-act mit zwei Aufrufen ist nicht atomar. Lösung: CAS-Schleife, die nur bei Wert unter 10 erhöht, oder ein Semaphore.</p></details>
+<details><summary>Szenario: In updateAndGet steht ein Log-Aufruf, und das Log zeigt Einträge doppelt. Warum?</summary><p>Bei Konkurrenz scheitert der CAS, und die Funktion läuft nochmals. Lösung: Funktion ohne Seiteneffekte, Log nach dem Update mit dem Ergebnis.</p></details>
+
+</body>
+</html>

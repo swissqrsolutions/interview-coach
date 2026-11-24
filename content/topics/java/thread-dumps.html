@@ -1,0 +1,276 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Thread Dumps lesen</title>
+<style>
+  body { font: 17px/1.55 -apple-system, system-ui, sans-serif; max-width: 760px; margin: 0 auto; padding: 16px; color: #1d1d1f; }
+  h1 { font-size: 28px; margin: 8px 0 4px; }
+  h2 { font-size: 21px; margin: 32px 0 8px; padding-top: 12px; border-top: 2px solid #e5e5ea; }
+  .kern { background: #eef6ff; border-left: 4px solid #0a66c2; padding: 10px 14px; border-radius: 6px; }
+  .senior { background: #f0faf0; border-left: 4px solid #2e7d32; padding: 10px 14px; border-radius: 6px; }
+  .trap { background: #fff4f2; border-left: 4px solid #c62828; padding: 10px 14px; border-radius: 6px; }
+  code { background: #f2f2f7; padding: 1px 5px; border-radius: 4px; font-size: 15px; }
+  pre { background: #1e1e1e; color: #e6e6e6; padding: 12px; border-radius: 8px; overflow-x: auto; font-size: 13.5px; line-height: 1.45; }
+  svg { width: 100%; height: auto; display: block; margin: 10px 0; }
+  ol li, ul li { margin: 4px 0; }
+  details { border: 1px solid #e5e5ea; border-radius: 8px; padding: 8px 12px; margin: 6px 0; }
+  summary { font-weight: 600; cursor: pointer; }
+  details p { margin: 6px 0 2px; }
+  .small { color: #6e6e73; font-size: 14px; }
+</style>
+</head>
+<body>
+
+<h1>Thread Dumps lesen</h1>
+<p class="small">Java · Tier 1 · Quellen: jcmd- und jstack-Manual Java SE 25, Java SE 25 API-Doku (<code>Thread.State</code>), JEP 444 (Abschnitt „Observing virtual threads"), OpenJDK-Quellcode <code>jdk.internal.vm.ThreadDumper</code> (JDK 21 und 25)</p>
+
+<div class="kern">
+<b>Kern:</b> Ein <b>Thread Dump</b> ist eine Momentaufnahme aller Threads einer JVM: Name, Zustand, Stack Trace und Locks. Er beantwortet die Frage „Was macht die Anwendung gerade?". Er ist das erste Werkzeug bei <b>Hängern</b>, <b>Deadlocks</b> und <b>hoher CPU</b>.
+</div>
+
+<h2>1. Wo entsteht ein Thread Dump?</h2>
+<svg viewBox="0 0 720 300" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="a" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="10" y="30" width="150" height="60" rx="8" fill="#fff" stroke="#555"/><text x="85" y="55" text-anchor="middle" font-weight="700">jcmd / jstack</text><text x="85" y="75" text-anchor="middle" font-size="12">eigener Prozess</text>
+  <line x1="160" y1="60" x2="218" y2="60" stroke="#555" stroke-width="2" marker-end="url(#a)"/><text x="189" y="52" text-anchor="middle" font-size="12">Attach</text>
+  <rect x="220" y="8" width="490" height="280" rx="12" fill="#f7f7fa" stroke="#999" stroke-dasharray="5 4"/><text x="465" y="28" text-anchor="middle" font-weight="700">Ziel-JVM</text>
+  <rect x="238" y="40" width="160" height="50" rx="8" fill="#fff" stroke="#555"/><text x="318" y="70" text-anchor="middle">Attach Listener</text>
+  <line x1="398" y1="65" x2="458" y2="65" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="460" y="40" width="230" height="50" rx="8" fill="#0a66c2"/><text x="575" y="62" text-anchor="middle" fill="#fff" font-weight="700">VM Thread</text><text x="575" y="80" text-anchor="middle" fill="#fff" font-size="12">Thread.print am Safepoint</text>
+  <line x1="575" y1="90" x2="575" y2="128" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="238" y="130" width="452" height="64" rx="8" fill="#dbe9fb" stroke="#0a66c2"/><text x="464" y="154" text-anchor="middle" font-weight="700">Alle Platform Threads</text><text x="464" y="176" text-anchor="middle" font-size="12">App-Threads · GC · JIT-Compiler · Finalizer · Carrier</text>
+  <rect x="238" y="214" width="452" height="58" rx="8" fill="#e8f5e9" stroke="#2e7d32"/><text x="464" y="238" text-anchor="middle" font-weight="700">Virtual Threads</text><text x="464" y="258" text-anchor="middle" font-size="12">nur in Thread.dump_to_file (Java 21+)</text>
+  <line x1="238" y1="162" x2="90" y2="162" stroke="#555" stroke-width="2"/><line x1="90" y1="162" x2="90" y2="92" stroke="#555" stroke-width="2" marker-end="url(#a)"/><text x="100" y="140" font-size="12">Text zurück</text>
+</svg>
+<ol>
+  <li><b>jcmd / jstack:</b> ein eigener Prozess. Er verbindet sich über den <b>Attach-Mechanismus</b> mit der Ziel-JVM. Beispiel: <code>jcmd 4711 Thread.print</code>.</li>
+  <li><b>Attach Listener:</b> ein Thread in der Ziel-JVM. Er nimmt den Befehl an.</li>
+  <li><b>VM Thread:</b> führt den Dump als VM-Operation aus. Die klassische Variante braucht einen kurzen <b>Safepoint</b>, also eine Pause aller Java-Threads.</li>
+  <li><b>Platform Threads:</b> erscheinen alle, auch JVM-interne wie <code>C2 CompilerThread0</code> oder <code>G1 Conc#0</code>.</li>
+  <li><b>Virtual Threads:</b> erscheinen im klassischen Dump nicht. Dafür gibt es <code>Thread.dump_to_file</code>. Laut JEP 444 pausiert dieser die Anwendung nicht.</li>
+</ol>
+
+<h2>2. Die Reise durch einen Dump (die Geschichte zum Merken)</h2>
+<svg viewBox="0 0 720 320" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="b" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="10" y="20" width="160" height="62" rx="10" fill="#eee" stroke="#777"/><text x="90" y="46" text-anchor="middle" font-weight="700">1. 3 Dumps</text><text x="90" y="66" text-anchor="middle" font-size="12">im Abstand 5–10 s</text>
+  <line x1="170" y1="51" x2="208" y2="51" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="210" y="20" width="160" height="62" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="290" y="46" text-anchor="middle" font-weight="700">2. Ende lesen</text><text x="290" y="66" text-anchor="middle" font-size="12">„Found … deadlock"?</text>
+  <line x1="370" y1="51" x2="408" y2="51" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="410" y="20" width="140" height="62" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="480" y="46" text-anchor="middle" font-weight="700">3. Filtern</text><text x="480" y="66" text-anchor="middle" font-size="12">nur App-Threads</text>
+  <line x1="550" y1="51" x2="588" y2="51" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="590" y="20" width="120" height="62" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="650" y="46" text-anchor="middle" font-weight="700">4. Zählen</text><text x="650" y="66" text-anchor="middle" font-size="12">nach Zustand</text>
+  <line x1="650" y1="82" x2="650" y2="128" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="470" y="130" width="240" height="70" rx="10" fill="#fff4f2" stroke="#c62828"/><text x="590" y="154" text-anchor="middle" font-weight="700">5. BLOCKED folgen</text><text x="590" y="174" text-anchor="middle" font-size="12">waiting to lock &lt;0x…a70&gt;</text><text x="590" y="190" text-anchor="middle" font-size="12">→ wer hat „locked &lt;0x…a70&gt;"?</text>
+  <line x1="470" y1="165" x2="378" y2="165" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="160" y="130" width="216" height="70" rx="10" fill="#fff" stroke="#555"/><text x="268" y="154" text-anchor="middle" font-weight="700">6. Gleicher Stack?</text><text x="268" y="174" text-anchor="middle" font-size="12">in allen 3 Dumps gleich</text><text x="268" y="190" text-anchor="middle" font-size="12">→ hängt wirklich</text>
+  <line x1="268" y1="200" x2="268" y2="238" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="120" y="240" width="300" height="62" rx="10" fill="#0a66c2"/><text x="270" y="264" text-anchor="middle" fill="#fff" font-weight="700">7. Ursache im eigenen Code</text><text x="270" y="284" text-anchor="middle" fill="#fff" font-size="12">oberster Frame aus com.firma.…</text>
+</svg>
+<ol>
+  <li><b>Drei Dumps ziehen:</b> Ein einzelner Dump ist ein Foto. Erst drei Dumps im Abstand von 5–10 Sekunden zeigen, ob ein Thread <b>feststeckt</b> oder nur gerade vorbeikommt.</li>
+  <li><b>Zuerst ans Ende:</b> Die JVM erkennt Lock-Zyklen selbst. Sie schreibt am Ende <code>Found one Java-level deadlock</code>.</li>
+  <li><b>Filtern:</b> JVM-Threads (GC, Compiler, <code>Reference Handler</code>) ignorieren. Gute Thread-Namen sparen hier viel Zeit.</li>
+  <li><b>Nach Zustand zählen:</b> 180 von 200 Request-Threads in <code>BLOCKED</code> an derselben Zeile? Das ist die Spur.</li>
+  <li><b>Lock-Adresse folgen:</b> Ein Thread zeigt <code>waiting to lock &lt;0x…a70&gt;</code>. Gesucht ist der Thread mit <code>- locked &lt;0x…a70&gt;</code>. Was macht der gerade?</li>
+  <li><b>Dumps vergleichen:</b> Steht der Halter in allen Dumps an derselben Stelle, hängt er wirklich. Zum Beispiel an einem Remote-Call ohne Timeout.</li>
+  <li><b>Eigenen Code finden:</b> Den obersten Frame aus dem eigenen Package suchen. Darüber liegt nur Framework- oder JDK-Code.</li>
+</ol>
+
+<h2>3. Beispiel: zwei echte Deadlocks lesen</h2>
+<pre>// transfer-1: synchronized(konto) { sleep; synchronized(depot) {} }
+// transfer-2: synchronized(depot) { sleep; synchronized(konto) {} }
+// job-A: lockA.lock(); sleep; lockB.lock();   (ReentrantLock)
+// job-B: lockB.lock(); sleep; lockA.lock();
+// waiter: m.wait()   sleeper: Thread.sleep(600_000)
+$ jstack -l 116908</pre>
+<pre>Full thread dump Java HotSpot(TM) 64-Bit Server VM (17.0.3.1+2-LTS-6 mixed mode, sharing):
+
+"transfer-1" #23 prio=5 os_prio=0 cpu=0.00ms elapsed=6.78s tid=0x000002b3829d1f50 nid=0x7440 waiting for monitor entry  [0x000000f1931ff000]
+   java.lang.Thread.State: BLOCKED (on object monitor)
+	at Deadlock.lambda$main$0(Deadlock.java:6)
+	- waiting to lock &lt;0x000000071a5e4a70&gt; (a java.lang.Object)
+	- locked &lt;0x000000071a5e4a60&gt; (a java.lang.Object)
+	at java.lang.Thread.run(java.base@17.0.3.1/Thread.java:833)
+
+"job-A" #25 prio=5 os_prio=0 cpu=0.00ms elapsed=6.77s tid=0x000002b3829d3900 nid=0x1c1a0 waiting on condition  [0x000000f1933ff000]
+   java.lang.Thread.State: WAITING (parking)
+	at jdk.internal.misc.Unsafe.park(java.base@17.0.3.1/Native Method)
+	- parking to wait for  &lt;0x000000071a5e4e98&gt; (a java.util.concurrent.locks.ReentrantLock$NonfairSync)
+	at java.util.concurrent.locks.LockSupport.park(java.base@17.0.3.1/LockSupport.java:211)
+	...
+	at java.util.concurrent.locks.ReentrantLock.lock(java.base@17.0.3.1/ReentrantLock.java:322)
+	at Deadlock.lambda$main$2(Deadlock.java:8)
+
+   Locked ownable synchronizers:
+	- &lt;0x000000071a5e4e68&gt; (a java.util.concurrent.locks.ReentrantLock$NonfairSync)
+
+"waiter" #27 ... in Object.wait()  [0x000000f1935fe000]
+   java.lang.Thread.State: WAITING (on object monitor)
+	at java.lang.Object.wait(java.base@17.0.3.1/Native Method)
+	- waiting on &lt;0x000000071a204d20&gt; (a java.lang.Object)
+
+"sleeper" #28 ... waiting on condition  [0x000000f1936ff000]
+   java.lang.Thread.State: TIMED_WAITING (sleeping)
+	at java.lang.Thread.sleep(java.base@17.0.3.1/Native Method)
+
+Found one Java-level deadlock:
+=============================
+"transfer-1":
+  waiting to lock monitor 0x000002b3ffd36060 (object 0x000000071a5e4a70, a java.lang.Object),
+  which is held by "transfer-2"
+
+"transfer-2":
+  waiting to lock monitor 0x000002b3829edd10 (object 0x000000071a5e4a60, a java.lang.Object),
+  which is held by "transfer-1"
+
+Found one Java-level deadlock:
+=============================
+"job-A":
+  waiting for ownable synchronizer 0x000000071a5e4e98, (a java.util.concurrent.locks.ReentrantLock$NonfairSync),
+  which is held by "job-B"
+
+"job-B":
+  waiting for ownable synchronizer 0x000000071a5e4e68, (a java.util.concurrent.locks.ReentrantLock$NonfairSync),
+  which is held by "job-A"
+
+Found 2 deadlocks.</pre>
+<p class="small">Echte Ausgabe, Oracle JDK 17.0.3 (gekürzt: JVM-Threads, Lambda-Frames und die Stack-Wiederholung nach jedem Deadlock-Block entfernt, „..." markiert Lücken). <code>jcmd &lt;pid&gt; Thread.print</code> ohne <code>-l</code> lieferte denselben Dump, aber ohne die Abschnitte „Locked ownable synchronizers".</p>
+<ol>
+  <li><b>Kopfzeile:</b> <code>#23</code> ist die Java-Thread-ID. <code>nid=0x7440</code> ist die <b>OS-Thread-ID</b> in Hex. <code>cpu=</code> ist die verbrauchte CPU-Zeit, <code>elapsed=</code> die Lebenszeit.</li>
+  <li><b>transfer-1</b> hält <code>…a60</code> (<code>- locked</code>) und will <code>…a70</code> (<code>- waiting to lock</code>). Zustand <code>BLOCKED (on object monitor)</code>: Er wartet am Eingang eines <code>synchronized</code>.</li>
+  <li><b>job-A</b> wartet auf einen <code>ReentrantLock</code>. Zustand <code>WAITING (parking)</code>, nicht BLOCKED. Welchen Lock er hält, zeigt nur <code>-l</code> unter <b>Locked ownable synchronizers</b>.</li>
+  <li><b>waiter</b> steht in <code>Object.wait()</code>: <code>WAITING (on object monitor)</code>. Er hat den Monitor beim Warten freigegeben. Das ist kein Deadlock.</li>
+  <li><b>sleeper</b> schläft: <code>TIMED_WAITING (sleeping)</code>. Harmlos.</li>
+  <li>Am Ende erkennt die JVM beide Zyklen, auch den mit <code>ReentrantLock</code>. Lösung in beiden Fällen: feste Lock-Reihenfolge oder <code>tryLock</code> mit Timeout (Seite <i>Synchronisation und Locks</i>).</li>
+</ol>
+<pre>$ jcmd 116908 help        (Java 17, Auszug der Thread-Befehle)
+Thread.print</pre>
+<p class="small">Echte Ausgabe, Oracle JDK 17.0.3: In der vollständigen Befehlsliste gibt es nur <code>Thread.print</code>, kein <code>Thread.dump_to_file</code>.</p>
+<pre>$ jcmd &lt;pid&gt; Thread.dump_to_file -format=json /tmp/threads.json      (Java 21+)
+{
+  "threadDump": {
+    "processId": "...", "time": "...", "runtimeVersion": "25...",
+    "threadContainers": [
+      { "container": "&lt;root&gt;", "parent": null, "owner": null, "threads": [ ... ] },
+      { "container": "java.util.concurrent.ThreadPerTaskExecutor@...", "parent": "&lt;root&gt;",
+        "threads": [ { "tid": "...", "virtual": true, "name": "", "state": "WAITING",
+                       "stack": [ "java.base/java.lang.VirtualThread.park(...)", "..." ],
+                       "carrier": "..." } ],
+        "threadCount": "..." }
+    ]
+  }
+}</pre>
+<p class="small">Erwartetes Ergebnis (laut Doku und JDK-25-Quellcode von <code>ThreadDumper</code>, nicht ausgeführt). Feldnamen aus dem Quellcode, Werte als „..." ausgelassen. In Java 21 enthält das neue Format nur Thread-IDs, Namen und Stacks. Java 25 ergänzt Zustand, Lock-Infos und den Carrier.</p>
+
+<h2>4. Details, die Interviewer fragen</h2>
+<ol>
+  <li><b>Die sechs Zustände</b> (<code>Thread.State</code>):
+    <ul>
+      <li><b>NEW:</b> erzeugt, noch nicht gestartet. Erscheint nicht im Dump.</li>
+      <li><b>RUNNABLE:</b> läuft oder ist lauffähig. Auch ein Thread in blockierender Socket-I/O ist RUNNABLE.</li>
+      <li><b>BLOCKED:</b> wartet auf den Monitor eines <code>synchronized</code>. Text: <code>waiting for monitor entry</code>.</li>
+      <li><b>WAITING:</b> wartet ohne Zeitlimit: <code>Object.wait()</code>, <code>join()</code>, <code>LockSupport.park()</code> (also auch <code>ReentrantLock</code>, Queues, Latches).</li>
+      <li><b>TIMED_WAITING:</b> dasselbe mit Zeitlimit: <code>sleep</code>, <code>wait(ms)</code>, <code>parkNanos</code>, <code>poll(timeout)</code>.</li>
+      <li><b>TERMINATED:</b> fertig. Erscheint nicht im Dump.</li>
+    </ul></li>
+  <li><b>Die Lock-Zeilen:</b> <code>- locked</code> = hält den Monitor. <code>- waiting to lock</code> = will ihn (BLOCKED). <code>- waiting on</code> = hat ihn in <code>wait()</code> abgegeben. <code>- parking to wait for</code> = wartet auf einen <code>java.util.concurrent</code>-Synchronizer.</li>
+  <li><b>jstack vs jcmd:</b> Beide liefern denselben Dump. Das Java-25-Manual nennt <code>jstack</code> „experimental and unsupported". Empfohlen ist <code>jcmd &lt;pid&gt; Thread.print</code>, mit <code>-l</code> für j.u.c.-Locks und <code>-e</code> für erweiterte Infos.</li>
+  <li><b>Andere Wege:</b> <code>kill -3 &lt;pid&gt;</code> (SIGQUIT) schreibt den Dump auf die Standardausgabe der JVM, also ins Container-Log. JMX: <code>ThreadMXBean.dumpAllThreads</code>. Dazu IDEs, VisualVM, JMC.</li>
+  <li><b>Deadlock-Erkennung:</b> Die JVM findet Zyklen über Monitore und <b>ownable synchronizers</b> (z. B. <code>ReentrantLock</code>). Ein Pool, der auf sich selbst wartet, ist kein Lock-Zyklus. Den meldet sie nicht.</li>
+  <li><b>Hohe CPU finden:</b> Linux: <code>top -H -p &lt;pid&gt;</code> zeigt CPU pro OS-Thread. Die Thread-ID in Hex umrechnen und im Dump als <code>nid=0x…</code> suchen. Alternativ das Feld <code>cpu=</code> in zwei Dumps vergleichen.</li>
+  <li><b>RUNNABLE heisst nicht „rechnet":</b> <code>SocketInputStream.read</code> oder <code>EPoll.wait</code> stehen auf RUNNABLE, warten aber auf das Netz. CPU sieht man nur über <code>cpu=</code> oder <code>top -H</code>.</li>
+  <li><b>Safepoint-Kosten:</b> Der klassische Dump hält alle Threads kurz an. Bei Tausenden Threads kann das spürbar sein. Ein paar Dumps sind in Produktion aber unkritisch.</li>
+  <li><b>Virtual Threads:</b> Im klassischen Dump erscheinen nur Carrier-Threads wie <code>ForkJoinPool-1-worker-1</code>. Den Virtual Thread selbst zeigt nur <code>Thread.dump_to_file</code>. Bei <code>-Djdk.trackAllThreads=false</code> fehlen dort manche direkt erzeugte Virtual Threads.</li>
+  <li><b>Thread-Container:</b> Das neue Format gruppiert Threads nach Containern: Executor, StructuredTaskScope, Root. So sieht man Eltern-Kind-Beziehungen.</li>
+</ol>
+
+<h2>5. Vergleich</h2>
+<ul>
+  <li><b>Thread Dump:</b> Momentaufnahme der Threads. Frage: „Wo hängt es jetzt?" Billig, wenige KB bis MB.</li>
+  <li><b>Heap Dump:</b> alle Objekte im Heap. Frage: „Wer hält den Speicher?" Gross und pausiert lange. Seite <i>Memory Leaks und OutOfMemoryError</i>.</li>
+  <li><b>JFR-Aufnahme:</b> Ereignisse über Zeit, z. B. Lock-Wartezeiten und CPU-Samples. Frage: „Wo geht die Zeit hin?" Seite <i>Profiling</i>.</li>
+  <li><b>Klassischer Dump vs <code>Thread.dump_to_file</code>:</b> klassisch mit Locks, Adressen und JVM-Threads, aber ohne Virtual Threads. Neu mit Virtual Threads und JSON, ohne Safepoint-Pause.</li>
+  <li><b>Core Dump:</b> Abbild des ganzen Prozesses für JVM-Abstürze. Auswertung mit <code>jhsdb</code>.</li>
+</ul>
+
+<h2>6. In der Produktion</h2>
+<ol>
+  <li><b>Service hängt, CPU fast 0 %:</b> Typisch Deadlock, leerer Connection Pool oder Remote-Call ohne Timeout. Im Dump: viele Threads <code>BLOCKED</code> oder in <code>getConnection</code>. Lösung: Timeouts, feste Lock-Reihenfolge, Pool-Grösse prüfen.</li>
+  <li><b>CPU 100 %:</b> Dieselben Threads sind in mehreren Dumps <code>RUNNABLE</code> in derselben Schleife. Typisch: Endlosschleife, Regex-Backtracking, zu viel GC. Mit <code>top -H</code> und <code>nid</code> verbinden.</li>
+  <li><b>Thread-Zahl wächst ständig:</b> Dumps zeigen Hunderte <code>pool-N-thread-M</code> mit steigendem N. Ursache: pro Request ein neuer Executor, nie geschlossen. Lösung: einen Pool teilen und schliessen.</li>
+  <li><b>Kein jcmd im Container:</b> Das Image hat nur eine JRE. Lösung: <code>kill -3 1</code> und das Pod-Log lesen. Oder ein Debug-Container mit JDK im selben Prozess-Namensraum.</li>
+  <li><b>Attach scheitert:</b> jcmd muss als gleicher Benutzer laufen und das gleiche Temp-Verzeichnis sehen. In Containern scheitert das oft. Dann hilft <code>kill -3</code>.</li>
+  <li><b>Nur ein Dump gezogen:</b> Ein einzelner Dump zeigt Zufall. Immer mehrere Dumps vergleichen, bevor man Schlüsse zieht.</li>
+</ol>
+
+<h2>7. Diagnose: Werkzeuge und Befehle</h2>
+<ul>
+  <li><code>jps -l</code> oder <code>jcmd</code> ohne Argument: Java-Prozesse und PIDs auflisten.</li>
+  <li><code>jcmd &lt;pid&gt; Thread.print -l</code>: klassischer Dump mit j.u.c.-Locks.</li>
+  <li><code>jcmd &lt;pid&gt; Thread.dump_to_file -format=json datei.json</code>: neuer Dump mit Virtual Threads (Java 21+). <code>-overwrite</code> erlaubt Überschreiben.</li>
+  <li>Drei Dumps im Abstand von 5 Sekunden per Schleife ziehen und als <code>dump1.txt</code> bis <code>dump3.txt</code> speichern.</li>
+  <li><code>kill -3 &lt;pid&gt;</code>: Dump in die Standardausgabe der JVM.</li>
+  <li><code>top -H -p &lt;pid&gt;</code> plus Umrechnung der Thread-ID in Hex: heissen Thread finden.</li>
+  <li><b>Analyse-Tools:</b> fastThread, IBM TMDA, IntelliJ „Analyze Stack Trace". Sie gruppieren Threads mit gleichem Stack.</li>
+  <li><b>JFR:</b> <code>jdk.JavaMonitorEnter</code> und <code>jdk.ThreadPark</code> zeigen Wartezeiten über Zeit, nicht nur einen Moment.</li>
+</ul>
+
+<h2>8. Senior-Punkte</h2>
+<div class="senior">
+<ol>
+  <li><b>Thread-Namen sind Diagnose-Design.</b> Eigene ThreadFactory mit Namen wie <code>kafka-consumer-orders-1</code>. Das spart im Incident Minuten.</li>
+  <li><b>Dumps automatisieren:</b> Ein Runbook oder Skript zieht bei Alarm drei Dumps und sichert sie. Der Neustart löscht sonst die Beweise.</li>
+  <li><b>Erst Dump, dann Neustart.</b> Ein Neustart behebt das Symptom. Ohne Dump bleibt die Ursache unbekannt.</li>
+  <li><b>Dump ist ein Foto, JFR ein Film.</b> Für seltene Lock-Wartezeiten ist eine JFR-Aufnahme oft besser als viele Dumps.</li>
+  <li><b>Virtual Threads ändern das Werkzeug.</b> Ab Java 21 braucht man <code>Thread.dump_to_file</code>. Ab Java 25 enthält es auch Zustand und Locks.</li>
+  <li><b>Timeouts überall:</b> Die meisten „Hänger" im Dump sind Netzwerk-Aufrufe ohne Timeout. Das ist eine Design-Regel, kein Tuning.</li>
+</ol>
+</div>
+
+<h2>9. Aus dem Projekt</h2>
+<p>„Einen Thread-Dump-Fall aus der Produktion habe ich nicht dokumentiert. Das nächste echte Beispiel: Bei MATCH haben wir Job-Dauer, Pending-Backlog und Pod-Restarts mit Grafana/Prometheus überwacht; bei einem hängenden Java-Service wäre mein nächster Schritt drei Thread Dumps vor dem Neustart." <span class="small">(Prüfen und durch dein echtes Beispiel ersetzen.)</span></p>
+
+<h2>10. Fallen</h2>
+<div class="trap">
+<ul>
+  <li>„RUNNABLE heisst, der Thread verbraucht CPU." → <b>Falsch.</b> Auch blockierende Socket-Reads stehen auf RUNNABLE.</li>
+  <li>„Ein Thread, der auf einen ReentrantLock wartet, ist BLOCKED." → <b>Falsch.</b> Er ist <code>WAITING (parking)</code>. BLOCKED gibt es nur bei <code>synchronized</code>.</li>
+  <li>„Ein Thread in <code>wait()</code> hält den Monitor." → <b>Falsch.</b> <code>wait()</code> gibt ihn frei. Der Dump zeigt <code>waiting on</code>.</li>
+  <li>„Ein Dump reicht." → <b>Falsch.</b> Erst mehrere Dumps zeigen, was feststeckt.</li>
+  <li>„jstack zeigt alle Threads." → <b>Nicht seit Java 21.</b> Virtual Threads fehlen. Dafür <code>Thread.dump_to_file</code>.</li>
+  <li>„Die JVM findet jeden Deadlock." → <b>Falsch.</b> Nur Zyklen über Monitore und ownable synchronizers. Pool-Starvation erkennt sie nicht.</li>
+</ul>
+</div>
+
+<h2>11. Fragen</h2>
+<details><summary>Was ist ein Thread Dump?</summary><p>Eine Momentaufnahme aller Threads der JVM mit Name, Zustand, Stack Trace und Locks.</p></details>
+<details><summary>Wie ziehen Sie einen Thread Dump?</summary><p>jcmd &lt;pid&gt; Thread.print -l. Alternativ jstack -l &lt;pid&gt; oder kill -3 &lt;pid&gt;, dann steht er im Log der JVM.</p></details>
+<details><summary>Warum mehrere Dumps statt einem?</summary><p>Ein Dump ist ein Zufallsmoment. Erst der Vergleich zeigt, welche Threads wirklich an derselben Stelle feststecken.</p></details>
+<details><summary>Welche Thread-Zustände gibt es?</summary><p>NEW, RUNNABLE, BLOCKED, WAITING, TIMED_WAITING, TERMINATED.</p></details>
+<details><summary>Was ist der Unterschied zwischen BLOCKED und WAITING?</summary><p>BLOCKED wartet auf den Eintritt in einen synchronized-Monitor. WAITING wartet auf ein Signal, z. B. wait(), join() oder park().</p></details>
+<details><summary>Welchen Zustand hat ein Thread in Thread.sleep?</summary><p>TIMED_WAITING (sleeping).</p></details>
+<details><summary>Welchen Zustand hat ein Thread, der auf ReentrantLock.lock() wartet?</summary><p>WAITING (parking). Im Dump steht „parking to wait for" mit dem Sync-Objekt des Locks.</p></details>
+<details><summary>Was bedeuten „locked", „waiting to lock" und „waiting on"?</summary><p>locked: hält den Monitor. waiting to lock: will ihn haben. waiting on: hat ihn in wait() abgegeben und wartet auf notify.</p></details>
+<details><summary>Was sind „Locked ownable synchronizers"?</summary><p>Gehaltene java.util.concurrent-Locks wie ReentrantLock. Sie erscheinen nur mit jstack -l oder jcmd Thread.print -l.</p></details>
+<details><summary>Wie erkennen Sie einen Deadlock im Dump?</summary><p>Am Ende steht „Found one Java-level deadlock". Darunter: welcher Thread welchen Lock hält und welchen er will.</p></details>
+<details><summary>Findet die JVM auch Deadlocks mit ReentrantLock?</summary><p>Ja, über ownable synchronizers. Nicht aber Warte-Zyklen über Pools, Semaphoren oder externe Ressourcen.</p></details>
+<details><summary>Was ist nid im Dump?</summary><p>Die ID des OS-Threads in Hex. Mit ihr verbinden Sie top -H mit dem Java-Thread.</p></details>
+<details><summary>Wie finden Sie den Thread, der 100 % CPU verbraucht?</summary><p>top -H -p &lt;pid&gt;, Thread-ID in Hex umrechnen, im Dump nid=0x… suchen. Dessen Stack über mehrere Dumps ansehen.</p></details>
+<details><summary>Steht ein Thread in Socket-Read auf WAITING?</summary><p>Nein, auf RUNNABLE. Die JVM sieht nativen I/O als laufend an.</p></details>
+<details><summary>jstack oder jcmd?</summary><p>jcmd. Das Java-25-Manual nennt jstack experimentell und nicht unterstützt. jcmd kann zusätzlich JFR, Heap Dumps und mehr.</p></details>
+<details><summary>Pausiert ein Thread Dump die Anwendung?</summary><p>Der klassische Dump braucht einen kurzen Safepoint. Bei sehr vielen Threads ist das spürbar. Der neue Dump mit dump_to_file pausiert laut JEP 444 nicht.</p></details>
+<details><summary>Wie sehen Sie Virtual Threads?</summary><p>Mit jcmd &lt;pid&gt; Thread.dump_to_file, als Text oder JSON. Der klassische Dump zeigt nur Carrier-Threads.</p></details>
+<details><summary>Was zeigt das JSON-Format zusätzlich?</summary><p>Thread-Container wie Executors und StructuredTaskScopes mit Eltern-Beziehung. Ab Java 25 auch Zustand, Locks und Carrier.</p></details>
+<details><summary>Wie bekommen Sie einen Dump aus einem Container ohne JDK?</summary><p>kill -3 auf den Java-Prozess, dann steht der Dump im Container-Log. Oder ein Debug-Container mit JDK.</p></details>
+<details><summary>Warum sind Thread-Namen wichtig?</summary><p>pool-7-thread-3 sagt nichts. Ein Name wie orders-consumer-3 zeigt sofort, welcher Teil der App betroffen ist.</p></details>
+<details><summary>Was ist der Unterschied zwischen Thread Dump und Heap Dump?</summary><p>Thread Dump: was die Threads gerade tun. Heap Dump: welche Objekte im Speicher liegen und wer sie hält.</p></details>
+<details><summary>Wann JFR statt Thread Dumps?</summary><p>Bei seltenen oder kurzen Wartezeiten. JFR misst Lock-Wartezeiten über Zeit, ein Dump zeigt nur einen Moment.</p></details>
+<details><summary>Szenario: Der Service antwortet nicht mehr, CPU ist bei 2 %. Was tun Sie?</summary><p>Vor dem Neustart drei Dumps mit jcmd Thread.print -l ziehen. Ans Ende schauen (Deadlock?), dann BLOCKED-Threads und ihre Lock-Halter verfolgen. Typisch: Deadlock, leerer Connection Pool oder Call ohne Timeout.</p></details>
+<details><summary>Szenario: Der Pod hat dauerhaft 100 % CPU, die Latenz ist hoch. Wie gehen Sie vor?</summary><p>top -H zeigt die heissen OS-Threads, nid im Dump zeigt den Java-Stack. Bleibt es eine App-Schleife, Code fixen. Sind es GC-Threads, GC-Log und Heap prüfen.</p></details>
+<details><summary>Szenario: Die Thread-Zahl steigt über Tage von 200 auf 8000. Was suchen Sie im Dump?</summary><p>Die Namensmuster der neuen Threads, z. B. pool-N-thread-1 mit steigendem N. Das deutet auf pro Aufruf erzeugte, nie geschlossene Executors.</p></details>
+
+</body>
+</html>

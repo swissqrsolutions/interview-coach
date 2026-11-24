@@ -1,0 +1,274 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ExecutorService und Thread Pools</title>
+<style>
+  body { font: 17px/1.55 -apple-system, system-ui, sans-serif; max-width: 760px; margin: 0 auto; padding: 16px; color: #1d1d1f; }
+  h1 { font-size: 28px; margin: 8px 0 4px; }
+  h2 { font-size: 21px; margin: 32px 0 8px; padding-top: 12px; border-top: 2px solid #e5e5ea; }
+  .kern { background: #eef6ff; border-left: 4px solid #0a66c2; padding: 10px 14px; border-radius: 6px; }
+  .senior { background: #f0faf0; border-left: 4px solid #2e7d32; padding: 10px 14px; border-radius: 6px; }
+  .trap { background: #fff4f2; border-left: 4px solid #c62828; padding: 10px 14px; border-radius: 6px; }
+  code { background: #f2f2f7; padding: 1px 5px; border-radius: 4px; font-size: 15px; }
+  pre { background: #1e1e1e; color: #e6e6e6; padding: 12px; border-radius: 8px; overflow-x: auto; font-size: 13.5px; line-height: 1.45; }
+  svg { width: 100%; height: auto; display: block; margin: 10px 0; }
+  ol li, ul li { margin: 4px 0; }
+  details { border: 1px solid #e5e5ea; border-radius: 8px; padding: 8px 12px; margin: 6px 0; }
+  summary { font-weight: 600; cursor: pointer; }
+  details p { margin: 6px 0 2px; }
+  .small { color: #6e6e73; font-size: 14px; }
+</style>
+</head>
+<body>
+
+<h1>ExecutorService und Thread Pools</h1>
+<p class="small">Java · Tier 1 · Quellen: Java SE 25 API-Doku (<code>ThreadPoolExecutor</code>, <code>Executors</code>, <code>ExecutorService</code>, <code>ForkJoinPool</code>, <code>CompletableFuture</code>), JEP 444 (Virtual Threads)</p>
+
+<div class="kern">
+<b>Kern:</b> Ein <b>ExecutorService</b> ist ein Dienst, der Aufgaben annimmt und auf wiederverwendeten Threads ausführt. Er trennt „was tun" (Task) von „wer tut es" (Thread). Ein <b>ThreadPoolExecutor</b> steuert das mit vier Stellschrauben: <b>Core-Grösse</b>, <b>Max-Grösse</b>, <b>Queue</b> und <b>Rejection Policy</b>.
+</div>
+
+<h2>1. Wo sitzt der Executor?</h2>
+<svg viewBox="0 0 720 320" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="a" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="10" y="30" width="140" height="60" rx="8" fill="#fff" stroke="#555"/><text x="80" y="55" text-anchor="middle" font-weight="700">Aufrufer</text><text x="80" y="75" text-anchor="middle" font-size="12">z. B. Request-Thread</text>
+  <line x1="150" y1="50" x2="208" y2="50" stroke="#555" stroke-width="2" marker-end="url(#a)"/><text x="179" y="42" text-anchor="middle" font-size="12">submit</text>
+  <rect x="210" y="8" width="500" height="200" rx="12" fill="#f7f7fa" stroke="#999" stroke-dasharray="5 4"/><text x="460" y="28" text-anchor="middle" font-weight="700">ThreadPoolExecutor</text>
+  <rect x="228" y="42" width="190" height="56" rx="8" fill="#dbe9fb" stroke="#0a66c2"/><text x="323" y="64" text-anchor="middle" font-weight="700">Work Queue</text><text x="323" y="84" text-anchor="middle" font-size="12">BlockingQueue&lt;Runnable&gt;</text>
+  <line x1="418" y1="70" x2="478" y2="70" stroke="#555" stroke-width="2" marker-end="url(#a)"/><text x="448" y="62" text-anchor="middle" font-size="12">take</text>
+  <rect x="480" y="42" width="214" height="56" rx="8" fill="#0a66c2"/><text x="587" y="64" text-anchor="middle" fill="#fff" font-weight="700">Worker-Threads</text><text x="587" y="84" text-anchor="middle" fill="#fff" font-size="12">core … max (ThreadFactory)</text>
+  <rect x="228" y="124" width="190" height="56" rx="8" fill="#fff4f2" stroke="#c62828"/><text x="323" y="146" text-anchor="middle" font-weight="700">Rejection Handler</text><text x="323" y="166" text-anchor="middle" font-size="12">Queue und Pool voll</text>
+  <rect x="480" y="124" width="214" height="56" rx="8" fill="#fff" stroke="#555"/><text x="587" y="146" text-anchor="middle" font-weight="700">Hooks</text><text x="587" y="166" text-anchor="middle" font-size="12">beforeExecute · afterExecute</text>
+  <line x1="587" y1="98" x2="587" y2="122" stroke="#999" stroke-width="1.5" marker-end="url(#a)"/>
+  <rect x="210" y="240" width="220" height="56" rx="8" fill="#e8f5e9" stroke="#2e7d32"/><text x="320" y="262" text-anchor="middle" font-weight="700">Future / CompletableFuture</text><text x="320" y="282" text-anchor="middle" font-size="12">Ergebnis oder Exception</text>
+  <line x1="587" y1="208" x2="432" y2="262" stroke="#555" stroke-width="2" marker-end="url(#a)"/><text x="540" y="250" font-size="12">Ergebnis</text>
+  <line x1="208" y1="268" x2="80" y2="92" stroke="#555" stroke-width="2" marker-end="url(#a)"/><text x="100" y="200" font-size="12">get() / join()</text>
+</svg>
+<ol>
+  <li><b>Aufrufer:</b> übergibt einen <code>Runnable</code> oder <code>Callable</code>. Beispiel: ein Controller schickt einen Report-Job.</li>
+  <li><b>Work Queue:</b> eine <b>BlockingQueue</b>, also eine thread-sichere Warteschlange. Sie hält Tasks, bis ein Worker frei ist.</li>
+  <li><b>Worker-Threads:</b> wiederverwendete Platform Threads. Eine <b>ThreadFactory</b> erzeugt sie, z. B. mit sprechendem Namen.</li>
+  <li><b>Rejection Handler:</b> entscheidet, was bei Überlast passiert. Beispiel: Exception werfen oder den Aufrufer selbst rechnen lassen.</li>
+  <li><b>Future:</b> ein Platzhalter für das spätere Ergebnis. <code>get()</code> wartet darauf und liefert auch die Exception.</li>
+</ol>
+<p>Was ein Thread selbst ist (Zustände, Interrupt), steht auf der Seite <i>Threads</i>. Diese Seite behandelt nur Pools.</p>
+
+<h2>2. Die Reise eines Tasks durch execute() (die Geschichte zum Merken)</h2>
+<svg viewBox="0 0 720 330" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="b" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="10" y="20" width="130" height="50" rx="10" fill="#eee" stroke="#777"/><text x="75" y="50" text-anchor="middle" font-weight="700">execute(task)</text>
+  <line x1="140" y1="45" x2="188" y2="45" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="190" y="20" width="170" height="50" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="275" y="42" text-anchor="middle" font-weight="700">1. Threads &lt; core?</text><text x="275" y="60" text-anchor="middle" font-size="12">ja → neuer Thread</text>
+  <line x1="275" y1="70" x2="275" y2="108" stroke="#555" stroke-width="2" marker-end="url(#b)"/><text x="290" y="94" font-size="12">nein</text>
+  <rect x="190" y="110" width="170" height="50" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="275" y="132" text-anchor="middle" font-weight="700">2. Queue.offer ok?</text><text x="275" y="150" text-anchor="middle" font-size="12">ja → wartet in Queue</text>
+  <line x1="275" y1="160" x2="275" y2="198" stroke="#555" stroke-width="2" marker-end="url(#b)"/><text x="290" y="184" font-size="12">nein (voll)</text>
+  <rect x="190" y="200" width="170" height="50" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="275" y="222" text-anchor="middle" font-weight="700">3. Threads &lt; max?</text><text x="275" y="240" text-anchor="middle" font-size="12">ja → neuer Thread</text>
+  <line x1="275" y1="250" x2="275" y2="278" stroke="#555" stroke-width="2" marker-end="url(#b)"/><text x="290" y="270" font-size="12">nein</text>
+  <rect x="190" y="280" width="170" height="44" rx="10" fill="#fff4f2" stroke="#c62828"/><text x="275" y="307" text-anchor="middle" font-weight="700">4. Rejection</text>
+  <rect x="440" y="20" width="270" height="70" rx="10" fill="#0a66c2"/><text x="575" y="44" text-anchor="middle" fill="#fff" font-weight="700">5. Worker-Schleife</text><text x="575" y="64" text-anchor="middle" fill="#fff" font-size="12">Task ausführen, dann queue.take()</text><text x="575" y="80" text-anchor="middle" fill="#fff" font-size="12">beforeExecute / afterExecute</text>
+  <line x1="360" y1="45" x2="438" y2="50" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <line x1="360" y1="225" x2="438" y2="80" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="440" y="140" width="270" height="70" rx="10" fill="#e8f5e9" stroke="#2e7d32"/><text x="575" y="164" text-anchor="middle" font-weight="700">6. Leerlauf</text><text x="575" y="184" text-anchor="middle" font-size="12">Thread über core und länger</text><text x="575" y="200" text-anchor="middle" font-size="12">als keepAliveTime leer → stirbt</text>
+  <line x1="575" y1="90" x2="575" y2="138" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+</svg>
+<ol>
+  <li><b>Unter Core:</b> Es laufen weniger als <code>corePoolSize</code> Threads. Der Pool startet einen <b>neuen Thread</b>, auch wenn andere frei sind.</li>
+  <li><b>Queue zuerst:</b> Sind alle Core-Threads da, kommt der Task in die <b>Queue</b>. Der Pool wächst noch nicht.</li>
+  <li><b>Queue voll:</b> Erst jetzt startet der Pool Threads bis <code>maximumPoolSize</code>. Diese Reihenfolge überrascht viele.</li>
+  <li><b>Alles voll:</b> Kein Platz in Queue und Pool. Der <b>Rejection Handler</b> entscheidet. Standard: <code>AbortPolicy</code> wirft <code>RejectedExecutionException</code>.</li>
+  <li><b>Worker-Schleife:</b> Ein Worker führt seinen ersten Task aus. Danach holt er den nächsten aus der Queue.</li>
+  <li><b>Leerlauf:</b> Threads über der Core-Grösse sterben nach <code>keepAliveTime</code> ohne Arbeit. Mit <code>allowCoreThreadTimeOut(true)</code> gilt das auch für Core-Threads.</li>
+</ol>
+<p>Core-Threads entstehen standardmässig erst beim ersten Task (<b>lazy</b>). <code>prestartAllCoreThreads()</code> startet sie sofort.</p>
+
+<h2>3. Beispiel: Pool füllen, Rejection, Shutdown, ForkJoin</h2>
+<pre>ThreadPoolExecutor p = new ThreadPoolExecutor(2, 4, 30, SECONDS,
+    new ArrayBlockingQueue&lt;&gt;(2), new ThreadPoolExecutor.AbortPolicy());
+for (int i = 1; i &lt;= 7; i++) p.execute(() -&gt; sleep(500));   // 1) füllen
+// 2) CallerRunsPolicy: core=1, max=1, Queue 1, drei Tasks
+// 3) new ThreadPoolExecutor(2, 10, ..., new LinkedBlockingQueue&lt;&gt;()) + 100 Tasks
+// 4) Executors.newFixedThreadPool(1).submit(() -&gt; { throw new IllegalStateException("boom"); })
+// 5) CompletableFuture.supplyAsync(...) ohne und mit eigenem Executor</pre>
+<pre>task 1 accepted: pool=1 queue=0
+task 2 accepted: pool=2 queue=0
+task 3 accepted: pool=2 queue=1
+task 4 accepted: pool=2 queue=2
+task 5 accepted: pool=3 queue=2
+task 6 accepted: pool=4 queue=2
+task 7 REJECTED: RejectedExecutionException
+awaitTermination: true completed=6
+CallerRuns task 3 on main
+CallerRuns task 1 on pool-2-thread-1
+CallerRuns task 2 on pool-2-thread-1
+LinkedBlockingQueue: pool=2 queue=98 (max=10 never reached)
+submit(): exception only via get(): java.lang.IllegalStateException: boom
+supplyAsync ran on ForkJoinPool.commonPool-worker-1
+with executor ran on pool-4-thread-1
+commonPool parallelism=15 cpus=16</pre>
+<p class="small">Echte Ausgabe, Oracle JDK 17.0.3 (Windows, 16 logische CPUs). Das Verhalten von ThreadPoolExecutor ist in Java 21 und 25 gleich dokumentiert.</p>
+<ol>
+  <li>Tasks 1–2 starten Core-Threads. Tasks 3–4 gehen in die Queue. Erst Tasks 5–6 starten Threads 3 und 4.</li>
+  <li>Task 7 findet keinen Platz: <b>AbortPolicy</b> wirft die Exception. Die anderen 6 Tasks laufen fertig.</li>
+  <li><b>CallerRunsPolicy:</b> Task 3 läuft im Thread <code>main</code>. Der Aufrufer ist damit kurz beschäftigt und schickt nichts Neues: <b>Backpressure</b>.</li>
+  <li>Mit unbegrenzter <code>LinkedBlockingQueue</code> bleibt der Pool bei 2 Threads. 98 Tasks warten. <code>max=10</code> hat keine Wirkung.</li>
+  <li><code>submit()</code> verpackt die Exception im Future. Ohne <code>get()</code> sieht sie niemand.</li>
+  <li><code>supplyAsync</code> ohne Executor nutzt den <b>Common Pool</b>. Seine Parallelität ist hier CPUs − 1 = 15.</li>
+</ol>
+<pre>// Shutdown: 2 Threads, 5 Tasks à 2 s
+p.shutdown();  p.submit(...);              // neuer Task nach shutdown()
+p.awaitTermination(500, MILLISECONDS);
+List&lt;Runnable&gt; never = p.shutdownNow();</pre>
+<pre>after shutdown(): submit rejected
+awaitTermination(500ms)=false
+task 2 interrupted
+task 1 interrupted
+shutdownNow(): 3 tasks never started
+awaitTermination=true isTerminated=true</pre>
+<p class="small">Echte Ausgabe, Oracle JDK 17.0.3.</p>
+<ol>
+  <li><code>shutdown()</code> nimmt nichts Neues mehr an, lässt aber laufende und wartende Tasks fertig laufen.</li>
+  <li><code>shutdownNow()</code> unterbricht laufende Tasks per <b>Interrupt</b> und gibt die nie gestarteten Tasks zurück.</li>
+</ol>
+<pre>// ForkJoinPool(4): Summe über 10 Mio. Zahlen, Schwelle 10'000 Elemente
+left.fork();  return right.compute() + left.join();</pre>
+<pre>sum=49999995000000
+parallelism=4 steals=5</pre>
+<p class="small">Echte Ausgabe, Oracle JDK 17.0.3. <code>steals</code> zählt Tasks, die ein Worker aus einer fremden Deque geholt hat.</p>
+
+<h2>4. Details, die Interviewer fragen</h2>
+<ol>
+  <li><b>Die sieben Parameter:</b> <code>corePoolSize</code>, <code>maximumPoolSize</code>, <code>keepAliveTime</code> + <code>TimeUnit</code>, <code>workQueue</code>, <code>threadFactory</code>, <code>handler</code>. Fixe Grösse: core = max.</li>
+  <li><b>Queue-Wahl:</b>
+    <ul>
+      <li><b>SynchronousQueue:</b> speichert nichts, gibt den Task direkt an einen Thread (<b>direct handoff</b>). Braucht ein grosses max, sonst Rejection.</li>
+      <li><b>LinkedBlockingQueue ohne Grenze:</b> max ist wirkungslos. Die Queue kann ohne Ende wachsen.</li>
+      <li><b>ArrayBlockingQueue (begrenzt):</b> schützt vor Ressourcen-Erschöpfung. Schwerer zu tunen, aber die richtige Wahl für Produktion.</li>
+      <li><b>PriorityBlockingQueue:</b> Tasks nach Priorität. Unbegrenzt, darum gleiche Gefahr wie LinkedBlockingQueue.</li>
+    </ul></li>
+  <li><b>Rejection Policies:</b>
+    <ul>
+      <li><b>AbortPolicy</b> (Standard): wirft <code>RejectedExecutionException</code>.</li>
+      <li><b>CallerRunsPolicy:</b> der Aufrufer-Thread führt den Task selbst aus. Einfache Backpressure.</li>
+      <li><b>DiscardPolicy:</b> verwirft still. Nur, wenn das Ergebnis egal ist.</li>
+      <li><b>DiscardOldestPolicy:</b> wirft den ältesten wartenden Task weg und versucht es erneut. Laut Doku „selten akzeptabel".</li>
+    </ul></li>
+  <li><b>Executors-Fabriken:</b>
+    <ul>
+      <li><code>newFixedThreadPool(n)</code>: n Threads, <b>unbegrenzte</b> Queue.</li>
+      <li><code>newCachedThreadPool()</code>: SynchronousQueue, Threads ohne Grenze, Leerlauf-Threads sterben nach 60 Sekunden.</li>
+      <li><code>newSingleThreadExecutor()</code>: ein Thread, unbegrenzte Queue, garantierte Reihenfolge.</li>
+      <li><code>newScheduledThreadPool(n)</code>: verzögerte und periodische Tasks.</li>
+      <li><code>newWorkStealingPool()</code>: ein ForkJoinPool.</li>
+      <li><code>newVirtualThreadPerTaskExecutor()</code> (Java 21): ein neuer Virtual Thread pro Task, kein Pool.</li>
+    </ul></li>
+  <li><b>execute vs submit:</b> <code>execute</code> lässt eine Exception zum <b>UncaughtExceptionHandler</b> durch. <code>submit</code> speichert sie im Future. Wer <code>get()</code> nie aufruft, verliert sie.</li>
+  <li><b>invokeAll / invokeAny:</b> <code>invokeAll</code> wartet auf alle Tasks. <code>invokeAny</code> liefert das erste erfolgreiche Ergebnis und bricht den Rest ab.</li>
+  <li><b>Shutdown-Muster:</b> <code>shutdown()</code>, dann <code>awaitTermination(timeout)</code>, dann bei Bedarf <code>shutdownNow()</code>. Tasks müssen auf Interrupt reagieren, sonst hilft <code>shutdownNow()</code> nicht.</li>
+  <li><b>close() (Java 19):</b> <code>ExecutorService</code> ist <code>AutoCloseable</code>. <code>close()</code> ruft <code>shutdown()</code> und wartet, bis alles fertig ist. Damit geht try-with-resources.</li>
+  <li><b>Hooks:</b> <code>beforeExecute</code> und <code>afterExecute</code> eignen sich für Metriken, MDC-Kontext und ThreadLocal-Aufräumen. <code>terminated()</code> läuft am Ende.</li>
+  <li><b>ForkJoinPool:</b> Jeder Worker hat eine eigene <b>Deque</b> (Warteschlange mit zwei Enden). Freie Worker stehlen Tasks aus fremden Deques: <b>Work Stealing</b>. Gut für rekursiv geteilte Arbeit (<code>RecursiveTask</code>).</li>
+  <li><b>Common Pool:</b> Ein JVM-weiter ForkJoinPool. Ihn nutzen Parallel Streams und <code>CompletableFuture</code>-Async-Methoden ohne Executor. Grösse per Property <code>java.util.concurrent.ForkJoinPool.common.parallelism</code>, laut Java-25-Doku besser per <code>setParallelism</code>.</li>
+  <li><b>ManagedBlocker:</b> Blockiert ein ForkJoin-Task auf I/O, kann der Pool mit <code>ForkJoinPool.managedBlock</code> Ersatz-Threads starten. Ohne das garantiert er nichts.</li>
+  <li><b>CompletableFuture und Pools:</b> <code>thenApply</code> (ohne Async) läuft im Thread, der die Stufe abschliesst. Oder im Aufrufer, falls schon fertig. <code>thenApplyAsync</code> ohne Executor springt in den Common Pool. Details zur Komposition: Seite <i>CompletableFuture</i>.</li>
+  <li><b>Timeouts:</b> <code>orTimeout</code> und <code>completeOnTimeout</code> gibt es seit Java 9. <code>future.get(timeout)</code> bricht den Task nicht ab, es wartet nur nicht länger.</li>
+  <li><b>ForkJoinPool als Scheduler (Java 25):</b> ForkJoinPool implementiert jetzt auch <code>ScheduledExecutorService</code> (<code>schedule</code>, <code>scheduleAtFixedRate</code>).</li>
+</ol>
+
+<h2>5. Vergleich</h2>
+<ul>
+  <li><b>new Thread() pro Task:</b> keine Grenze, teuer, kein Rückgabewert. Nur für einzelne, lange Hintergrund-Threads.</li>
+  <li><b>ThreadPoolExecutor:</b> volle Kontrolle über Grössen, Queue und Rejection. Standard für Platform Threads.</li>
+  <li><b>Executors.newFixedThreadPool:</b> bequem, aber unbegrenzte Queue. In Produktion lieber selbst bauen.</li>
+  <li><b>ScheduledThreadPoolExecutor:</b> für Timer und periodische Jobs. Ersetzt <code>java.util.Timer</code>, der bei einer Exception ganz stirbt.</li>
+  <li><b>ForkJoinPool:</b> Work Stealing für teilbare CPU-Arbeit. Schlecht für blockierende I/O.</li>
+  <li><b>Virtual-Thread-Executor (Java 21):</b> ein Thread pro Task, praktisch ohne Grenze. Für viele blockierende I/O-Tasks. Begrenzung über <code>Semaphore</code>. Siehe Seite <i>Virtual Threads</i>.</li>
+  <li><b>Spring <code>ThreadPoolTaskExecutor</code>:</b> eine Hülle um ThreadPoolExecutor mit Lifecycle im Spring-Kontext.</li>
+</ul>
+
+<h2>6. In der Produktion</h2>
+<ol>
+  <li><b>Unbegrenzte Queue frisst den Heap:</b> <code>newFixedThreadPool</code> nimmt unter Last immer weiter an. Die Latenz steigt, am Ende kommt <code>OutOfMemoryError</code>. Lösung: begrenzte Queue plus bewusste Rejection Policy.</li>
+  <li><b>Thread-Explosion:</b> <code>newCachedThreadPool</code> startet bei langsamen Downstreams Tausende Threads. Ergebnis: <code>unable to create native thread</code>. Lösung: Grenze setzen.</li>
+  <li><b>Common Pool blockiert:</b> Blockierende I/O in <code>supplyAsync</code> ohne Executor oder in Parallel Streams belegt den Common Pool. Andere Teile der App stehen dann. Lösung: eigener Executor für I/O.</li>
+  <li><b>Pool-Deadlock (Starvation):</b> Ein Task wartet mit <code>get()</code> auf einen Unter-Task im <b>selben</b> vollen Pool. Alle Threads warten, niemand arbeitet. Lösung: getrennte Pools oder nicht blockierend komponieren.</li>
+  <li><b>Verschluckte Exceptions:</b> Ein <code>submit</code>-Task scheitert, niemand ruft <code>get()</code>. Lösung: Exception im Task loggen oder <code>afterExecute</code> nutzen.</li>
+  <li><b>Hänger beim Herunterfahren:</b> Nicht-Daemon-Threads eines nie geschlossenen Pools halten die JVM am Leben. Lösung: Pool im Lifecycle schliessen (z. B. <code>@PreDestroy</code>, try-with-resources).</li>
+  <li><b>ThreadLocal-Leck:</b> Pool-Threads leben lange. Ein vergessenes <code>ThreadLocal.remove()</code> trägt Daten in den nächsten Task. Lösung: im <code>finally</code> oder in <code>afterExecute</code> aufräumen.</li>
+  <li><b>Falsche Grösse im Container:</b> Die JVM sieht das CPU-Limit des Containers. Ein Pool mit fixer Grösse 200 auf 1 CPU erzeugt viel Kontextwechsel. Lösung: Grösse aus Messung und <code>availableProcessors()</code> ableiten.</li>
+</ol>
+
+<h2>7. Diagnose: Werkzeuge und Befehle</h2>
+<ul>
+  <li><b>Pool-Metriken:</b> <code>getPoolSize()</code>, <code>getActiveCount()</code>, <code>getQueue().size()</code>, <code>getCompletedTaskCount()</code>. Als Gauge exportieren (z. B. Micrometer <code>ExecutorServiceMetrics</code>).</li>
+  <li><b>Thread Dump</b> (<code>jcmd &lt;pid&gt; Thread.print</code>): alle Worker in <code>WAITING</code> bei <code>LinkedBlockingQueue.take</code> = Pool leer. Alle in <code>Future.get</code> = möglicher Pool-Deadlock. Siehe Seite <i>Thread Dumps</i>.</li>
+  <li><b>Sprechende Thread-Namen</b> über eine eigene ThreadFactory, z. B. <code>report-worker-3</code>. Sonst steht im Dump nur <code>pool-7-thread-3</code>.</li>
+  <li><b>JFR:</b> Events <code>jdk.ThreadPark</code> (warten in der Queue), <code>jdk.JavaMonitorEnter</code>, <code>jdk.ThreadStart</code>. Siehe Seite <i>Profiling</i>.</li>
+  <li><b>Rejection zählen:</b> eigener Handler, der loggt und eine Metrik erhöht, dann die Standard-Policy aufruft.</li>
+  <li><b>ForkJoinPool:</b> <code>getStealCount()</code>, <code>getQueuedTaskCount()</code>, <code>toString()</code> zeigt Zustand und Zähler.</li>
+</ul>
+
+<h2>8. Senior-Punkte</h2>
+<div class="senior">
+<ol>
+  <li><b>Jede Queue braucht eine Grenze,</b> und jede Grenze braucht eine Antwort auf „voll". Rejection ist Teil des API-Vertrags, kein Bug.</li>
+  <li><b>Pool-Grösse ist Messung, nicht Formel.</b> Startpunkt CPU-Arbeit: etwa Anzahl Kerne. Startpunkt I/O: Kerne × (1 + Wartezeit / Rechenzeit). Danach unter Last messen.</li>
+  <li><b>Bulkhead:</b> getrennte Pools pro Downstream. Ein langsamer Dienst blockiert dann nur seinen Pool, nicht die ganze App.</li>
+  <li><b>CallerRunsPolicy ist einfache Backpressure.</b> Aber sie blockiert den Aufrufer. Im Event-Loop- oder Kafka-Consumer-Thread kann das schaden.</li>
+  <li><b>Kein blockierender Code im Common Pool.</b> Für I/O immer einen eigenen Executor an <code>*Async</code>-Methoden übergeben.</li>
+  <li><b>Ab Java 21 ändert sich die Frage:</b> Für viele blockierende I/O-Tasks sind Virtual Threads oft einfacher als ein fein getunter Pool. Pools bleiben für CPU-Arbeit und als Grenze für knappe Ressourcen.</li>
+  <li><b>Shutdown ist Pflicht:</b> geordnet mit Timeout, Tasks müssen Interrupts beachten. Sonst hängen Deployments.</li>
+</ol>
+</div>
+
+<h2>9. Aus dem Projekt</h2>
+<p>„Eine eigene ThreadPoolExecutor-Konfiguration ist in meinen Projekten nicht dokumentiert. Das nächste echte Beispiel für Backpressure: Bei MATCH startet ein .NET-Worker Spark-Jobs nur, wenn Arbeit wartet, und Nachrichten werden atomar geclaimt." <span class="small">(Prüfen und durch dein echtes Beispiel ersetzen.)</span></p>
+
+<h2>10. Fallen</h2>
+<div class="trap">
+<ul>
+  <li>„Der Pool wächst bis max, bevor er Tasks in die Queue stellt." → <b>Falsch.</b> Erst Queue, dann max. Mit unbegrenzter Queue wird max nie erreicht.</li>
+  <li>„<code>newFixedThreadPool</code> ist sicher, weil er begrenzt ist." → <b>Nur die Threads.</b> Die Queue ist unbegrenzt.</li>
+  <li>„<code>shutdown()</code> bricht laufende Tasks ab." → <b>Falsch.</b> Das macht <code>shutdownNow()</code>, und auch nur per Interrupt.</li>
+  <li>„Exceptions in <code>submit</code>-Tasks erscheinen im Log." → <b>Falsch.</b> Sie stecken im Future, bis jemand <code>get()</code> aufruft.</li>
+  <li>„<code>future.get(5, SECONDS)</code> stoppt den Task nach 5 Sekunden." → <b>Falsch.</b> Nur das Warten endet. Abbrechen mit <code>cancel(true)</code>.</li>
+  <li>„Virtual Threads sollte man in einen Pool stecken." → <b>Falsch.</b> Laut JEP 444 nie poolen. Begrenzen mit <code>Semaphore</code>.</li>
+  <li>„<code>thenApplyAsync</code> läuft im selben Pool wie die vorige Stufe." → <b>Falsch.</b> Ohne Executor-Argument immer im Common Pool.</li>
+</ul>
+</div>
+
+<h2>11. Fragen</h2>
+<details><summary>Was ist ein ExecutorService?</summary><p>Ein Dienst, der Tasks annimmt und auf wiederverwendeten Threads ausführt. Er liefert Futures und hat einen Lifecycle mit shutdown.</p></details>
+<details><summary>Warum Thread Pools statt new Thread()?</summary><p>Threads sind teuer zu erzeugen. Ein Pool verwendet sie wieder und begrenzt ihre Zahl. So schützt er Speicher und CPU.</p></details>
+<details><summary>Welche Parameter hat ThreadPoolExecutor?</summary><p>corePoolSize, maximumPoolSize, keepAliveTime mit TimeUnit, workQueue, threadFactory und RejectedExecutionHandler.</p></details>
+<details><summary>In welcher Reihenfolge wächst ein ThreadPoolExecutor?</summary><p>Erst Threads bis core, dann die Queue füllen, dann Threads bis max. Danach Rejection.</p></details>
+<details><summary>Warum erreicht ein Pool mit LinkedBlockingQueue nie maximumPoolSize?</summary><p>Die unbegrenzte Queue ist nie voll. Neue Threads über core entstehen aber nur bei voller Queue.</p></details>
+<details><summary>Welche Queue wählen Sie für Produktion?</summary><p>Eine begrenzte, z. B. ArrayBlockingQueue. Dazu eine bewusste Rejection Policy und Metriken für die Queue-Länge.</p></details>
+<details><summary>Was ist eine SynchronousQueue?</summary><p>Eine Queue ohne Kapazität. Sie übergibt den Task direkt an einen freien Thread. newCachedThreadPool nutzt sie.</p></details>
+<details><summary>Welche Rejection Policies gibt es?</summary><p>AbortPolicy (Exception, Standard), CallerRunsPolicy (Aufrufer rechnet selbst), DiscardPolicy (still verwerfen), DiscardOldestPolicy (ältesten wegwerfen, neu versuchen).</p></details>
+<details><summary>Warum ist CallerRunsPolicy eine Form von Backpressure?</summary><p>Der Aufrufer muss den Task selbst ausführen. In dieser Zeit schickt er keine neuen Tasks. So bremst er sich selbst.</p></details>
+<details><summary>Was ist an Executors.newFixedThreadPool riskant?</summary><p>Die Queue ist unbegrenzt. Unter Dauerlast wächst sie, bis Latenz und Heap explodieren.</p></details>
+<details><summary>Was ist an newCachedThreadPool riskant?</summary><p>Die Thread-Zahl hat keine Grenze. Bei langsamen Downstreams entstehen Tausende Threads.</p></details>
+<details><summary>execute() oder submit()?</summary><p>execute gibt nichts zurück, Exceptions gehen zum UncaughtExceptionHandler. submit liefert ein Future, die Exception steckt darin.</p></details>
+<details><summary>Was ist der Unterschied zwischen shutdown() und shutdownNow()?</summary><p>shutdown nimmt nichts Neues an und lässt alles fertig laufen. shutdownNow unterbricht laufende Tasks und gibt die wartenden zurück.</p></details>
+<details><summary>Wie fahren Sie einen Pool sauber herunter?</summary><p>shutdown, dann awaitTermination mit Timeout, dann shutdownNow. Seit Java 19 auch close() mit try-with-resources.</p></details>
+<details><summary>Was macht keepAliveTime?</summary><p>Threads über der Core-Grösse sterben nach dieser Leerlaufzeit. Mit allowCoreThreadTimeOut(true) auch Core-Threads.</p></details>
+<details><summary>Wofür braucht man eine eigene ThreadFactory?</summary><p>Für sprechende Namen, Daemon-Status und einen UncaughtExceptionHandler. Namen machen Thread Dumps lesbar.</p></details>
+<details><summary>Wie gross machen Sie einen Pool?</summary><p>CPU-Arbeit: etwa Anzahl Kerne. I/O: mehr, grob Kerne × (1 + Wartezeit / Rechenzeit). Dann unter Last messen.</p></details>
+<details><summary>Was ist Work Stealing?</summary><p>Jeder ForkJoin-Worker hat eine eigene Deque. Ein freier Worker holt Tasks aus der Deque eines anderen. So bleiben alle Kerne beschäftigt.</p></details>
+<details><summary>Wann ForkJoinPool statt ThreadPoolExecutor?</summary><p>Für rekursiv teilbare CPU-Arbeit mit fork und join. Für blockierende I/O ist er ungeeignet.</p></details>
+<details><summary>Was ist der Common Pool?</summary><p>Ein JVM-weiter ForkJoinPool. Ihn nutzen Parallel Streams und CompletableFuture-Async-Methoden ohne Executor. Im Beispiel oben hatte er CPUs − 1 = 15 Threads.</p></details>
+<details><summary>Wo läuft thenApply und wo thenApplyAsync?</summary><p>thenApply läuft im Thread, der die vorige Stufe abschliesst, oder im Aufrufer. thenApplyAsync ohne Executor läuft im Common Pool.</p></details>
+<details><summary>Warum sollte man supplyAsync einen Executor geben?</summary><p>Ohne Executor läuft blockierende Arbeit im Common Pool. Das bremst Parallel Streams und andere Async-Aufrufe der ganzen JVM.</p></details>
+<details><summary>Was ist ein Pool-Deadlock?</summary><p>Tasks warten mit get() auf Unter-Tasks im selben vollen Pool. Die Unter-Tasks finden keinen Thread. Alles steht.</p></details>
+<details><summary>Bricht future.get(timeout) den Task ab?</summary><p>Nein. Es wirft TimeoutException und wartet nicht weiter. Abbrechen geht mit cancel(true), das den Thread unterbricht.</p></details>
+<details><summary>Wofür sind beforeExecute und afterExecute?</summary><p>Hooks um jeden Task: Metriken, Logging-Kontext setzen, ThreadLocals aufräumen, Exceptions loggen.</p></details>
+<details><summary>Soll man Virtual Threads poolen?</summary><p>Nein. Sie sind billig, pro Task ein neuer. Zum Begrenzen eines knappen Downstreams eine Semaphore nutzen.</p></details>
+<details><summary>Was hat sich in Java 19 und 25 am ExecutorService geändert?</summary><p>Java 19: ExecutorService ist AutoCloseable mit close(). Java 25: ForkJoinPool implementiert auch ScheduledExecutorService.</p></details>
+<details><summary>Szenario: Unter Last steigt die Latenz minutenlang, dann kommt OutOfMemoryError. Der Pool ist newFixedThreadPool(20). Was ist los?</summary><p>Die unbegrenzte Queue wächst, weil Tasks schneller kommen, als 20 Threads sie abarbeiten. Lösung: begrenzte Queue, Rejection mit Fehler oder Backpressure, Queue-Länge als Metrik.</p></details>
+<details><summary>Szenario: Alle Worker eines Pools stehen im Thread Dump in Future.get(). Was vermuten Sie?</summary><p>Einen Pool-Deadlock: Tasks warten auf Unter-Tasks im selben Pool. Lösung: eigener Pool für Unter-Tasks oder nicht blockierend mit thenCompose komponieren.</p></details>
+<details><summary>Szenario: Parallel Streams werden langsam, seit ein Kollege CompletableFuture für HTTP-Aufrufe nutzt. Warum?</summary><p>Die HTTP-Aufrufe blockieren im Common Pool, ohne eigenen Executor. Parallel Streams teilen diesen Pool. Lösung: eigenen I/O-Executor an supplyAsync übergeben oder Virtual Threads nutzen.</p></details>
+
+</body>
+</html>

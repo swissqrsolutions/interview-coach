@@ -1,0 +1,252 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Fall: News-Feed</title>
+<style>
+  body { font: 17px/1.55 -apple-system, system-ui, sans-serif; max-width: 760px; margin: 0 auto; padding: 16px; color: #1d1d1f; }
+  h1 { font-size: 28px; margin: 8px 0 4px; }
+  h2 { font-size: 21px; margin: 32px 0 8px; padding-top: 12px; border-top: 2px solid #e5e5ea; }
+  .kern { background: #eef6ff; border-left: 4px solid #0a66c2; padding: 10px 14px; border-radius: 6px; }
+  .senior { background: #f0faf0; border-left: 4px solid #2e7d32; padding: 10px 14px; border-radius: 6px; }
+  .trap { background: #fff4f2; border-left: 4px solid #c62828; padding: 10px 14px; border-radius: 6px; }
+  code { background: #f2f2f7; padding: 1px 5px; border-radius: 4px; font-size: 15px; }
+  pre { background: #1e1e1e; color: #e6e6e6; padding: 12px; border-radius: 8px; overflow-x: auto; font-size: 13.5px; line-height: 1.45; }
+  svg { width: 100%; height: auto; display: block; margin: 10px 0; }
+  ol li, ul li { margin: 4px 0; }
+  details { border: 1px solid #e5e5ea; border-radius: 8px; padding: 8px 12px; margin: 6px 0; }
+  summary { font-weight: 600; cursor: pointer; }
+  details p { margin: 6px 0 2px; }
+  .small { color: #6e6e73; font-size: 14px; }
+</style>
+</head>
+<body>
+
+<h1>Fall: News-Feed</h1>
+<p class="small">System-Design-Fall · Tier 2 · Quellen: PostgreSQL 17 Docs (LATERAL, Row-Wise Comparison für Keyset-Pagination, Index-Only Scans, EXPLAIN), Redis Docs (Lists, Sorted Sets), Alex Xu „System Design Interview“ Vol. 1 Kap. 11, Kleppmann DDIA Kap. 1 (Twitter-Beispiel: Fan-out)</p>
+
+<div class="kern">
+<b>Kern (die 1-Minuten-Antwort):</b> Ein <b>News-Feed</b> zeigt jedem Nutzer die neuesten Beiträge der Accounts, denen er folgt. Die Kernfrage ist <b>Fan-out</b>: beim Schreiben in jede Follower-Timeline kopieren (<b>Push</b>) oder beim Lesen zusammensuchen (<b>Pull</b>). Die übliche Antwort ist <b>hybrid</b>: Push für normale Accounts, Pull für <b>Prominente</b> mit Millionen Followern. Timelines liegen als ID-Listen im <b>Cache</b>, Inhalte werden separat geladen, Paging läuft über einen <b>Cursor</b>.
+</div>
+
+<h2>1. Wo sitzt was? (Architektur)</h2>
+<svg viewBox="0 0 720 330" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="a" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="10" y="130" width="100" height="60" rx="8" fill="#fff" stroke="#555"/><text x="60" y="156" text-anchor="middle" font-weight="700">Client</text><text x="60" y="175" text-anchor="middle" font-size="12">App</text>
+  <line x1="110" y1="145" x2="168" y2="75" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <line x1="110" y1="175" x2="168" y2="245" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="170" y="40" width="150" height="62" rx="8" fill="#dbe9fb" stroke="#0a66c2"/><text x="245" y="66" text-anchor="middle" font-weight="700">Post-Service</text><text x="245" y="85" text-anchor="middle" font-size="12">POST /posts</text>
+  <rect x="170" y="215" width="150" height="62" rx="8" fill="#dbe9fb" stroke="#0a66c2"/><text x="245" y="241" text-anchor="middle" font-weight="700">Feed-Service</text><text x="245" y="260" text-anchor="middle" font-size="12">GET /feed</text>
+  <line x1="320" y1="71" x2="368" y2="71" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="370" y="40" width="150" height="62" rx="8" fill="#fff" stroke="#555"/><text x="445" y="66" text-anchor="middle" font-weight="700">Posts-DB</text><text x="445" y="85" text-anchor="middle" font-size="12">+ Outbox</text>
+  <line x1="520" y1="71" x2="568" y2="71" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="570" y="40" width="140" height="62" rx="8" fill="#0a66c2" stroke="#0a66c2"/><text x="640" y="66" text-anchor="middle" fill="#fff" font-weight="700">Fan-out-Worker</text><text x="640" y="85" text-anchor="middle" fill="#fff" font-size="12">über Queue</text>
+  <line x1="640" y1="102" x2="640" y2="148" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="570" y="150" width="140" height="62" rx="8" fill="#fff" stroke="#555"/><text x="640" y="176" text-anchor="middle" font-weight="700">Graph-DB/Tabelle</text><text x="640" y="195" text-anchor="middle" font-size="12">follows</text>
+  <rect x="370" y="215" width="150" height="62" rx="8" fill="#e8f5e9" stroke="#2e7d32"/><text x="445" y="241" text-anchor="middle" font-weight="700">Timeline-Cache</text><text x="445" y="260" text-anchor="middle" font-size="12">user → [post_ids]</text>
+  <line x1="570" y1="195" x2="522" y2="230" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <line x1="320" y1="246" x2="368" y2="246" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <line x1="300" y1="215" x2="400" y2="104" stroke="#555" stroke-width="2" stroke-dasharray="5 4" marker-end="url(#a)"/><text x="330" y="160" font-size="11">Inhalte, Promi-Posts</text>
+  <rect x="170" y="290" width="350" height="34" rx="8" fill="#fff" stroke="#999"/><text x="345" y="312" text-anchor="middle" font-size="12">Medien über CDN · Ranking-Service optional</text>
+</svg>
+<ol>
+  <li><b>Post-Service:</b> speichert einen Beitrag und schreibt ein Ereignis in die Outbox. Beispiel: Nutzer 77 postet „Neues Release!“.</li>
+  <li><b>Posts-DB:</b> Wahrheit für Inhalte. Index auf <code>(author_id, created_at DESC)</code> für „neueste Posts eines Autors“.</li>
+  <li><b>Fan-out-Worker:</b> liest Ereignisse aus der Queue und schreibt die Post-ID in die Timelines aller Follower.</li>
+  <li><b>Follows:</b> der Social Graph. Beispiel: Wer folgt Nutzer 77? 55 Follower.</li>
+  <li><b>Timeline-Cache:</b> pro Nutzer eine Liste der neuesten Post-IDs, z. B. in Redis, gekappt auf einige hundert.</li>
+  <li><b>Feed-Service:</b> liest die IDs, mischt Promi-Posts per Pull dazu, lädt Inhalte gebündelt und gibt eine Seite mit Cursor zurück.</li>
+</ol>
+
+<h2>2. Die Reise eines Posts in den Feed (die Geschichte zum Merken)</h2>
+<svg viewBox="0 0 720 300" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="b" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker><marker id="r" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#c62828"/></marker></defs>
+  <rect x="10" y="20" width="160" height="62" rx="10" fill="#eee" stroke="#777"/><text x="90" y="45" text-anchor="middle" font-weight="700">1. Post speichern</text><text x="90" y="65" text-anchor="middle" font-size="12">+ Outbox-Event</text>
+  <line x1="170" y1="51" x2="198" y2="51" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="200" y="20" width="150" height="62" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="275" y="45" text-anchor="middle" font-weight="700">2. Follower zählen</text><text x="275" y="65" text-anchor="middle" font-size="12">Promi? ja / nein</text>
+  <line x1="350" y1="51" x2="378" y2="51" stroke="#555" stroke-width="2" marker-end="url(#b)"/><text x="364" y="42" text-anchor="middle" font-size="11">nein</text>
+  <rect x="380" y="20" width="150" height="62" rx="10" fill="#0a66c2" stroke="#0a66c2"/><text x="455" y="45" text-anchor="middle" fill="#fff" font-weight="700">3. Push</text><text x="455" y="65" text-anchor="middle" fill="#fff" font-size="12">in N Timelines</text>
+  <path d="M275,82 C275,120 120,120 120,148" fill="none" stroke="#c62828" stroke-width="2" stroke-dasharray="6 4" marker-end="url(#r)"/><text x="200" y="118" fill="#c62828" font-size="11">ja</text>
+  <rect x="10" y="150" width="220" height="62" rx="10" fill="#fff4f2" stroke="#c62828"/><text x="120" y="175" text-anchor="middle" fill="#c62828" font-weight="700">3b. Kein Push</text><text x="120" y="195" text-anchor="middle" fill="#c62828" font-size="12">Post bleibt beim Autor</text>
+  <rect x="270" y="150" width="200" height="62" rx="10" fill="#e8f5e9" stroke="#2e7d32"/><text x="370" y="175" text-anchor="middle" font-weight="700">4. Feed lesen</text><text x="370" y="195" text-anchor="middle" font-size="12">Timeline-IDs + Promi-Pull</text>
+  <line x1="455" y1="82" x2="400" y2="148" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <line x1="230" y1="181" x2="268" y2="181" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <line x1="470" y1="181" x2="508" y2="181" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="510" y="150" width="200" height="62" rx="10" fill="#fff" stroke="#555"/><text x="610" y="175" text-anchor="middle" font-weight="700">5. Mischen, Hydrate</text><text x="610" y="195" text-anchor="middle" font-size="12">Inhalte per Batch laden</text>
+  <line x1="610" y1="212" x2="610" y2="238" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="270" y="240" width="440" height="50" rx="10" fill="#e8f5e9" stroke="#2e7d32"/><text x="490" y="270" text-anchor="middle" font-weight="700">6. Seite + Cursor (created_at, id) an den Client</text>
+</svg>
+<ol>
+  <li><b>Post speichern:</b> Nutzer 77 postet. Post und Outbox-Event gehen in eine Transaktion.</li>
+  <li><b>Follower zählen:</b> Der Worker prüft: 55 Follower, kein Promi. Ein Promi wäre z. B. über 100 000 Follower.</li>
+  <li><b>Push:</b> Der Worker schreibt die Post-ID in 55 Timelines. In Blöcken, damit ein Absturz nur einen Block wiederholt.</li>
+  <li><b>Promi:</b> Nutzer 1 hat Millionen Follower. Sein Post wird <b>nicht</b> kopiert. Er bleibt nur in seiner eigenen Liste.</li>
+  <li><b>Feed lesen:</b> Nutzer 42 öffnet die App. Der Service liest seine Timeline-IDs und holt die neuesten Posts der Promis, denen 42 folgt.</li>
+  <li><b>Mischen und Hydrate:</b> Beide Listen werden nach Zeit gemischt. Inhalte, Autoren und Like-Zahlen kommen per Batch-Lookup.</li>
+  <li><b>Seite zurück:</b> 20 Einträge und ein Cursor aus <code>(created_at, id)</code> des letzten Eintrags.</li>
+</ol>
+
+<h2>3. Beispiel: API, Datenmodell und die Queries laut gesagt</h2>
+<p><b>API:</b></p>
+<pre>POST /v1/posts                 {body, media[]}  (Idempotency-Key) → 201 {postId}
+GET  /v1/feed?limit=20&amp;cursor=… → {items[], nextCursor}
+POST /v1/users/{id}/follow     → 204
+DELETE /v1/users/{id}/follow   → 204</pre>
+<p><b>Datenmodell:</b></p>
+<pre>CREATE TABLE follows (
+  follower_id bigint NOT NULL,
+  followee_id bigint NOT NULL,
+  PRIMARY KEY (follower_id, followee_id)
+);
+CREATE INDEX follows_followee_idx ON follows (followee_id);
+CREATE TABLE posts (
+  id         bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  author_id  bigint NOT NULL,
+  body       text   NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX posts_author_time_idx ON posts (author_id, created_at DESC, id DESC);
+CREATE TABLE feed_items (              -- materialisierte Timeline (Push)
+  user_id    bigint NOT NULL,
+  created_at timestamptz NOT NULL,
+  post_id    bigint NOT NULL,
+  PRIMARY KEY (user_id, created_at, post_id)
+);</pre>
+<p><b>Query 1 (Pull), laut gesagt:</b> „Für jeden Account, dem 42 folgt, hole ich per LATERAL die 20 neuesten Posts über den Index. Dann sortiere ich alles und nehme 20.“</p>
+<pre>EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY ON)
+SELECT p.id, p.author_id, p.created_at
+FROM follows f
+JOIN LATERAL (SELECT id, author_id, created_at FROM posts
+              WHERE author_id = f.followee_id
+              ORDER BY created_at DESC, id DESC LIMIT 20) p ON true
+WHERE f.follower_id = 42
+ORDER BY p.created_at DESC, p.id DESC
+LIMIT 20;
+ Limit (actual rows=20 loops=1)
+   -&gt;  Sort (actual rows=20 loops=1)
+         Sort Method: top-N heapsort  Memory: 27kB
+         -&gt;  Nested Loop (actual rows=1010 loops=1)
+               -&gt;  Index Only Scan using follows_pkey on follows f (actual rows=51 loops=1)
+               -&gt;  Limit (actual rows=20 loops=51)
+                     -&gt;  Index Only Scan using posts_author_time_idx on posts (actual rows=20 loops=51)
+ Planning Time: 0.791 ms
+ Execution Time: 6.023 ms</pre>
+<p><b>Query 2 (Push), laut gesagt:</b> „Beim Posten schreibe ich die ID in alle Follower-Timelines. Ich messe einen normalen Account und einen Promi.“</p>
+<pre>WITH new_post AS (
+  INSERT INTO posts (author_id, body) VALUES (77, 'Neues Release!')
+  RETURNING id, author_id, created_at)
+INSERT INTO feed_items (user_id, created_at, post_id)
+SELECT f.follower_id, n.created_at, n.id
+FROM new_post n JOIN follows f ON f.followee_id = n.author_id;
+INSERT 0 56
+Time: 14.096 ms
+-- gleiche Query für author_id = 1 (Promi):
+INSERT 0 9999
+Time: 95.769 ms</pre>
+<p><b>Query 3 (Feed lesen), laut gesagt:</b> „Die materialisierte Timeline ist ein Range-Scan über den Primary Key. Die nächste Seite bekommt den Cursor als Zeilenvergleich.“</p>
+<pre>SELECT post_id, created_at FROM feed_items
+WHERE user_id = 42
+ORDER BY created_at DESC, post_id DESC LIMIT 20;
+ post_id |          created_at
+---------+-------------------------------
+  300002 | 2026-11-24 15:22:00.9945+00
+  300001 | 2026-11-24 15:22:00.980287+00
+-- nächste Seite:
+-- ... AND (created_at, post_id) &lt; ('2026-11-24 15:22:00.980287+00', 300001)</pre>
+<p class="small">Echte Ausgabe, PostgreSQL 17.12 (Schema <code>demo_news_feed</code>, 10 000 Nutzer, ca. 50 Follows pro Nutzer, 300 000 Posts, ein Promi mit 9 999 Followern; danach gelöscht). Plan gekürzt (Index Cond, Heap Fetches).</p>
+<ol>
+  <li><b>Pull kostet beim Lesen:</b> 51 Index-Lookups und 1010 Zeilen für eine Seite: 6 ms. Bei 1000 Follows wären es 1000 Lookups pro Feed-Aufruf.</li>
+  <li><b>Push kostet beim Schreiben:</b> 56 Zeilen in 14 ms, aber 9 999 Zeilen in 96 ms für den Promi. Bei 10 Mio. Followern wären es 10 Mio. Writes für einen Post.</li>
+  <li><b>Lesen der Timeline:</b> ein Range-Scan, sehr billig. Darum lohnt Push für die vielen normalen Accounts.</li>
+  <li><b>Keyset statt OFFSET:</b> Der Cursor <code>(created_at, post_id)</code> ist stabil, auch wenn neue Posts oben dazukommen.</li>
+</ol>
+
+<h2>4. Details, die Interviewer fragen</h2>
+<ol>
+  <li><b>Anforderungen:</b> Posten, Folgen, Feed chronologisch oder gerankt, Medien, Likes. Nicht-funktional: Feed p99 unter 200 ms, neue Posts nach Sekunden sichtbar, Lesen dominiert.</li>
+  <li><b>Schätzung:</b> 10 Mio. DAU, 10 Feed-Aufrufe pro Tag = 100 Mio. pro Tag ≈ <b>1150/s</b>, Spitze ca. 5000/s. 1 Mio. Posts pro Tag ≈ 12/s.</li>
+  <li><b>Fan-out-Kosten:</b> Bei 200 Followern im Schnitt sind 1 Mio. Posts 200 Mio. Timeline-Writes pro Tag ≈ <b>2300/s</b>. Das ist machbar; die Promis sind das Problem.</li>
+  <li><b>Timeline-Speicher:</b> 10 Mio. Nutzer × 800 IDs × 8 Bytes ≈ 64 GB plus Overhead. Das passt in einen Redis-Cluster. Inaktive Nutzer bekommen keine Timeline; sie wird beim Login aus Pull gebaut.</li>
+  <li><b>Hybrid-Schwelle:</b> Ab z. B. 100 000 Followern kein Push. Die Schwelle ist ein Tuning-Wert, kein Naturgesetz.</li>
+  <li><b>Hydration:</b> Die Timeline speichert nur IDs. Inhalte kommen per Batch-Lookup (<code>WHERE id = ANY($1)</code>) aus Cache oder DB. So bleibt eine Bearbeitung des Posts überall aktuell.</li>
+  <li><b>Löschen und Entfolgen:</b> Die ID bleibt in fremden Timelines. Beim Lesen filtert der Service gelöschte Posts und entfolgte Autoren heraus. Ein Job räumt später auf.</li>
+  <li><b>Ranking:</b> Statt Zeit sortiert ein Modell nach Relevanz (Interaktionen, Alter, Beziehung). Dann ist der Cursor eine Session mit vorberechneter Liste, nicht <code>created_at</code>.</li>
+  <li><b>Pagination:</b> Keyset-Cursor statt <code>OFFSET</code>. OFFSET liest alle übersprungenen Zeilen und verschiebt sich bei neuen Posts.</li>
+  <li><b>Konsistenz:</b> Eventual. Ein neuer Post erscheint nach Sekunden. Der eigene Post muss sofort sichtbar sein: <b>Read-your-writes</b> durch Einmischen der eigenen neuesten Posts.</li>
+  <li><b>Medien:</b> Bilder und Videos über Object Storage und CDN. Der Feed enthält nur URLs.</li>
+  <li><b>Sharding:</b> Timelines nach <code>user_id</code>, Posts nach <code>author_id</code> oder Post-ID. Follows doppelt speichern: nach Follower und nach Followee.</li>
+</ol>
+
+<h2>5. Vergleich: drei Design-Varianten</h2>
+<ul>
+  <li><b>A. Fan-out on Read (Pull):</b> Schreiben billig, keine Kopien. Lesen teuer, wächst mit der Zahl der Follows. Gut für wenige Leser oder Promi-Posts.</li>
+  <li><b>B. Fan-out on Write (Push):</b> Lesen billig, ein Range-Scan. Schreiben teuer, Promis erzeugen Millionen Writes, Speicher für Kopien.</li>
+  <li><b>C. Hybrid:</b> Push für normale, Pull für Promis, Timeline nur für aktive Nutzer. Mehr Logik, aber beide Pfade bleiben bezahlbar. Das ist die übliche Antwort.</li>
+</ul>
+
+<h2>6. In der Produktion</h2>
+<ol>
+  <li><b>Promi postet, Queue staut sich:</b> Millionen Fan-out-Writes blockieren normale Posts. Fix: Promi-Schwelle, eigene Queue für grosse Fan-outs.</li>
+  <li><b>Feed nach Redis-Ausfall leer:</b> Timelines sind weg. Fix: Fallback auf Pull, Timeline beim ersten Aufruf neu bauen, Replikat statt Neustart.</li>
+  <li><b>Doppelte Posts im Feed:</b> Fan-out-Retry schreibt erneut. Fix: idempotente Writes (Set oder Primary Key auf user und post).</li>
+  <li><b>Seite 2 zeigt Einträge von Seite 1:</b> OFFSET-Paging bei neuen Posts. Fix: Keyset-Cursor.</li>
+  <li><b>Gelöschte Posts tauchen auf:</b> Fix: Filter beim Hydrate, Tombstone-Cache für gelöschte IDs.</li>
+</ol>
+
+<h2>7. Diagnose: Werkzeuge und Queries</h2>
+<ul>
+  <li><b>Fan-out-Lag:</b> Zeit von Post bis zum letzten Timeline-Write, Queue-Länge pro Fan-out-Queue.</li>
+  <li><b>Verteilung der Follower-Zahlen:</b> <code>SELECT followee_id, count(*) FROM follows GROUP BY 1 ORDER BY 2 DESC LIMIT 20;</code> Wer sind die Promis?</li>
+  <li><b>Feed-Latenz</b> aufgeteilt: Timeline lesen, Pull der Promis, Hydration.</li>
+  <li><code>EXPLAIN (ANALYZE, BUFFERS)</code> für die Pull-Query: Index Only Scan erwartet.</li>
+  <li><b>Redis:</b> <code>MEMORY USAGE</code> einer Timeline, <code>INFO memory</code>, Eviction-Zähler.</li>
+</ul>
+
+<h2>8. Senior-Punkte</h2>
+<div class="senior">
+<ol>
+  <li><b>Die Kernfrage ist Fan-out,</b> und die Antwort hängt an der Follower-Verteilung. Ich frage nach ihr, bevor ich wähle.</li>
+  <li><b>Timelines speichern IDs, nicht Inhalte.</b> Bearbeiten und Löschen bleiben so einfach.</li>
+  <li><b>Timelines sind ein Cache,</b> die Wahrheit sind Posts und Follows. Ich kann jede Timeline neu bauen.</li>
+  <li><b>Nur aktive Nutzer bekommen Push.</b> Das spart oft den Grossteil der Writes.</li>
+  <li><b>Keyset-Pagination</b> ist Pflicht bei Feeds, die oben wachsen.</li>
+</ol>
+</div>
+
+<h2>9. Aus dem Projekt</h2>
+<p>„Einen Feed habe ich nicht gebaut. Am nächsten liegt Paging grosser Datenmengen: Bei NABODAT habe ich lazy-loading Data Tables für die Performance eingesetzt.“ <span class="small">(Prüfen und durch dein echtes Beispiel ersetzen.)</span></p>
+
+<h2>10. Fallen</h2>
+<div class="trap">
+<ul>
+  <li>„Fan-out on Write ist immer besser.“ → <b>Falsch.</b> Ein Promi mit 10 Mio. Followern erzeugt 10 Mio. Writes pro Post.</li>
+  <li>„Ich speichere den ganzen Post in jeder Timeline.“ → Viel Speicher, und Bearbeitungen müssen überall nachgezogen werden. Nur IDs.</li>
+  <li>„Paging mit OFFSET.“ → Langsam bei tiefen Seiten und instabil, wenn oben neue Posts kommen.</li>
+  <li>„Der eigene Post erscheint, wenn der Fan-out fertig ist.“ → Für den Autor muss er sofort sichtbar sein: Read-your-writes.</li>
+  <li>„Jeder Nutzer braucht eine vorberechnete Timeline.“ → Nur aktive. Inaktive bekommen sie beim Login per Pull.</li>
+</ul>
+</div>
+
+<h2>11. Fragen</h2>
+<details><summary>Skizzieren Sie den News-Feed in einer Minute.</summary><p>Post-Service speichert und erzeugt ein Event. Fan-out-Worker schreiben IDs in Follower-Timelines, ausser bei Promis. Der Feed-Service liest Timeline, mischt Promi-Posts per Pull, lädt Inhalte per Batch und gibt eine Seite mit Cursor zurück.</p></details>
+<details><summary>Push oder Pull?</summary><p>Push macht Lesen billig, Pull macht Schreiben billig. Ich nehme hybrid: Push für normale Accounts, Pull für Promis.</p></details>
+<details><summary>Was ist das Promi-Problem?</summary><p>Ein Account mit Millionen Followern erzeugt beim Push Millionen Writes pro Post. Die Fan-out-Queue staut sich.</p></details>
+<details><summary>Wie schätzen Sie die Last?</summary><p>10 Mio. DAU mit 10 Aufrufen sind ca. 1150 Feed-Reads/s. 1 Mio. Posts mit 200 Followern sind ca. 2300 Timeline-Writes/s.</p></details>
+<details><summary>Was speichern Sie in einer Timeline?</summary><p>Nur Post-IDs mit Zeitstempel, gekappt auf einige hundert. Inhalte werden beim Lesen geladen.</p></details>
+<details><summary>Wie paginieren Sie?</summary><p>Mit einem Keyset-Cursor aus created_at und id. Das ist schnell und stabil bei neuen Posts.</p></details>
+<details><summary>Wie sieht der Autor seinen eigenen Post sofort?</summary><p>Read-your-writes: Der Feed-Service mischt die eigenen neuesten Posts direkt aus der Posts-DB dazu.</p></details>
+<details><summary>Was passiert beim Löschen eines Posts?</summary><p>Die Wahrheit wird gelöscht oder markiert. Beim Hydrate fällt die ID heraus. Ein Job räumt Timelines später auf.</p></details>
+<details><summary>Was passiert beim Entfolgen?</summary><p>Neue Posts kommen nicht mehr. Alte IDs filtert der Feed-Service beim Lesen oder ein Job entfernt sie.</p></details>
+<details><summary>Wie bauen Sie Ranking ein?</summary><p>Ein Ranking-Service bewertet Kandidaten aus Timeline und Pull. Der Cursor zeigt dann auf eine gespeicherte, gerankte Liste.</p></details>
+<details><summary>Wo liegt die Timeline?</summary><p>In einem Cache wie Redis, als Liste oder Sorted Set pro Nutzer. Sie ist neu baubar aus Posts und Follows.</p></details>
+<details><summary>Wie sharden Sie?</summary><p>Timelines nach user_id, Posts nach Autor oder ID. Follows doppelt, nach Follower und nach Followee.</p></details>
+<details><summary>Wie teuer ist Pull in Ihrer Messung?</summary><p>51 Follows ergaben 1010 gelesene Zeilen und 6 ms. Das wächst linear mit der Zahl der Follows.</p></details>
+<details><summary>Wie machen Sie den Fan-out robust?</summary><p>Über Outbox und Queue, in Blöcken, mit idempotenten Writes. Ein Absturz wiederholt nur einen Block.</p></details>
+<details><summary>Brauchen inaktive Nutzer eine Timeline?</summary><p>Nein. Man spart viele Writes und baut die Timeline beim nächsten Login per Pull.</p></details>
+<details><summary>Szenario: Ein Promi postet und normale Posts erscheinen minutenlang nicht. Warum?</summary><p>Sein Fan-out blockiert die gemeinsame Queue. Fix: Promi-Schwelle mit Pull, eigene Queue für grosse Fan-outs.</p></details>
+<details><summary>Szenario: Nach einem Redis-Failover sehen Nutzer leere Feeds. Was tun Sie?</summary><p>Fallback auf Pull, Timeline beim ersten Aufruf neu bauen, Rate Limit für den Rebuild. Langfristig Replikate und Persistenz.</p></details>
+<details><summary>Szenario: Nutzer melden doppelte Einträge beim Scrollen. Woran denken Sie?</summary><p>OFFSET-Paging bei neuen Posts oder doppelte Fan-out-Writes. Fix: Keyset-Cursor und idempotente Timeline-Writes.</p></details>
+
+</body>
+</html>

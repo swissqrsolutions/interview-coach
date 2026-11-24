@@ -1,0 +1,223 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Consistent Hashing</title>
+<style>
+  body { font: 17px/1.55 -apple-system, system-ui, sans-serif; max-width: 760px; margin: 0 auto; padding: 16px; color: #1d1d1f; }
+  h1 { font-size: 28px; margin: 8px 0 4px; }
+  h2 { font-size: 21px; margin: 32px 0 8px; padding-top: 12px; border-top: 2px solid #e5e5ea; }
+  .kern { background: #eef6ff; border-left: 4px solid #0a66c2; padding: 10px 14px; border-radius: 6px; }
+  .senior { background: #f0faf0; border-left: 4px solid #2e7d32; padding: 10px 14px; border-radius: 6px; }
+  .trap { background: #fff4f2; border-left: 4px solid #c62828; padding: 10px 14px; border-radius: 6px; }
+  code { background: #f2f2f7; padding: 1px 5px; border-radius: 4px; font-size: 15px; }
+  pre { background: #1e1e1e; color: #e6e6e6; padding: 12px; border-radius: 8px; overflow-x: auto; font-size: 13.5px; line-height: 1.45; }
+  svg { width: 100%; height: auto; display: block; margin: 10px 0; }
+  ol li, ul li { margin: 4px 0; }
+  details { border: 1px solid #e5e5ea; border-radius: 8px; padding: 8px 12px; margin: 6px 0; }
+  summary { font-weight: 600; cursor: pointer; }
+  details p { margin: 6px 0 2px; }
+  .small { color: #6e6e73; font-size: 14px; }
+</style>
+</head>
+<body>
+
+<h1>Consistent Hashing</h1>
+<p class="small">System-Design-Grundlagen · Tier 2 · Quellen: Karger et al. 1997 (Consistent Hashing and Random Trees), DeCandia et al. 2007 (Dynamo, SOSP), Lamping &amp; Veach 2014 (A Fast, Minimal Memory, Consistent Hash Algorithm), Thaler &amp; Ravishankar 1998 (Rendezvous/HRW Hashing), Mirrokni, Thorup, Zadimoghaddam 2018 (Consistent Hashing with Bounded Loads), Apache Cassandra 5.0 Docs (cassandra.yaml: num_tokens), Envoy Docs (Cluster: RingHashLbConfig, MaglevLbConfig), Redis Cluster Specification, Kleppmann DDIA Kap. 6</p>
+
+<div class="kern">
+<b>Kern:</b> <b>Consistent Hashing</b> ist ein Verfahren, das Schlüssel so auf Knoten verteilt, dass bei einem neuen oder fehlenden Knoten nur ca. <b>1/N der Schlüssel umziehen</b>. Mit <code>hash % N</code> ziehen fast alle um. Darum nutzen verteilte Caches, Datenbanken und Load Balancer mit Affinität Consistent Hashing oder eine Variante davon.
+</div>
+
+<h2>1. Wo sitzt Consistent Hashing?</h2>
+<svg viewBox="0 0 720 320" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="a" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="10" y="120" width="120" height="60" rx="8" fill="#fff" stroke="#555"/><text x="70" y="146" text-anchor="middle" font-weight="700">Client</text><text x="70" y="166" text-anchor="middle" font-size="12">GET user:42</text>
+  <line x1="130" y1="150" x2="188" y2="150" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="190" y="110" width="170" height="80" rx="8" fill="#dbe9fb" stroke="#0a66c2"/><text x="275" y="136" text-anchor="middle" font-weight="700">Router</text><text x="275" y="156" text-anchor="middle" font-size="12">Client-Lib, Proxy</text><text x="275" y="174" text-anchor="middle" font-size="12">oder Koordinator</text>
+  <line x1="360" y1="150" x2="398" y2="150" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <circle cx="530" cy="150" r="110" fill="none" stroke="#0a66c2" stroke-width="3"/>
+  <text x="530" y="146" text-anchor="middle" font-weight="700">Hash-Ring</text><text x="530" y="166" text-anchor="middle" font-size="12">0 … 2^64 − 1</text>
+  <circle cx="530" cy="40" r="16" fill="#0a66c2"/><text x="530" y="45" text-anchor="middle" fill="#fff" font-size="12">A</text>
+  <circle cx="640" cy="150" r="16" fill="#2e7d32"/><text x="640" y="155" text-anchor="middle" fill="#fff" font-size="12">B</text>
+  <circle cx="530" cy="260" r="16" fill="#c62828"/><text x="530" y="265" text-anchor="middle" fill="#fff" font-size="12">C</text>
+  <circle cx="452" cy="72" r="16" fill="#2e7d32"/><text x="452" y="77" text-anchor="middle" fill="#fff" font-size="11">B'</text>
+  <circle cx="608" cy="228" r="16" fill="#0a66c2"/><text x="608" y="233" text-anchor="middle" fill="#fff" font-size="11">A'</text>
+  <circle cx="420" cy="150" r="16" fill="#c62828"/><text x="420" y="155" text-anchor="middle" fill="#fff" font-size="11">C'</text>
+  <circle cx="600" cy="72" r="7" fill="#f5a623"/><text x="660" y="70" font-size="12">user:42</text>
+  <text x="530" y="306" text-anchor="middle" font-size="12">A' B' C' = virtuelle Knoten (Tokens) derselben Server</text>
+</svg>
+<ol>
+  <li><b>Client:</b> will einen Schlüssel lesen oder schreiben, z. B. <code>user:42</code>.</li>
+  <li><b>Router:</b> berechnet den Hash und wählt den Knoten. Er sitzt in der Client-Bibliothek, in einem Proxy oder in jedem Datenbank-Knoten.</li>
+  <li><b>Hash-Ring:</b> Der Wertebereich des Hashes ist ein Kreis. Knoten und Schlüssel liegen beide darauf.</li>
+  <li><b>Regel:</b> Ein Schlüssel gehört zum <b>nächsten Knoten im Uhrzeigersinn</b>. <code>user:42</code> gehört hier zu B.</li>
+  <li><b>Virtuelle Knoten:</b> Jeder Server steht mehrfach auf dem Ring. Das glättet die Verteilung.</li>
+  <li><b>Typische Orte:</b> Memcached-Clients, Cassandra und Dynamo-artige Datenbanken, Envoy mit <code>RING_HASH</code> oder <code>MAGLEV</code>, CDN-Caches.</li>
+</ol>
+
+<h2>2. Die Reise eines Schlüssels (die Geschichte zum Merken)</h2>
+<svg viewBox="0 0 720 300" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="b" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker><marker id="r" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#c62828"/></marker></defs>
+  <rect x="10" y="20" width="150" height="60" rx="10" fill="#eee" stroke="#777"/><text x="85" y="45" text-anchor="middle" font-weight="700">1. hash(key)</text><text x="85" y="64" text-anchor="middle" font-size="12">Position auf dem Ring</text>
+  <line x1="160" y1="50" x2="198" y2="50" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="200" y="20" width="160" height="60" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="280" y="45" text-anchor="middle" font-weight="700">2. Binärsuche</text><text x="280" y="64" text-anchor="middle" font-size="12">nächstes Token ≥ Hash</text>
+  <line x1="360" y1="50" x2="398" y2="50" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="400" y="20" width="150" height="60" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="475" y="45" text-anchor="middle" font-weight="700">3. Token → Server</text><text x="475" y="64" text-anchor="middle" font-size="12">B'#17 → Server B</text>
+  <line x1="550" y1="50" x2="588" y2="50" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="590" y="20" width="120" height="60" rx="10" fill="#0a66c2" stroke="#0a66c2"/><text x="650" y="45" text-anchor="middle" fill="#fff" font-weight="700">4. Replikate</text><text x="650" y="64" text-anchor="middle" fill="#fff" font-size="12">nächste RF−1</text>
+  <rect x="10" y="150" width="330" height="70" rx="10" fill="#e8f5e9" stroke="#2e7d32"/><text x="175" y="176" text-anchor="middle" font-weight="700">5. Neuer Server D kommt dazu</text><text x="175" y="198" text-anchor="middle" font-size="12">übernimmt nur Bereiche vor seinen Tokens</text>
+  <rect x="380" y="150" width="330" height="70" rx="10" fill="#fff4f2" stroke="#c62828"/><text x="545" y="176" text-anchor="middle" fill="#c62828" font-weight="700">6. Server B fällt aus</text><text x="545" y="198" text-anchor="middle" fill="#c62828" font-size="12">seine Bereiche gehen an die Nachfolger</text>
+  <path d="M650,80 C650,120 545,120 545,148" fill="none" stroke="#c62828" stroke-width="2" stroke-dasharray="6 4" marker-end="url(#r)"/>
+  <text x="360" y="260" text-anchor="middle" font-size="13">Alle anderen Schlüssel bleiben, wo sie sind: ca. 1/N bewegt sich.</text>
+</svg>
+<ol>
+  <li><b>Hash berechnen:</b> Der Router hasht <code>user:42</code> auf eine Zahl, z. B. 64 Bit. Das ist die Position auf dem Ring.</li>
+  <li><b>Nächstes Token suchen:</b> Die Tokens liegen sortiert in einem Array. Eine <b>Binärsuche</b> findet das erste Token, das grösser oder gleich ist. Kosten: O(log T) bei T Tokens.</li>
+  <li><b>Token zum Server:</b> Jedes Token gehört zu einem echten Server. Das Token <code>B'#17</code> gehört Server B.</li>
+  <li><b>Replikate:</b> Bei Replikationsfaktor 3 gehen die Kopien an die nächsten zwei <b>verschiedenen</b> Server im Uhrzeigersinn. Das ist die <b>Preference List</b> aus Dynamo.</li>
+  <li><b>Server kommt dazu:</b> Server D setzt seine Tokens auf den Ring. Er übernimmt nur die Schlüssel direkt vor seinen Tokens. Ca. 1/N wandert, alles andere bleibt.</li>
+  <li><b>Server fällt aus:</b> Seine Bereiche gehen an die Nachfolger. Mit virtuellen Knoten verteilt sich seine Last auf <b>viele</b> Server, nicht auf einen Nachbarn.</li>
+</ol>
+
+<h2>3. Beispiel: sechs Verfahren, ein Knoten mehr</h2>
+<pre>def h(s): return int.from_bytes(hashlib.md5(s.encode()).digest()[:8], "big")
+KEYS = [f"user:{i}" for i in range(100_000)]
+
+def modn(nodes):  return {k: nodes[h(k) % len(nodes)] for k in KEYS}
+class Ring:                                    # sorted tokens + binary search
+    def __init__(self, nodes, vnodes):
+        self.r = sorted((h(f"{n}#{v}"), n) for n in nodes for v in range(vnodes))
+        self.pos = [p for p, _ in self.r]
+    def get(self, k):
+        return self.r[bisect.bisect(self.pos, h(k)) % len(self.r)][1]
+def jump(key, n): ...                           # Lamping &amp; Veach 2014
+def hrw(nodes):   return {k: max(nodes, key=lambda n: h(f"{n}|{k}")) for k in KEYS}
+# measure: max/avg load with 4 nodes, % keys moved when going 4 -&gt; 5 nodes</pre>
+<pre>$ python -I ch_sim.py
+== 100,000 keys, 4 -&gt; 5 nodes (ideal move: 20%) ==
+method                  max/avg load (4)    moved
+hash % N                            1.01    79.9%
+ring, 1 vnode                       1.66    25.5%
+ring, 16 vnodes                     1.22    15.7%
+ring, 256 vnodes                    1.14    19.0%
+jump hash                           1.01    20.1%
+rendezvous (HRW)                    1.01    20.2%
+== remove n2 from 5 nodes: where do its keys go? (ring, 256 vnodes) ==
+keys of n2 now on: {'n1': 4234, 'n3': 5108, 'n4': 3901, 'n5': 4759} | other keys moved: 0
+== load spread vs vnodes, 10 nodes (max/avg) ==
+vnodes   1: max/avg 2.26
+vnodes   8: max/avg 1.57
+vnodes  64: max/avg 1.17
+vnodes 256: max/avg 1.11</pre>
+<p class="small">Echte Ausgabe, Python 3.12.10 (Simulation, 100 000 Schlüssel, MD5 als Hash). Die Zahlen zeigen die Mechanik, keine Produktmessung.</p>
+<ol>
+  <li><b><code>hash % N</code>:</b> perfekte Verteilung, aber beim Schritt von 4 auf 5 Knoten ziehen <b>80 %</b> der Schlüssel um. Für einen Cache heisst das: 80 % Misses auf einen Schlag.</li>
+  <li><b>Ring mit 1 Token pro Server:</b> Nur 25 % ziehen um. Aber ein Server trägt 1,66-mal den Durchschnitt. Die Lücken auf dem Ring sind zufällig ungleich.</li>
+  <li><b>Virtuelle Knoten:</b> Mit 256 Tokens sinkt die Spitze auf 1,14. Bei 10 Servern fällt sie von 2,26 (1 Token) auf 1,11 (256 Tokens).</li>
+  <li><b>Jump Hash und Rendezvous:</b> fast perfekte Verteilung (1,01) und fast genau 20 % Bewegung. Beide brauchen keinen Ring.</li>
+  <li><b>Ausfall:</b> Fällt n2 weg, verteilen sich seine Schlüssel auf <b>alle vier</b> anderen Server. Kein anderer Schlüssel bewegt sich (0).</li>
+</ol>
+
+<h2>4. Details, die Interviewer fragen</h2>
+<ol>
+  <li><b>Problem von <code>hash % N</code>:</b> Ändert sich N, ändert sich das Ergebnis für fast jeden Schlüssel. Von N auf N+1 bleiben nur ca. 1/(N+1) am Platz.</li>
+  <li><b>Monotonie:</b> <b>Monotonie</b> heisst, ein neuer Knoten nimmt nur Schlüssel auf, er verschiebt keine zwischen alten Knoten. Das ist die Kern-Eigenschaft aus Karger 1997.</li>
+  <li><b>Virtuelle Knoten (vnodes, Tokens):</b> Jeder Server erhält viele Positionen auf dem Ring. Ergebnis: gleichmässige Last und Verteilung der Last eines Ausfalls auf viele Server.</li>
+  <li><b>Gewichtung:</b> Ein starker Server bekommt mehr Tokens. So trägt er mehr Daten. Cassandra beschreibt genau das für <code>num_tokens</code>.</li>
+  <li><b>Cassandra:</b> <code>num_tokens</code> ist in Cassandra 5.0 standardmässig <b>16</b>. Wenige Tokens mit dem Allocator (<code>allocate_tokens_for_local_replication_factor</code>, Standard 3) geben gute Balance bei weniger Reparatur-Aufwand.</li>
+  <li><b>Replikation auf dem Ring:</b> Kopien liegen auf den nächsten RF−1 <b>verschiedenen</b> Servern. Mit vnodes muss man Tokens desselben Servers überspringen. Rack- und Zonen-Bewusstsein kommt dazu.</li>
+  <li><b>Jump Consistent Hash:</b> Eine Funktion <code>jump(key, n)</code> liefert direkt einen Bucket 0…n−1. Kein Speicher, perfekte Verteilung. Aber: Buckets nur am <b>Ende</b> hinzufügen oder entfernen. Gut für nummerierte Shards, schlecht für zufällig ausfallende Server.</li>
+  <li><b>Rendezvous Hashing (HRW):</b> Für jeden Server einen Score <code>hash(server, key)</code> rechnen, der höchste gewinnt. Kein Ring, beliebige Server entfernbar. Kosten: O(N) pro Lookup.</li>
+  <li><b>Maglev Hashing:</b> Google baut daraus eine feste Lookup-Tabelle. Sehr schneller Lookup, sehr gleichmässig, minimal mehr Bewegung als ein Ring. Envoy nutzt standardmässig eine Tabelle mit 65 537 Einträgen.</li>
+  <li><b>Envoy Ring Hash:</b> <code>minimum_ring_size</code> ist standardmässig 1024 Einträge, maximal 8M. Mehr Einträge heisst bessere Verteilung, mehr Speicher.</li>
+  <li><b>Bounded Loads:</b> Ein Knoten darf höchstens <code>(1+ε)</code> mal den Durchschnitt tragen. Ist er voll, geht der Schlüssel zum nächsten. Gut gegen Hot Spots bei Sticky Routing.</li>
+  <li><b>Hot Keys:</b> Consistent Hashing verteilt <b>Schlüssel</b>, nicht <b>Last</b>. Ein einzelner sehr heisser Key landet immer auf einem Server. Lösung: Key-Splitting, lokale Caches, Replikate lesen.</li>
+  <li><b>Redis Cluster ist kein Ring:</b> Er nutzt <b>16 384 feste Hash Slots</b> (CRC16 mod 16384). Slots werden zwischen Knoten verschoben. Das ist das Muster „viele feste Partitionen“.</li>
+  <li><b>Feste Partitionen als Alternative:</b> Viel mehr Partitionen als Knoten anlegen, z. B. 1024. Beim Skalieren ziehen ganze Partitionen um. Kafka, Elasticsearch und Redis Cluster arbeiten so.</li>
+  <li><b>Hash-Funktion:</b> Sie muss gleichmässig sein, nicht kryptografisch. Typisch: MurmurHash3, xxHash. Wichtig: Alle Clients nutzen exakt dieselbe Funktion.</li>
+</ol>
+
+<h2>5. Vergleich</h2>
+<ul>
+  <li><b><code>hash % N</code>:</b> trivial, gleichmässig. Bei Änderung von N zieht fast alles um. Nur für feste N.</li>
+  <li><b>Ring mit vnodes:</b> beliebige Knoten hinzufügen und entfernen, Gewichtung möglich. Speicher O(Tokens), Lookup O(log T).</li>
+  <li><b>Jump Hash:</b> kein Speicher, perfekt gleichmässig. Nur Buckets am Ende ändern, keine Gewichte.</li>
+  <li><b>Rendezvous (HRW):</b> einfach, gleichmässig, beliebige Knoten entfernbar. Lookup O(N), gut bis einige hundert Knoten.</li>
+  <li><b>Maglev:</b> Lookup O(1) über Tabelle, sehr gleichmässig. Tabelle neu bauen bei Änderung. Gut für L4-Load-Balancer.</li>
+  <li><b>Feste Partitionen / Hash Slots:</b> Zuordnung Partition → Knoten liegt in Metadaten. Volle Kontrolle beim Umzug, braucht aber einen Koordinator.</li>
+</ul>
+
+<h2>6. In der Produktion</h2>
+<ol>
+  <li><b>Cache-Sturm nach Scale-out:</b> Ein Memcached-Pool mit <code>% N</code> bekommt einen Knoten mehr. Fast alle Keys sind Misses, die DB bricht ein. Lösung: Consistent Hashing (z. B. Ketama) in allen Clients.</li>
+  <li><b>Clients rechnen verschieden:</b> Zwei Services nutzen andere Hash-Funktionen oder andere Server-Reihenfolge. Derselbe Key liegt doppelt, Invalidierung trifft die falsche Kopie. Lösung: eine gemeinsame Bibliothek und Server-Namen statt Indizes.</li>
+  <li><b>Ungleiche Last:</b> Zu wenige vnodes geben einen heissen Knoten. Lösung: mehr Tokens oder Token-Allocator, Last pro Knoten messen.</li>
+  <li><b>Flapping:</b> Ein Knoten fällt kurz aus und kommt zurück. Jedes Mal wandern Keys hin und her. Lösung: Ausfall erst nach mehreren Health-Check-Fehlern melden, Hysterese.</li>
+  <li><b>Hot Key trotz guter Verteilung:</b> Ein einzelnes Produkt im Sale trifft einen Server. Lösung: lokaler Cache, Key mit Suffix auf mehrere Kopien verteilen.</li>
+  <li><b>Daten-Umzug kostet:</b> Beim Rebalancing streamen Knoten Daten. Das frisst Netz und I/O. Lösung: Throttling, Knoten einzeln hinzufügen, ausserhalb der Spitzenzeit.</li>
+</ol>
+
+<h2>7. Diagnose: Werkzeuge und Befehle</h2>
+<ul>
+  <li><code>nodetool status</code> und <code>nodetool ring</code> (Cassandra): Tokens, Anteil (<b>Owns</b>) und Zustand pro Knoten.</li>
+  <li><code>CLUSTER SHARDS</code> oder <code>CLUSTER SLOTS</code> (Redis Cluster): welche Slots auf welchem Knoten liegen.</li>
+  <li><code>redis-cli --cluster check</code> und <code>--cluster rebalance</code>: Slot-Verteilung prüfen und ausgleichen.</li>
+  <li><b>Metriken pro Knoten:</b> Keys, Bytes, Requests pro Sekunde, Hit Ratio. Ein Ausreisser zeigt schlechte Verteilung oder einen Hot Key.</li>
+  <li><b>Envoy-Statistiken:</b> Cluster-Statistiken <code>ring_hash_lb.size</code>, <code>min_hashes_per_host</code>, <code>max_hashes_per_host</code> zeigen die Gleichmässigkeit.</li>
+  <li><b>Offline-Simulation:</b> echte Keys durch die Hash-Funktion schicken wie oben. So sieht man Bewegung und Spitze vor dem Umbau.</li>
+</ul>
+
+<h2>8. Senior-Punkte</h2>
+<div class="senior">
+<ol>
+  <li><b>Consistent Hashing löst das Umzugs-Problem,</b> nicht das Hot-Key-Problem. Für Hot Keys braucht es Caching oder Key-Splitting.</li>
+  <li><b>Für Datenbanken wähle ich oft feste Partitionen</b> mit Metadaten. Umzüge sind dann explizit, beobachtbar und drosselbar.</li>
+  <li><b>Für Client-seitiges Routing</b> (Cache-Pool) reicht ein Ring mit vnodes oder Rendezvous. Wichtig ist eine gemeinsame Bibliothek.</li>
+  <li><b>Jump Hash nur mit nummerierten Shards,</b> die am Ende wachsen. Nie für Server, die zufällig ausfallen.</li>
+  <li><b>Bewegung kostet immer etwas:</b> kalte Caches oder Daten-Streaming. Ich plane Scale-out schrittweise und messe die Hit Ratio dabei.</li>
+  <li><b>Im Interview:</b> zuerst <code>% N</code> zeigen, dann das Umzugsproblem, dann Ring, dann vnodes. Diese Reihenfolge zeigt Verständnis.</li>
+</ol>
+</div>
+
+<h2>9. Aus dem Projekt</h2>
+<p>„Consistent Hashing habe ich nicht selbst gebaut. Am nächsten liegt MATCH: Iceberg verteilt Daten über Partitionen nach <code>days(received_date)</code> und <code>schema_type</code>, also feste Partitionen statt Hash-Ring.“ <span class="small">(Prüfen und durch dein echtes Beispiel ersetzen.)</span></p>
+
+<h2>10. Fallen</h2>
+<div class="trap">
+<ul>
+  <li>„Mit Consistent Hashing zieht beim Scale-out nichts um.“ → <b>Falsch.</b> Ca. 1/N zieht um. Das ist das Minimum, nicht null.</li>
+  <li>„Consistent Hashing verteilt die Last gleichmässig.“ → Nur die Schlüssel, und nur mit genug vnodes. Hot Keys bleiben heiss.</li>
+  <li>„Redis Cluster nutzt einen Hash-Ring.“ → <b>Falsch.</b> 16 384 feste Hash Slots, die zwischen Knoten verschoben werden.</li>
+  <li>„Mehr vnodes sind immer besser.“ → Nicht ganz. Mehr Speicher, mehr Metadaten, und in Cassandra mehr Reparatur-Aufwand. Darum dort heute 16 statt früher 256.</li>
+  <li>„Jump Hash passt für jeden Cluster.“ → <b>Falsch.</b> Nur Buckets am Ende ändern. Ein ausgefallener Server in der Mitte bricht die Zuordnung.</li>
+  <li>„Die Hash-Funktion muss kryptografisch sein.“ → Nein. Gleichmässig und schnell reicht, z. B. Murmur oder xxHash.</li>
+</ul>
+</div>
+
+<h2>11. Fragen</h2>
+<details><summary>Was ist Consistent Hashing?</summary><p>Ein Verfahren, das Schlüssel so auf Knoten verteilt, dass bei Änderung der Knotenzahl nur ca. 1/N der Schlüssel umzieht. Knoten und Schlüssel liegen dafür auf einem Hash-Ring.</p></details>
+<details><summary>Warum nicht einfach hash % N?</summary><p>Ändert sich N, ändert sich die Zuordnung fast jedes Schlüssels. In der Simulation zogen beim Schritt 4 → 5 rund 80 % um.</p></details>
+<details><summary>Wie findet man den Knoten für einen Schlüssel?</summary><p>Hash des Schlüssels berechnen, dann per Binärsuche das nächste Token im Uhrzeigersinn finden. Das Token gehört zu einem Server.</p></details>
+<details><summary>Was sind virtuelle Knoten?</summary><p>Jeder Server steht mehrfach auf dem Ring. Das glättet die Verteilung und verteilt die Last eines Ausfalls auf viele Server.</p></details>
+<details><summary>Wie viele Schlüssel ziehen bei einem neuen Knoten um?</summary><p>Im Mittel ca. 1/(N+1) aller Schlüssel. Bei 4 → 5 Knoten also ca. 20 %.</p></details>
+<details><summary>Was passiert, wenn ein Knoten ausfällt?</summary><p>Seine Bereiche gehen an die Nachfolger auf dem Ring. Mit vnodes sind das viele verschiedene Server. Kein anderer Schlüssel bewegt sich.</p></details>
+<details><summary>Wie gewichtet man starke Server?</summary><p>Sie bekommen mehr Tokens auf dem Ring. So gehört ihnen ein grösserer Anteil.</p></details>
+<details><summary>Wie funktioniert Replikation auf dem Ring?</summary><p>Die Kopien liegen auf den nächsten RF−1 verschiedenen Servern im Uhrzeigersinn. Tokens desselben Servers werden übersprungen, oft auch dieselbe Zone.</p></details>
+<details><summary>Was ist Jump Consistent Hash?</summary><p>Eine kurze Funktion, die Schlüssel und Bucket-Anzahl auf einen Bucket abbildet. Kein Speicher, perfekt gleichmässig. Buckets darf man nur am Ende ändern.</p></details>
+<details><summary>Was ist Rendezvous Hashing?</summary><p>Für jeden Server einen Score aus Server und Schlüssel berechnen, der höchste gewinnt. Kein Ring nötig, Lookup kostet O(N).</p></details>
+<details><summary>Was ist Maglev Hashing?</summary><p>Ein Verfahren, das eine feste Lookup-Tabelle baut. Lookup O(1), sehr gleichmässig. Envoy nutzt standardmässig 65 537 Einträge.</p></details>
+<details><summary>Nutzt Redis Cluster Consistent Hashing?</summary><p>Nein. Er nutzt 16 384 feste Hash Slots mit CRC16. Slots werden als Ganzes zwischen Knoten verschoben.</p></details>
+<details><summary>Feste Partitionen oder Ring?</summary><p>Feste Partitionen geben kontrollierte Umzüge über Metadaten. Ein Ring braucht keinen Koordinator. Datenbanken nutzen oft Partitionen, Client-Caches oft einen Ring.</p></details>
+<details><summary>Löst Consistent Hashing Hot Keys?</summary><p>Nein. Ein Schlüssel landet immer auf einem Server. Dagegen helfen lokale Caches, Lese-Replikate oder Key-Splitting.</p></details>
+<details><summary>Was ist Consistent Hashing with Bounded Loads?</summary><p>Jeder Knoten hat eine Obergrenze von (1+ε) mal dem Durchschnitt. Ist er voll, geht der Schlüssel weiter zum nächsten Knoten.</p></details>
+<details><summary>Wie viele Tokens nutzt Cassandra?</summary><p>In Cassandra 5.0 standardmässig 16 pro Knoten, mit einem Allocator für gute Balance. Früher waren 256 üblich.</p></details>
+<details><summary>Welche Hash-Funktion nehmen Sie?</summary><p>Eine schnelle, gleichmässige wie MurmurHash3 oder xxHash. Alle Clients müssen exakt dieselbe nutzen.</p></details>
+<details><summary>Wo nutzt ein Load Balancer Consistent Hashing?</summary><p>Für Affinität: Requests eines Nutzers oder Keys sollen am selben Backend landen, z. B. für lokale Caches. Envoy bietet RING_HASH und MAGLEV.</p></details>
+<details><summary>Szenario: Nach dem Hinzufügen eines Memcached-Knotens bricht die Datenbank ein. Warum?</summary><p>Die Clients nutzen hash % N. Fast alle Keys landen auf einem anderen Knoten und sind Misses. Lösung: Consistent Hashing in allen Clients, Scale-out ausserhalb der Spitze.</p></details>
+<details><summary>Szenario: Ein Knoten im Cluster hat doppelt so viel Last wie die anderen. Was prüfen Sie?</summary><p>Zuerst die Verteilung der Keys: zu wenige vnodes oder falsche Gewichte. Dann einen Hot Key mit Requests pro Key. Lösung: mehr Tokens, Rebalancing oder Hot-Key-Caching.</p></details>
+<details><summary>Szenario: Zwei Services lesen denselben Cache, aber Invalidierungen wirken nicht. Woran denken Sie?</summary><p>Die Services berechnen den Knoten verschieden, z. B. andere Hash-Funktion oder Server-Reihenfolge. Lösung: eine gemeinsame Client-Bibliothek und stabile Server-Namen.</p></details>
+
+</body>
+</html>

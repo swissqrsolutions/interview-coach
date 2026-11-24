@@ -10,7 +10,7 @@ const ROOT = path.resolve(path.dirname(new URL(import.meta.url).pathname.replace
 const C = p => path.join(ROOT, 'content', p);
 const read = p => fs.readFileSync(p, 'utf8').replace(/\r\n/g, '\n');
 const renderer = new marked.Renderer();
-renderer.code = ({ text }) => `<div class="code"><button class="copy" type="button">Copy</button><pre><code>${text.replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]))}</code></pre></div>`;
+renderer.code = ({ text }) => `<div class="code"><button class="copy" type="button">Kopieren</button><pre><code>${text.replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]))}</code></pre></div>`;
 const html = s => marked.parse(String(s || '').trim(), { renderer });
 
 const tech = JSON.parse(read(C('tech.json')));

@@ -1,0 +1,229 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Dateien und Rechte</title>
+<style>
+  body { font: 17px/1.55 -apple-system, system-ui, sans-serif; max-width: 760px; margin: 0 auto; padding: 16px; color: #1d1d1f; }
+  h1 { font-size: 28px; margin: 8px 0 4px; }
+  h2 { font-size: 21px; margin: 32px 0 8px; padding-top: 12px; border-top: 2px solid #e5e5ea; }
+  .kern { background: #eef6ff; border-left: 4px solid #0a66c2; padding: 10px 14px; border-radius: 6px; }
+  .senior { background: #f0faf0; border-left: 4px solid #2e7d32; padding: 10px 14px; border-radius: 6px; }
+  .trap { background: #fff4f2; border-left: 4px solid #c62828; padding: 10px 14px; border-radius: 6px; }
+  code { background: #f2f2f7; padding: 1px 5px; border-radius: 4px; font-size: 15px; }
+  pre { background: #1e1e1e; color: #e6e6e6; padding: 12px; border-radius: 8px; overflow-x: auto; font-size: 13.5px; line-height: 1.45; }
+  svg { width: 100%; height: auto; display: block; margin: 10px 0; }
+  ol li, ul li { margin: 4px 0; }
+  details { border: 1px solid #e5e5ea; border-radius: 8px; padding: 8px 12px; margin: 6px 0; }
+  summary { font-weight: 600; cursor: pointer; }
+  details p { margin: 6px 0 2px; }
+  .small { color: #6e6e73; font-size: 14px; }
+</style>
+</head>
+<body>
+
+<h1>Dateien und Rechte</h1>
+<p class="small">Linux · Tier 1 · Quellen: man7.org <code>chmod(1)</code>, <code>chown(1)</code>, <code>umask(2)</code>, <code>inode(7)</code>, <code>credentials(7)</code>, <code>find(1)</code>; Kubernetes Docs „Configure a Security Context for a Pod or Container“; Dockerfile Reference (<code>USER</code>, <code>COPY --chown</code>)</p>
+
+<div class="kern">
+<b>Kern:</b> Jede Datei in Linux hat einen <b>Besitzer</b> (User), eine <b>Gruppe</b> und <b>Rechte</b> für drei Klassen: Besitzer, Gruppe, alle anderen. Jede Klasse hat <b>r</b> (lesen), <b>w</b> (schreiben), <b>x</b> (ausführen). Der Kernel prüft bei jedem Zugriff die <b>numerische UID/GID</b> des Prozesses gegen diese Angaben.
+</div>
+
+<h2>1. Wo sitzen die Rechte?</h2>
+<svg viewBox="0 0 720 300" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="a" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="10" y="20" width="200" height="56" rx="8" fill="#fff" stroke="#555"/><text x="110" y="44" text-anchor="middle">Verzeichnis-Eintrag</text><text x="110" y="62" text-anchor="middle" font-size="12">Name „app.jar“ → Inode 4711</text>
+  <line x1="210" y1="48" x2="258" y2="48" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="260" y="10" width="270" height="170" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="395" y="32" text-anchor="middle" font-weight="700">Inode 4711</text>
+  <text x="280" y="58" font-size="13">Typ + Modus: -rwxr-x---</text>
+  <text x="280" y="80" font-size="13">UID 1000 · GID 1000</text>
+  <text x="280" y="102" font-size="13">Grösse · Zeiten · Link-Zähler</text>
+  <text x="280" y="124" font-size="13">Spezial: setuid · setgid · sticky</text>
+  <text x="280" y="146" font-size="13">Zeiger auf Datenblöcke</text>
+  <text x="280" y="168" font-size="12" fill="#555">(kein Dateiname!)</text>
+  <rect x="560" y="20" width="150" height="70" rx="8" fill="#e8f5e9" stroke="#2e7d32"/><text x="635" y="46" text-anchor="middle" font-weight="700">Prozess</text><text x="635" y="66" text-anchor="middle" font-size="12">UID 1000, GID 1000</text><text x="635" y="82" text-anchor="middle" font-size="12">+ Zusatzgruppen</text>
+  <line x1="560" y1="70" x2="532" y2="80" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="160" y="210" width="400" height="74" rx="10" fill="#0a66c2"/><text x="360" y="234" text-anchor="middle" fill="#fff" font-weight="700">Kernel-Prüfung bei open()</text><text x="360" y="254" text-anchor="middle" fill="#fff" font-size="12">UID = Besitzer? → Besitzer-Bits · sonst GID passt? → Gruppen-Bits</text><text x="360" y="272" text-anchor="middle" fill="#fff" font-size="12">sonst → Other-Bits · root (UID 0) darf fast alles</text>
+  <line x1="395" y1="180" x2="380" y2="206" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+</svg>
+<ol>
+  <li><b>Verzeichnis-Eintrag:</b> verbindet einen Namen mit einer <b>Inode-Nummer</b>. Ein Verzeichnis ist eine Liste solcher Einträge.</li>
+  <li><b>Inode:</b> speichert Typ, Rechte (<b>Modus</b>), UID, GID, Grösse, Zeiten und Zeiger auf die Daten. Den Namen speichert er nicht.</li>
+  <li><b>Prozess:</b> hat eine <b>effektive UID</b>, eine GID und Zusatzgruppen. Beispiel: Ein Container-Prozess mit UID 1000.</li>
+  <li><b>Prüfung:</b> Der Kernel nimmt <b>genau eine</b> Klasse: Besitzer, sonst Gruppe, sonst Other. Er kombiniert sie nicht.</li>
+  <li><b>root</b> (UID 0) umgeht die meisten Prüfungen. Genauer: Er hat <b>Capabilities</b> wie <code>CAP_DAC_OVERRIDE</code>.</li>
+</ol>
+
+<h2>2. Die Reise eines Dateizugriffs</h2>
+<svg viewBox="0 0 720 300" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="b" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker><marker id="r" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#c62828"/></marker></defs>
+  <rect x="10" y="20" width="150" height="62" rx="10" fill="#eee" stroke="#777"/><text x="85" y="46" text-anchor="middle" font-weight="700">cat /data/a/x</text><text x="85" y="66" text-anchor="middle" font-size="12">UID 1000</text>
+  <line x1="160" y1="51" x2="188" y2="51" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="190" y="20" width="150" height="62" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="265" y="46" text-anchor="middle" font-weight="700">/ , /data , /data/a</text><text x="265" y="66" text-anchor="middle" font-size="12">x auf jedem Ordner?</text>
+  <line x1="340" y1="51" x2="368" y2="51" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="370" y="20" width="150" height="62" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="445" y="46" text-anchor="middle" font-weight="700">Inode von x</text><text x="445" y="66" text-anchor="middle" font-size="12">Klasse wählen</text>
+  <line x1="520" y1="51" x2="548" y2="51" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="550" y="20" width="160" height="62" rx="10" fill="#0a66c2"/><text x="630" y="46" text-anchor="middle" fill="#fff" font-weight="700">r-Bit gesetzt?</text><text x="630" y="66" text-anchor="middle" fill="#fff" font-size="12">für diese Klasse</text>
+  <line x1="630" y1="82" x2="630" y2="128" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="540" y="130" width="170" height="56" rx="10" fill="#2e7d32"/><text x="625" y="163" text-anchor="middle" fill="#fff" font-weight="700">Datei offen</text>
+  <path d="M265,82 L265,206" stroke="#c62828" stroke-width="2" stroke-dasharray="6 4" marker-end="url(#r)"/>
+  <path d="M600,82 C560,170 420,190 342,224" fill="none" stroke="#c62828" stroke-width="2" stroke-dasharray="6 4" marker-end="url(#r)"/>
+  <rect x="150" y="208" width="190" height="62" rx="10" fill="#c62828"/><text x="245" y="234" text-anchor="middle" fill="#fff" font-weight="700">EACCES</text><text x="245" y="254" text-anchor="middle" fill="#fff" font-size="12">Permission denied</text>
+</svg>
+<ol>
+  <li><b>Start:</b> Ein Prozess mit UID 1000 will <code>/data/a/x</code> lesen.</li>
+  <li><b>Pfad durchlaufen:</b> Für jedes Verzeichnis auf dem Weg braucht er <b>x</b> (betreten). Fehlt x auf <code>/data</code>, endet die Reise hier.</li>
+  <li><b>Klasse wählen:</b> UID gleich Besitzer → Besitzer-Bits. Sonst eine seiner Gruppen gleich GID → Gruppen-Bits. Sonst Other-Bits.</li>
+  <li><b>Bit prüfen:</b> Zum Lesen braucht es <b>r</b>, zum Schreiben <b>w</b>, zum Ausführen <b>x</b>.</li>
+  <li><b>Ergebnis:</b> Datei offen, oder Fehler <b>EACCES</b> („Permission denied“).</li>
+  <li><b>Wichtig:</b> Löschen und Umbenennen prüfen die Rechte des <b>Verzeichnisses</b> (w + x), nicht der Datei.</li>
+</ol>
+
+<h2>3. Beispiel: umask, chmod, chown und Container-Benutzer</h2>
+<pre>$ umask 022; umask
+0022
+$ echo hallo &gt; a.txt; mkdir dir; ls -ld a.txt dir
+-rw-r--r-- 1 root root    6 Nov 24 15:30 a.txt
+drwxr-xr-x 2 root root 4096 Nov 24 15:30 dir
+$ umask 077; echo geheim &gt; b.txt; ls -l b.txt; umask 022
+-rw------- 1 root root 7 Nov 24 15:30 b.txt
+$ chmod 750 dir; chmod u+x,g-r a.txt; stat -c "%A %a %U:%G %n" a.txt dir
+-rwx---r-- 704 root:root a.txt
+drwxr-x--- 750 root:root dir
+$ su postgres -c "cat /tmp/demo/b.txt"
+cat: /tmp/demo/b.txt: Permission denied
+$ su postgres -c "touch /tmp/demo/dir/x"
+touch: cannot touch '/tmp/demo/dir/x': Permission denied
+$ chown postgres:postgres a.txt; ls -l a.txt; ls -ln a.txt
+-rwx---r-- 1 postgres postgres 6 Nov 24 15:30 a.txt
+-rwx---r-- 1 999 999 6 Nov 24 15:30 a.txt
+
+$ ls -l /usr/bin/passwd /usr/bin/su; ls -ld /tmp
+-rwsr-xr-x 1 root root 118168 Apr 19  2025 /usr/bin/passwd
+-rwsr-xr-x 1 root root  84360 Jul 31 15:34 /usr/bin/su
+drwxrwxrwt 1 root root 4096 Nov 24 15:16 /tmp
+$ id postgres
+uid=999(postgres) gid=999(postgres) groups=999(postgres),101(ssl-cert)
+$ ls -ld /var/lib/postgresql/data
+drwx------ 19 postgres postgres 4096 Nov 24 14:57 /var/lib/postgresql/data
+
+# umask in einer docker-exec-Shell dieses Containers
+$ docker exec pg17 sh -c umask
+0000
+$ docker exec -u postgres pg17 sh -c 'touch /tmp/x1; ls -l /tmp/x1'
+-rw-rw-rw- 1 postgres postgres 0 Nov 24 15:16 /tmp/x1</pre>
+<p class="small">Echte Ausgabe, Debian in Container pg17 (Debian GNU/Linux 13, coreutils). Drei Aufrufe nacheinander, im Verzeichnis <code>/tmp/demo</code>.</p>
+<ol>
+  <li><b>umask 022</b> nimmt Schreibrecht für Gruppe und Other weg. Dateien starten bei 666 → <b>644</b>. Verzeichnisse starten bei 777 → <b>755</b>.</li>
+  <li><b>umask 077</b> gibt private Dateien: <b>600</b>. Gut für Schlüssel und Secrets.</li>
+  <li><b>chmod 750</b> (oktal): Besitzer rwx (7), Gruppe r-x (5), Other nichts (0). <b>Symbolisch</b>: <code>u+x,g-r</code> ändert einzelne Bits.</li>
+  <li><b>s</b> statt x beim Besitzer heisst <b>setuid</b>: <code>passwd</code> läuft als root, egal wer es startet. <b>t</b> bei <code>/tmp</code> ist das <b>Sticky Bit</b>: Jeder darf anlegen, aber nur eigene Dateien löschen.</li>
+  <li><b>Warum „Permission denied“?</b> postgres ist nicht Besitzer und nicht in Gruppe root. Darum gelten die Other-Bits: bei b.txt (600) keine, bei dir (750) keine.</li>
+  <li><code>ls -ln</code> zeigt die Wahrheit: Der Kernel speichert nur <b>Zahlen</b> (999), keine Namen. Namen kommen aus <code>/etc/passwd</code> des jeweiligen Systems.</li>
+  <li>Das Postgres-Datenverzeichnis ist <b>700</b> und gehört UID 999. PostgreSQL verweigert den Start bei zu offenen Rechten.</li>
+  <li>In diesem Container hatte eine <code>docker exec</code>-Shell <b>umask 0000</b>. Neue Dateien waren für alle schreibbar (666). Man darf sich auf eine umask nie verlassen.</li>
+</ol>
+
+<h2>4. Details, die Interviewer fragen</h2>
+<ol>
+  <li><b>rwx bei Verzeichnissen:</b> <b>r</b> = Namen auflisten, <b>w</b> = Einträge anlegen, löschen, umbenennen (braucht auch x), <b>x</b> = betreten und Dateien darin ansprechen. Nur x ohne r: Man kann eine bekannte Datei öffnen, aber nicht auflisten.</li>
+  <li><b>Oktal:</b> r = 4, w = 2, x = 1. 755 = rwxr-xr-x, 644 = rw-r--r--, 600 = rw-------. Eine vierte Ziffer davor setzt Spezial-Bits: 4 = setuid, 2 = setgid, 1 = sticky. Beispiel: <code>chmod 1777 /tmp</code>.</li>
+  <li><b>umask:</b> eine Maske, die Bits beim Anlegen <b>wegnimmt</b>. Sie ist kein Recht, das hinzugefügt wird. Sie gilt pro Prozess und wird vererbt.</li>
+  <li><b>chown:</b> Besitzer ändern darf nur root (bzw. <code>CAP_CHOWN</code>). <code>chown user:gruppe datei</code>, rekursiv mit <code>-R</code>. Gruppe allein: <code>chgrp</code>.</li>
+  <li><b>setuid / setgid:</b> Eine Programmdatei mit <b>setuid</b> läuft mit der UID des Besitzers. <b>setgid</b> auf einem Verzeichnis lässt neue Dateien die Gruppe des Verzeichnisses erben. setuid auf Shell-Skripte ignoriert Linux.</li>
+  <li><b>Sticky Bit:</b> Auf einem Verzeichnis dürfen nur Besitzer der Datei, des Verzeichnisses oder root löschen. Typisch: <code>/tmp</code>.</li>
+  <li><b>Capabilities:</b> zerlegen root-Rechte in Teile, z. B. <code>CAP_NET_BIND_SERVICE</code> (Ports unter 1024), <code>CAP_CHOWN</code>. Container sollten alle unnötigen entfernen (<code>drop: ["ALL"]</code>).</li>
+  <li><b>ACLs:</b> <b>Access Control Lists</b> geben einzelnen Usern oder Gruppen Rechte zusätzlich zu den drei Klassen. <code>getfacl</code>, <code>setfacl</code>. Ein <code>+</code> in <code>ls -l</code> zeigt eine ACL.</li>
+  <li><b>Hard Link vs Symlink:</b> Ein <b>Hard Link</b> ist ein zweiter Name für dieselbe Inode. Ein <b>Symlink</b> ist eine eigene Datei mit einem Pfad. Rechte eines Symlinks sind egal, es zählen die des Ziels.</li>
+  <li><b>Container als Non-Root:</b> Der Prozess läuft mit einer UID ungleich 0, gesetzt über <code>USER 1000</code> im Dockerfile oder <code>runAsUser</code> in Kubernetes. Dateien im Image gehören oft root. Darum <code>COPY --chown=1000:1000</code> oder Schreibpfade auf Volumes legen.</li>
+  <li><b>fsGroup in Kubernetes:</b> <code>securityContext.fsGroup: 2000</code> setzt die Gruppe von Volume-Dateien auf 2000 und gibt dem Prozess diese Zusatzgruppe. So kann ein Non-Root-Prozess auf ein Volume schreiben.</li>
+  <li><b>Zufällige UIDs:</b> Manche Plattformen (z. B. OpenShift) starten Container mit einer zufälligen UID in Gruppe 0. Darum Schreibpfade für Gruppe 0 schreibbar machen (<code>chgrp 0</code>, <code>chmod g=u</code>).</li>
+  <li><b>readOnlyRootFilesystem:</b> Das Container-Dateisystem ist nur lesbar. Temporäre Daten gehen in ein <code>emptyDir</code>-Volume, z. B. für <code>/tmp</code>.</li>
+</ol>
+
+<h2>5. Vergleich</h2>
+<ul>
+  <li><b>chmod oktal vs symbolisch:</b> setzt alle Bits auf einmal vs ändert einzelne Bits.</li>
+  <li><b>umask vs chmod:</b> Standard für neue Dateien vs Änderung bestehender Dateien.</li>
+  <li><b>setuid vs sudo:</b> fest in einer Datei, für alle Aufrufer vs Regel pro Benutzer und Befehl, mit Log.</li>
+  <li><b>root im Container vs root auf dem Host:</b> Ohne User Namespaces ist es <b>dieselbe UID 0</b>. Ein Ausbruch hat dann Host-root-Rechte.</li>
+  <li><b>runAsNonRoot vs runAsUser:</b> prüft nur, dass die UID nicht 0 ist vs setzt eine konkrete UID.</li>
+  <li><b>Hard Link vs Symlink:</b> gleiche Inode, nur gleiches Dateisystem vs eigener Pfadverweis, auch über Dateisysteme.</li>
+</ul>
+
+<h2>6. In der Produktion</h2>
+<ol>
+  <li><b>App im Container kann nicht schreiben:</b> „Permission denied“ auf <code>/app/logs</code>. Das Verzeichnis gehört root, der Prozess läuft als 1000. Lösung: <code>COPY --chown</code>, Verzeichnis im Dockerfile anlegen und übergeben, oder Volume mit <code>fsGroup</code>.</li>
+  <li><b>Volume vom Host mit falscher UID:</b> Ein Bind Mount hat UID 1001, der Container läuft als 999. Namen sind egal, nur die Zahlen zählen. Lösung: UIDs abstimmen oder <code>fsGroup</code>.</li>
+  <li><b>Policy blockiert Pod:</b> Eine Policy (z. B. Kyverno oder Pod Security Standards „restricted“) verbietet root und privilegierte Pods. Lösung: Image auf Non-Root umbauen, nicht die Policy aufweichen.</li>
+  <li><b>Secret-Datei zu offen:</b> SSH oder PostgreSQL verweigern den Start bei zu offenen Rechten. Lösung: <code>chmod 600</code> bzw. <code>defaultMode: 0400</code> für Secret-Volumes.</li>
+  <li><b>Skript startet nicht:</b> „Permission denied“ beim Aufruf. Das x-Bit fehlt, oft nach Git unter Windows. Lösung: <code>chmod +x</code> und <code>git update-index --chmod=+x</code>.</li>
+  <li><b>chown -R beim Start dauert Minuten:</b> Viele Dateien auf einem grossen Volume. Lösung: <code>fsGroupChangePolicy: OnRootMismatch</code> in Kubernetes.</li>
+</ol>
+
+<h2>7. Diagnose: Werkzeuge und Befehle</h2>
+<ul>
+  <li><code>ls -l</code>, <code>ls -ln</code> (Zahlen statt Namen), <code>ls -ld dir</code> (das Verzeichnis selbst).</li>
+  <li><code>stat -c "%A %a %U:%G %n" datei</code>: Rechte symbolisch und oktal.</li>
+  <li><code>id</code>, <code>id -u</code>, <code>whoami</code>: wer bin ich im Container?</li>
+  <li><code>namei -l /pfad/zur/datei</code>: Rechte jedes Verzeichnisses entlang des Pfads.</li>
+  <li><code>find / -perm -4000 -type f 2&gt;/dev/null</code>: alle setuid-Dateien finden.</li>
+  <li><code>find /app -not -user 1000</code>: Dateien mit falschem Besitzer.</li>
+  <li><code>getfacl datei</code>: ACLs anzeigen. <code>getcap datei</code>: Datei-Capabilities.</li>
+  <li><code>grep Cap /proc/self/status</code>: Capabilities des Prozesses.</li>
+  <li><code>kubectl exec pod -- id</code> und <code>kubectl get pod -o jsonpath='{.spec.securityContext}'</code>.</li>
+</ul>
+
+<h2>8. Senior-Punkte</h2>
+<div class="senior">
+<ol>
+  <li><b>Non-Root ist Standard</b>, nicht Option. Dazu <code>allowPrivilegeEscalation: false</code>, <code>capabilities.drop: ["ALL"]</code>, nur lesbares Root-Dateisystem.</li>
+  <li><b>UIDs sind Zahlen.</b> Über Systemgrenzen (Host, Container, NFS) stimme ich Zahlen ab, nicht Namen.</li>
+  <li><b>Least Privilege</b> auch bei Dateien: Secrets 400 oder 600, Konfiguration nur lesbar, Schreiben nur in klar definierte Pfade.</li>
+  <li><b>setuid-Dateien im Image minimieren.</b> Sie sind ein Weg zur Rechteausweitung.</li>
+  <li><b>Rechte im Image festlegen,</b> nicht beim Start mit <code>chown -R</code> reparieren. Das ist schneller und reproduzierbar.</li>
+</ol>
+</div>
+
+<h2>9. Aus dem Projekt</h2>
+<p>„Bei MATCH erzwingt Kyverno im AKS-Cluster unter anderem: keine privilegierten Pods, nur Images aus der ACR und Resource Limits. Images mussten darum ohne Sonderrechte laufen.“ <span class="small">(Prüfen und durch dein echtes Beispiel ersetzen, z. B. ein konkreter Non-Root-Fix in einem Dockerfile.)</span></p>
+
+<h2>10. Fallen</h2>
+<div class="trap">
+<ul>
+  <li>„Zum Löschen einer Datei braucht man w auf der Datei.“ → <b>Falsch.</b> Man braucht w und x auf dem <b>Verzeichnis</b>.</li>
+  <li>„umask 022 gibt Dateien 755.“ → <b>Falsch.</b> Dateien starten bei 666, also 644. Nur Verzeichnisse bekommen 755.</li>
+  <li>„Wer in der Gruppe ist, bekommt Gruppe + Other.“ → <b>Falsch.</b> Der Kernel nimmt genau eine Klasse.</li>
+  <li>„Root im Container ist harmlos.“ → <b>Falsch.</b> Ohne User Namespaces ist es dieselbe UID 0 wie auf dem Host.</li>
+  <li>„chmod 777 löst das Problem.“ → Es öffnet die Datei für alle. Richtig: Besitzer oder Gruppe korrigieren.</li>
+  <li>„Der Benutzername im Container zählt.“ → <b>Falsch.</b> Der Kernel prüft nur die UID-Zahl.</li>
+</ul>
+</div>
+
+<h2>11. Fragen</h2>
+<details><summary>Was bedeuten r, w, x bei einer Datei?</summary><p>Lesen, schreiben und ausführen.</p></details>
+<details><summary>Was bedeuten r, w, x bei einem Verzeichnis?</summary><p>r: Namen auflisten. w: Einträge anlegen und löschen (mit x). x: betreten und Dateien darin ansprechen.</p></details>
+<details><summary>Was heisst chmod 750?</summary><p>Besitzer rwx, Gruppe r-x, alle anderen nichts.</p></details>
+<details><summary>Was ist die umask?</summary><p>Eine Maske, die beim Anlegen Rechte wegnimmt. Mit 022 werden Dateien 644 und Verzeichnisse 755.</p></details>
+<details><summary>Wie prüft der Kernel die Rechte?</summary><p>Er wählt genau eine Klasse: Besitzer, sonst Gruppe, sonst Other. Dann prüft er das passende Bit.</p></details>
+<details><summary>Was ist setuid?</summary><p>Ein Programm läuft mit der UID des Dateibesitzers. Beispiel: passwd läuft als root.</p></details>
+<details><summary>Was macht setgid auf einem Verzeichnis?</summary><p>Neue Dateien erben die Gruppe des Verzeichnisses. Gut für Team-Verzeichnisse.</p></details>
+<details><summary>Was ist das Sticky Bit?</summary><p>Auf einem Verzeichnis darf jeder nur eigene Dateien löschen. Typisch für /tmp (1777).</p></details>
+<details><summary>Wer darf chown ausführen?</summary><p>Nur root bzw. ein Prozess mit CAP_CHOWN. Normale Benutzer können Dateien nicht verschenken.</p></details>
+<details><summary>Was ist eine Inode?</summary><p>Die Struktur mit Metadaten einer Datei: Typ, Rechte, UID, GID, Grösse, Zeiten und Datenblöcke. Ohne Namen.</p></details>
+<details><summary>Hard Link vs Symlink?</summary><p>Hard Link: zweiter Name für dieselbe Inode. Symlink: eigene Datei, die auf einen Pfad zeigt.</p></details>
+<details><summary>Was sind Linux Capabilities?</summary><p>Teile der root-Rechte, einzeln vergebbar. Beispiel: CAP_NET_BIND_SERVICE für Ports unter 1024.</p></details>
+<details><summary>Warum Container als Non-Root?</summary><p>Ohne User Namespaces ist root im Container root auf dem Host. Bei einem Ausbruch begrenzt Non-Root den Schaden.</p></details>
+<details><summary>Wie lassen Sie einen Container als Non-Root laufen?</summary><p>USER 1000 im Dockerfile oder runAsUser und runAsNonRoot im securityContext. Dazu Dateien mit COPY --chown übergeben.</p></details>
+<details><summary>Was macht fsGroup?</summary><p>Kubernetes setzt die Gruppe der Volume-Dateien und gibt dem Prozess diese Zusatzgruppe. So kann er schreiben.</p></details>
+<details><summary>Warum zeigt ls -l im Container eine Zahl statt eines Namens?</summary><p>Die UID existiert nicht in /etc/passwd des Containers. Der Kernel speichert nur Zahlen.</p></details>
+<details><summary>Wie finden Sie alle setuid-Dateien?</summary><p>find / -perm -4000 -type f.</p></details>
+<details><summary>Was ist readOnlyRootFilesystem?</summary><p>Das Root-Dateisystem des Containers ist nur lesbar. Schreibpfade kommen über Volumes wie emptyDir.</p></details>
+<details><summary>Was zeigt namei -l?</summary><p>Die Rechte jedes Verzeichnisses entlang eines Pfads. Damit findet man das fehlende x-Bit.</p></details>
+<details><summary>Szenario: Ihre Spring-Boot-App im Container meldet „Permission denied“ beim Schreiben nach /app/tmp. Was tun Sie?</summary><p>id und ls -ln prüfen. Meist gehört das Verzeichnis root, der Prozess läuft als 1000. Lösung: COPY --chown oder ein emptyDir-Volume für tmp.</p></details>
+<details><summary>Szenario: Nach dem Mount eines Host-Verzeichnisses kann der Container-Prozess nichts lesen. Warum?</summary><p>Die numerischen UIDs passen nicht. Namen sind egal. Lösung: UID abstimmen oder fsGroup und Gruppenrechte nutzen.</p></details>
+<details><summary>Szenario: Ein Kollege will das Problem mit chmod -R 777 lösen. Was sagen Sie?</summary><p>Das öffnet alles für alle und ist ein Sicherheitsrisiko. Ich korrigiere Besitzer oder Gruppe und gebe nur die nötigen Rechte.</p></details>
+
+</body>
+</html>

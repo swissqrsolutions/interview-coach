@@ -1,0 +1,230 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CompletableFuture</title>
+<style>
+  body { font: 17px/1.55 -apple-system, system-ui, sans-serif; max-width: 760px; margin: 0 auto; padding: 16px; color: #1d1d1f; }
+  h1 { font-size: 28px; margin: 8px 0 4px; }
+  h2 { font-size: 21px; margin: 32px 0 8px; padding-top: 12px; border-top: 2px solid #e5e5ea; }
+  .kern { background: #eef6ff; border-left: 4px solid #0a66c2; padding: 10px 14px; border-radius: 6px; }
+  .senior { background: #f0faf0; border-left: 4px solid #2e7d32; padding: 10px 14px; border-radius: 6px; }
+  .trap { background: #fff4f2; border-left: 4px solid #c62828; padding: 10px 14px; border-radius: 6px; }
+  code { background: #f2f2f7; padding: 1px 5px; border-radius: 4px; font-size: 15px; }
+  pre { background: #1e1e1e; color: #e6e6e6; padding: 12px; border-radius: 8px; overflow-x: auto; font-size: 13.5px; line-height: 1.45; }
+  svg { width: 100%; height: auto; display: block; margin: 10px 0; }
+  ol li, ul li { margin: 4px 0; }
+  details { border: 1px solid #e5e5ea; border-radius: 8px; padding: 8px 12px; margin: 6px 0; }
+  summary { font-weight: 600; cursor: pointer; }
+  details p { margin: 6px 0 2px; }
+  .small { color: #6e6e73; font-size: 14px; }
+</style>
+</head>
+<body>
+
+<h1>CompletableFuture und asynchrone Programmierung</h1>
+<p class="small">Java · Tier 2 · Quellen: Java SE 25 API-Doku (<code>CompletableFuture</code>, <code>CompletionStage</code>, <code>ForkJoinPool</code>), JEP 266 (More Concurrency Updates, Java 9), JEP 444 (Virtual Threads), JEP 505 (Structured Concurrency, Preview)</p>
+
+<div class="kern">
+<b>Kern:</b> Eine <b>CompletableFuture</b> ist ein Platzhalter für ein Ergebnis, das später kommt. Sie löst das Problem, dass <code>Future.get()</code> blockiert und sich nicht verketten lässt. Man hängt Schritte an (<code>thenApply</code>, <code>thenCompose</code>, <code>thenCombine</code>), und diese laufen, sobald das Ergebnis da ist.
+</div>
+
+<h2>1. Wo sitzt die CompletableFuture?</h2>
+<svg viewBox="0 0 720 300" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="a" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="10" y="20" width="200" height="56" rx="8" fill="#fff" stroke="#555"/><text x="110" y="44" text-anchor="middle" font-weight="700">Aufrufer-Thread</text><text x="110" y="63" text-anchor="middle" font-size="12">z. B. Request-Thread</text>
+  <line x1="210" y1="48" x2="278" y2="48" stroke="#555" stroke-width="2" marker-end="url(#a)"/><text x="244" y="40" text-anchor="middle" font-size="12">supplyAsync</text>
+  <rect x="280" y="20" width="200" height="56" rx="8" fill="#0a66c2"/><text x="380" y="44" text-anchor="middle" fill="#fff" font-weight="700">CompletableFuture</text><text x="380" y="63" text-anchor="middle" fill="#fff" font-size="12">result · Stack von Folge-Schritten</text>
+  <line x1="480" y1="48" x2="538" y2="48" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="540" y="20" width="170" height="56" rx="8" fill="#fff" stroke="#555"/><text x="625" y="44" text-anchor="middle" font-weight="700">Folge-Schritte</text><text x="625" y="63" text-anchor="middle" font-size="12">thenApply, handle …</text>
+  <line x1="380" y1="76" x2="380" y2="128" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="120" y="130" width="250" height="60" rx="8" fill="#eee" stroke="#777"/><text x="245" y="154" text-anchor="middle" font-weight="700">ForkJoinPool.commonPool()</text><text x="245" y="174" text-anchor="middle" font-size="12">Standard, ohne Executor</text>
+  <rect x="390" y="130" width="250" height="60" rx="8" fill="#e8f5e9" stroke="#2e7d32"/><text x="515" y="154" text-anchor="middle" font-weight="700">Eigener Executor</text><text x="515" y="174" text-anchor="middle" font-size="12">für I/O: immer mitgeben</text>
+  <line x1="380" y1="190" x2="380" y2="228" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="200" y="230" width="360" height="50" rx="8" fill="#fff" stroke="#555"/><text x="380" y="252" text-anchor="middle" font-weight="700">Arbeit: DB, REST-Call, Berechnung</text><text x="380" y="270" text-anchor="middle" font-size="12">fertig → complete(result) → Folge-Schritte laufen</text>
+</svg>
+<ol>
+  <li><b>Aufrufer-Thread:</b> Er startet die Arbeit mit <code>supplyAsync</code> und bekommt sofort eine CompletableFuture zurück.</li>
+  <li><b>CompletableFuture:</b> Sie hält das Ergebnis (oder die Exception) und einen Stack der angehängten Folge-Schritte.</li>
+  <li><b>Executor:</b> Ohne Angabe läuft die Arbeit im <b>commonPool</b>. Mit Angabe im eigenen Pool, z. B. für I/O.</li>
+  <li><b>Arbeit:</b> Ein Worker-Thread erledigt sie und ruft intern <code>complete(result)</code> auf.</li>
+  <li><b>Folge-Schritte:</b> Danach laufen alle angehängten Schritte.</li>
+</ol>
+
+<h2>2. Die Reise eines Requests mit zwei parallelen Calls (die Geschichte zum Merken)</h2>
+<svg viewBox="0 0 720 300" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="b" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker><marker id="r" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#c62828"/></marker></defs>
+  <rect x="10" y="110" width="110" height="56" rx="10" fill="#eee" stroke="#777"/><text x="65" y="134" text-anchor="middle" font-weight="700">1. Start</text><text x="65" y="153" text-anchor="middle" font-size="12">2× supplyAsync</text>
+  <line x1="120" y1="125" x2="178" y2="70" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <line x1="120" y1="150" x2="178" y2="205" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="180" y="40" width="150" height="56" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="255" y="64" text-anchor="middle" font-weight="700">2a. User laden</text><text x="255" y="83" text-anchor="middle" font-size="12">300 ms, io-Pool</text>
+  <rect x="180" y="180" width="150" height="56" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="255" y="204" text-anchor="middle" font-weight="700">2b. Bestellungen</text><text x="255" y="223" text-anchor="middle" font-size="12">300 ms, io-Pool</text>
+  <line x1="330" y1="68" x2="398" y2="125" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <line x1="330" y1="208" x2="398" y2="150" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="400" y="110" width="140" height="56" rx="10" fill="#0a66c2"/><text x="470" y="134" text-anchor="middle" fill="#fff" font-weight="700">3. thenCombine</text><text x="470" y="153" text-anchor="middle" fill="#fff" font-size="12">wartet auf beide</text>
+  <line x1="540" y1="138" x2="578" y2="138" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="580" y="110" width="130" height="56" rx="10" fill="#e8f5e9" stroke="#2e7d32"/><text x="645" y="134" text-anchor="middle" font-weight="700">5. Antwort</text><text x="645" y="153" text-anchor="middle" font-size="12">≈ 300 ms, nicht 600</text>
+  <path d="M470,166 C470,280 645,280 645,168" fill="none" stroke="#c62828" stroke-width="2" stroke-dasharray="6 4" marker-end="url(#r)"/>
+  <text x="560" y="262" text-anchor="middle" fill="#c62828" font-size="12">4. Fehler/Timeout → handle, Fallback</text>
+</svg>
+<ol>
+  <li><b>Start:</b> Der Request-Thread startet zwei Calls mit <code>supplyAsync(…, ioPool)</code>. Er wartet nicht.</li>
+  <li><b>Parallel arbeiten:</b> Zwei Threads aus dem I/O-Pool laden User und Bestellungen gleichzeitig.</li>
+  <li><b>Zusammenführen:</b> <code>thenCombine</code> registriert eine Funktion. Sie läuft erst, wenn <b>beide</b> fertig sind.</li>
+  <li><b>Fehler:</b> Wirft ein Call eine Exception, ist auch das kombinierte Ergebnis fehlerhaft. <code>handle</code> oder <code>exceptionally</code> liefern einen Fallback. <code>orTimeout</code> begrenzt die Wartezeit.</li>
+  <li><b>Antwort:</b> Die Gesamtzeit ist die des langsamsten Calls, nicht die Summe.</li>
+</ol>
+
+<h2>3. Beispiel: Kombinieren, Threads, Fehler, Timeout, allOf, cancel</h2>
+<pre>ExecutorService io = Executors.newFixedThreadPool(4, …);              // Threads "io-NN"
+user.thenCombine(orders, (u, o) -&gt; u + " hat " + o + " Bestellungen").join(); // 2) je 300 ms
+CompletableFuture.supplyAsync(() -&gt; t()).join();                     // 3) ohne Executor
+supplyAsync(() -&gt; 21, io).thenApply(x -&gt; x * 2)
+    .thenCompose(x -&gt; supplyAsync(() -&gt; "id=" + x, io));              // 4)
+fail.join(); fail.get();                                              // 5) wirft "DB down"
+fail.exceptionally(ex -&gt; -1); fail.handle((v, ex) -&gt; …);              // 6)
+slow.orTimeout(200, MILLISECONDS); slow2.completeOnTimeout("cached", 200, MILLISECONDS); // 7)
+CompletableFuture.allOf(5 Tasks à 100 ms).join();                     // 8)
+completedFuture("x").thenApply(s -&gt; t());                             // 9)
+cancelMe.cancel(true);   // Task läuft schon 100 ms                    // 10)</pre>
+<pre>1) commonPool parallelism=15 cores=16
+2) Anna@io-23 hat 3 Bestellungen in 314 ms
+3) default pool: ForkJoinPool.commonPool-worker-1
+4) thenCompose -&gt; id=42
+5) join: CompletionException cause=java.lang.IllegalStateException: DB down
+5) get:  ExecutionException cause=java.lang.IllegalStateException: DB down
+6) exceptionally -&gt; -1
+6) handle -&gt; fallback, ex=CompletionException
+7) orTimeout: cause=TimeoutException
+7) completeOnTimeout -&gt; cached
+8) allOf: [1, 4, 9, 16, 25] in 335 ms (4 threads)
+9) thenApply on completed future runs in: main
+10) cancel(true)=true isCancelled=true
+   task still ran to the end</pre>
+<p class="small">Echte Ausgabe, Oracle JDK 17.0.3 (16 Kerne). Zeiten und Thread-Namen ändern sich pro Lauf. Java 21 und 25 verhalten sich gleich.</p>
+<ol>
+  <li>Der <b>commonPool</b> hat hier 15 Threads, also Kerne minus 1. Er ist für CPU-Arbeit gedacht.</li>
+  <li>Zwei Calls à 300 ms brauchen zusammen nur 314 ms. Sie laufen parallel.</li>
+  <li>Ohne Executor läuft <code>supplyAsync</code> im <b>commonPool</b>.</li>
+  <li><code>thenApply</code> ändert den Wert. <code>thenCompose</code> hängt eine weitere asynchrone Aufgabe an und „glättet“ das Ergebnis: <code>CompletableFuture&lt;String&gt;</code>, nicht <code>CompletableFuture&lt;CompletableFuture&lt;String&gt;&gt;</code>.</li>
+  <li><code>join()</code> wirft eine unchecked <b>CompletionException</b>. <code>get()</code> wirft eine checked <b>ExecutionException</b>. Die echte Ursache steckt in <code>getCause()</code>.</li>
+  <li>In einem abhängigen Schritt kommt die Exception <b>eingepackt</b> als <code>CompletionException</code> an. Man muss <code>getCause()</code> prüfen.</li>
+  <li><code>orTimeout</code> beendet mit <code>TimeoutException</code>. <code>completeOnTimeout</code> liefert einen Ersatzwert.</li>
+  <li><code>allOf</code> wartet auf alle. 5 Tasks à 100 ms auf 4 Threads brauchen zwei Runden, also ca. 300 ms. <code>allOf</code> selbst liefert kein Ergebnis; man liest danach jede Future.</li>
+  <li>Ist die Future schon fertig, läuft <code>thenApply</code> sofort im <b>aufrufenden</b> Thread, hier <code>main</code>.</li>
+  <li><code>cancel(true)</code> markiert die Future als abgebrochen. Der laufende Task wird aber <b>nicht unterbrochen</b> und läuft zu Ende.</li>
+</ol>
+
+<h2>4. Details, die Interviewer fragen</h2>
+<ol>
+  <li><b>Future vs CompletableFuture:</b> Ein <b>Future</b> hat nur <code>get()</code>, das blockiert. Eine CompletableFuture kann man verketten, kombinieren, von aussen abschliessen (<code>complete</code>) und Fehler behandeln.</li>
+  <li><b>CompletionStage:</b> Das Interface mit allen Verkettungs-Methoden. CompletableFuture implementiert es und <code>Future</code>.</li>
+  <li><b>Die wichtigsten Methoden:</b>
+    <ul>
+      <li><code>thenApply(fn)</code>: Wert umwandeln, wie <code>map</code>.</li>
+      <li><code>thenAccept(consumer)</code> / <code>thenRun(runnable)</code>: Ergebnis nutzen, nichts zurückgeben.</li>
+      <li><code>thenCompose(fn)</code>: nächste asynchrone Aufgabe, wie <code>flatMap</code>.</li>
+      <li><code>thenCombine(other, fn)</code>: zwei unabhängige Ergebnisse zusammenführen.</li>
+      <li><code>allOf</code> / <code>anyOf</code>: auf alle oder auf die erste warten.</li>
+      <li><code>exceptionally(fn)</code>: nur im Fehlerfall, liefert Ersatzwert.</li>
+      <li><code>handle(bifn)</code>: immer, bekommt Wert <b>oder</b> Exception, liefert neuen Wert.</li>
+      <li><code>whenComplete(biconsumer)</code>: immer, ändert das Ergebnis nicht. Gut für Logs und Metriken.</li>
+    </ul></li>
+  <li><b>Async-Varianten:</b> <code>thenApplyAsync</code> usw. laufen im Executor (Standard: commonPool). Ohne <code>Async</code> läuft der Schritt im Thread, der die Future abschliesst, oder im Aufrufer, wenn sie schon fertig ist.</li>
+  <li><b>Welcher Thread?</b> Das ist bei Nicht-Async-Methoden nicht festgelegt. Darum gehört blockierender Code nie in einen Nicht-Async-Schritt.</li>
+  <li><b>commonPool:</b> Er ist JVM-weit geteilt, auch mit parallelen Streams. Blockierende I/O dort hungert alle anderen aus. Für I/O immer einen eigenen Executor mitgeben.</li>
+  <li><b>Fehler-Weitergabe:</b> Schlägt eine Stufe fehl, werden alle Folge-Stufen übersprungen. Erst <code>exceptionally</code>, <code>handle</code> oder <code>whenComplete</code> sehen den Fehler.</li>
+  <li><b>cancel:</b> <code>cancel</code> wirkt wie <code>completeExceptionally(new CancellationException())</code>. Der Parameter <code>mayInterruptIfRunning</code> hat <b>keine Wirkung</b>. Die laufende Arbeit muss man selbst stoppen.</li>
+  <li><b>Timeouts (Java 9):</b> <code>orTimeout</code> und <code>completeOnTimeout</code>. Dazu <code>delayedExecutor</code> für verzögerte Ausführung.</li>
+  <li><b>Neuere Methoden:</b> <code>exceptionallyCompose</code> und <code>exceptionallyAsync</code> (Java 12). <code>resultNow()</code>, <code>exceptionNow()</code> und <code>state()</code> (Java 19).</li>
+  <li><b>Manuell abschliessen:</b> <code>new CompletableFuture&lt;&gt;()</code> plus <code>complete(v)</code> oder <code>completeExceptionally(ex)</code>. So verbindet man Callback-APIs mit Futures.</li>
+  <li><b>ThreadLocal und MDC:</b> Ein anderer Thread sieht keine ThreadLocal-Werte des Aufrufers. Log-Kontext (MDC), Security-Context und Transaktionen gehen verloren. Man muss sie selbst übergeben.</li>
+</ol>
+
+<h2>5. Vergleich</h2>
+<ul>
+  <li><b>Future + ExecutorService:</b> einfach, aber <code>get()</code> blockiert. Kein Verketten.</li>
+  <li><b>CompletableFuture:</b> verkettet, kombiniert, Fehlerbehandlung. Code wird bei vielen Stufen schwer lesbar.</li>
+  <li><b>Virtual Threads (Java 21):</b> einfacher blockierender Code, der trotzdem skaliert. Für viele I/O-Fälle heute die einfachere Wahl.</li>
+  <li><b>Structured Concurrency (<code>StructuredTaskScope</code>):</b> mehrere Teilaufgaben als eine Einheit mit gemeinsamem Abbruch. In Java 25 noch <b>Preview</b>.</li>
+  <li><b>Reactive (Project Reactor, WebFlux):</b> Streams mit Backpressure. Mächtig, aber steile Lernkurve und schwer zu debuggen.</li>
+  <li><b>Spring <code>@Async</code>:</b> gibt eine <code>CompletableFuture</code> zurück. Läuft im konfigurierten Spring-Executor.</li>
+</ul>
+
+<h2>6. In der Produktion</h2>
+<ol>
+  <li><b>commonPool blockiert:</b> REST- oder DB-Calls im commonPool belegen alle Threads. Parallele Streams und andere Futures warten. Lösung: eigener, begrenzter I/O-Executor.</li>
+  <li><b>Verschluckte Exceptions:</b> Niemand ruft <code>join()</code> auf und niemand hängt <code>exceptionally</code> an. Der Fehler verschwindet ohne Log. Lösung: am Ende immer <code>whenComplete</code> oder <code>exceptionally</code> mit Log.</li>
+  <li><b>Hängende Requests:</b> Ein Downstream-Service antwortet nie. <code>join()</code> wartet ewig. Lösung: <code>orTimeout</code> plus Timeout im HTTP-Client.</li>
+  <li><b>Unbegrenzte Queue:</b> <code>Executors.newFixedThreadPool</code> hat eine unbegrenzte Queue. Bei Last wächst sie bis zum OOM. Lösung: <code>ThreadPoolExecutor</code> mit begrenzter Queue und Rejection Policy.</li>
+  <li><b>Verlorener Kontext:</b> Logs ohne Trace-ID, Security-Context fehlt. Lösung: Context weitergeben, z. B. mit Micrometer Context Propagation oder einem dekorierten Executor.</li>
+  <li><b>cancel stoppt nichts:</b> Nach einem Timeout läuft der teure Call weiter und belastet den Downstream. Lösung: Timeout direkt im Client setzen.</li>
+  <li><b>Deadlock im Pool:</b> Ein Task im Pool wartet mit <code>join()</code> auf einen anderen Task im selben, vollen Pool. Lösung: nicht blockierend verketten (<code>thenCompose</code>) oder getrennte Pools.</li>
+</ol>
+
+<h2>7. Diagnose: Werkzeuge und Befehle</h2>
+<ul>
+  <li><b>Thread Dump</b> (<code>jcmd &lt;pid&gt; Thread.print</code>): alle <code>ForkJoinPool.commonPool-worker</code> in <code>socketRead</code> oder <code>WAITING</code> zeigt blockierende I/O im commonPool.</li>
+  <li><b>Thread-Namen:</b> Eigene Executors mit einer ThreadFactory benennen (<code>io-</code>, <code>report-</code>). Dann sieht man im Dump sofort, wer hängt.</li>
+  <li><b>Pool-Metriken:</b> Micrometer <code>ExecutorServiceMetrics</code> zeigt aktive Threads, Queue-Länge, abgelehnte Tasks.</li>
+  <li><b>JFR:</b> Events <code>jdk.ThreadPark</code> und <code>jdk.JavaMonitorWait</code> zeigen, wo Threads warten.</li>
+  <li><b>Distributed Tracing</b> (OpenTelemetry): zeigt, ob Calls wirklich parallel laufen und welcher Call langsam ist.</li>
+  <li><b>Logs mit Ursache:</b> Immer <code>ex.getCause()</code> loggen, nicht nur die <code>CompletionException</code>.</li>
+</ul>
+
+<h2>8. Senior-Punkte</h2>
+<div class="senior">
+<ol>
+  <li><b>Executor immer bewusst wählen.</b> commonPool nur für kurze CPU-Arbeit. I/O bekommt einen eigenen, begrenzten Pool.</li>
+  <li><b>Jede Kette braucht ein Ende mit Fehlerbehandlung und Timeout.</b> Sonst verschwinden Fehler oder Requests hängen.</li>
+  <li><b>Parallelität ist kein Selbstzweck.</b> Zwei Calls parallel sparen Zeit, aber verdoppeln die Last auf Downstream-Systeme.</li>
+  <li><b>Mit Java 21 neu abwägen.</b> Virtual Threads mit einfachem, blockierendem Code sind oft lesbarer als lange Future-Ketten.</li>
+  <li><b>Kontext ist Teil des Designs.</b> Trace-ID, Security und Transaktion wandern nicht automatisch mit.</li>
+  <li><b>cancel ist nur ein Signal an die Future.</b> Echtes Abbrechen braucht Timeouts im Client oder eigene Abbruch-Flags.</li>
+</ol>
+</div>
+
+<h2>9. Aus dem Projekt</h2>
+<p>„Bei BAG DigiSanté antwortet die Upload-Funktion direkt nach dem Blob-Write; das Scan-Ergebnis verarbeitet eine separate Event-Hub-Funktion asynchron. Das ist dasselbe Prinzip wie eine Future: nicht warten, sondern auf das Ergebnis reagieren.“ <span class="small">(Prüfen und durch dein echtes Beispiel ersetzen. Konkreter CompletableFuture-Code ist im Profil nicht belegt.)</span></p>
+
+<h2>10. Fallen</h2>
+<div class="trap">
+<ul>
+  <li>„<code>cancel(true)</code> unterbricht den laufenden Task.“ → <b>Falsch.</b> Der Parameter hat keine Wirkung. Der Task läuft weiter.</li>
+  <li>„<code>supplyAsync</code> ohne Executor ist für REST-Calls okay.“ → <b>Falsch.</b> Es blockiert den geteilten commonPool.</li>
+  <li>„<code>thenApply</code> läuft immer in einem anderen Thread.“ → <b>Falsch.</b> Ist die Future fertig, läuft es im Aufrufer.</li>
+  <li>„<code>exceptionally</code> bekommt die Original-Exception.“ → <b>Nicht immer.</b> In Folge-Stufen kommt sie als <code>CompletionException</code>. <code>getCause()</code> prüfen.</li>
+  <li>„<code>allOf</code> liefert die Liste der Ergebnisse.“ → <b>Falsch.</b> Es liefert <code>CompletableFuture&lt;Void&gt;</code>. Die Ergebnisse liest man danach.</li>
+  <li>„<code>thenApply</code> mit einer Funktion, die eine Future zurückgibt, ist okay.“ → <b>Falsch.</b> Das ergibt eine verschachtelte Future. Dafür <code>thenCompose</code>.</li>
+</ul>
+</div>
+
+<h2>11. Fragen</h2>
+<details><summary>Was ist eine CompletableFuture?</summary><p>Ein Platzhalter für ein späteres Ergebnis. Man kann Schritte anhängen, Ergebnisse kombinieren und Fehler behandeln, ohne zu blockieren.</p></details>
+<details><summary>Was ist der Unterschied zu Future?</summary><p>Future hat nur ein blockierendes get(). CompletableFuture kann man verketten, kombinieren und von aussen abschliessen.</p></details>
+<details><summary>thenApply vs thenCompose?</summary><p>thenApply wandelt den Wert um, wie map. thenCompose hängt eine weitere asynchrone Aufgabe an und vermeidet eine verschachtelte Future, wie flatMap.</p></details>
+<details><summary>thenCombine vs thenCompose?</summary><p>thenCombine führt zwei unabhängige, parallele Ergebnisse zusammen. thenCompose ist sequentiell: der zweite Schritt braucht das erste Ergebnis.</p></details>
+<details><summary>Welcher Executor wird ohne Angabe genutzt?</summary><p>ForkJoinPool.commonPool(). Er ist JVM-weit geteilt und hat standardmässig Kerne minus 1 Threads.</p></details>
+<details><summary>Warum gehört I/O nicht in den commonPool?</summary><p>Blockierende Calls belegen die wenigen Threads. Andere Futures und parallele Streams warten dann.</p></details>
+<details><summary>thenApply vs thenApplyAsync?</summary><p>thenApplyAsync läuft immer im Executor. thenApply läuft im Thread, der die Future abschliesst, oder im Aufrufer, wenn sie schon fertig ist.</p></details>
+<details><summary>join vs get?</summary><p>join wirft eine unchecked CompletionException. get wirft checked ExecutionException und InterruptedException. Beide blockieren.</p></details>
+<details><summary>exceptionally vs handle vs whenComplete?</summary><p>exceptionally nur bei Fehler, liefert Ersatzwert. handle immer, liefert neuen Wert. whenComplete immer, ändert das Ergebnis nicht.</p></details>
+<details><summary>Wie geben Sie einem Call ein Timeout?</summary><p>orTimeout wirft TimeoutException, completeOnTimeout liefert einen Ersatzwert. Seit Java 9. Dazu ein Timeout im HTTP-Client.</p></details>
+<details><summary>Was macht cancel(true)?</summary><p>Es schliesst die Future mit CancellationException ab. Der laufende Task wird nicht unterbrochen.</p></details>
+<details><summary>allOf vs anyOf?</summary><p>allOf ist fertig, wenn alle fertig sind, und liefert Void. anyOf ist fertig mit dem ersten Ergebnis.</p></details>
+<details><summary>Wie sammeln Sie die Ergebnisse nach allOf?</summary><p>Nach allOf(...).join() jede Future mit join() lesen, z. B. per Stream. Sie blockieren dann nicht mehr.</p></details>
+<details><summary>Was passiert mit einer Exception in der Mitte der Kette?</summary><p>Die folgenden thenApply-Schritte werden übersprungen. Erst exceptionally, handle oder whenComplete sehen den Fehler.</p></details>
+<details><summary>Wie verbinden Sie eine Callback-API mit CompletableFuture?</summary><p>new CompletableFuture() erzeugen, im Callback complete(v) oder completeExceptionally(ex) aufrufen, die Future zurückgeben.</p></details>
+<details><summary>Warum fehlt im async Code die Trace-ID im Log?</summary><p>MDC und ThreadLocal hängen am Thread. Der Worker-Thread kennt sie nicht. Lösung: Kontext weitergeben, z. B. mit einem dekorierten Executor.</p></details>
+<details><summary>Kann ein Thread Pool mit CompletableFuture deadlocken?</summary><p>Ja. Wartet ein Task mit join() auf einen Task im selben vollen Pool, wartet er ewig. Lösung: nicht blockierend verketten.</p></details>
+<details><summary>CompletableFuture oder Virtual Threads?</summary><p>Für viele I/O-Calls sind Virtual Threads mit einfachem Code oft lesbarer. CompletableFuture bleibt gut für Kombinieren, Fallbacks und bestehende asynchrone APIs.</p></details>
+<details><summary>Was ist Structured Concurrency?</summary><p>Teilaufgaben eines Requests werden als eine Einheit gestartet, gewartet und gemeinsam abgebrochen. StructuredTaskScope ist in Java 25 noch Preview.</p></details>
+<details><summary>Was liefert Spring @Async zurück?</summary><p>Eine CompletableFuture oder void. Die Methode läuft im konfigurierten Spring-Executor, nur bei Aufruf über den Proxy.</p></details>
+<details><summary>Was sind resultNow und state?</summary><p>Seit Java 19. resultNow liefert das Ergebnis einer fertigen Future ohne Wartezeit. state zeigt RUNNING, SUCCESS, FAILED oder CANCELLED.</p></details>
+<details><summary>Szenario: Unter Last werden alle Endpoints langsam, auch die ohne DB. Der Thread Dump zeigt alle commonPool-Worker in socketRead. Was ist los?</summary><p>Blockierende I/O läuft im geteilten commonPool. Alle anderen Futures und parallelen Streams warten. Lösung: eigener begrenzter I/O-Executor und Timeouts.</p></details>
+<details><summary>Szenario: Ein Fehler im async Teil erscheint nie im Log. Warum?</summary><p>Niemand ruft join auf und keine Stufe behandelt den Fehler. Die Exception bleibt in der Future. Lösung: am Ende whenComplete oder exceptionally mit Log.</p></details>
+<details><summary>Szenario: Ein Endpoint ruft drei Services nacheinander auf und braucht 900 ms. Wie verbessern Sie das?</summary><p>Unabhängige Calls parallel mit supplyAsync im I/O-Pool starten und mit thenCombine oder allOf zusammenführen. Dazu orTimeout und Fallback mit handle. Die Last auf die Downstreams beachten.</p></details>
+
+</body>
+</html>

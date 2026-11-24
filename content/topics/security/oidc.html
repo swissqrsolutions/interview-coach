@@ -1,0 +1,214 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OpenID Connect</title>
+<style>
+  body { font: 17px/1.55 -apple-system, system-ui, sans-serif; max-width: 760px; margin: 0 auto; padding: 16px; color: #1d1d1f; }
+  h1 { font-size: 28px; margin: 8px 0 4px; }
+  h2 { font-size: 21px; margin: 32px 0 8px; padding-top: 12px; border-top: 2px solid #e5e5ea; }
+  .kern { background: #eef6ff; border-left: 4px solid #0a66c2; padding: 10px 14px; border-radius: 6px; }
+  .senior { background: #f0faf0; border-left: 4px solid #2e7d32; padding: 10px 14px; border-radius: 6px; }
+  .trap { background: #fff4f2; border-left: 4px solid #c62828; padding: 10px 14px; border-radius: 6px; }
+  code { background: #f2f2f7; padding: 1px 5px; border-radius: 4px; font-size: 15px; }
+  pre { background: #1e1e1e; color: #e6e6e6; padding: 12px; border-radius: 8px; overflow-x: auto; font-size: 13.5px; line-height: 1.45; }
+  svg { width: 100%; height: auto; display: block; margin: 10px 0; }
+  ol li, ul li { margin: 4px 0; }
+  details { border: 1px solid #e5e5ea; border-radius: 8px; padding: 8px 12px; margin: 6px 0; }
+  summary { font-weight: 600; cursor: pointer; }
+  details p { margin: 6px 0 2px; }
+  .small { color: #6e6e73; font-size: 14px; }
+</style>
+</head>
+<body>
+
+<h1>OpenID Connect</h1>
+<p class="small">Security · Tier 1 · Quellen: OpenID Connect Core 1.0, OpenID Connect Discovery 1.0, Keycloak Docs „Securing applications – OIDC layers“, Microsoft Learn „OpenID Connect on the Microsoft identity platform“, Spring Security 7.2 Reference (OAuth2 Login, Resource Server)</p>
+
+<div class="kern">
+<b>Kern:</b> <b>OpenID Connect</b> (OIDC) ist eine <b>Identitätsschicht</b> auf OAuth 2. Es fügt das <b>ID Token</b> hinzu: ein signiertes JWT, das dem Client sagt, <b>wer</b> sich angemeldet hat. OAuth gibt Zugriff, OIDC gibt Login.
+</div>
+
+<h2>1. Wo sitzt OIDC?</h2>
+<svg viewBox="0 0 720 300" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="a" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="10" y="10" width="700" height="44" rx="8" fill="#0a66c2"/><text x="360" y="38" text-anchor="middle" fill="#fff" font-weight="700">OpenID Connect: ID Token · UserInfo · Discovery · nonce · Logout</text>
+  <rect x="10" y="64" width="700" height="44" rx="8" fill="#dbe9fb" stroke="#0a66c2"/><text x="360" y="92" text-anchor="middle">OAuth 2: Authorization Code + PKCE · Access Token · Refresh Token · Scopes</text>
+  <rect x="10" y="118" width="700" height="36" rx="8" fill="#eee" stroke="#777"/><text x="360" y="141" text-anchor="middle">JWT / JWS / JWK · TLS · HTTP</text>
+  <rect x="20" y="190" width="150" height="56" rx="8" fill="#fff" stroke="#555"/><text x="95" y="214" text-anchor="middle" font-weight="700">Relying Party</text><text x="95" y="232" text-anchor="middle" font-size="12">= Client (App)</text>
+  <rect x="285" y="190" width="150" height="56" rx="8" fill="#fff" stroke="#555"/><text x="360" y="214" text-anchor="middle" font-weight="700">OpenID Provider</text><text x="360" y="232" text-anchor="middle" font-size="12">Keycloak, Entra ID</text>
+  <rect x="550" y="190" width="150" height="56" rx="8" fill="#e8f5e9" stroke="#2e7d32"/><text x="625" y="214" text-anchor="middle" font-weight="700">API</text><text x="625" y="232" text-anchor="middle" font-size="12">bekommt Access Token</text>
+  <line x1="170" y1="210" x2="283" y2="210" stroke="#555" stroke-width="2" marker-end="url(#a)"/><text x="226" y="202" text-anchor="middle" font-size="12">scope=openid</text>
+  <line x1="283" y1="232" x2="172" y2="232" stroke="#555" stroke-width="2" marker-end="url(#a)"/><text x="226" y="262" text-anchor="middle" font-size="12">ID Token → Client</text>
+  <line x1="170" y1="245" x2="548" y2="245" stroke="#2e7d32" stroke-width="2" stroke-dasharray="5 4" marker-end="url(#a)"/><text x="470" y="280" text-anchor="middle" font-size="12" fill="#2e7d32">Access Token → API</text>
+</svg>
+<ol>
+  <li><b>OpenID Provider (OP):</b> der Authorization Server mit OIDC-Funktionen. Er stellt ID Tokens aus. Beispiel: ein Keycloak-Realm.</li>
+  <li><b>Relying Party (RP):</b> der Client, der dem OP die Identität glaubt. Beispiel: eine Spring-Boot-Web-App mit <code>oauth2Login()</code>.</li>
+  <li><b>Scope <code>openid</code>:</b> macht aus einem OAuth-Request einen OIDC-Request. Ohne ihn gibt es kein ID Token.</li>
+  <li><b>ID Token:</b> geht an den Client. <b>Access Token:</b> geht an die API. Das ist die wichtigste Trennung.</li>
+</ol>
+
+<h2>2. Die Reise eines Logins (die Geschichte zum Merken)</h2>
+<svg viewBox="0 0 720 330" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="b" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="10" y="20" width="160" height="60" rx="10" fill="#eee" stroke="#777"/><text x="90" y="45" text-anchor="middle" font-weight="700">1. Discovery</text><text x="90" y="64" text-anchor="middle" font-size="12">.well-known</text>
+  <line x1="170" y1="50" x2="198" y2="50" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="200" y="20" width="160" height="60" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="280" y="45" text-anchor="middle" font-weight="700">2. /authorize</text><text x="280" y="64" text-anchor="middle" font-size="12">openid + nonce</text>
+  <line x1="360" y1="50" x2="388" y2="50" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="390" y="20" width="150" height="60" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="465" y="45" text-anchor="middle" font-weight="700">3. Login</text><text x="465" y="64" text-anchor="middle" font-size="12">beim OP, MFA</text>
+  <line x1="540" y1="50" x2="568" y2="50" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="570" y="20" width="140" height="60" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="640" y="45" text-anchor="middle" font-weight="700">4. /token</text><text x="640" y="64" text-anchor="middle" font-size="12">Code + Verifier</text>
+  <line x1="640" y1="80" x2="640" y2="128" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="470" y="130" width="240" height="70" rx="10" fill="#0a66c2"/><text x="590" y="155" text-anchor="middle" fill="#fff" font-weight="700">5. ID Token prüfen</text><text x="590" y="175" text-anchor="middle" fill="#fff" font-size="12">Signatur (JWKS), iss, aud,</text><text x="590" y="191" text-anchor="middle" fill="#fff" font-size="12">exp, nonce</text>
+  <line x1="470" y1="165" x2="388" y2="165" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="200" y="130" width="186" height="70" rx="10" fill="#e8f5e9" stroke="#2e7d32"/><text x="293" y="155" text-anchor="middle" font-weight="700">6. Session</text><text x="293" y="175" text-anchor="middle" font-size="12">Benutzer = iss + sub</text><text x="293" y="191" text-anchor="middle" font-size="12">Cookie an Browser</text>
+  <line x1="293" y1="200" x2="293" y2="248" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="140" y="250" width="310" height="60" rx="10" fill="#fff" stroke="#555"/><text x="295" y="275" text-anchor="middle" font-weight="700">7. Optional: /userinfo</text><text x="295" y="294" text-anchor="middle" font-size="12">mit Access Token, sub muss passen</text>
+</svg>
+<ol>
+  <li><b>Discovery.</b> Der Client liest <code>{issuer}/.well-known/openid-configuration</code>. Dort stehen alle Endpoints und die <code>jwks_uri</code>. Keine URL ist hart kodiert.</li>
+  <li><b>Authorization Request.</b> Der Client schickt den Browser zu <code>/authorize</code> mit <code>scope=openid profile email</code>, <code>state</code>, <code>nonce</code> und PKCE.</li>
+  <li><b>Login beim OP.</b> Anna meldet sich bei Keycloak an. Der Client sieht kein Passwort. Keycloak kann dabei an LDAP oder einen anderen IdP weiterleiten.</li>
+  <li><b>Token-Tausch.</b> Der Client tauscht den Code gegen ID Token, Access Token und Refresh Token.</li>
+  <li><b>ID Token prüfen.</b> Signatur mit dem Schlüssel aus dem JWKS, <code>iss</code> exakt, <code>aud</code> enthält die eigene <code>client_id</code>, <code>exp</code> in der Zukunft, <code>nonce</code> gleich dem gesendeten Wert.</li>
+  <li><b>Session.</b> Der Client merkt sich den Benutzer über <b>iss + sub</b>. Der Browser bekommt ein Session-Cookie.</li>
+  <li><b>UserInfo (optional).</b> Für mehr Profildaten ruft der Client <code>/userinfo</code> mit dem Access Token auf. Das <code>sub</code> der Antwort muss exakt dem <code>sub</code> im ID Token entsprechen.</li>
+</ol>
+
+<h2>3. Beispiel: ID Token vs Access Token</h2>
+<pre>ISS = "https://sso.example.ch/realms/demo"
+id_token = {"iss": ISS, "sub": "f3a9c2e1", "aud": "web-ui", "azp": "web-ui",
+            "exp": NOW + 300, "iat": NOW, "auth_time": NOW - 5, "nonce": "n-8Kq2",
+            "preferred_username": "anna", "email": "anna@example.ch"}
+access_token = {"iss": ISS, "sub": "f3a9c2e1", "aud": "reports-api", "azp": "web-ui",
+                "exp": NOW + 300, "iat": NOW, "scope": "openid profile email reports.read",
+                "realm_access": {"roles": ["analyst"]}}
+
+def check_id_token(tok, client_id, sent_nonce, now):   # iss, aud, exp, nonce
+    ...</pre>
+<pre>$ python -I oidc_demo.py
+ID Token claims    : ['aud', 'auth_time', 'azp', 'email', 'exp', 'iat', 'iss', 'nonce', 'preferred_username', 'sub']
+Access Token claims: ['aud', 'azp', 'exp', 'iat', 'iss', 'realm_access', 'scope', 'sub']
+1) ID Token im Client      : iss=ok, aud enthaelt client_id=ok, exp=ok, nonce=ok
+2) ID Token, Replay (nonce): iss=ok, aud enthaelt client_id=ok, exp=ok, nonce=FAIL
+3) Access Token als ID Token: iss=ok, aud enthaelt client_id=FAIL, exp=ok, nonce=FAIL</pre>
+<p class="small">Echte Ausgabe, Python 3.12. Die Claims sind konstruiert, wie sie Keycloak typischerweise ausstellt. Die Signaturprüfung ist hier weggelassen (siehe Seite JWT).</p>
+<ol>
+  <li>Das ID Token hat <code>aud = client_id</code> der Web-App, <code>nonce</code> und <code>auth_time</code>. Es beschreibt den <b>Login</b>.</li>
+  <li>Das Access Token hat <code>aud = reports-api</code>, <code>scope</code> und Rollen. Es beschreibt den <b>Zugriff</b>.</li>
+  <li>Ein abgefangenes ID Token aus einem anderen Login hat eine andere <code>nonce</code>: Replay erkannt.</li>
+  <li>Wer ein Access Token als Login-Beweis nimmt, scheitert an <code>aud</code> und <code>nonce</code>. Das ist richtig so.</li>
+</ol>
+<p>Spring Boot als Relying Party (Keycloak):</p>
+<pre>spring:
+  security:
+    oauth2:
+      client:
+        registration:
+          keycloak:
+            client-id: web-ui
+            client-secret: ${KEYCLOAK_CLIENT_SECRET}
+            scope: openid, profile, email
+        provider:
+          keycloak:
+            issuer-uri: https://sso.example.ch/realms/demo   # Discovery von hier</pre>
+<pre>http.oauth2Login(Customizer.withDefaults());   // Code + PKCE, nonce, ID-Token-Prüfung</pre>
+
+<h2>4. Details, die Interviewer fragen</h2>
+<ol>
+  <li><b>Pflicht-Claims im ID Token:</b> <code>iss</code>, <code>sub</code>, <code>aud</code>, <code>exp</code>, <code>iat</code>. <code>nonce</code> ist Pflicht, wenn der Request eine nonce hatte. <code>auth_time</code> ist Pflicht bei <code>max_age</code>.</li>
+  <li><b>sub:</b> eine lokal eindeutige, nie neu vergebene ID innerhalb des Issuers, max. 255 ASCII-Zeichen. Der stabile Schlüssel ist <b>iss + sub</b>, nicht die E-Mail.</li>
+  <li><b>azp:</b> <b>Authorized Party</b>, die <code>client_id</code>, für die das Token ausgestellt wurde. Wichtig, wenn <code>aud</code> mehrere Werte hat.</li>
+  <li><b>acr und amr:</b> <code>acr</code> beschreibt die Stärke der Anmeldung, <code>amr</code> die Methoden (z. B. <code>pwd</code>, <code>otp</code>). Damit prüft eine App, ob MFA stattfand.</li>
+  <li><b>Standard-Scopes:</b> <code>profile</code> (Name, <code>preferred_username</code>, <code>locale</code> …), <code>email</code> (<code>email</code>, <code>email_verified</code>), <code>address</code>, <code>phone</code>. <code>openid</code> ist Pflicht.</li>
+  <li><b>Discovery:</b> <code>/.well-known/openid-configuration</code> liefert <code>issuer</code>, <code>authorization_endpoint</code>, <code>token_endpoint</code>, <code>userinfo_endpoint</code>, <code>jwks_uri</code>, unterstützte Algorithmen und Scopes. Der <code>issuer</code> darin muss exakt zum <code>iss</code> passen.</li>
+  <li><b>UserInfo:</b> Standard ist JSON, signiert nur auf Wunsch. Aufruf mit Access Token. Das <code>sub</code> muss mit dem ID Token übereinstimmen, sonst Daten verwerfen.</li>
+  <li><b>Keycloak-Pfade:</b> Issuer ist <code>https://host/realms/{realm}</code>. Endpoints unter <code>/realms/{realm}/protocol/openid-connect/</code>: <code>auth</code>, <code>token</code>, <code>userinfo</code>, <code>certs</code> (JWKS), <code>logout</code>, <code>token/introspect</code>.</li>
+  <li><b>Entra-ID-Pfade:</b> Authority ist <code>https://login.microsoftonline.com/{tenant}/v2.0</code>, Discovery darunter. JWKS unter <code>/discovery/v2.0/keys</code>. UserInfo liegt bei Microsoft Graph. <code>{tenant}</code> kann eine Tenant-ID oder <code>common</code>, <code>organizations</code>, <code>consumers</code> sein.</li>
+  <li><b>Entra: fremde Tokens nicht prüfen.</b> Microsoft sagt: Tokens für APIs, die man nicht besitzt (z. B. Graph), nicht selbst validieren. Sie können ein spezielles Format haben.</li>
+  <li><b>Logout:</b> <b>RP-Initiated Logout</b> leitet zum <code>end_session_endpoint</code>. <b>Back-Channel Logout</b> schickt ein Logout-Token Server-zu-Server. <b>Front-Channel Logout</b> ruft eine URL im Browser auf. Die eigene Session muss die App immer selbst löschen.</li>
+  <li><b>Hybrid und Implicit in OIDC:</b> <code>response_type=id_token</code> gibt es noch in der Spezifikation. Empfehlung heute: nur <code>code</code> mit PKCE.</li>
+</ol>
+
+<h2>5. Vergleich</h2>
+<ul>
+  <li><b>ID Token:</b> für den Client. Zweck: Login-Beweis. <code>aud</code> = client_id. Immer JWT. Nicht an APIs schicken.</li>
+  <li><b>Access Token:</b> für die API. Zweck: Zugriff. <code>aud</code> = API. JWT oder opaque. Der Client soll ihn nicht interpretieren.</li>
+  <li><b>Refresh Token:</b> für den Authorization Server. Zweck: neue Tokens. Meist opaque.</li>
+  <li><b>OIDC vs SAML 2.0:</b> beide machen SSO. SAML nutzt XML-Assertions und Browser-POST, verbreitet in alten Enterprise-Apps. OIDC nutzt JSON/JWT und passt zu SPAs, Mobile und APIs.</li>
+  <li><b>OIDC vs reines OAuth:</b> OAuth sagt nur „dieser Token darf X“. OIDC sagt zusätzlich „das ist Anna, angemeldet um 9:02 mit MFA“.</li>
+  <li><b>Keycloak vs Entra ID:</b> Keycloak ist Open Source und selbst betrieben, mit Realms, LDAP-Föderation und Identity Brokering. Entra ID ist SaaS von Microsoft, stark integriert mit Azure und Managed Identities.</li>
+</ul>
+
+<h2>6. In der Produktion</h2>
+<ol>
+  <li><b>Login über Access Token:</b> Eine App nimmt ein beliebiges gültiges Access Token als Login. Ein Token für eine andere App reicht dann zum Login. Lösung: ID Token mit <code>aud</code> und <code>nonce</code> prüfen.</li>
+  <li><b>Benutzer per E-Mail verknüpft:</b> E-Mail ändert sich oder ist nicht verifiziert. Ein Angreifer übernimmt ein Konto. Lösung: Schlüssel <code>iss + sub</code>, E-Mail nur mit <code>email_verified</code>.</li>
+  <li><b>Issuer passt nicht:</b> Keycloak hinter Proxy meldet <code>http://keycloak:8080/realms/demo</code>, die App erwartet <code>https://sso…</code>. Validierung schlägt fehl. Lösung: Hostname von Keycloak richtig konfigurieren (<code>hostname</code>-Option), Proxy-Header.</li>
+  <li><b>Multi-Tenant mit <code>common</code>:</b> Das <code>iss</code> enthält die Tenant-ID jedes Benutzers. Eine feste Issuer-Prüfung schlägt fehl, keine Prüfung lässt fremde Tenants herein. Lösung: Liste erlaubter Tenants prüfen.</li>
+  <li><b>Logout unvollständig:</b> Die App löscht ihre Session, aber die SSO-Session bei Keycloak lebt. Der nächste Klick meldet still wieder an. Lösung: RP-Initiated Logout zusätzlich.</li>
+  <li><b>Zu grosse Tokens:</b> Alle Gruppen im Token, der Header wird zu gross, Proxy oder Server lehnt ab (HTTP 431 oder 400). Lösung: Claims mit Mappern begrenzen, Gruppen serverseitig nachladen.</li>
+</ol>
+
+<h2>7. Diagnose: Werkzeuge und Befehle</h2>
+<ul>
+  <li><code>curl -s https://sso.example.ch/realms/demo/.well-known/openid-configuration | jq .issuer,.jwks_uri</code>: stimmt der Issuer?</li>
+  <li><code>curl -s …/protocol/openid-connect/certs | jq '.keys[].kid'</code>: welche Schlüssel sind aktiv?</li>
+  <li><b>Token dekodieren:</b> Header und Payload lokal base64url-dekodieren. Prüfen: <code>iss</code>, <code>aud</code>, <code>azp</code>, <code>exp</code>, <code>kid</code>.</li>
+  <li><b>Keycloak:</b> Client → Client scopes → „Evaluate“ zeigt das ID Token, Access Token und die UserInfo eines Benutzers.</li>
+  <li><b>Entra ID:</b> App registrations → Endpoints zeigt das Metadata-Dokument. Sign-in-Logs zeigen Fehlercodes.</li>
+  <li><b>Spring:</b> <code>logging.level.org.springframework.security=DEBUG</code>, Fehler wie <code>invalid_id_token</code> oder <code>invalid_nonce</code>.</li>
+</ul>
+
+<h2>8. Senior-Punkte</h2>
+<div class="senior">
+<ol>
+  <li><b>Identität und Zugriff trennen.</b> ID Token nur im Client, Access Token nur an APIs. Diese Regel verhindert die meisten OIDC-Fehler.</li>
+  <li><b>Bibliothek statt Eigenbau.</b> Validierung, Discovery und Key-Rotation sind fehleranfällig. Spring Security, MSAL oder ein zertifizierter Client machen das richtig.</li>
+  <li><b>Ein zentraler IdP</b> gibt SSO, MFA und ein Audit an einer Stelle. Preis: Der IdP ist kritische Infrastruktur und braucht HA, Backup und Monitoring.</li>
+  <li><b>Keycloak oder Entra ID</b> ist eine Betriebsentscheidung: Selbst betreiben gibt Kontrolle und Datenhoheit, SaaS spart Betrieb und bringt Azure-Integration.</li>
+  <li><b>Claims sparsam.</b> Jedes Claim ist ein Datenschutz-Thema (DSG) und macht Tokens grösser. Nur das, was der Client wirklich braucht.</li>
+  <li><b>Logout ist verteilt.</b> App-Session, IdP-Session und Tokens enden nicht automatisch zusammen. Das muss man bewusst entwerfen.</li>
+</ol>
+</div>
+
+<h2>9. Aus dem Projekt</h2>
+<p>„Bei MATCH läuft der Login der WebUI über Keycloak, das wir im Helm-Chart mitdeployen. Bei CARIAD war Keycloak mit LDAP angebunden.“ <span class="small">(Prüfen und durch dein echtes Beispiel ersetzen.)</span></p>
+
+<h2>10. Fallen</h2>
+<div class="trap">
+<ul>
+  <li>„OIDC ist eine Alternative zu OAuth.“ → <b>Falsch.</b> OIDC baut auf OAuth 2 auf und nutzt dessen Flows.</li>
+  <li>„Das ID Token schicke ich an die API.“ → <b>Falsch.</b> Die API bekommt das Access Token. Das ID Token ist für den Client.</li>
+  <li>„Die E-Mail ist die Benutzer-ID.“ → <b>Falsch.</b> Die stabile ID ist <code>iss + sub</code>.</li>
+  <li>„UserInfo ist immer signiert.“ → <b>Falsch.</b> Standard ist einfaches JSON über TLS. Signiert nur auf Wunsch.</li>
+  <li>„Logout in der App meldet auch bei Keycloak ab.“ → <b>Falsch.</b> Dafür braucht es RP-Initiated Logout.</li>
+</ul>
+</div>
+
+<h2>11. Fragen</h2>
+<details><summary>Was ist OpenID Connect?</summary><p>Eine Identitätsschicht auf OAuth 2. Sie fügt das ID Token, den UserInfo-Endpoint und Discovery hinzu. Damit kann sich ein Benutzer bei einer App anmelden.</p></details>
+<details><summary>Was ist der Unterschied zwischen ID Token und Access Token?</summary><p>Das ID Token sagt dem Client, wer sich angemeldet hat, aud ist die client_id. Das Access Token gibt Zugriff auf eine API, aud ist die API.</p></details>
+<details><summary>Welche Claims muss ein ID Token haben?</summary><p>iss, sub, aud, exp und iat. Dazu nonce, wenn der Request eine nonce hatte, und auth_time bei max_age.</p></details>
+<details><summary>Wie prüft ein Client das ID Token?</summary><p>Signatur mit dem JWKS-Schlüssel, iss exakt, aud enthält die client_id, exp nicht vorbei, iat plausibel, nonce gleich dem gesendeten Wert.</p></details>
+<details><summary>Wofür ist die nonce?</summary><p>Sie bindet das ID Token an genau diesen Login-Request. Ein abgefangenes Token aus einem anderen Login wird so erkannt.</p></details>
+<details><summary>Was ist sub, und warum nicht die E-Mail als ID?</summary><p>sub ist eine lokal eindeutige, nie neu vergebene ID beim Issuer. E-Mails ändern sich und sind nicht immer verifiziert. Schlüssel ist iss + sub.</p></details>
+<details><summary>Was ist azp?</summary><p>Die Authorized Party, also die client_id, für die das Token ausgestellt wurde. Relevant, wenn aud mehrere Werte enthält.</p></details>
+<details><summary>Was ist das Discovery-Dokument?</summary><p>JSON unter /.well-known/openid-configuration mit issuer, allen Endpoints, jwks_uri und unterstützten Algorithmen. Clients konfigurieren sich daraus selbst.</p></details>
+<details><summary>Was liefert der UserInfo-Endpoint?</summary><p>Profil-Claims des Benutzers, aufgerufen mit dem Access Token. Standard ist JSON. sub muss mit dem ID Token übereinstimmen.</p></details>
+<details><summary>Welche Standard-Scopes gibt es?</summary><p>openid (Pflicht), profile, email, address und phone. Jeder Scope steht für eine Gruppe von Claims.</p></details>
+<details><summary>Was sind acr und amr?</summary><p>acr beschreibt die Stärke der Authentifizierung, amr die benutzten Methoden. Damit prüft eine App z. B., ob MFA benutzt wurde.</p></details>
+<details><summary>Wie sieht die Issuer-URL bei Keycloak aus?</summary><p>https://host/realms/{realm}. Die Endpoints liegen unter /realms/{realm}/protocol/openid-connect/, z. B. token und certs.</p></details>
+<details><summary>Was ist bei Entra ID mit „common“ zu beachten?</summary><p>Dann können Benutzer aus vielen Tenants kommen, und iss enthält deren Tenant-ID. Die App muss die erlaubten Tenants selbst prüfen.</p></details>
+<details><summary>Welche Logout-Varianten gibt es?</summary><p>RP-Initiated Logout über den end_session_endpoint, Back-Channel Logout Server-zu-Server und Front-Channel Logout im Browser. Die App muss ihre eigene Session immer selbst löschen.</p></details>
+<details><summary>OIDC oder SAML?</summary><p>Beide machen SSO. OIDC ist JSON/JWT-basiert und passt zu SPAs, Mobile und APIs. SAML ist XML-basiert und vor allem in älteren Enterprise-Apps verbreitet.</p></details>
+<details><summary>Wie konfigurieren Sie Spring Boot als OIDC-Client?</summary><p>spring-boot-starter-oauth2-client, eine Registration mit client-id und scope openid, issuer-uri beim Provider, dazu http.oauth2Login(). Spring macht Discovery und ID-Token-Prüfung.</p></details>
+<details><summary>Warum soll ein Client das Access Token nicht lesen?</summary><p>Es ist für die API bestimmt, das Format kann sich ändern oder opaque sein. Microsoft warnt ausdrücklich davor, z. B. Graph-Tokens selbst zu validieren.</p></details>
+<details><summary>Szenario: Nach dem Umzug von Keycloak hinter einen Ingress schlägt die Token-Validierung fehl. Was prüfen Sie?</summary><p>Den issuer im Discovery-Dokument gegen iss im Token und gegen die konfigurierte issuer-uri. Meist stimmt Hostname oder Schema nicht. Lösung: Keycloak-Hostname und Proxy-Header richtig setzen.</p></details>
+<details><summary>Szenario: Ein Benutzer ist nach Logout sofort wieder angemeldet. Warum?</summary><p>Die App hat nur ihre eigene Session gelöscht, die SSO-Session beim IdP lebt noch. Lösung: zusätzlich RP-Initiated Logout zum end_session_endpoint.</p></details>
+<details><summary>Szenario: Eine zweite App akzeptiert Tokens der ersten App als Login. Was ist falsch?</summary><p>Sie prüft aud nicht oder nutzt Access Tokens als Login. Lösung: ID Token prüfen, aud muss die eigene client_id sein, dazu nonce.</p></details>
+
+</body>
+</html>

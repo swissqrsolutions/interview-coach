@@ -1,0 +1,211 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Autoboxing und Integer-Cache</title>
+<style>
+  body { font: 17px/1.55 -apple-system, system-ui, sans-serif; max-width: 760px; margin: 0 auto; padding: 16px; color: #1d1d1f; }
+  h1 { font-size: 28px; margin: 8px 0 4px; }
+  h2 { font-size: 21px; margin: 32px 0 8px; padding-top: 12px; border-top: 2px solid #e5e5ea; }
+  .kern { background: #eef6ff; border-left: 4px solid #0a66c2; padding: 10px 14px; border-radius: 6px; }
+  .senior { background: #f0faf0; border-left: 4px solid #2e7d32; padding: 10px 14px; border-radius: 6px; }
+  .trap { background: #fff4f2; border-left: 4px solid #c62828; padding: 10px 14px; border-radius: 6px; }
+  code { background: #f2f2f7; padding: 1px 5px; border-radius: 4px; font-size: 15px; }
+  pre { background: #1e1e1e; color: #e6e6e6; padding: 12px; border-radius: 8px; overflow-x: auto; font-size: 13.5px; line-height: 1.45; }
+  svg { width: 100%; height: auto; display: block; margin: 10px 0; }
+  ol li, ul li { margin: 4px 0; }
+  details { border: 1px solid #e5e5ea; border-radius: 8px; padding: 8px 12px; margin: 6px 0; }
+  summary { font-weight: 600; cursor: pointer; }
+  details p { margin: 6px 0 2px; }
+  .small { color: #6e6e73; font-size: 14px; }
+</style>
+</head>
+<body>
+
+<h1>Primitive vs Wrapper, Autoboxing, Integer-Cache</h1>
+<p class="small">Java · Tier 2 · Quellen: JLS 21 (§4.2 Primitive Types, §5.1.7 Boxing, §5.1.8 Unboxing, §15.25 Conditional Operator, §15.21 Equality), Java SE 25 API-Doku (<code>Integer.valueOf</code>, <code>Integer</code> Konstruktoren, Value-based Classes), JEP 390 (Warnings for Value-Based Classes, Java 16)</p>
+
+<div class="kern">
+<b>Kern:</b> Java hat 8 <b>primitive Typen</b> (<code>int</code>, <code>long</code> …) und zu jedem eine <b>Wrapper-Klasse</b> (<code>Integer</code>, <code>Long</code> …). <b>Autoboxing</b> ist die automatische Umwandlung primitiv → Wrapper, <b>Unboxing</b> die Rückrichtung. Das löst das Problem, dass Collections und Generics nur Objekte speichern; der Preis sind Objekte auf dem Heap, <code>null</code>-Gefahr und <code>==</code>-Fallen.
+</div>
+
+<h2>1. Wo sitzen Primitive und Wrapper?</h2>
+<svg viewBox="0 0 720 290" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="a" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="10" y="20" width="250" height="250" rx="12" fill="#f7f7fa" stroke="#999" stroke-dasharray="5 4"/><text x="135" y="42" text-anchor="middle" font-weight="700">Stack (Thread)</text>
+  <rect x="30" y="60" width="210" height="40" rx="6" fill="#dbe9fb" stroke="#0a66c2"/><text x="135" y="85" text-anchor="middle">int x = 5   (4 Bytes, Wert)</text>
+  <rect x="30" y="120" width="210" height="40" rx="6" fill="#fff" stroke="#555"/><text x="135" y="145" text-anchor="middle">Integer a = 127   (Referenz)</text>
+  <rect x="30" y="180" width="210" height="40" rx="6" fill="#fff" stroke="#555"/><text x="135" y="205" text-anchor="middle">Integer b = 1000  (Referenz)</text>
+  <rect x="300" y="20" width="410" height="250" rx="12" fill="#f7f7fa" stroke="#999" stroke-dasharray="5 4"/><text x="505" y="42" text-anchor="middle" font-weight="700">Heap</text>
+  <rect x="320" y="60" width="370" height="80" rx="8" fill="#e8f5e9" stroke="#2e7d32"/><text x="505" y="84" text-anchor="middle" font-weight="700">IntegerCache: Integer[-128 … 127]</text><text x="505" y="106" text-anchor="middle" font-size="12">einmal angelegt, von allen geteilt</text><text x="505" y="124" text-anchor="middle" font-size="12">Obergrenze per -XX:AutoBoxCacheMax</text>
+  <rect x="320" y="170" width="370" height="60" rx="8" fill="#fff" stroke="#555"/><text x="505" y="194" text-anchor="middle" font-weight="700">new Integer-Objekt (1000)</text><text x="505" y="214" text-anchor="middle" font-size="12">Header + int ≈ 16 Bytes, bei jedem Boxing neu</text>
+  <line x1="240" y1="140" x2="318" y2="110" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <line x1="240" y1="200" x2="318" y2="200" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+</svg>
+<ol>
+  <li><b>Primitive</b> (<code>boolean</code>, <code>byte</code>, <code>short</code>, <code>char</code>, <code>int</code>, <code>long</code>, <code>float</code>, <code>double</code>): Der Wert selbst steht in der Variable. Kein Objekt, kein <code>null</code>.</li>
+  <li><b>Wrapper</b> (<code>Boolean</code>, <code>Byte</code>, <code>Short</code>, <code>Character</code>, <code>Integer</code>, <code>Long</code>, <code>Float</code>, <code>Double</code>): ein unveränderliches Objekt auf dem Heap. Die Variable hält nur eine Referenz.</li>
+  <li><b>IntegerCache:</b> Für Werte von -128 bis 127 gibt <code>Integer.valueOf</code> immer dasselbe vorbereitete Objekt zurück.</li>
+  <li><b>Andere Werte:</b> Jedes Boxing ausserhalb des Caches erzeugt ein neues Objekt mit Header, ca. 16 Bytes statt 4.</li>
+</ol>
+
+<h2>2. Die Reise eines Werts durch Boxing und Unboxing (die Geschichte zum Merken)</h2>
+<svg viewBox="0 0 720 280" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="b" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker><marker id="r" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#c62828"/></marker></defs>
+  <rect x="10" y="40" width="140" height="70" rx="10" fill="#eee" stroke="#777"/><text x="80" y="68" text-anchor="middle" font-weight="700">1. int 128</text><text x="80" y="90" text-anchor="middle" font-size="12">list.add(128)</text>
+  <line x1="150" y1="75" x2="188" y2="75" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="190" y="40" width="170" height="70" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="275" y="68" text-anchor="middle" font-weight="700">2. javac fügt ein</text><text x="275" y="90" text-anchor="middle" font-size="12">Integer.valueOf(128)</text>
+  <line x1="360" y1="75" x2="398" y2="75" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="400" y="40" width="150" height="70" rx="10" fill="#0a66c2"/><text x="475" y="68" text-anchor="middle" fill="#fff" font-weight="700">3. Cache?</text><text x="475" y="90" text-anchor="middle" fill="#fff" font-size="12">nein → new Objekt</text>
+  <line x1="550" y1="75" x2="588" y2="75" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="590" y="40" width="120" height="70" rx="10" fill="#fff" stroke="#555"/><text x="650" y="68" text-anchor="middle" font-weight="700">4. in Liste</text><text x="650" y="90" text-anchor="middle" font-size="12">Referenz</text>
+  <line x1="650" y1="110" x2="650" y2="158" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="470" y="160" width="240" height="70" rx="10" fill="#e8f5e9" stroke="#2e7d32"/><text x="590" y="188" text-anchor="middle" font-weight="700">5. int y = list.get(0)</text><text x="590" y="210" text-anchor="middle" font-size="12">javac: .intValue()</text>
+  <line x1="470" y1="195" x2="368" y2="195" stroke="#c62828" stroke-width="2" stroke-dasharray="6 4" marker-end="url(#r)"/>
+  <rect x="120" y="160" width="246" height="70" rx="10" fill="#fff4f2" stroke="#c62828"/><text x="243" y="188" text-anchor="middle" font-weight="700" fill="#c62828">6. war es null?</text><text x="243" y="210" text-anchor="middle" font-size="12">null.intValue() → NPE</text>
+</svg>
+<ol>
+  <li><b>Primitiver Wert:</b> Der Code ruft <code>list.add(128)</code> auf. Die Liste erwartet aber ein <code>Integer</code>.</li>
+  <li><b>Compiler:</b> javac fügt still <code>Integer.valueOf(128)</code> ein. Das ist <b>Autoboxing</b>. Es passiert beim Kompilieren, nicht zur Laufzeit-Magie.</li>
+  <li><b>Cache-Prüfung:</b> <code>valueOf</code> schaut in den <b>IntegerCache</b>. 128 liegt ausserhalb von -128…127. Darum entsteht ein neues Objekt.</li>
+  <li><b>In der Liste:</b> Die Liste speichert die Referenz auf das Objekt.</li>
+  <li><b>Unboxing:</b> <code>int y = list.get(0)</code> wird zu <code>list.get(0).intValue()</code>.</li>
+  <li><b>Gefahr:</b> Ist die Referenz <code>null</code>, wirft <code>intValue()</code> eine <code>NullPointerException</code>. In der Zeile steht aber kein sichtbarer Methodenaufruf.</li>
+</ol>
+
+<h2>3. Beispiel: Cache, NPE, Ternary, equals, remove, Performance</h2>
+<pre>Integer a1 = 127, b1 = 127, a2 = 128, b2 = 128;  a1 == b1; a2 == b2;  // 1)
+int count = map.get("missing");                                     // 2)
+Integer r = flag ? 1 : nul;   // nul ist (Integer) null              // 3)
+Long l = 1L; Integer i = 1;  l.equals(i); l == 1;                    // 4)
+List&lt;Integer&gt; list = [10, 20, 30, 1]; list.remove(1); list.remove(Integer.valueOf(1)); // 5)
+Long sumBoxed = 0L; for (k &lt; 50 Mio.) sumBoxed += k;  vs  long sum    // 6)
+Integer/Long/Double.valueOf(…) == …                                  // 7)
+Integer big1 = 1000, big2 = 1000; big1 == big2;                      // 8)
+Object o = 42; 'A' + 1; Integer.MAX_VALUE + 1;                        // 9) 10)</pre>
+<pre>1) 127==127: true, 128==128: false, 128.equals(128): true
+2) int count = map.get(missing): NullPointerException
+3) flag ? 1 : (Integer) null -&gt; NullPointerException (unboxing in ternary)
+4) Long(1).equals(Integer(1)): false, l == 1: true
+5) remove(1) removes INDEX 1 -&gt; [10, 30, 1], remove(Integer.valueOf(1)) -&gt; [10, 30]
+6) run 1: Long sum 287 ms, long sum 42 ms (equal=true)
+6) run 2: Long sum 233 ms, long sum 28 ms (equal=true)
+7) Integer.valueOf(127)==Integer.valueOf(127): true, Long.valueOf(127)==Long.valueOf(127): true, Double.valueOf(1.0)==Double.valueOf(1.0): false
+8) 1000==1000: false
+9) Object o = 42 -&gt; java.lang.Integer
+10) 'A' + 1 = 66, (char) = B, Integer.MAX_VALUE + 1 = -2147483648
+--- with -XX:AutoBoxCacheMax=1000
+1) 127==127: true, 128==128: true, 128.equals(128): true
+8) 1000==1000: true</pre>
+<p class="small">Echte Ausgabe, Oracle JDK 17.0.3. Zeiten bei 6) ändern sich pro Lauf. Der zweite Block ist ein zweiter Lauf mit <code>-XX:AutoBoxCacheMax=1000</code> (nur die geänderten Zeilen). Java 21 und 25 verhalten sich gleich.</p>
+<ol>
+  <li>127 kommt aus dem Cache: gleiches Objekt, <code>==</code> ist true. 128 sind zwei Objekte: <code>==</code> ist false. <code>equals</code> vergleicht den Wert und ist korrekt.</li>
+  <li>Ein fehlender Map-Eintrag ist <code>null</code>. Das Unboxing in <code>int</code> wirft eine NPE.</li>
+  <li>Im Ternary ist ein Zweig <code>int</code>. Darum ist der Typ des ganzen Ausdrucks <code>int</code>. Java unboxt den <code>null</code>-Zweig: NPE.</li>
+  <li><code>Long.equals(Integer)</code> ist false: verschiedene Klassen. <code>l == 1</code> unboxt <code>l</code> und vergleicht Zahlen: true.</li>
+  <li><code>remove(1)</code> wählt <code>remove(int index)</code>, nicht <code>remove(Object)</code>. Ohne Boxing gewinnt die primitive Überladung.</li>
+  <li>Ein <code>Long</code> als Summe erzeugt in jeder Runde ein neues Objekt. 7- bis 8-mal langsamer als <code>long</code>.</li>
+  <li><code>Long</code> hat auch einen Cache für -128…127. <code>Double</code> und <code>Float</code> haben keinen.</li>
+  <li>1000 liegt ausserhalb des Standard-Caches. Mit <code>-XX:AutoBoxCacheMax=1000</code> wird er grösser, und <code>==</code> ist true. Das ist kein Grund, <code>==</code> zu nutzen.</li>
+  <li>Ein <code>int</code> in einer <code>Object</code>-Variable wird ein <code>Integer</code>.</li>
+  <li><code>char</code> ist ein Zahlentyp (UTF-16-Code). Primitive Ganzzahlen laufen still über.</li>
+</ol>
+
+<h2>4. Details, die Interviewer fragen</h2>
+<ol>
+  <li><b>Was javac erzeugt:</b> Boxing wird zu <code>Integer.valueOf(x)</code>. Unboxing wird zu <code>x.intValue()</code>. Mit <code>javap -c</code> sieht man die Aufrufe.</li>
+  <li><b>Cache-Regel (JLS §5.1.7):</b> Für konstante Werte <code>true</code>/<code>false</code>, <code>char</code> bis <code>\u007f</code> und Ganzzahlen von -128 bis 127 liefert Boxing garantiert dasselbe Objekt. Für andere Werte ist die Identität nicht festgelegt.</li>
+  <li><b>Welche Wrapper cachen:</b> <code>Integer</code>, <code>Long</code>, <code>Short</code>, <code>Byte</code> für -128…127, <code>Character</code> bis 127, <code>Boolean</code> beide Werte. <code>Float</code> und <code>Double</code> nicht. Nur die Obergrenze von <code>Integer</code> ist per <code>-XX:AutoBoxCacheMax</code> einstellbar.</li>
+  <li><b>Wrapper-Konstruktoren:</b> <code>new Integer(5)</code> ist seit Java 9 deprecated und seit Java 16 zur Entfernung markiert (JEP 390). Immer <code>valueOf</code> oder Autoboxing.</li>
+  <li><b>Value-based Classes:</b> Wrapper sind <b>value-based</b>: kein <code>==</code>, kein <code>synchronized</code> darauf. javac warnt seit Java 16 bei <code>synchronized</code> auf einem Wrapper.</li>
+  <li><b>== bei gemischten Typen:</b> Ist eine Seite primitiv, wird die andere unboxt und nach Wert verglichen. Sind beide Wrapper, vergleicht <code>==</code> Referenzen.</li>
+  <li><b>Überladung:</b> Der Compiler sucht erst ohne Boxing, dann mit Boxing, dann mit Varargs. Darum ruft <code>list.remove(1)</code> die Index-Variante.</li>
+  <li><b>Generics:</b> <code>List&lt;int&gt;</code> geht nicht. Typ-Parameter müssen Referenztypen sein. Für primitive Daten: Arrays, <code>IntStream</code>, Bibliotheken wie Eclipse Collections.</li>
+  <li><b>Streams:</b> <code>mapToInt</code>, <code>IntStream.sum()</code>, <code>Collectors.summingInt</code> vermeiden Boxing. <code>Stream&lt;Integer&gt;.reduce(0, Integer::sum)</code> boxt bei jedem Schritt.</li>
+  <li><b>Speicher:</b> <code>int</code> = 4 Bytes. <code>Integer</code> = Header + 4 Bytes, ca. 16 Bytes, plus 4–8 Bytes Referenz. <code>ArrayList&lt;Integer&gt;</code> mit 1 Mio. Werten braucht mehrfach so viel wie <code>int[]</code>.</li>
+  <li><b>Default-Werte:</b> Primitive Felder starten mit 0 oder <code>false</code>. Wrapper-Felder starten mit <code>null</code>. In JPA-Entities zeigt <code>Integer</code> „unbekannt“, <code>int</code> kann das nicht.</li>
+  <li><b>Escape Analysis:</b> Der JIT entfernt manche kurzlebigen Box-Objekte. Darauf kann man sich aber nicht verlassen.</li>
+</ol>
+
+<h2>5. Vergleich</h2>
+<ul>
+  <li><b>int:</b> schnell, 4 Bytes, kein <code>null</code>, Standard 0. Für Rechnen, Zähler, Arrays.</li>
+  <li><b>Integer:</b> Objekt, kann <code>null</code> sein, nötig für Collections und Generics. Vergleich mit <code>equals</code>.</li>
+  <li><b>int[] vs List&lt;Integer&gt;:</b> Array ist kompakt und schnell. Liste ist flexibel, aber mit Boxing.</li>
+  <li><b>IntStream vs Stream&lt;Integer&gt;:</b> IntStream ohne Boxing, mit <code>sum</code>, <code>average</code>, <code>max</code>.</li>
+  <li><b>OptionalInt vs Optional&lt;Integer&gt;:</b> gleiche Idee ohne Boxing.</li>
+  <li><b>BigDecimal:</b> kein Wrapper, sondern ein Typ für exakte Dezimalzahlen. Für Geld statt <code>double</code>.</li>
+</ul>
+
+<h2>6. In der Produktion</h2>
+<ol>
+  <li><b>NPE beim Unboxing:</b> Ein JSON-Feld oder eine DB-Spalte ist <code>null</code>, der Code nimmt <code>int</code>. Der Stack Trace zeigt eine Zeile ohne sichtbaren Methodenaufruf. Lösung: <code>Integer</code> mit Prüfung, <code>getOrDefault</code>, Validierung am Eingang.</li>
+  <li><b>IDs mit == verglichen:</b> Im Test (kleine IDs) funktioniert es, in der Produktion (IDs über 127) nicht. Lösung: <code>equals</code> oder <code>Objects.equals</code>; SonarQube-Regel aktivieren.</li>
+  <li><b>Hohe GC-Last durch Boxing:</b> <code>Map&lt;Long, Long&gt;</code> mit Millionen Einträgen oder Summen in <code>Long</code>. Lösung: primitive Typen, primitive Streams, primitive Collections.</li>
+  <li><b>Lock auf Wrapper:</b> <code>synchronized (Integer.valueOf(id))</code> teilt Locks über den Cache mit fremdem Code. Lösung: eigenes Lock-Objekt.</li>
+  <li><b>Ternary-NPE:</b> <code>cond ? 0 : map.get(k)</code> wirft bei fehlendem Schlüssel. Lösung: beide Zweige <code>Integer</code> oder <code>getOrDefault</code>.</li>
+  <li><b>Hibernate und primitive Felder:</b> Eine nullable Spalte in ein <code>int</code>-Feld führt zu einer Exception beim Laden. Lösung: Wrapper-Typ für nullable Spalten.</li>
+</ol>
+
+<h2>7. Diagnose: Werkzeuge und Befehle</h2>
+<ul>
+  <li><code>javap -c</code>: zeigt versteckte <code>Integer.valueOf</code>- und <code>intValue</code>-Aufrufe.</li>
+  <li><b>Helpful NullPointerExceptions</b> (JEP 358, seit Java 15 standardmässig aktiv): Die Meldung nennt die Ursache, z. B. „Cannot invoke Integer.intValue() because … is null“.</li>
+  <li><b>JFR Allocation-Profil</b> oder async-profiler im Modus <code>alloc</code>: viele <code>java.lang.Integer</code>/<code>Long</code>-Objekte zeigen Boxing in heissen Pfaden.</li>
+  <li><code>jcmd &lt;pid&gt; GC.class_histogram</code>: Millionen <code>java.lang.Long</code> deuten auf Wrapper-Collections.</li>
+  <li><b>SonarQube / SpotBugs:</b> Regeln gegen <code>==</code> auf Wrappern, Boxing in Schleifen und deprecated Konstruktoren.</li>
+</ul>
+
+<h2>8. Senior-Punkte</h2>
+<div class="senior">
+<ol>
+  <li><b>Primitiv als Standard,</b> Wrapper nur, wenn nötig: Collections, Generics, oder „unbekannt“ als <code>null</code>.</li>
+  <li><b>Wrapper immer mit equals vergleichen.</b> Der Cache macht <code>==</code>-Fehler unsichtbar, bis echte Daten kommen.</li>
+  <li><b>null bewusst modellieren.</b> Ein Wrapper-Feld heisst „kann fehlen“. Diese Entscheidung gehört in die API, nicht zufällig in den Code.</li>
+  <li><b>Boxing ist in Massen teuer.</b> Bei Millionen Werten: primitive Arrays oder Streams. Erst messen.</li>
+  <li><b>Kein Tuning des Caches als Fix.</b> <code>AutoBoxCacheMax</code> versteckt Bugs, statt sie zu lösen.</li>
+</ol>
+</div>
+
+<h2>9. Aus dem Projekt</h2>
+<p>„Bei der MATCH-Parity-Suche war <code>null</code> vs leerer String eine der Ursachen für Abweichungen zwischen .NET und Spark; dieselbe Sorgfalt gilt in Java bei nullable Wrapper-Feldern gegen primitive Felder.“ <span class="small">(Prüfen und durch dein echtes Beispiel ersetzen. Der Parity-Fall ist belegt, ein Java-Autoboxing-Fall nicht.)</span></p>
+
+<h2>10. Fallen</h2>
+<div class="trap">
+<ul>
+  <li>„<code>Integer a == Integer b</code> vergleicht Werte.“ → <b>Falsch.</b> Es vergleicht Referenzen. Nur im Cache-Bereich zufällig richtig.</li>
+  <li>„<code>int x = map.get(k)</code> ist sicher.“ → <b>Falsch.</b> Bei fehlendem Schlüssel NPE durch Unboxing.</li>
+  <li>„<code>list.remove(1)</code> entfernt die Zahl 1.“ → <b>Falsch.</b> Es entfernt den Index 1.</li>
+  <li>„<code>Long.valueOf(1).equals(1)</code> ist true.“ → <b>Falsch.</b> <code>1</code> wird ein <code>Integer</code>, andere Klasse.</li>
+  <li>„Double hat auch einen Cache.“ → <b>Falsch.</b> Nur Ganzzahl-Wrapper, <code>Character</code> und <code>Boolean</code>.</li>
+  <li>„Autoboxing passiert zur Laufzeit durch die JVM.“ → <b>Falsch.</b> javac fügt die Aufrufe beim Kompilieren ein.</li>
+</ul>
+</div>
+
+<h2>11. Fragen</h2>
+<details><summary>Was ist Autoboxing?</summary><p>Die automatische Umwandlung eines primitiven Werts in sein Wrapper-Objekt, z. B. int in Integer. javac fügt dafür Integer.valueOf ein.</p></details>
+<details><summary>Was ist Unboxing?</summary><p>Die Rückrichtung: Wrapper in primitiven Wert, z. B. über intValue(). Bei null kommt eine NullPointerException.</p></details>
+<details><summary>Warum gibt es Wrapper-Klassen?</summary><p>Collections und Generics speichern nur Objekte. Wrapper können auch null sein und haben Hilfsmethoden wie parseInt.</p></details>
+<details><summary>Was ist der Integer-Cache?</summary><p>Integer.valueOf liefert für -128 bis 127 immer dasselbe vorbereitete Objekt. Die JLS garantiert diesen Bereich.</p></details>
+<details><summary>Warum ist Integer 127 == 127 true, aber 128 == 128 false?</summary><p>127 kommt aus dem Cache, beide Referenzen zeigen auf dasselbe Objekt. 128 sind zwei verschiedene Objekte.</p></details>
+<details><summary>Kann man den Cache vergrössern?</summary><p>Ja, die Obergrenze für Integer mit -XX:AutoBoxCacheMax. Das ist aber kein Fix für ==-Fehler.</p></details>
+<details><summary>Welche Wrapper haben einen Cache?</summary><p>Integer, Long, Short, Byte (-128 bis 127), Character (bis 127), Boolean. Float und Double nicht.</p></details>
+<details><summary>Warum ist new Integer(5) schlecht?</summary><p>Es erzeugt immer ein neues Objekt und umgeht den Cache. Seit Java 9 deprecated, seit Java 16 for removal.</p></details>
+<details><summary>Wie vergleichen Sie zwei Integer richtig?</summary><p>Mit equals oder Objects.equals, falls null möglich ist. Für Sortierung Integer.compare.</p></details>
+<details><summary>Was passiert bei Integer == int?</summary><p>Der Integer wird unboxt, verglichen werden Werte. Ist der Integer null, kommt eine NPE.</p></details>
+<details><summary>Warum kann ein Ternary eine NPE werfen?</summary><p>Ist ein Zweig primitiv, ist der ganze Ausdruck primitiv. Der Wrapper-Zweig wird unboxt, auch wenn er null ist.</p></details>
+<details><summary>Was macht list.remove(1) bei List&lt;Integer&gt;?</summary><p>Es entfernt das Element an Index 1. Für den Wert: remove(Integer.valueOf(1)).</p></details>
+<details><summary>Ist Long.valueOf(1).equals(Integer.valueOf(1)) true?</summary><p>Nein. equals prüft auch die Klasse. Long und Integer sind verschieden.</p></details>
+<details><summary>Was kostet Boxing?</summary><p>Ein Objekt pro Wert ausserhalb des Caches, ca. 16 Bytes plus Referenz, und mehr GC-Arbeit. In Schleifen deutlich langsamer.</p></details>
+<details><summary>Wie vermeiden Sie Boxing in Streams?</summary><p>Mit IntStream, LongStream, mapToInt, sum, summingInt. Nicht reduce auf Stream&lt;Integer&gt;.</p></details>
+<details><summary>Warum geht List&lt;int&gt; nicht?</summary><p>Typ-Parameter müssen Referenztypen sein. Generics arbeiten mit Type Erasure auf Object.</p></details>
+<details><summary>int oder Integer in einer JPA-Entity?</summary><p>Integer für nullable Spalten, weil null „unbekannt“ bedeutet. int nur für NOT-NULL-Spalten.</p></details>
+<details><summary>Warum nicht auf einem Integer synchronisieren?</summary><p>Wrapper sind value-based und gecacht. Fremder Code kann dasselbe Objekt sperren. javac warnt seit Java 16.</p></details>
+<details><summary>Wie sieht man Boxing im Bytecode?</summary><p>javap -c zeigt Aufrufe von Integer.valueOf und intValue.</p></details>
+<details><summary>Szenario: Ein ID-Vergleich funktioniert im Test, in der Produktion aber nicht. Was prüfen Sie?</summary><p>Ob Long- oder Integer-IDs mit == verglichen werden. Im Test sind IDs klein und gecacht, in der Produktion grösser. Lösung: equals.</p></details>
+<details><summary>Szenario: Ein Service wirft NPE in einer Zeile wie int total = order.getAmount(); Was ist los?</summary><p>getAmount liefert einen null-Wrapper, das Unboxing wirft. Die Helpful-NPE-Meldung zeigt es. Lösung: Feld validieren oder bewusst mit null umgehen.</p></details>
+<details><summary>Szenario: Eine Berechnung über 100 Mio. Werte erzeugt hohe GC-Last. Was ändern Sie?</summary><p>Allocation-Profil prüfen: viele Long/Integer heisst Boxing. Auf long-Variablen, long[] oder LongStream umstellen.</p></details>
+
+</body>
+</html>

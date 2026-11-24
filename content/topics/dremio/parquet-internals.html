@@ -1,0 +1,228 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Parquet intern: Row Groups, Column Chunks, Encoding, Predicate Pushdown</title>
+<style>
+  body { font: 17px/1.55 -apple-system, system-ui, sans-serif; max-width: 760px; margin: 0 auto; padding: 16px; color: #1d1d1f; }
+  h1 { font-size: 28px; margin: 8px 0 4px; }
+  h2 { font-size: 21px; margin: 32px 0 8px; padding-top: 12px; border-top: 2px solid #e5e5ea; }
+  .kern { background: #eef6ff; border-left: 4px solid #0a66c2; padding: 10px 14px; border-radius: 6px; }
+  .senior { background: #f0faf0; border-left: 4px solid #2e7d32; padding: 10px 14px; border-radius: 6px; }
+  .trap { background: #fff4f2; border-left: 4px solid #c62828; padding: 10px 14px; border-radius: 6px; }
+  code { background: #f2f2f7; padding: 1px 5px; border-radius: 4px; font-size: 15px; }
+  pre { background: #1e1e1e; color: #e6e6e6; padding: 12px; border-radius: 8px; overflow-x: auto; font-size: 13.5px; line-height: 1.45; }
+  svg { width: 100%; height: auto; display: block; margin: 10px 0; }
+  ol li, ul li { margin: 4px 0; }
+  details { border: 1px solid #e5e5ea; border-radius: 8px; padding: 8px 12px; margin: 6px 0; }
+  summary { font-weight: 600; cursor: pointer; }
+  details p { margin: 6px 0 2px; }
+  .small { color: #6e6e73; font-size: 14px; }
+</style>
+</head>
+<body>
+
+<h1>Parquet intern: Row Groups, Column Chunks, Encoding, Predicate Pushdown</h1>
+<p class="small">Dremio · Tier 1 · Quellen: Apache Parquet Docs (File Format, Configurations, Metadata, Data Pages, Encodings, Compression, Page Index), Apache Iceberg Docs (Configuration), Spark SQL Data Sources (Parquet)</p>
+
+<div class="kern">
+<b>Kern:</b> <b>Parquet</b> ist ein binäres Spaltenformat. Eine Datei ist in <b>Row Groups</b> geteilt, jede Row Group in einen <b>Column Chunk</b> pro Spalte, jeder Chunk in <b>Pages</b>. Am Ende steht der <b>Footer</b> mit Schema, Positionen und Statistiken. Damit kann ein Reader nur die nötigen Spalten lesen und ganze Blöcke überspringen.
+</div>
+
+<h2>1. Wo liegt was in einer Parquet-Datei?</h2>
+<svg viewBox="0 0 720 360" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="a" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="10" y="10" width="420" height="28" rx="4" fill="#eee" stroke="#777"/><text x="220" y="29" text-anchor="middle">Magic "PAR1" (4 Bytes)</text>
+  <rect x="10" y="44" width="420" height="116" rx="6" fill="#dbe9fb" stroke="#0a66c2"/><text x="20" y="62" font-weight="700">Row Group 1</text>
+  <rect x="20" y="70" width="128" height="80" rx="4" fill="#fff" stroke="#555"/><text x="84" y="88" text-anchor="middle" font-size="12">Column Chunk</text><text x="84" y="104" text-anchor="middle" font-size="12">trade_id</text><text x="84" y="124" text-anchor="middle" font-size="11">Page · Page · Page</text>
+  <rect x="156" y="70" width="128" height="80" rx="4" fill="#fff" stroke="#555"/><text x="220" y="88" text-anchor="middle" font-size="12">Column Chunk</text><text x="220" y="104" text-anchor="middle" font-size="12">market</text><text x="220" y="124" text-anchor="middle" font-size="11">Dict-Page · Pages</text>
+  <rect x="292" y="70" width="128" height="80" rx="4" fill="#fff" stroke="#555"/><text x="356" y="88" text-anchor="middle" font-size="12">Column Chunk</text><text x="356" y="104" text-anchor="middle" font-size="12">price</text><text x="356" y="124" text-anchor="middle" font-size="11">Page · Page</text>
+  <rect x="10" y="166" width="420" height="34" rx="6" fill="#dbe9fb" stroke="#0a66c2"/><text x="220" y="188" text-anchor="middle">Row Group 2 … Row Group M</text>
+  <rect x="10" y="206" width="420" height="28" rx="4" fill="#f7f7fa" stroke="#999"/><text x="220" y="225" text-anchor="middle" font-size="12">Page Index (Column Index, Offset Index), Bloom Filter</text>
+  <rect x="10" y="240" width="420" height="56" rx="6" fill="#0a66c2"/><text x="220" y="262" text-anchor="middle" fill="#fff" font-weight="700">Footer: FileMetaData (Thrift)</text><text x="220" y="282" text-anchor="middle" fill="#fff" font-size="12">Schema · Row Groups · Offsets · Statistiken</text>
+  <rect x="10" y="302" width="420" height="22" rx="4" fill="#eee" stroke="#777"/><text x="220" y="318" text-anchor="middle" font-size="12">Länge des Footers (4 Bytes, little endian)</text>
+  <rect x="10" y="328" width="420" height="26" rx="4" fill="#eee" stroke="#777"/><text x="220" y="346" text-anchor="middle">Magic "PAR1"</text>
+  <rect x="480" y="110" width="230" height="130" rx="8" fill="#fff" stroke="#555"/><text x="595" y="132" text-anchor="middle" font-weight="700">Page</text>
+  <text x="595" y="156" text-anchor="middle" font-size="12">Page Header (Thrift)</text>
+  <text x="595" y="178" text-anchor="middle" font-size="12">Repetition Levels</text>
+  <text x="595" y="200" text-anchor="middle" font-size="12">Definition Levels</text>
+  <text x="595" y="222" text-anchor="middle" font-size="12">kodierte Werte</text>
+  <line x1="420" y1="110" x2="478" y2="150" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+</svg>
+<ol>
+  <li><b>Magic:</b> Die Datei beginnt und endet mit den 4 Bytes <code>PAR1</code>.</li>
+  <li><b>Row Group:</b> eine horizontale Scheibe der Tabelle, z. B. 1 Million Zeilen. Sie ist die Einheit für Parallelität und für das Überspringen per Statistik.</li>
+  <li><b>Column Chunk:</b> alle Werte einer Spalte innerhalb einer Row Group, hintereinander gespeichert. Hier liegt der Spaltenvorteil.</li>
+  <li><b>Page:</b> die kleinste Einheit für Kodierung und Kompression. Ein Chunk hat optional zuerst eine <b>Dictionary Page</b>, dann <b>Data Pages</b>.</li>
+  <li><b>Page Index:</b> optionale Min/Max-Werte und Positionen pro Page, nahe beim Footer gespeichert. So kann ein Reader einzelne Pages überspringen.</li>
+  <li><b>Footer:</b> <b>FileMetaData</b> mit Schema, Row Groups, Offsets und Statistiken. Er ist mit Thrift (<b>TCompactProtocol</b>) kodiert. Danach folgen seine Länge und wieder <code>PAR1</code>.</li>
+</ol>
+
+<h2>2. Die Reise einer Abfrage durch eine Parquet-Datei</h2>
+<svg viewBox="0 0 720 320" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="b" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="10" y="20" width="160" height="64" rx="10" fill="#eee" stroke="#777"/><text x="90" y="46" text-anchor="middle" font-weight="700">1. Ende lesen</text><text x="90" y="66" text-anchor="middle" font-size="12">8 Bytes → Footer</text>
+  <line x1="170" y1="52" x2="208" y2="52" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="210" y="20" width="160" height="64" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="290" y="46" text-anchor="middle" font-weight="700">2. Footer parsen</text><text x="290" y="66" text-anchor="middle" font-size="12">Schema, Stats</text>
+  <line x1="370" y1="52" x2="408" y2="52" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="410" y="20" width="150" height="64" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="485" y="46" text-anchor="middle" font-weight="700">3. Row Groups</text><text x="485" y="66" text-anchor="middle" font-size="12">min/max → skip</text>
+  <line x1="560" y1="52" x2="598" y2="52" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="600" y="20" width="110" height="64" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="655" y="46" text-anchor="middle" font-weight="700">4. Spalten</text><text x="655" y="66" text-anchor="middle" font-size="12">nur nötige</text>
+  <line x1="655" y1="84" x2="655" y2="138" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="520" y="140" width="190" height="64" rx="10" fill="#fff" stroke="#555"/><text x="615" y="166" text-anchor="middle" font-weight="700">5. Pages</text><text x="615" y="186" text-anchor="middle" font-size="12">Page Index → skip</text>
+  <line x1="520" y1="172" x2="418" y2="172" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="240" y="140" width="176" height="64" rx="10" fill="#fff" stroke="#555"/><text x="328" y="166" text-anchor="middle" font-weight="700">6. Dekomprimieren</text><text x="328" y="186" text-anchor="middle" font-size="12">zstd, snappy …</text>
+  <line x1="240" y1="172" x2="168" y2="172" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="10" y="140" width="156" height="64" rx="10" fill="#0a66c2"/><text x="88" y="166" text-anchor="middle" fill="#fff" font-weight="700">7. Dekodieren</text><text x="88" y="186" text-anchor="middle" fill="#fff" font-size="12">Dict, RLE → Werte</text>
+  <rect x="10" y="240" width="700" height="56" rx="10" fill="#e8f5e9" stroke="#2e7d32"/><text x="360" y="264" text-anchor="middle">WHERE price &gt; 58 auf 10 Row Groups: sortiert → 1 lesen, 9 überspringen</text><text x="360" y="284" text-anchor="middle" font-size="12">unsortiert → alle 10 lesen (jede Gruppe enthält irgendwo einen hohen Preis)</text>
+</svg>
+<ol>
+  <li><b>Ende lesen:</b> Dremio liest die letzten 8 Bytes: 4 Bytes Footer-Länge und <code>PAR1</code>. Jetzt weiss es, wo der Footer beginnt.</li>
+  <li><b>Footer parsen:</b> Es liest den Footer. Darin stehen das Schema, alle Row Groups, die Position jedes Column Chunks und die Statistiken.</li>
+  <li><b>Row Groups prüfen:</b> Die Abfrage ist <code>WHERE price &gt; 58</code>. Hat eine Row Group <code>max(price) = 55</code>, wird sie nicht gelesen. Das ist <b>Predicate Pushdown</b>.</li>
+  <li><b>Spalten wählen:</b> Die Abfrage braucht <code>market</code> und <code>price</code>. Nur diese Column Chunks werden gelesen. Das ist <b>Column Pruning</b>.</li>
+  <li><b>Pages prüfen:</b> Gibt es einen <b>Page Index</b>, prüft der Reader auch Min/Max pro Page. Er liest nur passende Pages.</li>
+  <li><b>Dekomprimieren:</b> Jede Page wird mit dem Codec des Chunks entpackt, z. B. zstd.</li>
+  <li><b>Dekodieren:</b> Dictionary-IDs werden zu Werten, RLE-Läufe werden aufgefaltet, Definition Levels zeigen die Nulls. Erst jetzt entstehen echte Werte im Speicher, bei Dremio als Arrow-Spalten.</li>
+</ol>
+
+<h2>3. Beispiel: Dictionary, RLE und Min/Max-Skipping</h2>
+<p>pyarrow ist hier nicht installiert, und es gibt keine echte Parquet-Datei. Darum zeigt eine Python-Simulation die drei Ideen mit 100 000 Werten. Es ist <b>kein</b> echter Parquet-Writer.</p>
+<pre>market = [random.choice(["CH", "DE", "FR", "IT"]) for _ in range(100_000)]
+def dict_rle(col):
+    d = {v: i for i, v in enumerate(dict.fromkeys(col))}     # Dictionary
+    ids = [d[v] for v in col]                                 # Werte → IDs
+    runs = 1 + sum(1 for a, b in zip(ids, ids[1:]) if a != b) # RLE-Läufe
+    return d, runs
+# Row Groups à 10 000 Zeilen, min/max pro Gruppe, Filter price > 58
+read = sum(1 for g in groups if max(g) &gt; 58)</pre>
+<pre>market unsorted: dictionary {'DE': 0, 'FR': 1, 'IT': 2, 'CH': 3}  ->   74899 runs for 100000 values
+market sorted  : dictionary {'CH': 0, 'DE': 1, 'FR': 2, 'IT': 3}  ->       4 runs for 100000 values
+price unsorted: WHERE price > 58 -> read 10 of 10 row groups, skip 0
+price sorted  : WHERE price > 58 -> read  1 of 10 row groups, skip 9</pre>
+<p class="small">Echte Ausgabe, Python 3.12 (eigene Simulation der Ideen, keine Parquet-Datei).</p>
+<ol>
+  <li><b>Dictionary:</b> 100 000 Strings werden zu 4 Einträgen im Dictionary und 100 000 kleinen IDs. Für 4 Werte reichen 2 Bit pro ID.</li>
+  <li><b>RLE unsortiert:</b> Die IDs wechseln fast bei jeder Zeile. 74 899 Läufe: RLE bringt kaum etwas, Bit-Packing schon.</li>
+  <li><b>RLE sortiert:</b> Nach Sortierung sind es nur 4 Läufe. Die Spalte schrumpft auf fast nichts.</li>
+  <li><b>Min/Max unsortiert:</b> Jede Row Group enthält irgendwo einen hohen Preis. Keine Gruppe kann übersprungen werden.</li>
+  <li><b>Min/Max sortiert:</b> Nur die letzte Gruppe hat Preise über 58. 9 von 10 Gruppen fallen weg. Darum lohnt sich das Sortieren beim Schreiben, z. B. mit <code>rewrite_data_files</code> und <code>strategy =&gt; 'sort'</code>.</li>
+</ol>
+<p>Ein echter Byte-Blick auf eine Datei mit reinem Python sähe so aus:</p>
+<pre>import struct, sys
+data = open(sys.argv[1], "rb").read()
+print(data[:4], data[-4:])                          # Magic vorne und hinten
+footer_len = struct.unpack("&lt;I", data[-8:-4])[0]  # little endian
+print("footer bytes:", footer_len)</pre>
+<p class="small">Erwartetes Ergebnis (laut Parquet-Spezifikation, nicht ausgeführt): <code>b'PAR1' b'PAR1'</code> und eine Footer-Länge in Bytes. Den Inhalt des Footers (Thrift Compact) dekodiert man besser mit <code>parquet-cli meta</code> oder pyarrow.</p>
+
+<h2>4. Details, die Interviewer fragen</h2>
+<ol>
+  <li><b>Physische Typen:</b> Parquet kennt wenige <b>physische Typen</b>: BOOLEAN, INT32, INT64, INT96 (veraltet), FLOAT, DOUBLE, BYTE_ARRAY, FIXED_LEN_BYTE_ARRAY.</li>
+  <li><b>Logische Typen:</b> Ein <b>logischer Typ</b> sagt, wie man die Bytes deutet. Beispiele: STRING auf BYTE_ARRAY, DATE auf INT32, DECIMAL auf INT32, INT64 oder FIXED_LEN_BYTE_ARRAY, TIMESTAMP auf INT64.</li>
+  <li><b>Definition und Repetition Levels:</b> Eine Data Page enthält Repetition Levels, Definition Levels und Werte. <b>Definition Levels</b> zeigen, ob ein Wert da ist oder <code>NULL</code>. <b>Repetition Levels</b> zeigen, wo eine neue Liste beginnt. Bei flachen Pflichtspalten fallen beide weg.</li>
+  <li><b>Encodings:</b>
+    <ul>
+      <li><b>PLAIN:</b> Werte einfach hintereinander. Rückfall, wenn nichts Besseres passt.</li>
+      <li><b>RLE_DICTIONARY:</b> Werte ins Dictionary, Data Pages speichern IDs. Die Dictionary Page steht vor den Data Pages. <b>PLAIN_DICTIONARY</b> ist der veraltete Name.</li>
+      <li><b>RLE / Bit-Packing Hybrid:</b> für Booleans, Dictionary-IDs und Levels. Mischt Läufe gleicher Werte und dicht gepackte Bits.</li>
+      <li><b>DELTA_BINARY_PACKED:</b> für INT32/INT64. Speichert Differenzen, gut für steigende IDs und Zeitstempel.</li>
+      <li><b>DELTA_LENGTH_BYTE_ARRAY</b> und <b>DELTA_BYTE_ARRAY:</b> für Strings. Der zweite speichert gemeinsame Präfixe nur einmal.</li>
+      <li><b>BYTE_STREAM_SPLIT:</b> für Gleitkommazahlen. Er teilt die Bytes in Ströme, damit der Codec danach besser komprimiert.</li>
+    </ul></li>
+  <li><b>Dictionary-Fallback:</b> Wird das Dictionary zu gross, wechselt der Writer für den Rest des Chunks auf PLAIN. Iceberg setzt die Dictionary-Grösse über <code>write.parquet.dict-size-bytes</code>, Standard 2 MB.</li>
+  <li><b>Encoding vor Kompression:</b> Zuerst wird kodiert (Dictionary, RLE, Delta), dann wird jede Page komprimiert. Codecs: SNAPPY, GZIP, ZSTD, LZ4_RAW, BROTLI, LZO, UNCOMPRESSED. LZ4 (alt) ist veraltet, LZ4_RAW ersetzt es.</li>
+  <li><b>Statistiken:</b> Pro Column Chunk speichert der Footer Statistiken wie Min, Max und Null-Anzahl. Sie sind die Basis für Predicate Pushdown auf Row-Group-Ebene.</li>
+  <li><b>Page Index:</b> <b>Column Index</b> hält Min/Max pro Page. <b>Offset Index</b> hält Position und erste Zeile pro Page. Vorher musste ein Reader jeden Page Header lesen, um Pages zu überspringen.</li>
+  <li><b>Bloom Filter:</b> Min/Max hilft nicht bei <code>WHERE trade_id = 'T0042'</code> mit zufälligen IDs. Ein <b>Bloom Filter</b> sagt „sicher nicht drin“ oder „vielleicht drin“. In Iceberg pro Spalte aktivierbar mit <code>write.parquet.bloom-filter-enabled.column.&lt;col&gt;</code>, standardmässig aus.</li>
+  <li><b>Grössen:</b> Die Parquet-Doku empfiehlt grosse Row Groups (512 MB bis 1 GB) und Pages um 8 KB. Iceberg nutzt standardmässig 128 MB Row Groups und 1 MB Pages. Spark liest standardmässig bis 128 MB pro Task (<code>spark.sql.files.maxPartitionBytes</code>).</li>
+  <li><b>Unveränderlich:</b> Eine Parquet-Datei wird einmal geschrieben und nie geändert. Updates erzeugen neue Dateien. Das Tabellenformat (Iceberg) verwaltet, welche Dateien gelten.</li>
+  <li><b>Iceberg und Field IDs:</b> Iceberg schreibt in Parquet eine <b>Field ID</b> pro Spalte. Es ordnet Spalten über die ID zu, nicht über den Namen. Darum sind Umbenennungen sicher.</li>
+</ol>
+
+<h2>5. Vergleich</h2>
+<ul>
+  <li><b>Row-Group-Statistiken:</b> grob, immer im Footer, billig. Wirken nur bei sortierten oder geclusterten Daten.</li>
+  <li><b>Page Index:</b> feiner, wird nur bei selektiven Abfragen gelesen. Gut für Punktabfragen in grossen Row Groups.</li>
+  <li><b>Bloom Filter:</b> für Gleichheit auf Spalten mit vielen verschiedenen Werten. Kostet Platz pro Spalte.</li>
+  <li><b>Iceberg-Manifest-Statistiken:</b> Min/Max pro Datei in den Manifesten. Iceberg überspringt so ganze Dateien, bevor es einen Footer liest.</li>
+  <li><b>Dictionary vs Delta:</b> Dictionary für wenige verschiedene Werte (Markt, Status). Delta für steigende Zahlen (IDs, Zeit).</li>
+  <li><b>Parquet vs ORC:</b> Ähnliche Ideen. ORC nennt die Blöcke Stripes und hat eingebaute Indizes für Gruppen von 10 000 Zeilen.</li>
+</ul>
+
+<h2>6. In der Produktion</h2>
+<ol>
+  <li><b>Pushdown greift nicht:</b> Daten sind unsortiert, jede Row Group deckt den ganzen Wertebereich ab. Lösung: beim Schreiben sortieren oder mit sort-Compaction nachsortieren.</li>
+  <li><b>Pushdown greift nicht wegen Typ:</b> Filter mit Funktion oder Cast, z. B. <code>WHERE CAST(price AS STRING) = '50'</code>. Lösung: auf der Originalspalte filtern.</li>
+  <li><b>Riesige Dictionaries:</b> Spalte mit fast nur eindeutigen Werten. Das Dictionary läuft voll und fällt auf PLAIN zurück. Das kostet Zeit beim Schreiben. Lösung: Dictionary für diese Spalte abschalten oder hinnehmen.</li>
+  <li><b>Speicherdruck beim Schreiben:</b> Der Writer hält eine ganze Row Group im Speicher, für jede offene Datei. Viele Partitionen gleichzeitig (Fanout) kosten viel Speicher. Lösung: sortiert schreiben, Row-Group-Grösse anpassen.</li>
+  <li><b>Viele kleine Dateien:</b> Jede Datei hat Footer und eigene Row Groups. Statistiken und Kompression wirken kaum. Lösung: Compaction.</li>
+  <li><b>Zeitstempel-Probleme:</b> INT96 ist veraltet, Engines deuten Zeitzonen verschieden. Lösung: INT64-Zeitstempel mit klarer Zeitzone.</li>
+</ol>
+
+<h2>7. Diagnose: Werkzeuge und Befehle</h2>
+<ul>
+  <li><code>parquet-cli meta datei.parquet</code> (parquet-java): Row Groups, Codec, Encodings, Min/Max pro Chunk.</li>
+  <li><code>parquet-cli pages datei.parquet</code>: Pages pro Column Chunk mit Grösse und Encoding.</li>
+  <li><b>pyarrow:</b> <code>pq.ParquetFile(f).metadata.row_group(0).column(0).statistics</code> zeigt die Statistiken (wenn pyarrow installiert ist).</li>
+  <li><b>Spark:</b> <code>explain()</code> zeigt <code>PushedFilters</code> und <code>ReadSchema</code>. In der Spark UI zeigen „number of files read“ und „size of files read“, ob übersprungen wurde.</li>
+  <li><b>Iceberg:</b> <code>SELECT file_path, lower_bounds, upper_bounds, record_count FROM db.t.files</code> zeigt die Statistiken pro Datei.</li>
+  <li><b>Dremio:</b> Das Query-Profil zeigt pro Scan, wie viele Dateien und Row Groups gelesen wurden.</li>
+</ul>
+
+<h2>8. Senior-Punkte</h2>
+<div class="senior">
+<ol>
+  <li><b>Statistiken nützen nur bei Ordnung.</b> Ohne Sortierung oder Clustering überspringt Min/Max fast nichts. Sortierung ist die wichtigste Stellschraube.</li>
+  <li><b>Pruning hat drei Stufen:</b> Partition (Iceberg), Datei (Manifest-Statistiken), Row Group und Page (Parquet). Man sollte alle drei kennen.</li>
+  <li><b>Row-Group-Grösse ist eine Abwägung:</b> gross für Scans und Kompression, kleiner für feines Überspringen und weniger Schreibspeicher.</li>
+  <li><b>Encoding schlägt Codec.</b> Gutes Dictionary oder Delta spart oft mehr als ein stärkerer Codec.</li>
+  <li><b>Parquet ist unveränderlich.</b> Darum braucht man ein Tabellenformat für Updates, Deletes und Transaktionen.</li>
+  <li><b>Erst messen.</b> Query-Profil und Metadaten zeigen, ob Pruning greift. Erst dann Schreib-Einstellungen ändern.</li>
+</ol>
+</div>
+
+<h2>9. Aus dem Projekt</h2>
+<p>„Bei MATCH schreibt Spark die Iceberg-Tabellen und Dremio liest sie. Partitioniert ist nach <code>days(received_date)</code> und <code>schema_type</code>. So überspringt Dremio zuerst ganze Partitionen, danach Dateien und Row Groups über die Statistiken.“ <span class="small">(Prüfen und durch dein echtes Beispiel ersetzen. Row-Group-Grösse, Codec und Sortierung in MATCH nicht in deinen Notizen: nur nennen, wenn du sie im Repo geprüft hast.)</span></p>
+
+<h2>10. Fallen</h2>
+<div class="trap">
+<ul>
+  <li>„Parquet liest immer nur die nötigen Zeilen.“ → <b>Falsch.</b> Es überspringt nur ganze Row Groups oder Pages, und nur wenn Min/Max passen.</li>
+  <li>„Der Footer steht am Anfang.“ → <b>Falsch.</b> Er steht am Ende, damit man in einem Durchgang schreiben kann.</li>
+  <li>„Kompression ist das Einzige, was Parquet klein macht.“ → <b>Falsch.</b> Encodings wie Dictionary und RLE wirken vorher und oft stärker.</li>
+  <li>„Min/Max hilft bei jeder Gleichheitssuche.“ → <b>Falsch.</b> Bei zufälligen IDs deckt jede Gruppe den ganzen Bereich ab. Dafür gibt es Bloom Filter.</li>
+  <li>„Eine Parquet-Datei kann man updaten.“ → <b>Falsch.</b> Sie ist unveränderlich. Ein Update schreibt neue Dateien.</li>
+  <li>„NULL wird als Sonderwert gespeichert.“ → <b>Falsch.</b> Nulls stehen in den Definition Levels. Für sie wird kein Wert gespeichert.</li>
+</ul>
+</div>
+
+<h2>11. Fragen</h2>
+<details><summary>Wie ist eine Parquet-Datei aufgebaut?</summary><p>PAR1, dann Row Groups mit einem Column Chunk pro Spalte, jeder Chunk aus Pages. Am Ende der Footer, seine Länge (4 Bytes) und wieder PAR1.</p></details>
+<details><summary>Was ist eine Row Group?</summary><p>Eine horizontale Scheibe von Zeilen. Sie ist die Einheit für Parallelität und für das Überspringen per Statistik.</p></details>
+<details><summary>Was ist ein Column Chunk?</summary><p>Alle Werte einer Spalte innerhalb einer Row Group, zusammenhängend gespeichert.</p></details>
+<details><summary>Was ist eine Page?</summary><p>Die kleinste Einheit für Kodierung und Kompression. Ein Chunk hat optional eine Dictionary Page und dann Data Pages.</p></details>
+<details><summary>Was steht im Footer?</summary><p>FileMetaData: Schema, Anzahl Zeilen, Row Groups, Position und Codec jedes Column Chunks und Statistiken. Kodiert mit Thrift Compact Protocol.</p></details>
+<details><summary>Warum steht der Footer am Ende?</summary><p>Damit der Writer in einem Durchgang schreiben kann. Positionen und Statistiken kennt er erst am Ende.</p></details>
+<details><summary>Wie findet ein Reader den Footer?</summary><p>Er liest die letzten 8 Bytes: 4 Bytes Länge, little endian, und PAR1. Dann springt er um diese Länge zurück.</p></details>
+<details><summary>Was ist Dictionary Encoding?</summary><p>Verschiedene Werte kommen einmal in eine Dictionary Page. Die Data Pages speichern nur kleine IDs, kodiert mit RLE und Bit-Packing.</p></details>
+<details><summary>Was passiert, wenn das Dictionary zu gross wird?</summary><p>Der Writer fällt für den Rest des Chunks auf PLAIN zurück.</p></details>
+<details><summary>Was ist das RLE/Bit-Packing Hybrid Encoding?</summary><p>Läufe gleicher Werte werden als Wert plus Anzahl gespeichert, andere Werte dicht als Bits gepackt. Genutzt für Booleans, Dictionary-IDs und Levels.</p></details>
+<details><summary>Wofür ist DELTA_BINARY_PACKED gut?</summary><p>Für INT32 und INT64 mit kleinen Abständen, z. B. steigende IDs und Zeitstempel. Es speichert Differenzen statt Werte.</p></details>
+<details><summary>Was sind Definition und Repetition Levels?</summary><p>Definition Levels zeigen, ob ein Wert da ist oder NULL. Repetition Levels zeigen bei Listen, wo ein neuer Eintrag beginnt.</p></details>
+<details><summary>Wie funktioniert Predicate Pushdown in Parquet?</summary><p>Der Reader vergleicht den Filter mit Min/Max jeder Row Group und Page. Was nicht passen kann, wird nicht gelesen.</p></details>
+<details><summary>Warum hilft Sortieren beim Pushdown?</summary><p>Sortiert hat jede Row Group einen schmalen Wertebereich. Unsortiert deckt jede Gruppe fast alles ab und kann nicht übersprungen werden.</p></details>
+<details><summary>Was ist der Page Index?</summary><p>Column Index mit Min/Max pro Page und Offset Index mit Positionen. So überspringt man Pages, ohne jeden Page Header zu lesen.</p></details>
+<details><summary>Wann braucht man Bloom Filter?</summary><p>Für Gleichheitssuche auf Spalten mit vielen verschiedenen, unsortierten Werten. Min/Max hilft dort nicht.</p></details>
+<details><summary>Welche Kompression nutzt Parquet?</summary><p>Pro Page ein Codec: snappy, gzip, zstd, lz4_raw, brotli oder keiner. Spark schreibt standardmässig snappy, Iceberg zstd.</p></details>
+<details><summary>Welche Row-Group-Grösse ist richtig?</summary><p>Die Parquet-Doku empfiehlt 512 MB bis 1 GB. Iceberg nutzt standardmässig 128 MB. Grösser hilft Scans, kleiner hilft feinem Überspringen und spart Schreibspeicher.</p></details>
+<details><summary>Wie nutzt Iceberg Parquet-Statistiken?</summary><p>Iceberg speichert Min/Max pro Datei in den Manifesten und überspringt Dateien vor dem Lesen. Danach nutzt der Reader die Parquet-Statistiken pro Row Group.</p></details>
+<details><summary>Warum ordnet Iceberg Parquet-Spalten über IDs zu?</summary><p>Damit Umbenennen und Umordnen sicher sind. Der Name kann sich ändern, die Field ID bleibt.</p></details>
+<details><summary>Arrow vs Parquet?</summary><p>Parquet ist für die Platte: kodiert und komprimiert. Arrow ist für den Speicher: direkt rechenbar. Dremio liest Parquet und rechnet in Arrow.</p></details>
+<details><summary>Szenario: Eine Dremio-Abfrage mit WHERE trade_date = ... liest trotzdem alle Row Groups. Warum?</summary><p>Die Daten sind nach trade_date nicht sortiert oder partitioniert, jede Gruppe deckt alle Tage ab. Lösung: nach dem Datum partitionieren oder sortiert schreiben, z. B. mit sort-Compaction.</p></details>
+<details><summary>Szenario: Spark-Executors laufen beim Schreiben in OOM. Was hat Parquet damit zu tun?</summary><p>Der Writer puffert pro offener Datei eine Row Group. Viele Partitionen gleichzeitig vervielfachen das. Lösung: vor dem Schreiben nach Partition verteilen und sortieren, oder kleinere Row Groups.</p></details>
+<details><summary>Szenario: Punktabfragen nach einer zufälligen ID sind langsam. Was tun Sie?</summary><p>Min/Max hilft bei zufälligen IDs nicht. Ich aktiviere einen Bloom Filter für diese Spalte oder sortiere nach der ID, wenn das zu den anderen Abfragen passt.</p></details>
+
+</body>
+</html>

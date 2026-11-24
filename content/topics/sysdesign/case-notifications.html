@@ -1,0 +1,279 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Fall: Benachrichtigungs-System</title>
+<style>
+  body { font: 17px/1.55 -apple-system, system-ui, sans-serif; max-width: 760px; margin: 0 auto; padding: 16px; color: #1d1d1f; }
+  h1 { font-size: 28px; margin: 8px 0 4px; }
+  h2 { font-size: 21px; margin: 32px 0 8px; padding-top: 12px; border-top: 2px solid #e5e5ea; }
+  .kern { background: #eef6ff; border-left: 4px solid #0a66c2; padding: 10px 14px; border-radius: 6px; }
+  .senior { background: #f0faf0; border-left: 4px solid #2e7d32; padding: 10px 14px; border-radius: 6px; }
+  .trap { background: #fff4f2; border-left: 4px solid #c62828; padding: 10px 14px; border-radius: 6px; }
+  code { background: #f2f2f7; padding: 1px 5px; border-radius: 4px; font-size: 15px; }
+  pre { background: #1e1e1e; color: #e6e6e6; padding: 12px; border-radius: 8px; overflow-x: auto; font-size: 13.5px; line-height: 1.45; }
+  svg { width: 100%; height: auto; display: block; margin: 10px 0; }
+  ol li, ul li { margin: 4px 0; }
+  details { border: 1px solid #e5e5ea; border-radius: 8px; padding: 8px 12px; margin: 6px 0; }
+  summary { font-weight: 600; cursor: pointer; }
+  details p { margin: 6px 0 2px; }
+  .small { color: #6e6e73; font-size: 14px; }
+</style>
+</head>
+<body>
+
+<h1>Fall: Benachrichtigungs-System</h1>
+<p class="small">System-Design-Fall · Tier 1 · Quellen: Firebase Cloud Messaging Docs (Send messages, Multicast bis 500 Tokens, Error Codes), Apple Developer Docs (Sending notification requests to APNs), PostgreSQL 17 Docs (INSERT … ON CONFLICT, FOR UPDATE SKIP LOCKED, Partial Indexes), AWS Architecture Blog „Exponential Backoff and Jitter“, Alex Xu „System Design Interview“ Vol. 1 Kap. 10</p>
+
+<div class="kern">
+<b>Kern (die 1-Minuten-Antwort):</b> Ein <b>Benachrichtigungs-System</b> nimmt Ereignisse von vielen Services an und stellt sie über <b>Push, E-Mail, SMS und In-App</b> zu. Eine zentrale API prüft <b>Präferenzen, Idempotenz und Rate Limits</b> und legt pro Kanal eine Nachricht in eine <b>eigene Queue</b>. Kanal-Worker sprechen mit externen Providern, wiederholen mit <b>Backoff</b> und verschieben Hoffnungslose in eine <b>DLQ</b>. Zustellung ist <b>at-least-once</b>; Duplikate verhindert ein Idempotenz-Schlüssel.
+</div>
+
+<h2>1. Wo sitzt was? (Architektur)</h2>
+<svg viewBox="0 0 720 340" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="a" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="10" y="130" width="110" height="70" rx="8" fill="#fff" stroke="#555"/><text x="65" y="158" text-anchor="middle" font-weight="700">Services</text><text x="65" y="178" text-anchor="middle" font-size="12">Bestellung, Login</text>
+  <line x1="120" y1="165" x2="158" y2="165" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="160" y="120" width="150" height="90" rx="8" fill="#dbe9fb" stroke="#0a66c2"/><text x="235" y="146" text-anchor="middle" font-weight="700">Notification-API</text><text x="235" y="166" text-anchor="middle" font-size="12">Idempotenz, Präferenz,</text><text x="235" y="184" text-anchor="middle" font-size="12">Rate Limit, Template</text>
+  <line x1="235" y1="210" x2="235" y2="258" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="160" y="260" width="150" height="60" rx="8" fill="#fff" stroke="#555"/><text x="235" y="286" text-anchor="middle" font-weight="700">PostgreSQL</text><text x="235" y="305" text-anchor="middle" font-size="12">Status, Inbox, Prefs</text>
+  <line x1="310" y1="140" x2="368" y2="60" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <line x1="310" y1="165" x2="368" y2="165" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <line x1="310" y1="190" x2="368" y2="265" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="370" y="30" width="150" height="56" rx="8" fill="#0a66c2" stroke="#0a66c2"/><text x="445" y="55" text-anchor="middle" fill="#fff" font-weight="700">Queue push</text><text x="445" y="73" text-anchor="middle" fill="#fff" font-size="12">+ Worker</text>
+  <rect x="370" y="137" width="150" height="56" rx="8" fill="#0a66c2" stroke="#0a66c2"/><text x="445" y="162" text-anchor="middle" fill="#fff" font-weight="700">Queue email</text><text x="445" y="180" text-anchor="middle" fill="#fff" font-size="12">+ Worker</text>
+  <rect x="370" y="240" width="150" height="56" rx="8" fill="#0a66c2" stroke="#0a66c2"/><text x="445" y="265" text-anchor="middle" fill="#fff" font-weight="700">Queue sms</text><text x="445" y="283" text-anchor="middle" fill="#fff" font-size="12">+ Worker</text>
+  <line x1="520" y1="58" x2="568" y2="58" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <line x1="520" y1="165" x2="568" y2="165" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <line x1="520" y1="268" x2="568" y2="268" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="570" y="30" width="140" height="56" rx="8" fill="#fff" stroke="#555"/><text x="640" y="55" text-anchor="middle" font-weight="700">APNs / FCM</text><text x="640" y="73" text-anchor="middle" font-size="12">extern</text>
+  <rect x="570" y="137" width="140" height="56" rx="8" fill="#fff" stroke="#555"/><text x="640" y="162" text-anchor="middle" font-weight="700">E-Mail-Provider</text><text x="640" y="180" text-anchor="middle" font-size="12">SMTP / API</text>
+  <rect x="570" y="240" width="140" height="56" rx="8" fill="#fff" stroke="#555"/><text x="640" y="265" text-anchor="middle" font-weight="700">SMS-Gateway</text><text x="640" y="283" text-anchor="middle" font-size="12">teuer, limitiert</text>
+</svg>
+<ol>
+  <li><b>Services:</b> senden fachliche Ereignisse, z. B. „Bestellung 981 versendet“. Sie kennen keine Kanäle.</li>
+  <li><b>Notification-API:</b> prüft den <b>Idempotenz-Schlüssel</b>, liest Präferenzen, wendet <b>Rate Limits</b> an und rendert das Template in der Sprache des Nutzers (de, fr, it).</li>
+  <li><b>PostgreSQL:</b> speichert Präferenzen, Geräte-Tokens, Status jeder Nachricht und die In-App-Inbox.</li>
+  <li><b>Queue pro Kanal:</b> Ein langsamer SMS-Provider bremst so keine Push-Nachrichten. Jeder Kanal skaliert eigene Worker.</li>
+  <li><b>Kanal-Worker:</b> rufen den Provider, werten die Antwort aus und planen Retries. Beispiel: FCM meldet „Token ungültig“ → Token löschen.</li>
+  <li><b>Externe Provider:</b> APNs und FCM für Push, ein E-Mail-Dienst, ein SMS-Gateway. Sie haben eigene Limits und Ausfälle.</li>
+</ol>
+
+<h2>2. Die Reise einer Benachrichtigung (die Geschichte zum Merken)</h2>
+<svg viewBox="0 0 720 320" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="b" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker><marker id="r" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#c62828"/></marker></defs>
+  <rect x="10" y="20" width="160" height="62" rx="10" fill="#eee" stroke="#777"/><text x="90" y="45" text-anchor="middle" font-weight="700">1. Ereignis</text><text x="90" y="65" text-anchor="middle" font-size="12">order-981:shipped</text>
+  <line x1="170" y1="51" x2="198" y2="51" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="200" y="20" width="150" height="62" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="275" y="45" text-anchor="middle" font-weight="700">2. Fan-out</text><text x="275" y="65" text-anchor="middle" font-size="12">pro aktivem Kanal</text>
+  <line x1="350" y1="51" x2="378" y2="51" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="380" y="20" width="150" height="62" rx="10" fill="#fff" stroke="#555"/><text x="455" y="45" text-anchor="middle" font-weight="700">3. Zeile queued</text><text x="455" y="65" text-anchor="middle" font-size="12">Unique-Key schützt</text>
+  <line x1="530" y1="51" x2="558" y2="51" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="560" y="20" width="150" height="62" rx="10" fill="#0a66c2" stroke="#0a66c2"/><text x="635" y="45" text-anchor="middle" fill="#fff" font-weight="700">4. Claim</text><text x="635" y="65" text-anchor="middle" fill="#fff" font-size="12">SKIP LOCKED</text>
+  <line x1="635" y1="82" x2="635" y2="128" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="540" y="130" width="170" height="62" rx="10" fill="#fff" stroke="#555"/><text x="625" y="155" text-anchor="middle" font-weight="700">5. Provider-Call</text><text x="625" y="175" text-anchor="middle" font-size="12">FCM / APNs</text>
+  <line x1="540" y1="161" x2="452" y2="161" stroke="#555" stroke-width="2" marker-end="url(#b)"/><text x="496" y="152" text-anchor="middle" font-size="11">200</text>
+  <rect x="280" y="130" width="170" height="62" rx="10" fill="#e8f5e9" stroke="#2e7d32"/><text x="365" y="155" text-anchor="middle" font-weight="700">6. sent</text><text x="365" y="175" text-anchor="middle" font-size="12">Status + Metrik</text>
+  <rect x="380" y="235" width="330" height="62" rx="10" fill="#fff4f2" stroke="#c62828"/><text x="545" y="260" text-anchor="middle" fill="#c62828" font-weight="700">7. Fehler: Retry mit Backoff</text><text x="545" y="280" text-anchor="middle" fill="#c62828" font-size="12">4 s, 16 s, 1 min … max 1 h → nach 5× dead</text>
+  <path d="M625,192 C625,215 600,220 600,233" fill="none" stroke="#c62828" stroke-width="2" stroke-dasharray="6 4" marker-end="url(#r)"/>
+  <rect x="10" y="235" width="330" height="62" rx="10" fill="#e8f5e9" stroke="#2e7d32"/><text x="175" y="260" text-anchor="middle" font-weight="700">8. In-App: Inbox + Badge</text><text x="175" y="280" text-anchor="middle" font-size="12">WebSocket oder beim nächsten Öffnen</text>
+</svg>
+<ol>
+  <li><b>Ereignis:</b> Der Versand-Service meldet „Bestellung 981 von Nutzer 42 ist unterwegs“. Er schickt den Schlüssel <code>order-981:shipped</code> mit.</li>
+  <li><b>Fan-out:</b> Die API liest die Präferenzen von Nutzer 42: Push, E-Mail und In-App sind an, SMS ist aus.</li>
+  <li><b>Speichern:</b> Pro Kanal entsteht eine Zeile mit <code>status = 'queued'</code>. Kommt das Ereignis doppelt, blockt der Unique-Key.</li>
+  <li><b>Claim:</b> Ein Push-Worker holt bis zu 100 fällige Nachrichten. <code>SKIP LOCKED</code> verhindert, dass zwei Worker dieselbe nehmen.</li>
+  <li><b>Provider:</b> Der Worker ruft FCM oder APNs mit dem Geräte-Token.</li>
+  <li><b>Erfolg:</b> Status <code>sent</code>, Metrik hoch. „Gesendet“ heisst nicht „gelesen“: Der Provider stellt selbst zu.</li>
+  <li><b>Fehler:</b> Bei Timeout oder 5xx plant der Worker einen neuen Versuch mit exponentiellem Backoff. Nach 5 Versuchen ist die Nachricht <code>dead</code> und landet in der DLQ.</li>
+  <li><b>In-App:</b> Die Inbox-Zeile ist sofort sichtbar. Ist die App offen, kommt sie über WebSocket; sonst beim nächsten Öffnen mit Badge-Zähler.</li>
+</ol>
+
+<h2>3. Beispiel: API, Datenmodell und die Queries laut gesagt</h2>
+<p><b>API:</b></p>
+<pre>POST /v1/notifications                (intern, von Services)
+     {idempotencyKey, userId, template, data, priority: "transactional"|"marketing"}
+     → 202 Accepted {notificationIds[]}
+GET  /v1/users/{id}/inbox?cursor=…    → {items[], unread}
+POST /v1/users/{id}/inbox/{nid}:read  → 204
+PUT  /v1/users/{id}/preferences       {push: true, email: true, sms: false, quietHours}
+POST /v1/devices                      {platform, token}   (Token-Registrierung)</pre>
+<p><b>Datenmodell:</b></p>
+<pre>CREATE TABLE user_prefs (
+  user_id bigint NOT NULL,
+  channel text   NOT NULL CHECK (channel IN ('push','email','sms','inapp')),
+  enabled boolean NOT NULL DEFAULT true,
+  PRIMARY KEY (user_id, channel)
+);
+CREATE TABLE notifications (
+  id              bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  idempotency_key text   NOT NULL,
+  user_id         bigint NOT NULL,
+  channel         text   NOT NULL,
+  template        text   NOT NULL,
+  payload         jsonb  NOT NULL,
+  status          text   NOT NULL DEFAULT 'queued'
+                  CHECK (status IN ('queued','sending','sent','failed','dead')),
+  attempts        int    NOT NULL DEFAULT 0,
+  next_attempt_at timestamptz NOT NULL DEFAULT now(),
+  read_at         timestamptz,
+  created_at      timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (idempotency_key, channel)
+);
+CREATE INDEX notif_due_idx   ON notifications (next_attempt_at) WHERE status = 'queued';
+CREATE INDEX notif_inbox_idx ON notifications (user_id, created_at DESC) WHERE channel = 'inapp';</pre>
+<p><b>Query 1, laut gesagt:</b> „Ich fächere das Ereignis auf alle aktiven Kanäle auf. Der Unique-Key auf Schlüssel und Kanal macht den zweiten Aufruf wirkungslos.“</p>
+<pre>INSERT INTO notifications (idempotency_key, user_id, channel, template, payload)
+SELECT 'order-981:shipped', p.user_id, p.channel, 'order_shipped',
+       '{"order":981,"carrier":"Post CH"}'
+FROM user_prefs p
+WHERE p.user_id = 42 AND p.enabled
+ON CONFLICT (idempotency_key, channel) DO NOTHING
+RETURNING id, channel, status;
+ id | channel | status
+----+---------+--------
+  1 | push    | queued
+  2 | email   | queued
+  3 | inapp   | queued
+(3 rows)
+-- gleiche Query nochmals (Producer-Retry):
+(0 rows)</pre>
+<p><b>Query 2, laut gesagt:</b> „Der Push-Worker holt bis zu 100 fällige Nachrichten. Gesperrte überspringt er.“</p>
+<pre>UPDATE notifications SET status = 'sending', attempts = attempts + 1
+WHERE id IN (SELECT id FROM notifications
+             WHERE status = 'queued' AND next_attempt_at &lt;= now()
+               AND channel = 'push'
+             ORDER BY next_attempt_at
+             LIMIT 100
+             FOR UPDATE SKIP LOCKED)
+RETURNING id, channel, attempts;
+ id | channel | attempts
+----+---------+----------
+  1 | push    |        1</pre>
+<p><b>Query 3, laut gesagt:</b> „Der Provider antwortet mit Timeout. Ich plane den nächsten Versuch: 2 Sekunden mal 2 hoch Versuche, maximal eine Stunde. Ab 5 Versuchen ist die Nachricht tot.“</p>
+<pre>UPDATE notifications
+SET status = CASE WHEN attempts &gt;= 5 THEN 'dead' ELSE 'queued' END,
+    next_attempt_at = now() + least(interval '1 hour', interval '2 seconds' * power(2, attempts))
+WHERE id = 1
+RETURNING id, status, attempts, next_attempt_at - now() AS wartezeit;
+ id | status | attempts | wartezeit
+----+--------+----------+-----------
+  1 | queued |        1 | 00:00:04
+
+SELECT attempts, least(interval '1 hour', interval '2 seconds' * power(2, attempts)) AS backoff
+FROM generate_series(1, 12, 2) attempts;
+ attempts | backoff
+----------+----------
+        1 | 00:00:04
+        3 | 00:00:16
+        5 | 00:01:04
+        7 | 00:04:16
+        9 | 00:17:04
+       11 | 01:00:00
+
+SELECT count(*) FILTER (WHERE read_at IS NULL) AS ungelesen
+FROM notifications WHERE user_id = 42 AND channel = 'inapp';
+ ungelesen
+-----------
+         1</pre>
+<p class="small">Echte Ausgabe, PostgreSQL 17.12 (Schema <code>demo_notifications</code>, danach gelöscht).</p>
+<ol>
+  <li><b>SMS fehlt:</b> Die Präferenz ist aus, also entsteht keine Zeile. Präferenzen wirken beim Fan-out, nicht erst im Worker.</li>
+  <li><b>Idempotenz:</b> Der Producer darf blind wiederholen. Der zweite Aufruf erzeugt 0 Zeilen.</li>
+  <li><b>Backoff:</b> Die Wartezeit wächst exponentiell und ist gedeckelt. In echt kommt <b>Jitter</b> (Zufall) dazu, sonst wiederholen alle gleichzeitig.</li>
+  <li><b>Inbox:</b> Der Badge-Zähler ist ein Count über einen Partial Index. Bei vielen Nutzern speichert man ihn als Zähler pro Nutzer.</li>
+</ol>
+
+<h2>4. Details, die Interviewer fragen</h2>
+<ol>
+  <li><b>Anforderungen:</b> Kanäle (Push, E-Mail, SMS, In-App), Typen (transaktional vs Marketing), Präferenzen und Opt-out, Sprachen, Zustell-Latenz (Sekunden für Sicherheitscodes, Minuten für Newsletter).</li>
+  <li><b>Schätzung:</b> 10 Mio. Nutzer, 5 Nachrichten pro Tag = 50 Mio. pro Tag ≈ <b>580/s</b>. Ein Broadcast an alle in 10 Minuten sind ca. <b>17 000/s</b>. Die Spitze bestimmt das Design.</li>
+  <li><b>Priorität:</b> Eigene Queues für transaktional (Login-Code, Zahlung) und Marketing. Ein grosser Newsletter darf einen Login-Code nie verzögern.</li>
+  <li><b>Zustellgarantie:</b> <b>At-least-once</b> zwischen unseren Komponenten. Exactly-once bis zum Gerät gibt es nicht. Wir dedupen bei uns; APNs und FCM können über Collapse-IDs gleiche Nachrichten auf dem Gerät zusammenfassen.</li>
+  <li><b>Retry:</b> Nur bei vorübergehenden Fehlern (Timeout, 429, 5xx). Bei dauerhaften (ungültiges Token, ungültige Adresse) sofort aufhören und Daten bereinigen.</li>
+  <li><b>Geräte-Tokens:</b> Ein Nutzer hat mehrere Geräte. FCM Multicast nimmt bis zu 500 Tokens pro Aufruf. Meldet der Provider ein Token als nicht registriert, wird es gelöscht.</li>
+  <li><b>Rate Limits:</b> Pro Nutzer (z. B. max. 3 Marketing-Nachrichten pro Tag) gegen Spam-Gefühl. Pro Provider gegen Drosselung. Token Bucket pro Kanal.</li>
+  <li><b>Quiet Hours:</b> Marketing nachts nicht senden: <code>next_attempt_at</code> auf 08:00 Uhr in der Zeitzone des Nutzers setzen. Sicherheitsnachrichten ignorieren das.</li>
+  <li><b>Templates und Sprache:</b> Templates versioniert, Sprache aus dem Profil. In der Schweiz mindestens de, fr, it. Rendern vor dem Einreihen, damit Retries denselben Text senden.</li>
+  <li><b>Broadcast:</b> Nicht 10 Mio. Zeilen in einer Transaktion. Ein Job teilt die Nutzer in Blöcke (z. B. 10 000) und reiht Blöcke ein. Bei Push alternativ FCM-Topics.</li>
+  <li><b>Outbox beim Producer:</b> Der Bestell-Service schreibt das Ereignis in seiner eigenen Transaktion in eine Outbox. So geht kein Ereignis verloren, wenn er nach dem Commit abstürzt.</li>
+  <li><b>Fallback-Kanal:</b> Push nicht zugestellt nach X Minuten → E-Mail. Das braucht einen Zeitplan pro Nachricht und eine Lese-Rückmeldung.</li>
+  <li><b>Tracking:</b> Zustell- und Öffnungsraten über Provider-Callbacks und Tracking-Links. Achtung: Datenschutz und Einwilligung für Marketing-Tracking.</li>
+  <li><b>Sicherheit:</b> Keine sensiblen Daten in Push-Texten (Sperrbildschirm). Bei Gesundheits- oder Behördendaten nur „Sie haben eine neue Nachricht“ und Inhalt nach Login.</li>
+</ol>
+
+<h2>5. Vergleich: drei Design-Varianten</h2>
+<ul>
+  <li><b>A. Jeder Service sendet selbst:</b> schnell gebaut. Aber: Präferenzen, Limits und Provider-Logik sind x-fach dupliziert, keine Gesamtsicht.</li>
+  <li><b>B. Zentraler Service mit DB-Queue (wie oben):</b> einfach, transaktional, gut beobachtbar. Grenze: einige tausend Nachrichten pro Sekunde, dann wird die Tabelle heiss.</li>
+  <li><b>C. Zentraler Service mit Broker (Kafka, Service Bus, SQS):</b> hoher Durchsatz, Partitionierung, Replay. Mehr Betrieb; Status und Idempotenz trotzdem in einer DB.</li>
+</ul>
+
+<h2>6. In der Produktion</h2>
+<ol>
+  <li><b>Doppelte Nachrichten:</b> Producer-Retry ohne Schlüssel oder Worker-Absturz nach dem Provider-Call. Fix: Idempotenz-Schlüssel, Status vor und nach dem Call, Collapse-ID beim Provider.</li>
+  <li><b>Login-Codes kommen zu spät:</b> Ein Newsletter verstopft die Queue. Fix: Prioritäts-Queues, getrennte Worker-Pools.</li>
+  <li><b>SMS-Kosten explodieren:</b> Retry-Schleife oder Bot-Registrierungen. Fix: Limit pro Nummer, Captcha, Budget-Alarm.</li>
+  <li><b>Provider-Ausfall:</b> FCM antwortet mit 5xx. Fix: Circuit Breaker, Backoff mit Jitter, Nachrichten bleiben in der Queue.</li>
+  <li><b>Retry-Sturm:</b> Nach dem Ausfall wiederholen alle gleichzeitig. Fix: Jitter und begrenzte Parallelität pro Provider.</li>
+  <li><b>Tote Tokens:</b> Viele Fehler „nicht registriert“. Fix: Token sofort löschen, Token beim App-Start neu registrieren.</li>
+</ol>
+
+<h2>7. Diagnose: Werkzeuge und Queries</h2>
+<ul>
+  <li><code>SELECT channel, status, count(*) FROM notifications WHERE created_at &gt; now() - interval '1 hour' GROUP BY 1, 2;</code></li>
+  <li><b>Alter der ältesten fälligen Nachricht</b> pro Kanal und Priorität: <code>now() - min(next_attempt_at) WHERE status = 'queued'</code>.</li>
+  <li><b>Provider-Fehler nach Code:</b> 429, 5xx, ungültiges Token. Ein Sprung bei 429 heisst: zu schnell senden.</li>
+  <li><b>DLQ-Grösse</b> und Gründe. Eine wachsende DLQ ist ein Alarm, kein Archiv.</li>
+  <li><b>End-to-end-Latenz:</b> Ereignis bis <code>sent</code>, als Histogramm pro Priorität.</li>
+</ul>
+
+<h2>8. Senior-Punkte</h2>
+<div class="senior">
+<ol>
+  <li><b>Transaktional und Marketing nie in derselben Queue.</b> Prioritäten sind Architektur, kein Feld.</li>
+  <li><b>At-least-once plus Idempotenz</b> ist die ehrliche Garantie. Exactly-once bis zum Handy verspreche ich nicht.</li>
+  <li><b>Nur vorübergehende Fehler wiederholen.</b> Dauerhafte Fehler bereinigen Daten (Token, Adresse).</li>
+  <li><b>Präferenzen und Opt-out sind Recht,</b> nicht nur Komfort. Marketing ohne Einwilligung ist ein rechtliches Risiko.</li>
+  <li><b>Keine sensiblen Inhalte im Push.</b> Der Sperrbildschirm ist öffentlich.</li>
+  <li><b>Erst DB-Queue, dann Broker.</b> Ich wechsle, wenn Durchsatz oder Replay es verlangen.</li>
+</ol>
+</div>
+
+<h2>9. Aus dem Projekt</h2>
+<p>„Ein Benachrichtigungs-System habe ich nicht gebaut. Am nächsten liegen bei DAZiT Kafka-Events zwischen Microservices und bei DigiSanté der Sedex-Messaging-Client als Sidecar für den Nachrichtenaustausch.“ <span class="small">(Prüfen und durch dein echtes Beispiel ersetzen.)</span></p>
+
+<h2>10. Fallen</h2>
+<div class="trap">
+<ul>
+  <li>„Wir garantieren exactly-once.“ → <b>Falsch.</b> Netz und Provider erlauben nur at-least-once. Duplikate verhindert man mit Schlüsseln.</li>
+  <li>„Jeder Fehler wird wiederholt.“ → <b>Falsch.</b> Ungültige Tokens oder Adressen nie wiederholen.</li>
+  <li>„Eine Queue für alles reicht.“ → Ein Newsletter blockiert dann Login-Codes.</li>
+  <li>„Retry sofort und fest alle 5 Sekunden.“ → Retry-Sturm. Exponentiell, gedeckelt, mit Jitter.</li>
+  <li>„Gesendet heisst zugestellt.“ → Nein. Der Provider stellt asynchron zu; das Gerät kann offline sein.</li>
+</ul>
+</div>
+
+<h2>11. Fragen</h2>
+<details><summary>Skizzieren Sie das System in einer Minute.</summary><p>Services senden Ereignisse an eine zentrale API. Sie prüft Idempotenz, Präferenzen und Limits und reiht pro Kanal ein. Kanal-Worker rufen Provider, wiederholen mit Backoff und schieben Tote in eine DLQ.</p></details>
+<details><summary>Welche Fragen stellen Sie zuerst?</summary><p>Welche Kanäle, wie viele Nutzer und Nachrichten, wie schnell (Login-Code vs Newsletter), Präferenzen und Opt-out, Sprachen, Broadcasts.</p></details>
+<details><summary>Wie gross ist die Last?</summary><p>50 Mio. Nachrichten pro Tag sind ca. 580/s. Ein Broadcast an 10 Mio. in 10 Minuten braucht ca. 17 000/s.</p></details>
+<details><summary>Warum eine Queue pro Kanal?</summary><p>Kanäle haben andere Latenz, Limits und Ausfälle. Ein langsamer SMS-Provider darf Push nicht bremsen.</p></details>
+<details><summary>Wie verhindern Sie Duplikate?</summary><p>Idempotenz-Schlüssel vom Producer, Unique-Key auf Schlüssel und Kanal. Beim Provider Collapse-IDs.</p></details>
+<details><summary>Welche Zustellgarantie geben Sie?</summary><p>At-least-once intern. Exactly-once bis zum Gerät ist nicht möglich.</p></details>
+<details><summary>Wie bauen Sie Retries?</summary><p>Nur bei vorübergehenden Fehlern. Exponentieller Backoff mit Deckel und Jitter, max. N Versuche, dann DLQ.</p></details>
+<details><summary>Was ist eine DLQ?</summary><p>Eine Dead Letter Queue für Nachrichten, die nach allen Versuchen scheitern. Man beobachtet sie, analysiert Gründe und spielt nach dem Fix neu ein.</p></details>
+<details><summary>Wie verhindern Sie, dass ein Newsletter Login-Codes verzögert?</summary><p>Getrennte Queues und Worker-Pools pro Priorität.</p></details>
+<details><summary>Wie senden Sie an 10 Mio. Nutzer?</summary><p>Ein Job teilt die Nutzer in Blöcke und reiht sie ein. Bei Push Multicast oder Topics. Rate Limits pro Provider beachten.</p></details>
+<details><summary>Wie gehen Sie mit ungültigen Geräte-Tokens um?</summary><p>Meldet der Provider das Token als nicht registriert, löschen. Die App registriert beim Start neu.</p></details>
+<details><summary>Wie setzen Sie Quiet Hours um?</summary><p>next_attempt_at in die nächste erlaubte Zeit in der Zeitzone des Nutzers schieben. Sicherheitsnachrichten sind ausgenommen.</p></details>
+<details><summary>Wie geht kein Ereignis beim Producer verloren?</summary><p>Transactional Outbox: Ereignis in derselben Transaktion wie die Fachdaten schreiben, ein Relay sendet es danach.</p></details>
+<details><summary>Wie machen Sie die In-App-Inbox?</summary><p>Eine Tabelle pro Nutzer mit Index auf Nutzer und Zeit, Ungelesen-Zähler, Live-Updates per WebSocket oder SSE.</p></details>
+<details><summary>Was gehört nicht in eine Push-Nachricht?</summary><p>Sensible Inhalte wie Gesundheits- oder Finanzdaten. Der Text ist auf dem Sperrbildschirm sichtbar.</p></details>
+<details><summary>DB-Queue oder Kafka?</summary><p>DB-Queue ist einfach und transaktional bis einige tausend pro Sekunde. Kafka für hohen Durchsatz, Partitionierung und Replay.</p></details>
+<details><summary>Szenario: Nutzer bekommen jede Nachricht doppelt. Wo suchen Sie?</summary><p>Producer-Retries ohne Schlüssel oder Worker, die nach dem Provider-Call abstürzen und neu senden. Fix: Idempotenz-Schlüssel, Status-Übergänge prüfen, Collapse-ID.</p></details>
+<details><summary>Szenario: FCM ist 20 Minuten gestört. Was passiert in Ihrem System?</summary><p>Circuit Breaker öffnet, Nachrichten bleiben queued, Backoff mit Jitter. Danach langsam hochfahren, damit kein Retry-Sturm entsteht. Optional Fallback auf E-Mail für kritische Nachrichten.</p></details>
+<details><summary>Szenario: Die SMS-Rechnung ist zehnmal höher als sonst. Was prüfen Sie?</summary><p>Retry-Schleifen, Bot-Registrierungen mit SMS-Verifikation, fehlende Limits pro Nummer. Fix: Limits, Captcha, Budget-Alarm.</p></details>
+
+</body>
+</html>

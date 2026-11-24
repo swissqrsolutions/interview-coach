@@ -1,0 +1,256 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Prozesse und Signale</title>
+<style>
+  body { font: 17px/1.55 -apple-system, system-ui, sans-serif; max-width: 760px; margin: 0 auto; padding: 16px; color: #1d1d1f; }
+  h1 { font-size: 28px; margin: 8px 0 4px; }
+  h2 { font-size: 21px; margin: 32px 0 8px; padding-top: 12px; border-top: 2px solid #e5e5ea; }
+  .kern { background: #eef6ff; border-left: 4px solid #0a66c2; padding: 10px 14px; border-radius: 6px; }
+  .senior { background: #f0faf0; border-left: 4px solid #2e7d32; padding: 10px 14px; border-radius: 6px; }
+  .trap { background: #fff4f2; border-left: 4px solid #c62828; padding: 10px 14px; border-radius: 6px; }
+  code { background: #f2f2f7; padding: 1px 5px; border-radius: 4px; font-size: 15px; }
+  pre { background: #1e1e1e; color: #e6e6e6; padding: 12px; border-radius: 8px; overflow-x: auto; font-size: 13.5px; line-height: 1.45; }
+  svg { width: 100%; height: auto; display: block; margin: 10px 0; }
+  ol li, ul li { margin: 4px 0; }
+  details { border: 1px solid #e5e5ea; border-radius: 8px; padding: 8px 12px; margin: 6px 0; }
+  summary { font-weight: 600; cursor: pointer; }
+  details p { margin: 6px 0 2px; }
+  .small { color: #6e6e73; font-size: 14px; }
+</style>
+</head>
+<body>
+
+<h1>Prozesse und Signale</h1>
+<p class="small">Linux · Tier 1 · Quellen: man7.org <code>signal(7)</code>, <code>kill(1)</code>, <code>ps(1)</code>, <code>top(1)</code>, <code>proc(5)</code>, <code>wait(2)</code>; Docker Docs (<code>docker stop</code>, <code>docker run --init</code>); Kubernetes API (<code>terminationGracePeriodSeconds</code>); Spring Boot Reference „Graceful Shutdown“</p>
+
+<div class="kern">
+<b>Kern:</b> Ein <b>Prozess</b> ist ein laufendes Programm mit eigener <b>PID</b>, eigenem Speicher und einem <b>Elternprozess</b>. <b>Signale</b> sind kurze Nachrichten des Kernels an einen Prozess, z. B. „bitte beenden“ (<b>SIGTERM</b>) oder „sofort sterben“ (<b>SIGKILL</b>). Wer Signale versteht, versteht sauberes Herunterfahren von Containern.
+</div>
+
+<h2>1. Wo sitzt ein Prozess?</h2>
+<svg viewBox="0 0 720 320" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="a" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="10" y="10" width="700" height="44" rx="8" fill="#0a66c2"/><text x="360" y="38" text-anchor="middle" fill="#fff" font-weight="700">Linux-Kernel: Scheduler · Speicher · Signale · cgroups · Namespaces</text>
+  <rect x="10" y="80" width="330" height="230" rx="12" fill="#f7f7fa" stroke="#999" stroke-dasharray="5 4"/><text x="175" y="100" text-anchor="middle" font-weight="700">Host (PID-Namespace des Hosts)</text>
+  <rect x="30" y="114" width="130" height="44" rx="8" fill="#fff" stroke="#555"/><text x="95" y="141" text-anchor="middle">PID 1 systemd</text>
+  <line x1="95" y1="158" x2="95" y2="190" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="30" y="192" width="130" height="44" rx="8" fill="#fff" stroke="#555"/><text x="95" y="219" text-anchor="middle">containerd</text>
+  <rect x="180" y="114" width="140" height="44" rx="8" fill="#fff" stroke="#555"/><text x="250" y="141" text-anchor="middle">sshd → bash</text>
+  <line x1="160" y1="214" x2="378" y2="214" stroke="#555" stroke-width="2" marker-end="url(#a)"/><text x="270" y="206" text-anchor="middle" font-size="11">startet Container</text>
+  <rect x="380" y="80" width="330" height="230" rx="12" fill="#f7f7fa" stroke="#999" stroke-dasharray="5 4"/><text x="545" y="100" text-anchor="middle" font-weight="700">Container (eigener PID-Namespace)</text>
+  <rect x="400" y="114" width="290" height="50" rx="8" fill="#e8f5e9" stroke="#2e7d32"/><text x="545" y="136" text-anchor="middle" font-weight="700">PID 1: java -jar app.jar</text><text x="545" y="154" text-anchor="middle" font-size="12">bekommt SIGTERM von docker stop</text>
+  <line x1="545" y1="164" x2="545" y2="196" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="400" y="198" width="135" height="44" rx="8" fill="#fff" stroke="#555"/><text x="467" y="225" text-anchor="middle">PID 7 Kind</text>
+  <rect x="555" y="198" width="135" height="44" rx="8" fill="#fdecea" stroke="#c62828"/><text x="622" y="218" text-anchor="middle">PID 9 Zombie</text><text x="622" y="234" text-anchor="middle" font-size="11">Status Z</text>
+  <text x="545" y="280" text-anchor="middle" font-size="12">Auf dem Host hat derselbe Prozess eine andere PID.</text>
+</svg>
+<ol>
+  <li><b>Kernel:</b> verwaltet alle Prozesse. Er teilt CPU-Zeit zu (<b>Scheduler</b>) und stellt Signale zu.</li>
+  <li><b>PID 1:</b> der erste Prozess. Auf dem Host meist <b>systemd</b>. Er adoptiert verwaiste Prozesse und räumt sie ab.</li>
+  <li><b>Elternprozess (PPID):</b> Jeder Prozess entsteht durch <code>fork()</code> eines Elternprozesses. Beispiel: <code>bash</code> startet <code>ps</code>.</li>
+  <li><b>PID-Namespace:</b> Ein Container hat eigene PIDs. Die App ist dort PID 1, auf dem Host z. B. PID 48213.</li>
+  <li><b>cgroups:</b> begrenzen CPU und Speicher pro Container. Über die Grenze kommt der <b>OOM-Killer</b>.</li>
+  <li><b>Zustände</b> in <code>ps</code>: <code>R</code> läuft, <code>S</code> schläft (wartet), <code>D</code> wartet auf I/O (nicht unterbrechbar), <code>T</code> gestoppt, <code>Z</code> Zombie.</li>
+</ol>
+
+<h2>2. Die Reise eines Shutdowns (docker stop und kubectl delete)</h2>
+<svg viewBox="0 0 720 300" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="b" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker><marker id="r" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#c62828"/></marker></defs>
+  <rect x="10" y="30" width="140" height="62" rx="10" fill="#eee" stroke="#777"/><text x="80" y="56" text-anchor="middle" font-weight="700">docker stop</text><text x="80" y="76" text-anchor="middle" font-size="12">kubectl delete</text>
+  <line x1="150" y1="61" x2="188" y2="61" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="190" y="30" width="150" height="62" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="265" y="56" text-anchor="middle" font-weight="700">SIGTERM (15)</text><text x="265" y="76" text-anchor="middle" font-size="12">an PID 1</text>
+  <line x1="340" y1="61" x2="378" y2="61" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="380" y="30" width="170" height="62" rx="10" fill="#e8f5e9" stroke="#2e7d32"/><text x="465" y="56" text-anchor="middle" font-weight="700">Handler läuft</text><text x="465" y="76" text-anchor="middle" font-size="12">Requests fertig, Commit</text>
+  <line x1="550" y1="61" x2="588" y2="61" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="590" y="30" width="120" height="62" rx="10" fill="#2e7d32"/><text x="650" y="56" text-anchor="middle" fill="#fff" font-weight="700">exit 0</text><text x="650" y="76" text-anchor="middle" fill="#fff" font-size="12">sauber</text>
+  <path d="M265,92 L265,180" stroke="#c62828" stroke-width="2" stroke-dasharray="6 4" marker-end="url(#r)"/>
+  <text x="280" y="140" font-size="12" fill="#c62828">Grace Period vorbei (Docker 10 s, K8s 30 s)</text>
+  <rect x="190" y="182" width="150" height="62" rx="10" fill="#c62828"/><text x="265" y="208" text-anchor="middle" fill="#fff" font-weight="700">SIGKILL (9)</text><text x="265" y="228" text-anchor="middle" fill="#fff" font-size="12">vom Kernel, sofort</text>
+  <line x1="340" y1="213" x2="378" y2="213" stroke="#c62828" stroke-width="2" marker-end="url(#r)"/>
+  <rect x="380" y="182" width="170" height="62" rx="10" fill="#fdecea" stroke="#c62828"/><text x="465" y="208" text-anchor="middle" font-weight="700">exit 137</text><text x="465" y="228" text-anchor="middle" font-size="12">128 + 9, kein Aufräumen</text>
+</svg>
+<ol>
+  <li><b>Stopp-Befehl:</b> <code>docker stop</code> oder das Löschen eines Pods startet das Herunterfahren.</li>
+  <li><b>SIGTERM:</b> Docker schickt das <b>STOPSIGNAL</b> an PID 1 im Container. Standard ist SIGTERM (15). Das Image kann ein anderes festlegen.</li>
+  <li><b>Handler:</b> Eine gute App fängt SIGTERM. Spring Boot nimmt keine neuen Requests mehr an und lässt laufende fertig laufen (<b>Graceful Shutdown</b>, Standard in Spring Boot).</li>
+  <li><b>Sauberes Ende:</b> Die App schliesst Verbindungen, committet Offsets und endet mit Exit-Code 0.</li>
+  <li><b>Grace Period:</b> Ist die App nach der Frist noch da, kommt <b>SIGKILL</b>. Docker wartet standardmässig 10 s (Linux), Kubernetes 30 s (<code>terminationGracePeriodSeconds</code>).</li>
+  <li><b>SIGKILL:</b> Der Kernel beendet den Prozess sofort. Kein Handler, kein <code>finally</code>, kein Flush. Exit-Code <b>137</b> = 128 + 9.</li>
+</ol>
+
+<h2>3. Beispiel: Signale, Exit-Codes, Zombie und PID 1</h2>
+<pre>$ docker exec pg17 ps -eo pid,ppid,user,stat,%cpu,%mem,rss,comm --sort=pid | head -9
+    PID    PPID USER     STAT %CPU %MEM   RSS COMMAND
+      1       0 postgres Ss    0.0  0.9 27908 postgres
+     79       1 postgres Ss    0.0  0.9 27700 postgres
+     80       1 postgres Ss    0.0  0.2  8104 postgres
+     82       1 postgres Ss    0.0  0.3 10240 postgres
+     83       1 postgres Ss    0.0  0.3  9108 postgres
+     84       1 postgres Ss    0.0  0.2  8272 postgres
+    557       0 root     Ss   37.5  0.1  3484 bash
+    563     557 root     R     0.0  0.1  4156 ps
+
+# SIGTERM vs SIGKILL
+$ sleep 300 &amp; kill -15 $!; wait $!; echo "exit=$?"
+sleep nach kill -15: exit=143
+$ sleep 300 &amp; kill -9 $!;  wait $!; echo "exit=$?"
+bash: line 5:   566 Killed                  sleep 300
+sleep nach kill -9: exit=137
+
+# Ein Prozess mit SIGTERM-Handler (trap)
+$ bash -c 'trap "echo SIGTERM erhalten, raeume auf; exit 0" TERM; sleep 300 &amp; wait' &amp;
+$ kill -15 $!; wait $!; echo "exit=$?"
+SIGTERM erhalten, raeume auf
+exit=0
+
+# Zombie: Kind endet, Eltern (perl) ruft wait() nicht auf
+$ perl -e 'if (fork()==0){exit 0} sleep 3' &amp;  ps -o pid,ppid,stat,comm --ppid $!
+    PID    PPID STAT COMMAND
+    572     570 Z    perl
+
+# Welche Signale fängt PID 1 (postgres)?
+$ grep SigCgt /proc/1/status
+SigCgt:	0000000000014a07</pre>
+<p class="small">Echte Ausgabe, Debian in Container pg17 (Debian GNU/Linux 13, procps). Befehle leicht gekürzt.</p>
+<pre># PID 1 ohne Handler: sleep als Hauptprozess
+$ docker run -d --name pid1demo postgres:17 sleep 1000 ; time docker stop pid1demo
+ohne --init: ExitCode=137
+Dauer docker stop: 10.5 s
+
+$ docker run -d --init --name pid1demo postgres:17 sleep 1000
+$ docker exec pid1demo ps -o pid,comm
+    PID COMMAND
+      1 docker-init
+      7 sleep
+mit --init: ExitCode=130
+Dauer docker stop: 0.5 s
+
+$ docker inspect postgres:17 --format '{{.Config.StopSignal}}'
+SIGINT</pre>
+<p class="small">Echte Ausgabe, Docker Engine 29.9.2, Image postgres:17. Ausgabe von <code>docker inspect</code> und <code>time</code> zusammengefasst.</p>
+<ol>
+  <li><b>PID 1 ist postgres</b>, die Worker (79–84) sind seine Kinder (PPID 1). <code>Ss</code> heisst: schläft, ist Session-Leader.</li>
+  <li><b>Exit-Codes:</b> Ein Signal-Tod gibt 128 + Signalnummer. SIGTERM → <b>143</b>, SIGKILL → <b>137</b>, SIGINT → <b>130</b>.</li>
+  <li><b>trap:</b> Mit Handler endet der Prozess sauber mit 0. SIGKILL kann man nicht fangen.</li>
+  <li><b>Zombie (Z):</b> Das Kind ist tot, aber der Elternprozess hat seinen Exit-Status nicht mit <code>wait()</code> abgeholt. Der Eintrag bleibt in der Prozesstabelle.</li>
+  <li><b>SigCgt</b> ist eine Bitmaske gefangener Signale. <code>0x14a07</code> = Bits 1, 2, 3, 10, 12, 15, 17 = HUP, INT, QUIT, USR1, USR2, TERM, CHLD. Postgres fängt also SIGTERM.</li>
+  <li><b>PID-1-Falle:</b> <code>sleep</code> als PID 1 hat keinen Handler. Der Kernel ignoriert dann Signale mit Standardaktion an PID 1. <code>docker stop</code> wartet 10 s und schickt SIGKILL → 137.</li>
+  <li><b>Mit <code>--init</code></b> ist <code>docker-init</code> (tini) PID 1. Es leitet das Signal an <code>sleep</code> weiter. Stop in 0,5 s. Das Signal war SIGINT, weil das postgres-Image <code>STOPSIGNAL SIGINT</code> setzt → Exit 130.</li>
+</ol>
+
+<h2>4. Details, die Interviewer fragen</h2>
+<ol>
+  <li><b>Wichtige Signale:</b>
+    <ul>
+      <li><b>SIGHUP (1):</b> Terminal weg. Viele Daemons laden damit die Konfiguration neu, z. B. nginx.</li>
+      <li><b>SIGINT (2):</b> Ctrl+C.</li>
+      <li><b>SIGQUIT (3):</b> Ctrl+\. Die JVM schreibt dabei einen <b>Thread Dump</b> und läuft weiter.</li>
+      <li><b>SIGKILL (9):</b> sofortiger Tod. Nicht fangbar, nicht ignorierbar.</li>
+      <li><b>SIGTERM (15):</b> höfliche Bitte zu enden. Standard von <code>kill</code>.</li>
+      <li><b>SIGSTOP / SIGCONT:</b> anhalten und fortsetzen. SIGSTOP ist nicht fangbar.</li>
+      <li><b>SIGCHLD (17):</b> ein Kind hat sich beendet.</li>
+    </ul></li>
+  <li><b>kill -15 vs kill -9:</b> SIGTERM erlaubt Aufräumen: offene Requests beenden, Transaktionen committen, Dateien flushen. SIGKILL schneidet alles ab. Darum immer zuerst <code>-15</code>, erst nach einer Frist <code>-9</code>.</li>
+  <li><b>kill -0 PID:</b> sendet kein Signal, prüft nur, ob der Prozess existiert und ob man Rechte hat.</li>
+  <li><b>Zombie:</b> Ein beendeter Prozess, dessen Eltern den Status nicht abgeholt haben. Er braucht keinen Speicher, nur einen Eintrag und eine PID. <code>kill -9</code> auf einen Zombie wirkt nicht, er ist schon tot. Lösung: Eltern reparieren oder beenden. Dann adoptiert PID 1 den Zombie und räumt ihn ab.</li>
+  <li><b>Waise (Orphan):</b> Ein lebender Prozess, dessen Eltern gestorben sind. PID 1 (oder ein <b>Subreaper</b>) adoptiert ihn.</li>
+  <li><b>PID 1 im Container hat zwei Pflichten:</b> Signale behandeln und Zombies abräumen. Eine JVM oder ein Shell-Skript als PID 1 macht das zweite oft nicht. Lösung: <code>docker run --init</code>, <b>tini</b> oder <b>dumb-init</b> als ENTRYPOINT.</li>
+  <li><b>Shell-Form vs Exec-Form im Dockerfile:</b> <code>CMD java -jar app.jar</code> startet <code>/bin/sh -c</code> als PID 1. Die Shell leitet SIGTERM oft nicht weiter. <code>CMD ["java","-jar","app.jar"]</code> macht Java zu PID 1. In Entrypoint-Skripten: <code>exec java …</code>.</li>
+  <li><b>Load Average:</b> Durchschnitt der Prozesse im Zustand R <b>und D</b> über 1, 5 und 15 Minuten. Man vergleicht ihn mit der Anzahl CPUs. Hohe Load mit wenig CPU-Last heisst oft: Warten auf I/O.</li>
+  <li><b>ps-Spalten:</b> <b>RSS</b> = belegter physischer Speicher, <b>VSZ</b> = reservierter virtueller Speicher, <b>%CPU</b> = Durchschnitt seit Start (bei <code>ps</code>), nicht aktuell.</li>
+  <li><b>top-Tasten:</b> <code>P</code> nach CPU sortieren, <code>M</code> nach Speicher, <code>1</code> pro CPU, <code>H</code> Threads zeigen, <code>k</code> Signal senden.</li>
+  <li><b>nice / renice:</b> ändern die Priorität für den Scheduler (-20 hoch bis 19 niedrig).</li>
+  <li><b>Kubernetes-Ablauf:</b> Pod auf Terminating, <code>preStop</code>-Hook läuft, dann SIGTERM, nach <code>terminationGracePeriodSeconds</code> (Standard 30) SIGKILL. Der <code>preStop</code>-Hook zählt in die Frist.</li>
+</ol>
+
+<h2>5. Vergleich</h2>
+<ul>
+  <li><b>SIGTERM vs SIGKILL:</b> fangbar und sauber vs sofort und ohne Aufräumen.</li>
+  <li><b>SIGINT vs SIGTERM:</b> beide fangbar. SIGINT kommt von Ctrl+C, SIGTERM von Werkzeugen wie <code>kill</code> und Docker.</li>
+  <li><b>Zombie vs Waise:</b> tot und nicht abgeholt vs lebend ohne Eltern.</li>
+  <li><b>ps vs top:</b> Momentaufnahme, gut für Skripte vs Live-Ansicht, gut für Analyse.</li>
+  <li><b>kill vs pkill vs killall:</b> nach PID vs nach Name/Muster vs nach exaktem Namen.</li>
+  <li><b>Prozess vs Thread:</b> eigener Adressraum vs geteilter Adressraum im selben Prozess. In Linux sind Threads Tasks mit eigener TID.</li>
+  <li><b>tini vs dumb-init vs --init:</b> alle sind minimale PID-1-Prozesse. <code>--init</code> nutzt intern tini.</li>
+</ul>
+
+<h2>6. In der Produktion</h2>
+<ol>
+  <li><b>Deployment dauert immer 30 s länger:</b> Die App als PID 1 ignoriert SIGTERM (Shell-Form, Skript ohne <code>exec</code>). Kubernetes wartet die Frist ab und killt. Lösung: Exec-Form, <code>exec</code> im Skript, oder tini.</li>
+  <li><b>Fehlerhafte Requests beim Rolling Update:</b> Der Pod stirbt, bevor der Load Balancer ihn entfernt hat. Lösung: kurzer <code>preStop</code>-Sleep, Graceful Shutdown, Readiness Probe.</li>
+  <li><b>Verlorene Daten nach Absturz:</b> Ein Prozess bekam SIGKILL (OOM oder Frist vorbei) mitten in einem Schreibvorgang. Lösung: Arbeit <b>idempotent</b> und wiederholbar machen, nicht auf sauberes Ende vertrauen.</li>
+  <li><b>Viele Zombies:</b> Ein Prozess startet Kinder (z. B. Shell-Aufrufe aus Java) und räumt nicht ab. Die PID-Tabelle läuft voll, neue Prozesse scheitern mit „fork: Resource temporarily unavailable“. Lösung: Init-Prozess im Container, Eltern-Code reparieren.</li>
+  <li><b>Hängender Prozess im Zustand D:</b> wartet auf Disk oder NFS. Auch <code>kill -9</code> hilft erst, wenn das I/O zurückkommt. Lösung: Speicher- oder Netzwerkproblem beheben.</li>
+  <li><b>Exit Code 137 im Pod:</b> SIGKILL, meist OOMKilled oder Grace Period überschritten. <code>kubectl describe pod</code> zeigt den Grund.</li>
+</ol>
+
+<h2>7. Diagnose: Werkzeuge und Befehle</h2>
+<ul>
+  <li><code>ps -eo pid,ppid,user,stat,%cpu,%mem,rss,etime,cmd --sort=-%cpu | head</code>: Prozesse nach CPU.</li>
+  <li><code>ps -ef --forest</code> oder <code>pstree -p</code>: Eltern-Kind-Baum.</li>
+  <li><code>ps -eo stat,pid,ppid,cmd | grep '^Z'</code>: Zombies und ihre Eltern finden.</li>
+  <li><code>top -b -n1</code> (Batch, für Skripte), <code>top -H -p PID</code> (Threads eines Prozesses), <code>htop</code>.</li>
+  <li><code>kill -l</code> (alle Signale), <code>kill -TERM PID</code>, <code>pkill -f muster</code>, <code>pgrep -a java</code>.</li>
+  <li><code>/proc/PID/status</code> (Zustand, Speicher, SigCgt), <code>/proc/PID/cmdline</code>, <code>/proc/PID/fd</code> (offene Dateien).</li>
+  <li><code>jcmd PID Thread.print</code> oder <code>kill -3 PID</code>: Thread Dump einer JVM.</li>
+  <li><code>strace -p PID</code>: Systemaufrufe eines hängenden Prozesses.</li>
+  <li><code>docker inspect --format '{{.State.ExitCode}} {{.State.OOMKilled}}'</code>, <code>kubectl describe pod</code> (Last State, Reason).</li>
+</ul>
+
+<h2>8. Senior-Punkte</h2>
+<div class="senior">
+<ol>
+  <li><b>SIGKILL kommt immer irgendwann.</b> OOM, Node-Ausfall, Frist vorbei. Darum baue ich Verarbeitung idempotent und crash-sicher, statt auf den Shutdown-Hook zu vertrauen.</li>
+  <li><b>PID 1 ist eine Design-Entscheidung</b> im Dockerfile: Exec-Form, <code>exec</code> in Skripten, tini wenn Kinder entstehen.</li>
+  <li><b>Grace Period passend wählen:</b> länger als der längste normale Request oder Batch-Schritt, aber nicht beliebig lang.</li>
+  <li><b>Exit-Codes lesen:</b> 137 = SIGKILL, 143 = SIGTERM ohne Handler, 1 = App-Fehler. Das spart Zeit bei der Analyse.</li>
+  <li><b>Graceful Shutdown ist ein Zusammenspiel:</b> App, preStop, Readiness und Load Balancer. Eines allein reicht nicht.</li>
+</ol>
+</div>
+
+<h2>9. Aus dem Projekt</h2>
+<p>„Bei MATCH kann ein Spark-Job jederzeit hart beendet werden, z. B. bei einem Pod-Reschedule. Darum ist die Verarbeitung idempotent: Messages, die zu lange in Processing hängen, setzt die Stale-Job-Recovery auf Pending zurück.“ <span class="small">(Prüfen und durch dein echtes Beispiel ersetzen.)</span></p>
+
+<h2>10. Fallen</h2>
+<div class="trap">
+<ul>
+  <li>„<code>kill</code> tötet immer sofort.“ → <b>Falsch.</b> <code>kill</code> sendet standardmässig SIGTERM. Der Prozess darf aufräumen oder es ignorieren.</li>
+  <li>„<code>kill -9</code> entfernt Zombies.“ → <b>Falsch.</b> Zombies sind schon tot. Nur der Elternprozess oder sein Ende hilft.</li>
+  <li>„Zombies verbrauchen viel Speicher.“ → <b>Falsch.</b> Nur einen Eintrag in der Prozesstabelle. Das Problem ist die PID-Grenze.</li>
+  <li>„PID 1 im Container verhält sich wie jeder Prozess.“ → <b>Falsch.</b> Signale mit Standardaktion werden ignoriert, wenn kein Handler da ist.</li>
+  <li>„<code>CMD java -jar app.jar</code> reicht.“ → Shell-Form: <code>sh</code> wird PID 1 und leitet SIGTERM oft nicht weiter.</li>
+  <li>„Exit 137 heisst immer OOM.“ → Nicht immer. 137 heisst SIGKILL. Auch eine abgelaufene Grace Period gibt 137.</li>
+</ul>
+</div>
+
+<h2>11. Fragen</h2>
+<details><summary>Was ist ein Prozess?</summary><p>Ein laufendes Programm mit eigener PID, eigenem Speicher, offenen Dateien und einem Elternprozess.</p></details>
+<details><summary>Was ist ein Signal?</summary><p>Eine kurze Nachricht des Kernels an einen Prozess. Der Prozess kann sie fangen, ignorieren oder die Standardaktion ausführen, ausser bei SIGKILL und SIGSTOP.</p></details>
+<details><summary>Was ist der Unterschied zwischen kill -15 und kill -9?</summary><p>-15 (SIGTERM) bittet um Beenden und erlaubt Aufräumen. -9 (SIGKILL) beendet sofort durch den Kernel, ohne Handler.</p></details>
+<details><summary>Warum nicht immer kill -9?</summary><p>Keine Aufräumarbeit: offene Transaktionen, ungeschriebene Puffer, Lock-Dateien und halbe Requests bleiben zurück.</p></details>
+<details><summary>Welche Signale kann man nicht fangen?</summary><p>SIGKILL und SIGSTOP.</p></details>
+<details><summary>Was bedeutet Exit-Code 137?</summary><p>128 + 9: Der Prozess starb durch SIGKILL. Oft OOM-Killer oder abgelaufene Grace Period.</p></details>
+<details><summary>Was bedeutet Exit-Code 143?</summary><p>128 + 15: Der Prozess starb durch SIGTERM, ohne eigenen Handler.</p></details>
+<details><summary>Was ist ein Zombie-Prozess?</summary><p>Ein beendeter Prozess, dessen Exit-Status der Elternprozess nicht mit wait() abgeholt hat. Status Z in ps.</p></details>
+<details><summary>Wie werden Sie Zombies los?</summary><p>Den Elternprozess reparieren oder beenden. Dann adoptiert PID 1 die Zombies und räumt sie ab.</p></details>
+<details><summary>Was ist ein Orphan-Prozess?</summary><p>Ein lebender Prozess ohne Elternprozess. PID 1 oder ein Subreaper adoptiert ihn.</p></details>
+<details><summary>Warum ist PID 1 im Container besonders?</summary><p>Linux ignoriert an PID 1 Signale mit Standardaktion, wenn kein Handler da ist. Und PID 1 muss Zombies abräumen.</p></details>
+<details><summary>Was macht docker run --init?</summary><p>Ein kleiner Init-Prozess (tini) wird PID 1. Er leitet Signale weiter und räumt Zombies ab.</p></details>
+<details><summary>Was passiert bei docker stop?</summary><p>Docker sendet das STOPSIGNAL (Standard SIGTERM) an PID 1 und nach 10 Sekunden SIGKILL.</p></details>
+<details><summary>Wie lange wartet Kubernetes vor SIGKILL?</summary><p>terminationGracePeriodSeconds, Standard 30 Sekunden. Der preStop-Hook läuft innerhalb dieser Frist.</p></details>
+<details><summary>Shell-Form oder Exec-Form im Dockerfile?</summary><p>Exec-Form (JSON-Array). Dann ist die App PID 1 und bekommt SIGTERM direkt. In Skripten die App mit exec starten.</p></details>
+<details><summary>Was ist der Load Average?</summary><p>Durchschnittliche Zahl der Prozesse in R oder D über 1, 5 und 15 Minuten. Man vergleicht ihn mit der Zahl der CPUs.</p></details>
+<details><summary>Was bedeutet der Zustand D?</summary><p>Nicht unterbrechbares Warten, meist auf I/O. Auch SIGKILL wirkt erst, wenn das I/O zurückkommt.</p></details>
+<details><summary>Was ist der Unterschied zwischen RSS und VSZ?</summary><p>RSS ist belegter physischer Speicher. VSZ ist reservierter virtueller Speicher, oft viel grösser.</p></details>
+<details><summary>Wie bekommen Sie einen Thread Dump einer JVM?</summary><p>jcmd PID Thread.print oder kill -3 PID. SIGQUIT beendet die JVM nicht.</p></details>
+<details><summary>Wie fängt man SIGTERM in einem Shell-Skript?</summary><p>Mit trap, z. B. trap 'aufraeumen; exit 0' TERM.</p></details>
+<details><summary>Wie macht Spring Boot einen Graceful Shutdown?</summary><p>Bei SIGTERM nimmt der Webserver keine neuen Requests an und lässt laufende fertig laufen. Das ist in Spring Boot Standard, die Wartezeit ist einstellbar.</p></details>
+<details><summary>Szenario: Jedes Deployment dauert 30 Sekunden länger als nötig, und die Pods enden mit 137. Warum?</summary><p>Die App bekommt SIGTERM nicht, z. B. wegen Shell-Form oder Skript ohne exec. Kubernetes wartet die Frist und killt. Lösung: Exec-Form, exec oder tini.</p></details>
+<details><summary>Szenario: Ein Server meldet „fork: Resource temporarily unavailable“. Woran denken Sie?</summary><p>An die PID- oder Prozessgrenze, oft durch viele Zombies. Ich suche mit ps nach Status Z und repariere den Elternprozess.</p></details>
+<details><summary>Szenario: Während Rolling Updates sehen Kunden kurz 502-Fehler. Was prüfen Sie?</summary><p>Ob der Pod endet, bevor er aus dem Load Balancer raus ist. Lösung: preStop-Sleep, Graceful Shutdown, Readiness richtig setzen.</p></details>
+
+</body>
+</html>

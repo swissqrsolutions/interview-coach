@@ -1,0 +1,252 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Fall: Streaming-Betrugserkennung</title>
+<style>
+  body { font: 17px/1.55 -apple-system, system-ui, sans-serif; max-width: 760px; margin: 0 auto; padding: 16px; color: #1d1d1f; }
+  h1 { font-size: 28px; margin: 8px 0 4px; }
+  h2 { font-size: 21px; margin: 32px 0 8px; padding-top: 12px; border-top: 2px solid #e5e5ea; }
+  .kern { background: #eef6ff; border-left: 4px solid #0a66c2; padding: 10px 14px; border-radius: 6px; }
+  .senior { background: #f0faf0; border-left: 4px solid #2e7d32; padding: 10px 14px; border-radius: 6px; }
+  .trap { background: #fff4f2; border-left: 4px solid #c62828; padding: 10px 14px; border-radius: 6px; }
+  code { background: #f2f2f7; padding: 1px 5px; border-radius: 4px; font-size: 15px; }
+  pre { background: #1e1e1e; color: #e6e6e6; padding: 12px; border-radius: 8px; overflow-x: auto; font-size: 13.5px; line-height: 1.45; }
+  svg { width: 100%; height: auto; display: block; margin: 10px 0; }
+  ol li, ul li { margin: 4px 0; }
+  details { border: 1px solid #e5e5ea; border-radius: 8px; padding: 8px 12px; margin: 6px 0; }
+  summary { font-weight: 600; cursor: pointer; }
+  details p { margin: 6px 0 2px; }
+  .small { color: #6e6e73; font-size: 14px; }
+</style>
+</head>
+<body>
+
+<h1>Fall: Streaming-Betrugserkennung für Zahlungen</h1>
+<p class="small">Lakehouse · Design-Fall · Tier 2 · Quellen: Apache Kafka 4.4 Docs (Producer Configs, Transactions), Apache Flink 2.3 Docs (Checkpointing, State, Kafka Connector), Apache Spark 4.3 Docs (Structured Streaming, Real-time Mode), Apache Iceberg 1.12 Docs (Spark Structured Streaming, Maintenance)</p>
+
+<div class="kern">
+<b>Kern (die 1-Minuten-Antwort):</b> <b>Streaming-Betrugserkennung</b> bewertet jede Zahlung in Millisekunden, bevor sie freigegeben wird. Ich trenne zwei Wege: einen <b>synchronen Hot Path</b> (Scoring-Service liest vorberechnete Features aus einem <b>Online-Store</b>) und einen <b>Streaming-Pfad</b> (Kafka → Flink oder Spark), der Features pro Karte laufend aktualisiert. Alle Events landen zusätzlich in Iceberg (Bronze/Silver/Gold) für Analyse, Audit und Modell-Training.
+</div>
+
+<h2>1. Wo sitzt was? (Architektur)</h2>
+<svg viewBox="0 0 720 340" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="sfa" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="10" y="20" width="130" height="56" rx="8" fill="#fff" stroke="#555"/><text x="75" y="44" text-anchor="middle" font-weight="700">Payment API</text><text x="75" y="62" text-anchor="middle" font-size="12">Autorisierung</text>
+  <line x1="140" y1="40" x2="208" y2="40" stroke="#c62828" stroke-width="2" marker-end="url(#sfa)"/><text x="174" y="32" text-anchor="middle" font-size="11" fill="#c62828">sync</text>
+  <rect x="210" y="20" width="150" height="56" rx="8" fill="#ffe9e6" stroke="#c62828"/><text x="285" y="44" text-anchor="middle" font-weight="700">Scoring-Service</text><text x="285" y="62" text-anchor="middle" font-size="12">Regeln + Modell</text>
+  <rect x="400" y="20" width="140" height="56" rx="8" fill="#fff" stroke="#555"/><text x="470" y="44" text-anchor="middle" font-weight="700">Online-Store</text><text x="470" y="62" text-anchor="middle" font-size="12">Features pro Karte</text>
+  <line x1="360" y1="48" x2="398" y2="48" stroke="#555" stroke-width="2" marker-end="url(#sfa)"/>
+  <line x1="75" y1="76" x2="75" y2="128" stroke="#555" stroke-width="2" marker-end="url(#sfa)"/>
+  <rect x="10" y="130" width="130" height="56" rx="8" fill="#dbe9fb" stroke="#0a66c2"/><text x="75" y="154" text-anchor="middle" font-weight="700">Kafka</text><text x="75" y="172" text-anchor="middle" font-size="12">payments, Key=Karte</text>
+  <line x1="140" y1="158" x2="208" y2="158" stroke="#555" stroke-width="2" marker-end="url(#sfa)"/>
+  <rect x="210" y="130" width="150" height="56" rx="8" fill="#0a66c2"/><text x="285" y="154" text-anchor="middle" fill="#fff" font-weight="700">Stream-Prozessor</text><text x="285" y="172" text-anchor="middle" fill="#fff" font-size="12">Flink / Spark</text>
+  <line x1="360" y1="150" x2="440" y2="78" stroke="#555" stroke-width="2" marker-end="url(#sfa)"/><text x="420" y="122" font-size="11">Features</text>
+  <line x1="360" y1="170" x2="568" y2="170" stroke="#555" stroke-width="2" marker-end="url(#sfa)"/>
+  <rect x="570" y="140" width="140" height="56" rx="8" fill="#fff" stroke="#555"/><text x="640" y="164" text-anchor="middle" font-weight="700">Alerts</text><text x="640" y="182" text-anchor="middle" font-size="12">Fall-Bearbeitung</text>
+  <line x1="75" y1="186" x2="75" y2="228" stroke="#555" stroke-width="2" marker-end="url(#sfa)"/>
+  <rect x="10" y="230" width="560" height="56" rx="10" fill="#f7f7fa" stroke="#999" stroke-dasharray="5 4"/>
+  <text x="290" y="222" text-anchor="middle" font-size="12">Iceberg (kontinuierlich, Commit alle 1–5 min)</text>
+  <rect x="24" y="240" width="160" height="36" rx="6" fill="#fff" stroke="#8d6e63"/><text x="104" y="263" text-anchor="middle">Bronze: Rohevents</text>
+  <rect x="200" y="240" width="170" height="36" rx="6" fill="#fff" stroke="#78909c"/><text x="285" y="263" text-anchor="middle">Silver: dedupliziert + Labels</text>
+  <rect x="386" y="240" width="170" height="36" rx="6" fill="#fff" stroke="#c9a227"/><text x="471" y="263" text-anchor="middle">Gold: KPIs, Trainingsdaten</text>
+  <line x1="570" y1="258" x2="608" y2="258" stroke="#555" stroke-width="2" marker-end="url(#sfa)"/>
+  <rect x="610" y="230" width="100" height="56" rx="8" fill="#fff" stroke="#555"/><text x="660" y="254" text-anchor="middle" font-weight="700">Training</text><text x="660" y="272" text-anchor="middle" font-size="12">BI, Audit</text>
+  <text x="360" y="320" text-anchor="middle" font-size="12">Rot = synchroner Weg mit Latenz-Budget. Blau = asynchroner Streaming-Weg.</text>
+</svg>
+<ol>
+  <li><b>Payment API:</b> Sie bekommt die Autorisierung. Sie fragt synchron den Scoring-Service und schreibt das Event nach Kafka.</li>
+  <li><b>Scoring-Service:</b> Er wendet <b>Regeln</b> (z. B. „mehr als 4 Zahlungen in 10 Minuten“) und ein <b>ML-Modell</b> an. Antwort: freigeben, ablehnen oder prüfen.</li>
+  <li><b>Online-Store:</b> ein Key-Value-Speicher mit kleiner Latenz, z. B. Redis. Er hält Features pro Karte, z. B. Anzahl und Summe der letzten 10 Minuten.</li>
+  <li><b>Kafka:</b> das Event-Log. Der <b>Key</b> ist das Karten-Token. So landen alle Zahlungen einer Karte in derselben Partition, in Reihenfolge.</li>
+  <li><b>Stream-Prozessor:</b> Flink oder Spark Structured Streaming. Er hält <b>State</b> pro Karte, aktualisiert Features und erkennt Muster über mehrere Events.</li>
+  <li><b>Alerts:</b> Verdachtsfälle gehen an die Fall-Bearbeitung.</li>
+  <li><b>Iceberg Bronze/Silver/Gold:</b> Rohevents, bereinigte Events mit späteren <b>Labels</b> (Chargeback = echter Betrug), daraus KPIs und Trainingsdaten.</li>
+</ol>
+
+<h2>2. Die Reise einer Zahlung</h2>
+<svg viewBox="0 0 720 290" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="sfb" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="10" y="20" width="120" height="60" rx="10" fill="#eee" stroke="#777"/><text x="70" y="44" text-anchor="middle" font-weight="700">1. Karte</text><text x="70" y="64" text-anchor="middle" font-size="12">950 CHF, BR</text>
+  <line x1="130" y1="50" x2="168" y2="50" stroke="#555" stroke-width="2" marker-end="url(#sfb)"/>
+  <rect x="170" y="20" width="160" height="60" rx="10" fill="#ffe9e6" stroke="#c62828"/><text x="250" y="44" text-anchor="middle" font-weight="700">2. Score</text><text x="250" y="64" text-anchor="middle" font-size="12">Features lesen, &lt; 50 ms</text>
+  <line x1="330" y1="50" x2="368" y2="50" stroke="#555" stroke-width="2" marker-end="url(#sfb)"/>
+  <rect x="370" y="20" width="150" height="60" rx="10" fill="#fff" stroke="#555"/><text x="445" y="44" text-anchor="middle" font-weight="700">3. Entscheidung</text><text x="445" y="64" text-anchor="middle" font-size="12">OK / REVIEW / NEIN</text>
+  <line x1="520" y1="50" x2="558" y2="50" stroke="#555" stroke-width="2" marker-end="url(#sfb)"/>
+  <rect x="560" y="20" width="150" height="60" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="635" y="44" text-anchor="middle" font-weight="700">4. Kafka</text><text x="635" y="64" text-anchor="middle" font-size="12">Event + Entscheidung</text>
+  <line x1="635" y1="80" x2="635" y2="128" stroke="#555" stroke-width="2" marker-end="url(#sfb)"/>
+  <rect x="540" y="130" width="170" height="60" rx="10" fill="#0a66c2"/><text x="625" y="154" text-anchor="middle" fill="#fff" font-weight="700">5. Stream-Prozessor</text><text x="625" y="174" text-anchor="middle" fill="#fff" font-size="12">State pro Karte +1</text>
+  <line x1="540" y1="160" x2="372" y2="160" stroke="#555" stroke-width="2" marker-end="url(#sfb)"/>
+  <rect x="200" y="130" width="170" height="60" rx="10" fill="#fff" stroke="#555"/><text x="285" y="154" text-anchor="middle" font-weight="700">6. Online-Store</text><text x="285" y="174" text-anchor="middle" font-size="12">neue Features</text>
+  <line x1="200" y1="160" x2="132" y2="160" stroke="#555" stroke-width="2" marker-end="url(#sfb)"/>
+  <rect x="10" y="130" width="120" height="60" rx="10" fill="#fff" stroke="#555"/><text x="70" y="154" text-anchor="middle" font-weight="700">7. Nächste</text><text x="70" y="174" text-anchor="middle" font-size="12">Zahlung sieht sie</text>
+  <rect x="200" y="220" width="510" height="50" rx="10" fill="#e8f5e9" stroke="#2e7d32"/><text x="455" y="242" text-anchor="middle" font-weight="700">8. Iceberg: Bronze → Silver → Gold</text><text x="455" y="260" text-anchor="middle" font-size="12">Wochen später: Chargeback-Label → Trainingsdaten</text>
+  <line x1="625" y1="190" x2="625" y2="218" stroke="#2e7d32" stroke-width="1.5" marker-end="url(#sfb)"/>
+</svg>
+<ol>
+  <li><b>Zahlung:</b> Karte A zahlt 950 CHF in Brasilien. Vorher kamen zwei kleine Zahlungen in der Schweiz.</li>
+  <li><b>Score:</b> Der Scoring-Service liest die Features von Karte A aus dem Online-Store. Das dauert wenige Millisekunden.</li>
+  <li><b>Entscheidung:</b> Regeln und Modell geben z. B. <code>OK</code>. Das Budget für alles liegt meist unter 100 ms.</li>
+  <li><b>Kafka:</b> Die API schreibt das Event mit der Entscheidung nach Kafka. Key ist das Karten-Token.</li>
+  <li><b>Stream-Prozessor:</b> Er zählt die Zahlung in den State von Karte A. Jetzt sind es 3 Zahlungen und 1031,50 CHF in 10 Minuten.</li>
+  <li><b>Online-Store:</b> Der Prozessor schreibt die neuen Features. Das ist <b>asynchron</b>, ein paar hundert Millisekunden später.</li>
+  <li><b>Nächste Zahlung:</b> Die 4. Zahlung von Karte A sieht die neuen Features und geht auf <code>REVIEW</code>.</li>
+  <li><b>Iceberg:</b> Das Event landet in Bronze. Silver dedupliziert. Wochen später kommt ein <b>Chargeback</b>, also eine Rückbuchung. Sie wird zum Label für das Modell-Training.</li>
+</ol>
+
+<h2>3. Beispiel: Schemas, Kern-Transformation, Qualitäts-Checks</h2>
+<p><b>Event-Schema (Avro in einer Schema Registry):</b></p>
+<pre>{ "type": "record", "name": "Payment", "fields": [
+  {"name": "event_id",    "type": "string"},           // eindeutig, für Dedup
+  {"name": "card_token",  "type": "string"},           // nie die echte Kartennummer
+  {"name": "event_time",  "type": {"type":"long","logicalType":"timestamp-millis"}},
+  {"name": "amount_minor","type": "long"},              // Rappen, keine float
+  {"name": "currency",    "type": "string"},
+  {"name": "merchant_id", "type": "string"},
+  {"name": "country",     "type": "string"} ]}</pre>
+<p><b>Kern-Transformation: Dedup und Velocity-Features (echt ausgeführt, SQL wie im Streaming-Job):</b></p>
+<pre>WITH dedup AS (                       -- 1) Duplikate weg (event_id)
+  SELECT * FROM (SELECT *, row_number() OVER (PARTITION BY event_id ORDER BY ts) rn
+                 FROM payment) WHERE rn = 1),
+feat AS (                             -- 2) Features pro Karte, letzte 10 Minuten
+  SELECT *,
+    count(*)        OVER w AS tx_10min,
+    sum(amount_chf) OVER w AS sum_10min
+  FROM dedup
+  WINDOW w AS (PARTITION BY card_token ORDER BY ts RANGE BETWEEN 600 PRECEDING AND CURRENT ROW))
+SELECT event_id, card_token, ts, amount_chf, country, tx_10min, round(sum_10min,1) sum_10min,
+  CASE WHEN tx_10min &gt;= 4 OR sum_10min &gt; 2000 THEN 'REVIEW' ELSE 'OK' END AS decision
+FROM feat ORDER BY ts, event_id</pre>
+<pre>event_id | card_token | ts | amount_chf | country | tx_10min | sum_10min | decision
+e1 | card_A | 0 | 42.0 | CH | 1 | 42.0 | OK
+e2 | card_A | 120 | 39.5 | CH | 2 | 81.5 | OK
+e3 | card_B | 200 | 18.0 | CH | 1 | 18.0 | OK
+e4 | card_A | 300 | 950.0 | BR | 3 | 1031.5 | OK
+e5 | card_A | 330 | 980.0 | BR | 4 | 2011.5 | REVIEW
+e6 | card_A | 360 | 990.0 | BR | 5 | 3001.5 | REVIEW
+e7 | card_B | 900 | 22.0 | CH | 1 | 22.0 | OK</pre>
+<p class="small">Echte Ausgabe, Python 3.12 + sqlite3 3.49.1. Input: 8 Zeilen, <code>e2</code> doppelt (Producer-Retry). <code>ts</code> in Sekunden.</p>
+<ol>
+  <li>Das doppelte <code>e2</code> erscheint nur einmal. Ohne Dedup wäre <code>tx_10min</code> ab <code>e2</code> um 1 zu hoch.</li>
+  <li>Das Fenster ist ein <b>Sliding Window</b> pro Karte: immer die letzten 600 Sekunden vor dem Event.</li>
+  <li>Bei <code>e5</code> greift die Regel: 4 Zahlungen und über 2000 CHF in 10 Minuten.</li>
+  <li>Karte B bleibt unauffällig, weil der State <b>pro Karte</b> getrennt ist.</li>
+</ol>
+<p><b>Derselbe Job im Streaming (PySpark, Ausschnitt):</b></p>
+<pre>events = (spark.readStream.format("kafka")
+  .option("kafka.bootstrap.servers", "kafka:9092")
+  .option("subscribe", "payments").load()
+  .select(from_avro("value", schema).alias("p")).select("p.*")
+  .withWatermark("event_time", "10 minutes")
+  .dropDuplicatesWithinWatermark(["event_id"]))
+
+features = (events
+  .groupBy("card_token", F.window("event_time", "10 minutes", "1 minute"))
+  .agg(F.count("*").alias("tx_10min"), F.sum("amount_minor").alias("sum_10min")))
+
+(events.writeStream.format("iceberg").outputMode("append")
+  .trigger(processingTime="1 minute")
+  .option("checkpointLocation", "s3a://chk/payments_bronze")
+  .toTable("lake.bronze.payments"))</pre>
+<p class="small">Erwartetes Ergebnis (laut Doku, nicht ausgeführt): ein Iceberg-Commit pro Micro-Batch (jede Minute); Duplikate mit gleicher <code>event_id</code> innerhalb der Watermark fallen weg. Kafka und Spark laufen hier nicht.</p>
+<p><b>Qualitäts-Checks:</b></p>
+<ol>
+  <li><b>Schema:</b> Die Schema Registry lehnt inkompatible Producer ab.</li>
+  <li><b>Pflichtfelder und Bereich:</b> <code>amount_minor &gt; 0</code>, Währung in einer Liste, <code>event_time</code> nicht weit in der Zukunft. Fehler → <b>Dead Letter Topic</b>.</li>
+  <li><b>Duplikat-Rate:</b> Anteil verworfener Duplikate pro Minute. Ein Sprung zeigt Producer-Probleme.</li>
+  <li><b>Freshness:</b> Abstand zwischen <code>event_time</code> und jetzt im Online-Store. Zu alt → Scoring nutzt veraltete Features.</li>
+  <li><b>Abgleich:</b> Anzahl Events in Bronze pro Stunde = Anzahl Autorisierungen im Zahlungssystem.</li>
+</ol>
+
+<h2>4. Details, die Interviewer fragen</h2>
+<ol>
+  <li><b>Volumen (Beispielrechnung):</b> 2000 Zahlungen pro Sekunde im Mittel, 10 000 in der Spitze. Bei 1 KB pro Event sind das 10 MB/s Spitze. Pro Tag ca. 173 Mio. Events, ca. 170 GB roh. Als Parquet deutlich weniger.</li>
+  <li><b>Kafka-Partitionen:</b> Key = Karten-Token. Die Zahl der Partitionen begrenzt die Parallelität der Consumer. Für 10 000 Events/s reichen z. B. 24–48 Partitionen. Die Zahl später zu ändern verschiebt Keys, also früh grosszügig planen.</li>
+  <li><b>Latenz-Budget:</b> Der synchrone Weg (API → Scoring → Online-Store) muss in wenigen zehn Millisekunden fertig sein. Der Streaming-Weg darf Sekunden brauchen. Darum ist Scoring kein Teil des Stream-Jobs.</li>
+  <li><b>Idempotenz:</b> Der Kafka-Producer ist standardmässig idempotent (<code>enable.idempotence=true</code>, <code>acks=all</code>). Das verhindert Duplikate durch Producer-Retries <b>innerhalb</b> einer Session. Gegen App-Retries hilft nur Dedup über <code>event_id</code>.</li>
+  <li><b>Exactly-Once:</b> Flink und Spark machen den <b>State</b> per Checkpoint exactly-once. Ins Iceberg-Ziel kommt jede Micro-Batch genau einmal, weil Spark die Batch-ID mit dem Commit verknüpft. Externe Sinks wie Redis sind at-least-once, also Writes idempotent machen (SET statt INCR).</li>
+  <li><b>Late Data:</b> Events können verspätet kommen, z. B. nach einem Netzwerkproblem. Eine <b>Watermark</b> sagt, wie lange man wartet. Für Scoring zählt aber der Moment der Zahlung, nicht das perfekte Fenster.</li>
+  <li><b>State-Grösse:</b> Pro Karte wenige Zahlen. Bei 10 Mio. aktiven Karten sind das einige GB. Flink nutzt dafür <b>RocksDB</b> als State Backend und <b>State TTL</b>, damit inaktive Karten verschwinden.</li>
+  <li><b>Iceberg im Streaming:</b> Jede Micro-Batch ist ein Commit und erzeugt Dateien. Trigger von 1–5 Minuten statt Sekunden, plus Compaction und <code>expire_snapshots</code>.</li>
+  <li><b>Partitionierung Iceberg:</b> <code>days(event_time)</code> für Bronze und Silver. Nicht nach Karte, das gibt Millionen Partitionen.</li>
+  <li><b>Datenschutz:</b> Nie die Kartennummer speichern, nur ein <b>Token</b>. PCI DSS verlangt Schutz der Kartendaten. Zugriff auf Silver mit Personenbezug einschränken.</li>
+  <li><b>Kosten:</b> Ein Streaming-Job läuft 24/7, also zahlt man immer. Darum nur die Teile streamen, die Sekunden brauchen. Reports und Training laufen als Batch auf Gold.</li>
+</ol>
+
+<h2>5. Vergleich: Alternativen</h2>
+<ul>
+  <li><b>Apache Flink:</b> echtes Event-für-Event-Processing, sehr kleiner Latenz, reicher State (Timer, CEP für Muster). Stark für komplexe Muster über viele Events. Preis: eigener Cluster und eigenes Know-how.</li>
+  <li><b>Spark Structured Streaming:</b> Micro-Batches, gleiche API wie Batch, ideal, wenn das Team schon Spark nutzt. Seit Spark 4.1 gibt es den <b>Real-time Mode</b> für Millisekunden-Latenz, aber nur mit Kafka als Quelle und Einschränkungen bei Sinks.</li>
+  <li><b>Nur Regeln im Scoring-Service + Batch-Features:</b> Features einmal pro Stunde aus dem Lakehouse rechnen. Viel einfacher, aber blind für schnelle Angriffe in Minuten.</li>
+</ul>
+
+<h2>6. In der Produktion</h2>
+<ol>
+  <li><b>Consumer Lag wächst:</b> Der Job ist zu langsam oder eine Partition ist heiss (Skew durch einen Händler). Lösung: mehr Parallelität, Key prüfen, heisse Keys getrennt behandeln.</li>
+  <li><b>Doppelte Alerts nach Neustart:</b> Der Sink ist at-least-once. Lösung: Alerts mit <code>event_id</code> als Schlüssel idempotent schreiben.</li>
+  <li><b>State wächst ohne Ende:</b> keine Watermark oder kein State TTL. Lösung: Watermark und TTL setzen.</li>
+  <li><b>Scoring wird langsam, Zahlungen hängen:</b> Online-Store überlastet. Lösung: Timeout mit <b>Fallback</b> (nur Regeln), nie den Bezahlvorgang blockieren.</li>
+  <li><b>Viele kleine Iceberg-Dateien:</b> Trigger zu kurz. Lösung: längerer Trigger, Compaction alle paar Stunden.</li>
+  <li><b>Modell wird schlechter:</b> Betrüger ändern ihr Verhalten (<b>Concept Drift</b>). Lösung: Quote von REVIEW und Chargebacks überwachen, regelmässig neu trainieren.</li>
+</ol>
+
+<h2>7. Diagnose</h2>
+<ul>
+  <li><b>Consumer Lag:</b> <code>kafka-consumer-groups.sh --describe --group fraud</code> zeigt Lag pro Partition.</li>
+  <li><b>Spark:</b> <code>query.lastProgress</code> zeigt <code>inputRowsPerSecond</code>, <code>processedRowsPerSecond</code>, Batch-Dauer und State-Grösse.</li>
+  <li><b>Flink:</b> Web UI mit Backpressure, Checkpoint-Dauer und State-Grösse pro Operator.</li>
+  <li><b>Iceberg:</b> <code>SELECT count(*) FROM lake.bronze.payments.files</code> und Dateigrössen, <code>.snapshots</code> für Commits pro Stunde.</li>
+  <li><b>Fachlich:</b> Anteil REVIEW pro Stunde, Latenz p99 des Scoring-Services, Chargeback-Quote.</li>
+</ul>
+
+<h2>8. Senior-Punkte</h2>
+<div class="senior">
+<ol>
+  <li><b>Die Entscheidung bleibt synchron, die Features werden gestreamt.</b> So hängt die Zahlung nie an einem Stream-Job.</li>
+  <li><b>Exactly-Once ist ein Ende-zu-Ende-Thema.</b> Engine-Garantien enden am Sink. Idempotente Writes mit <code>event_id</code> sind der eigentliche Schutz.</li>
+  <li><b>Fallback statt Ausfall:</b> Ist das Scoring zu langsam, entscheiden einfache Regeln. Der Fachbereich legt fest, ob man im Zweifel freigibt oder ablehnt.</li>
+  <li><b>Gleiche Feature-Logik online und offline.</b> Sonst lernt das Modell andere Werte, als es live sieht (<b>Training-Serving Skew</b>).</li>
+  <li><b>Streaming kostet 24/7.</b> Nur streamen, was Sekunden braucht.</li>
+  <li><b>Das Lakehouse ist das Gedächtnis:</b> Audit, Nachrechnen, Training. Der Stream ist nur der schnelle Weg.</li>
+</ol>
+</div>
+
+<h2>9. Aus dem Projekt</h2>
+<p>„Streaming-Betrugserkennung habe ich nicht produktiv gebaut; am nächsten dran sind die Kafka-Microservices bei BIT DAZiT und die idempotente, crash-sichere Batch-Pipeline bei ElCom MATCH, wo ich bewusst Batch statt Streaming gewählt habe, weil Minuten Latenz reichten.“ <span class="small">(Prüfen und durch dein echtes Beispiel ersetzen.)</span></p>
+
+<h2>10. Fallen</h2>
+<div class="trap">
+<ul>
+  <li>„Der Stream-Job entscheidet über die Zahlung.“ → <b>Riskant.</b> Die Entscheidung gehört in einen synchronen Service mit Timeout und Fallback.</li>
+  <li>„Kafka ist exactly-once, also gibt es keine Duplikate.“ → <b>Falsch.</b> Der idempotente Producer schützt nur vor eigenen Retries. App-Retries und Sinks brauchen Dedup.</li>
+  <li>„Je kürzer der Trigger, desto besser.“ → <b>Falsch.</b> Kurze Trigger erzeugen viele kleine Dateien und Commits.</li>
+  <li>„Wir speichern die Kartennummer für das Training.“ → <b>Falsch.</b> Nur Tokens. Kartendaten fallen unter PCI DSS.</li>
+  <li>„Processing Time reicht für Fenster.“ → <b>Falsch.</b> Verspätete Events landen dann im falschen Fenster. Event Time plus Watermark nutzen.</li>
+</ul>
+</div>
+
+<h2>11. Fragen (Interviewer-Nachfragen)</h2>
+<details><summary>Wie bekommen Sie die Entscheidung unter 100 ms?</summary><p>Scoring läuft synchron in einem eigenen Service. Er liest nur vorberechnete Features aus einem Online-Store. Schwere Berechnungen macht der Stream-Job vorher.</p></details>
+<details><summary>Warum ist der Kafka-Key das Karten-Token?</summary><p>Alle Events einer Karte landen in derselben Partition und bleiben in Reihenfolge. So kann der State pro Karte lokal bleiben.</p></details>
+<details><summary>Flink oder Spark?</summary><p>Flink für sehr kleine Latenz und komplexe Muster mit Timern. Spark, wenn das Team Spark schon nutzt und Sekunden reichen; der Real-time Mode senkt die Latenz, hat aber Einschränkungen.</p></details>
+<details><summary>Wie verhindern Sie doppelte Events?</summary><p>Idempotenter Producer gegen eigene Retries. Dazu Dedup über event_id im Stream, z. B. dropDuplicatesWithinWatermark, und idempotente Sinks.</p></details>
+<details><summary>Was passiert bei einem Absturz des Stream-Jobs?</summary><p>Er startet vom letzten Checkpoint mit Offsets und State. Events seit dem Checkpoint werden erneut verarbeitet. Darum müssen Sinks idempotent sein.</p></details>
+<details><summary>Wie gehen Sie mit verspäteten Events um?</summary><p>Mit Event Time und einer Watermark. Zu späte Events gehen nicht ins Fenster, landen aber in Bronze und in der Batch-Analyse.</p></details>
+<details><summary>Wie gross wird der State?</summary><p>Wenige Werte pro Karte, also bei Millionen Karten einige GB. RocksDB als State Backend und State TTL für inaktive Karten.</p></details>
+<details><summary>Warum schreiben Sie auch nach Iceberg?</summary><p>Für Audit, Nachrechnen, BI und Modell-Training. Kafka hält Daten nur begrenzt; Iceberg ist das langfristige Gedächtnis.</p></details>
+<details><summary>Wie partitionieren Sie die Iceberg-Tabellen?</summary><p>Nach Tag der Event Time. Nicht nach Karte, das ergibt Millionen winziger Partitionen.</p></details>
+<details><summary>Wie verhindern Sie kleine Dateien?</summary><p>Trigger von einer bis fünf Minuten, Compaction mit rewrite_data_files und regelmässig expire_snapshots.</p></details>
+<details><summary>Woher kommen die Labels für das Training?</summary><p>Aus Chargebacks und Fall-Entscheidungen, oft Wochen später. Silver verbindet sie über die Zahlungs-ID mit dem ursprünglichen Event.</p></details>
+<details><summary>Was ist Training-Serving Skew?</summary><p>Das Modell sieht live andere Feature-Werte als im Training. Lösung: dieselbe Feature-Definition online und offline, z. B. über einen Feature Store.</p></details>
+<details><summary>Was tun Sie, wenn der Online-Store ausfällt?</summary><p>Timeout und Fallback auf einfache Regeln. Die Zahlung darf nicht hängen bleiben. Der Ausfall wird alarmiert.</p></details>
+<details><summary>Wie schützen Sie Kartendaten?</summary><p>Nur Tokens im ganzen System, Verschlüsselung, enge Zugriffsrechte auf Silver. Kartendaten fallen unter PCI DSS.</p></details>
+<details><summary>Was ist Concept Drift?</summary><p>Betrüger ändern ihr Verhalten, das Modell wird schlechter. Man überwacht Trefferquoten und trainiert regelmässig neu.</p></details>
+<details><summary>Wie testen Sie neue Regeln ohne Risiko?</summary><p>Im Shadow Mode: Die Regel rechnet mit, entscheidet aber nicht. Ergebnisse vergleicht man in Gold mit den echten Fällen.</p></details>
+<details><summary>Was kostet diese Lösung am meisten?</summary><p>Der 24/7-Betrieb von Stream-Jobs und Online-Store. Darum nur zeitkritische Teile streamen und den Rest als Batch rechnen.</p></details>
+<details><summary>Szenario: Der Consumer Lag steigt jeden Abend um 20 Uhr. Was prüfen Sie?</summary><p>Lastspitze oder heisse Partition. Lag pro Partition ansehen, Batch-Dauer und Backpressure prüfen. Dann skalieren oder heisse Keys verteilen.</p></details>
+<details><summary>Szenario: Nach einem Deployment des Stream-Jobs gibt es doppelte Alerts. Warum?</summary><p>Der Job hat ab dem letzten Checkpoint neu verarbeitet, und der Alert-Sink ist nicht idempotent. Alerts mit event_id als Schlüssel schreiben.</p></details>
+<details><summary>Szenario: Die Fachseite will alle Features auch für Zahlungen von vor zwei Jahren. Wie liefern Sie das?</summary><p>Als Batch-Backfill auf Silver in Iceberg mit derselben Feature-Logik wie im Stream. Ergebnis in eine Gold-Tabelle, partitioniert nach Tag.</p></details>
+
+</body>
+</html>

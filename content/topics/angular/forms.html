@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Reactive Forms vs Template Forms</title>
+<title>Reactive, Template und Signal Forms</title>
 <style>
   body { font: 17px/1.55 -apple-system, system-ui, sans-serif; max-width: 760px; margin: 0 auto; padding: 16px; color: #1d1d1f; }
   h1 { font-size: 28px; margin: 8px 0 4px; }
@@ -23,11 +23,11 @@
 </head>
 <body>
 
-<h1>Reactive Forms vs Template Forms</h1>
-<p class="small">Angular · Tier 1 · Quellen: angular.dev (v20) Guides „Forms overview“, „Reactive forms“, „Typed forms“, „Template-driven forms“, „Validating form input“; API <code>FormControl</code>, <code>FormGroup</code>, <code>FormRecord</code>, <code>NonNullableFormBuilder</code>, <code>AsyncValidatorFn</code>; angular.dev „Signal Forms“ (v21+), API <code>form</code></p>
+<h1>Reactive, Template und Signal Forms</h1>
+<p class="small">Angular · Tier 1 · Quellen: angular.dev (v22) Guides „Forms overview“, „Reactive forms“, „Typed forms“, „Template-driven forms“, „Validating form input“; API <code>FormControl</code>, <code>FormGroup</code>, <code>FormRecord</code>, <code>NonNullableFormBuilder</code>, <code>AsyncValidatorFn</code>; angular.dev „Signal Forms“ (Overview, Models, Validation), API <code>form</code>, <code>FormField</code> (stabil seit v22); Angular-CHANGELOG</p>
 
 <div class="kern">
-<b>Kern:</b> Angular hat zwei klassische Formular-Ansätze. <b>Reactive Forms</b> bauen das Formular-Modell im TypeScript-Code und binden es ans Template; <b>Template-driven Forms</b> erzeugen das Modell aus Direktiven wie <code>ngModel</code> im Template. Seit v14 sind Reactive Forms <b>typisiert</b>; <b>Signal Forms</b> kamen erst nach Angular 20 (experimentell in v21).
+<b>Kern:</b> Angular hat zwei klassische Formular-Ansätze. <b>Reactive Forms</b> bauen das Formular-Modell im TypeScript-Code und binden es ans Template; <b>Template-driven Forms</b> erzeugen das Modell aus Direktiven wie <code>ngModel</code> im Template. Seit v14 sind Reactive Forms <b>typisiert</b>. Der dritte Ansatz, <b>Signal Forms</b>, kam in v21 experimentell und ist seit <b>Angular 22</b> stabil.
 </div>
 
 <h2>1. Wo sitzt das Formular-Modell?</h2>
@@ -51,6 +51,7 @@
   <li><b>Template-driven:</b> Direktiven im Template (<code>ngModel</code>, <code>required</code>) erzeugen das Modell. Es entsteht <b>asynchron</b> nach dem ersten Rendern.</li>
   <li><b>ControlValueAccessor (CVA):</b> die Brücke zwischen Control und DOM-Element. Beide Ansätze nutzen sie. Eigene Inputs implementieren das Interface.</li>
   <li><b>Daten:</b> Reactive arbeitet unveränderlich mit <code>value</code>. Template-driven schreibt per Two-Way-Binding direkt ins Datenobjekt.</li>
+  <li><b>Signal Forms (v22):</b> Das Modell ist ein <code>signal()</code>. <code>form(model, schema)</code> baut daraus einen Feldbaum; das Template bindet Felder mit <code>[formField]</code>.</li>
 </ol>
 
 <h2>2. Die Reise einer Eingabe (die Geschichte zum Merken)</h2>
@@ -121,12 +122,27 @@ export class Register {
 - pw ≠ pw2: form.errors = { mismatch: true } (Fehler an der Gruppe, nicht am Control).
 - form.controls.email.value hat den Typ string (nicht string | null), dank NonNullableFormBuilder.
 - form.reset() setzt email wieder auf '' statt null.</pre>
+<pre>// Dasselbe Feld als Signal Form (Angular 22, stabil; in v21 experimentell)
+import { form, FormField, required, email, minLength, validateHttp } from '@angular/forms/signals';
+
+model = signal({ email: '', pw: '' });
+reg = form(this.model, p =&gt; {
+  required(p.email); email(p.email);
+  required(p.pw); minLength(p.pw, 12);
+  validateHttp(p.email, {
+    request: ({ value }) =&gt; `/api/users/exists?email=${value()}`,
+    onSuccess: (taken: boolean) =&gt; taken ? { kind: 'emailTaken' } : null,
+    onError: () =&gt; ({ kind: 'networkError' }),
+  });
+});
+// Template: &lt;input [formField]="reg.email"&gt;  ·  reg.email().errors()  ·  reg().invalid()</pre>
 <ol>
   <li>Der <code>NonNullableFormBuilder</code> macht alle Controls <b>non-nullable</b>. <code>reset()</code> setzt auf den Startwert zurück, nicht auf <code>null</code>.</li>
   <li>Ein Async-Validator läuft nur, wenn die sync-Validatoren bestehen. Das spart Requests.</li>
   <li><code>updateOn: 'blur'</code> verhindert einen Request pro Tastendruck.</li>
   <li>Gruppen-Validatoren setzen Fehler an der Gruppe. Das Template muss <code>form.errors</code> prüfen.</li>
   <li>Der Async-Validator nutzt <code>this.api</code> aus einem Feld. Ein <code>inject()</code> direkt im Validator würde zur Laufzeit <code>NG0203</code> werfen.</li>
+  <li>Signal Forms: Fehler sind Objekte mit <code>kind</code> und optional <code>message</code>. <code>validateHttp</code> läuft erst, wenn die sync-Regeln bestehen; dazwischen ist <code>pending()</code> true.</li>
 </ol>
 
 <h2>4. Details, die Interviewer fragen</h2>
@@ -143,14 +159,16 @@ export class Register {
   <li><b>setValue vs patchValue:</b> <code>setValue</code> braucht alle Felder, <code>patchValue</code> nur einen Teil. <code>emitEvent: false</code> unterdrückt <code>valueChanges</code>.</li>
   <li><b>ControlValueAccessor:</b> vier Methoden: <code>writeValue</code>, <code>registerOnChange</code>, <code>registerOnTouched</code>, <code>setDisabledState</code>. Registriert mit <code>NG_VALUE_ACCESSOR</code>.</li>
   <li><b>Template-driven:</b> <code>FormsModule</code>, <code>[(ngModel)]</code>, <code>#f="ngForm"</code>. Gut für kleine Formulare. Schwer testbar ohne DOM.</li>
-  <li><b>Signal Forms:</b> In Angular 20 gibt es sie nicht. In v21 experimentell, laut API-Doku ab v22 stabil. Paket <code>@angular/forms/signals</code>, Funktion <code>form(model)</code> auf einem <code>signal()</code>, Direktive <code>FormField</code>, Validierung über ein Schema mit <code>required</code>, <code>email</code>.</li>
+  <li><b>Signal Forms:</b> In Angular 20 gibt es sie nicht. In v21 experimentell, seit v22 stabil. Paket <code>@angular/forms/signals</code>, Funktion <code>form(model, schema)</code> auf einem <code>signal()</code>, Direktive <code>FormField</code> mit <code>[formField]</code>, Regeln wie <code>required</code>, <code>email</code>, <code>validateHttp</code>. Feldzustand als Signals: <code>value()</code>, <code>errors()</code>, <code>touched()</code>, <code>pending()</code>.</li>
+  <li><b>Absenden bei Signal Forms:</b> <code>submit(form, { action })</code> führt die Aktion aus; Server-Fehler kommen als <code>ValidationError</code> zurück ans Feld. Parallele Submits sind verboten.</li>
+  <li><b>v22-Breaking-Change:</b> Die Validatoren <code>min</code>/<code>max</code> akzeptieren keine Strings mehr, nur Zahlen oder <code>null</code>.</li>
 </ol>
 
 <h2>5. Vergleich</h2>
 <ul>
   <li><b>Reactive:</b> Modell im Code, synchron verfügbar, unveränderlich, typisiert, gut testbar. Für komplexe und dynamische Formulare.</li>
   <li><b>Template-driven:</b> Modell aus dem Template, asynchron, mutiert Daten. Wenig Code für einfache Formulare.</li>
-  <li><b>Signal Forms (v21+):</b> Modell ist ein Signal, Zustand als Signals, Validierung als Schema. Für Angular 20 nicht verfügbar.</li>
+  <li><b>Signal Forms (stabil seit v22):</b> Modell ist ein Signal, Zustand als Signals, Validierung als Schema. Kein <code>valueChanges</code>, kein Subscribe. Für Angular 20 nicht verfügbar.</li>
   <li><b>Sync- vs Async-Validator:</b> sofort vs nach Server-Antwort, Status <code>PENDING</code> dazwischen.</li>
   <li><b>Control- vs Gruppen-Validator:</b> ein Feld vs Regeln über mehrere Felder.</li>
 </ul>
@@ -181,7 +199,7 @@ export class Register {
   <li><b>Immer typisiert und nonNullable.</b> Das findet Fehler beim Build statt in Produktion.</li>
   <li><b>Validierung doppelt:</b> Frontend für UX, Backend für Wahrheit und Sicherheit.</li>
   <li><b>Eigene Inputs per ControlValueAccessor</b> statt Hacks mit <code>@Output</code>. Dann funktionieren Validatoren und Status.</li>
-  <li><b>Signal Forms beobachten,</b> aber erst nach Upgrade auf v21+ und stabilem Stand einführen.</li>
+  <li><b>Signal Forms für neue Formulare</b> ab v22 (stabil). Bestehende Reactive Forms nicht umschreiben, solange sie funktionieren; Reactive Forms bleiben unterstützt.</li>
 </ol>
 </div>
 
@@ -194,7 +212,8 @@ export class Register {
   <li>„Ein Async-Validator läuft immer.“ → <b>Falsch.</b> Nur wenn alle sync-Validatoren bestehen.</li>
   <li>„form.value enthält alle Felder.“ → <b>Falsch.</b> Disabled Controls fehlen. <code>getRawValue()</code> nutzen.</li>
   <li>„FormControl&lt;string&gt; ist der Standard-Typ.“ → <b>Falsch.</b> <code>string | null</code>, ausser mit <code>nonNullable</code>.</li>
-  <li>„Signal Forms gibt es in Angular 20.“ → <b>Falsch.</b> Erst ab v21 (experimentell).</li>
+  <li>„Signal Forms gibt es in Angular 20.“ → <b>Falsch.</b> Erst ab v21 (experimentell), stabil seit v22.</li>
+  <li>„Signal Forms sind noch experimentell.“ → <b>Seit v22 falsch.</b> <code>form()</code> und <code>FormField</code> sind stabil.</li>
   <li>„Template-driven Forms sind synchron.“ → <b>Falsch.</b> Die Controls entstehen nach dem Rendern.</li>
   <li>„Frontend-Validierung reicht.“ → <b>Falsch.</b> Das Backend muss immer prüfen.</li>
 </ul>
@@ -216,10 +235,11 @@ export class Register {
 <details><summary>Was ist ein ControlValueAccessor?</summary><p>Die Brücke zwischen Control und UI-Element. Eigene Inputs implementieren writeValue, registerOnChange, registerOnTouched, setDisabledState.</p></details>
 <details><summary>Welche Status hat ein Control?</summary><p>VALID, INVALID, PENDING, DISABLED. Dazu dirty/pristine und touched/untouched.</p></details>
 <details><summary>Was bringt control.events?</summary><p>Seit v18 ein Strom aller Änderungen: Wert, Status, touched, pristine, submit, reset.</p></details>
-<details><summary>Was sind Signal Forms?</summary><p>Ein neues Formular-API auf Basis von Signals im Paket @angular/forms/signals. Experimentell ab v21, nicht in Angular 20.</p></details>
+<details><summary>Was sind Signal Forms?</summary><p>Ein Formular-API auf Basis von Signals im Paket @angular/forms/signals. Experimentell in v21, stabil seit v22, nicht in Angular 20.</p></details>
+<details><summary>Wie bindet man ein Signal-Forms-Feld ans Template?</summary><p>Mit der Direktive FormField: &lt;input [formField]="loginForm.email"&gt;. Den Wert liest man mit loginForm.email().value().</p></details>
 <details><summary>Szenario: Beim Speichern fehlt das Feld „Kundennummer“. Warum?</summary><p>Das Control ist disabled und fehlt in value. Lösung: getRawValue().</p></details>
 <details><summary>Szenario: Der Speichern-Button bleibt grau, obwohl alles gültig aussieht. Warum?</summary><p>Ein Async-Validator endet nicht, der Status bleibt PENDING. Lösung: Observable mit take(1) beenden.</p></details>
-<details><summary>Szenario: Sie migrieren 50 Formulare von Angular 14 nach 20. Wie?</summary><p>Zuerst UntypedFormGroup schrittweise typisieren und nonNullable nutzen. Signal Forms erst nach Upgrade auf v21+ prüfen.</p></details>
+<details><summary>Szenario: Sie migrieren 50 Formulare von Angular 14 nach 22. Wie?</summary><p>Zuerst UntypedFormGroup schrittweise typisieren und nonNullable nutzen. Neue Formulare in Signal Forms (stabil seit v22), alte nur bei Bedarf umstellen.</p></details>
 
 </body>
 </html>

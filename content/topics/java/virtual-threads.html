@@ -1,0 +1,214 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Virtual Threads</title>
+<style>
+  body { font: 17px/1.55 -apple-system, system-ui, sans-serif; max-width: 760px; margin: 0 auto; padding: 16px; color: #1d1d1f; }
+  h1 { font-size: 28px; margin: 8px 0 4px; }
+  h2 { font-size: 21px; margin: 32px 0 8px; padding-top: 12px; border-top: 2px solid #e5e5ea; }
+  .kern { background: #eef6ff; border-left: 4px solid #0a66c2; padding: 10px 14px; border-radius: 6px; }
+  .senior { background: #f0faf0; border-left: 4px solid #2e7d32; padding: 10px 14px; border-radius: 6px; }
+  .trap { background: #fff4f2; border-left: 4px solid #c62828; padding: 10px 14px; border-radius: 6px; }
+  code { background: #f2f2f7; padding: 1px 5px; border-radius: 4px; font-size: 15px; }
+  pre { background: #1e1e1e; color: #e6e6e6; padding: 12px; border-radius: 8px; overflow-x: auto; font-size: 13.5px; line-height: 1.45; }
+  svg { width: 100%; height: auto; display: block; margin: 10px 0; }
+  ol li, ul li { margin: 4px 0; }
+  details { border: 1px solid #e5e5ea; border-radius: 8px; padding: 8px 12px; margin: 6px 0; }
+  summary { font-weight: 600; cursor: pointer; }
+  details p { margin: 6px 0 2px; }
+  .small { color: #6e6e73; font-size: 14px; }
+</style>
+</head>
+<body>
+
+<h1>Virtual Threads</h1>
+<p class="small">Java · Tier 1 · Quellen: JEP 444 (Virtual Threads, Java 21), JEP 491 (Synchronize Virtual Threads without Pinning, Java 24), JEP 506 (Scoped Values, Java 25), JEP 505/525/533 (Structured Concurrency Preview, Java 25/26/27), JEP 543 (Structured Concurrency, Status „Integrated" für JDK 28), Java SE 25 API-Doku (<code>Thread</code>, <code>Executors</code>), jcmd-Manual Java 25, Spring Boot Referenz (Virtual Threads)</p>
+
+<div class="kern">
+<b>Kern:</b> Ein <b>Virtual Thread</b> ist ein <code>java.lang.Thread</code>, den die JVM verwaltet, nicht das Betriebssystem. Er belegt einen OS-Thread nur, solange er wirklich rechnet. Beim Blockieren auf I/O gibt er ihn frei. So laufen Millionen blockierende Tasks im einfachen <b>Thread-per-Request</b>-Stil, ohne Thread Pool und ohne reaktiven Code.
+</div>
+
+<h2>1. Wo sitzen Virtual Threads?</h2>
+<svg viewBox="0 0 720 320" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="a" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="10" y="10" width="700" height="70" rx="10" fill="#e8f5e9" stroke="#2e7d32"/><text x="360" y="34" text-anchor="middle" font-weight="700">Virtual Threads (M, z. B. 100 000)</text><text x="360" y="58" text-anchor="middle" font-size="12">wartende: Stack-Frames als Objekte im Heap · laufende: auf einem Carrier gemountet</text>
+  <line x1="360" y1="80" x2="360" y2="110" stroke="#555" stroke-width="2" marker-end="url(#a)"/><text x="375" y="100" font-size="12">submit / mount</text>
+  <rect x="140" y="112" width="440" height="60" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="360" y="136" text-anchor="middle" font-weight="700">Scheduler: eigener ForkJoinPool (FIFO)</text><text x="360" y="156" text-anchor="middle" font-size="12">nicht der Common Pool · parallelism = Anzahl CPUs</text>
+  <line x1="250" y1="172" x2="150" y2="206" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <line x1="360" y1="172" x2="360" y2="206" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <line x1="470" y1="172" x2="570" y2="206" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="60" y="208" width="180" height="46" rx="8" fill="#0a66c2"/><text x="150" y="236" text-anchor="middle" fill="#fff">Carrier 1</text>
+  <rect x="270" y="208" width="180" height="46" rx="8" fill="#0a66c2"/><text x="360" y="236" text-anchor="middle" fill="#fff">Carrier 2</text>
+  <rect x="480" y="208" width="180" height="46" rx="8" fill="#0a66c2"/><text x="570" y="236" text-anchor="middle" fill="#fff">Carrier N</text>
+  <rect x="60" y="270" width="600" height="40" rx="8" fill="#eee" stroke="#777"/><text x="360" y="295" text-anchor="middle">OS-Threads und CPU-Kerne (N)</text>
+</svg>
+<ol>
+  <li><b>Virtual Thread:</b> ein normales <code>Thread</code>-Objekt. Wartet er, liegen seine Stack-Frames im Heap. Beispiel: ein Request, der auf eine DB-Antwort wartet.</li>
+  <li><b>Scheduler:</b> ein eigener <b>ForkJoinPool</b> im <b>FIFO</b>-Modus. Er ist getrennt vom Common Pool der Parallel Streams.</li>
+  <li><b>Carrier Thread:</b> ein Platform Thread des Schedulers. Er „trägt" gerade einen Virtual Thread. Standard: so viele Carrier wie CPUs.</li>
+  <li><b>OS-Thread:</b> Jeder Carrier ist ein echter OS-Thread. Das Verhältnis ist <b>M:N</b>: viele Virtual Threads auf wenigen OS-Threads.</li>
+</ol>
+<p>Platform vs Virtual im Überblick steht auf der Seite <i>Threads</i>. Diese Seite geht in die Tiefe.</p>
+
+<h2>2. Die Reise eines Virtual Threads (die Geschichte zum Merken)</h2>
+<svg viewBox="0 0 720 330" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="b" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker><marker id="r" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#c62828"/></marker></defs>
+  <rect x="10" y="20" width="140" height="60" rx="10" fill="#eee" stroke="#777"/><text x="80" y="46" text-anchor="middle" font-weight="700">1. start()</text><text x="80" y="66" text-anchor="middle" font-size="12">in Scheduler-Queue</text>
+  <line x1="150" y1="50" x2="198" y2="50" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="200" y="20" width="150" height="60" rx="10" fill="#0a66c2"/><text x="275" y="46" text-anchor="middle" fill="#fff" font-weight="700">2. mount</text><text x="275" y="66" text-anchor="middle" fill="#fff" font-size="12">läuft auf Carrier A</text>
+  <line x1="350" y1="50" x2="398" y2="50" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="400" y="20" width="150" height="60" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="475" y="46" text-anchor="middle" font-weight="700">3. blockiert</text><text x="475" y="66" text-anchor="middle" font-size="12">socket.read()</text>
+  <line x1="550" y1="50" x2="598" y2="50" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="600" y="20" width="110" height="60" rx="10" fill="#e8f5e9" stroke="#2e7d32"/><text x="655" y="46" text-anchor="middle" font-weight="700">4. unmount</text><text x="655" y="66" text-anchor="middle" font-size="12">Frames → Heap</text>
+  <line x1="655" y1="80" x2="655" y2="138" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="520" y="140" width="190" height="60" rx="10" fill="#fff" stroke="#555"/><text x="615" y="166" text-anchor="middle" font-weight="700">5. Daten da</text><text x="615" y="186" text-anchor="middle" font-size="12">Poller → wieder einreihen</text>
+  <line x1="520" y1="170" x2="352" y2="170" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="200" y="140" width="150" height="60" rx="10" fill="#0a66c2"/><text x="275" y="166" text-anchor="middle" fill="#fff" font-weight="700">6. mount</text><text x="275" y="186" text-anchor="middle" fill="#fff" font-size="12">evtl. auf Carrier B</text>
+  <path d="M475,80 C475,250 140,260 120,214" fill="none" stroke="#c62828" stroke-width="2" stroke-dasharray="6 4" marker-end="url(#r)"/>
+  <rect x="10" y="214" width="190" height="60" rx="10" fill="#fff4f2" stroke="#c62828"/><text x="105" y="238" text-anchor="middle" font-weight="700" fill="#c62828">Pinning</text><text x="105" y="258" text-anchor="middle" font-size="12">kein unmount, Carrier blockiert</text>
+  <text x="380" y="300" text-anchor="middle" fill="#c62828" font-size="12">Java 21–23: in synchronized · ab 24: nur noch native Frames, Klassen-Init</text>
+</svg>
+<ol>
+  <li><b>Start:</b> <code>Thread.ofVirtual().start(task)</code> erzeugt den Thread und reiht ihn beim Scheduler ein. Kosten: ein kleines Heap-Objekt, kein OS-Thread.</li>
+  <li><b>Mount:</b> Der Scheduler setzt ihn auf einen freien Carrier. Der Carrier führt jetzt seinen Code aus. <code>Thread.currentThread()</code> liefert trotzdem den Virtual Thread.</li>
+  <li><b>Blockieren:</b> Der Code ruft z. B. <code>socket.read()</code> oder <code>queue.take()</code>. Die JDK-Methode merkt: Ich laufe virtuell.</li>
+  <li><b>Unmount:</b> Der Virtual Thread kopiert seine Stack-Frames in den Heap und gibt den Carrier frei. Der Carrier holt sofort den nächsten Virtual Thread.</li>
+  <li><b>Weiter:</b> Sind die Daten da, reiht ein <b>Poller</b> den Thread wieder beim Scheduler ein.</li>
+  <li><b>Mount, eventuell woanders:</b> Er läuft weiter, vielleicht auf einem anderen Carrier. Es gibt keine feste Bindung.</li>
+  <li><b>Pinning (rot):</b> Kann er nicht unmounten, blockiert er seinen Carrier mit. In Java 21–23 passiert das in <code>synchronized</code>. Seit Java 24 (JEP 491) nur noch in Sonderfällen.</li>
+</ol>
+
+<h2>3. Beispiel: 2000 schlafende Tasks</h2>
+<pre>// Platform Threads: fester Pool mit 200 Threads
+ExecutorService ex = Executors.newFixedThreadPool(200);
+IntStream.range(0, 2_000).forEach(i -&gt; ex.submit(() -&gt; { Thread.sleep(1000); return i; }));
+ex.shutdown(); ex.awaitTermination(1, MINUTES);</pre>
+<pre>2000 Tasks, fixed pool 200: 10172 ms</pre>
+<p class="small">Echte Ausgabe, Oracle JDK 17.0.3.</p>
+<pre>// Virtual Threads (Java 21+): ein neuer Virtual Thread pro Task
+try (var ex = Executors.newVirtualThreadPerTaskExecutor()) {
+  IntStream.range(0, 2_000).forEach(i -&gt; ex.submit(() -&gt; { Thread.sleep(1000); return i; }));
+}  // close() wartet auf alle Tasks</pre>
+<pre>2000 Tasks, virtual: etwa 1000 ms (alle schlafen gleichzeitig)</pre>
+<p class="small">Erwartetes Ergebnis (laut Doku, nicht ausgeführt). JEP 444 beschreibt dasselbe Beispiel mit 10 000 Tasks: 200 Platform Threads schaffen 200 Tasks pro Sekunde, Virtual Threads etwa 10 000 pro Sekunde.</p>
+<ol>
+  <li>Der Pool mit 200 Threads arbeitet in 10 Runden à 1 Sekunde. Das ergibt 10 Sekunden.</li>
+  <li>Mit Virtual Threads schlafen alle 2000 gleichzeitig. Kein OS-Thread ist dabei blockiert.</li>
+  <li>Würde jeder Task 1 Sekunde <b>rechnen</b>, hilft das nicht. Mehr Threads als Kerne bringen bei CPU-Arbeit nichts.</li>
+</ol>
+<pre>// Pinning sichtbar machen (Java 21–23)
+synchronized (lock) { Thread.sleep(100); }      // blockiert im Monitor
+$ java -XX:StartFlightRecording=filename=pin.jfr App
+$ jfr print --events jdk.VirtualThreadPinned pin.jfr</pre>
+<p class="small">Erwartetes Ergebnis (laut Doku, nicht ausgeführt): Auf Java 21 erscheinen <code>jdk.VirtualThreadPinned</code>-Events mit Stack Trace, Schwelle 20 ms. Auf Java 24 und 25 erscheinen für diesen Code keine Events mehr, weil <code>synchronized</code> nicht mehr pinnt (JEP 491).</p>
+
+<h2>4. Details, die Interviewer fragen</h2>
+<ol>
+  <li><b>Erzeugen:</b> <code>Thread.ofVirtual().name("req-", 0).start(r)</code>, <code>Thread.startVirtualThread(r)</code> oder <code>Executors.newVirtualThreadPerTaskExecutor()</code>. Alle seit Java 21.</li>
+  <li><b>Scheduler-Grösse:</b> <code>jdk.virtualThreadScheduler.parallelism</code> = Zahl der Carrier, Standard = Anzahl CPUs. <code>jdk.virtualThreadScheduler.maxPoolSize</code> = Obergrenze, Standard 256.</li>
+  <li><b>Compensation:</b> Manche Operationen blockieren den OS-Thread trotzdem, z. B. viele Dateisystem-Zugriffe. Dann startet der Scheduler kurz zusätzliche Carrier, bis maxPoolSize.</li>
+  <li><b>Pinning in Java 21–23:</b> Ein Virtual Thread pinnt in <code>synchronized</code> und in nativen Methoden oder Foreign Functions. Bei Pinning startet der Scheduler <b>keinen</b> Ersatz-Carrier.</li>
+  <li><b>JEP 491 (Java 24):</b> Die JVM verfolgt Monitore jetzt pro Virtual Thread, nicht pro Carrier. Blockieren in <code>synchronized</code>, beim Warten auf den Monitor und in <code>Object.wait()</code> gibt den Carrier frei.</li>
+  <li><b>Pinning ab Java 24:</b> Es bleibt bei nativem Code, der zurück in blockierenden Java-Code ruft. Dazu: Blockieren beim Laden einer Klasse, in einem Klassen-Initialisierer (<code>static {}</code>) und beim Warten auf die Initialisierung durch einen anderen Thread.</li>
+  <li><b>Diagnose-Property:</b> <code>-Djdk.tracePinnedThreads</code> gab es in Java 21–23. Seit Java 24 ist sie entfernt und wirkungslos. Heute nutzt man das JFR-Event <code>jdk.VirtualThreadPinned</code>.</li>
+  <li><b>Kein Time Sharing:</b> Der Scheduler unterbricht einen rechnenden Virtual Thread nicht. Langer CPU-Code belegt seinen Carrier, bis er blockiert oder endet.</li>
+  <li><b>Immer Daemon, feste Priorität:</b> <code>setDaemon(false)</code> und <code>setPriority</code> haben keine Wirkung.</li>
+  <li><b>ThreadLocal:</b> funktioniert. Aber bei Millionen Threads kostet jede Kopie Speicher. Teure Objekte nie per ThreadLocal „poolen", denn jeder Task hat einen neuen Thread.</li>
+  <li><b>Nie poolen:</b> Laut JEP 444 „sollten nie gepoolt werden". Pro Task ein neuer Virtual Thread. Zum Begrenzen eines Downstreams eine <b>Semaphore</b> nutzen.</li>
+  <li><b>Scoped Values (final in Java 25, JEP 506):</b> ein <b>ScopedValue</b> teilt unveränderliche Daten mit aufgerufenen Methoden und Kind-Threads. Er gilt nur innerhalb von <code>ScopedValue.where(KEY, v).run(...)</code>. Billiger und sicherer als ThreadLocal.</li>
+  <li><b>Structured Concurrency (Status November 2026):</b> In Java 21 bis 27 nur <b>Preview</b>, also mit <code>--enable-preview</code>. In Java 25 heisst der Einstieg <code>StructuredTaskScope.open()</code>. JEP 543 will die API in JDK 28 final machen, Status „Integrated".</li>
+  <li><b>Thread Dump:</b> Der klassische <code>jstack</code>-Dump ist für Millionen Threads ungeeignet. Neu: <code>jcmd &lt;pid&gt; Thread.dump_to_file -format=json datei.json</code>. Details auf der Seite <i>Thread Dumps</i>.</li>
+  <li><b>Spring Boot:</b> <code>spring.threads.virtual.enabled=true</code> schaltet Virtual Threads ein. Die Spring-Doku empfiehlt dafür Java 24 oder neuer. Pool-Properties wirken dann nicht mehr.</li>
+</ol>
+
+<h2>5. Vergleich</h2>
+<ul>
+  <li><b>Platform Thread:</b> 1:1 auf einen OS-Thread, teuer, begrenzte Anzahl. Gut für CPU-Arbeit und wenige lange Aufgaben.</li>
+  <li><b>Virtual Thread:</b> M:N, billig, Millionen möglich. Gut für viele gleichzeitige, blockierende I/O-Aufgaben. Nicht schneller pro Task.</li>
+  <li><b>Thread Pool (ThreadPoolExecutor):</b> begrenzt und verwendet Platform Threads wieder. Mit Virtual Threads für I/O oft überflüssig. Siehe Seite <i>ExecutorService und Thread Pools</i>.</li>
+  <li><b>Reaktiv (WebFlux, Reactor):</b> wenige Threads, nicht blockierender Code mit Callbacks. Gleicher Durchsatz möglich, aber schwer zu lesen und zu debuggen. Virtual Threads erreichen viel davon mit normalem, blockierendem Code.</li>
+  <li><b>CompletableFuture:</b> Komposition asynchroner Schritte. Mit Virtual Threads kann man oft einfach blockierend <code>get()</code> aufrufen.</li>
+  <li><b>Kotlin Coroutines:</b> ebenfalls leichte Tasks, aber kooperativ mit <code>suspend</code> im Code. Virtual Threads brauchen keine Code-Änderung.</li>
+</ul>
+
+<h2>6. In der Produktion</h2>
+<ol>
+  <li><b>Pinning auf Java 21:</b> <code>synchronized</code> um I/O (z. B. in einem alten JDBC-Treiber) belegt alle Carrier. Die App friert ein, obwohl die CPU leer ist. Lösung: Java 24+ oder <code>ReentrantLock</code>. Seite <i>Synchronisation und Locks</i>.</li>
+  <li><b>Downstream überrannt:</b> Ohne Pool gibt es keine natürliche Grenze mehr. 10 000 Virtual Threads öffnen 10 000 DB-Anfragen. Der Connection Pool wird zum Engpass mit Timeouts. Lösung: <code>Semaphore</code> oder eine bewusste Grenze im Connection Pool.</li>
+  <li><b>Speicher durch ThreadLocal:</b> Ein Framework legt pro Thread einen grossen Puffer ab. Mit Millionen Threads wächst der Heap stark. Lösung: ThreadLocal-Nutzung prüfen, <code>-Djdk.traceVirtualThreadLocals=true</code> hilft beim Finden.</li>
+  <li><b>CPU-lastige Tasks:</b> Lange Berechnungen ohne Blockieren halten Carrier fest. Andere Requests warten. Lösung: CPU-Arbeit in einen begrenzten Platform-Pool auslagern.</li>
+  <li><b>Monitoring bricht:</b> Dashboards zählen „aktive Threads im Pool". Mit Virtual Threads gibt es keinen Pool. Lösung: In-Flight-Requests und Semaphore-Wartezeit messen.</li>
+  <li><b>Dateisystem-I/O:</b> Viele Dateioperationen blockieren den OS-Thread. Der Scheduler kompensiert nur bis <code>maxPoolSize</code>.</li>
+</ol>
+
+<h2>7. Diagnose: Werkzeuge und Befehle</h2>
+<ul>
+  <li><b>JFR-Events:</b> <code>jdk.VirtualThreadPinned</code> (an, Schwelle 20 ms), <code>jdk.VirtualThreadSubmitFailed</code> (an), <code>jdk.VirtualThreadStart</code> und <code>jdk.VirtualThreadEnd</code> (standardmässig aus).</li>
+  <li><code>jfr view pinned-threads rec.jfr</code>: fertige Auswertung der Pinning-Events (<code>jfr view</code> ab Java 21).</li>
+  <li><code>jcmd &lt;pid&gt; Thread.dump_to_file -format=json dump.json</code>: Dump mit allen Virtual Threads, gruppiert nach <b>Thread-Containern</b>.</li>
+  <li><code>jcmd &lt;pid&gt; Thread.vthread_scheduler</code> und <code>Thread.vthread_pollers</code>: Zustand von Scheduler und I/O-Pollern (im Java-25-Manual).</li>
+  <li><code>-Djdk.virtualThreadScheduler.parallelism=N</code>: Carrier-Zahl zum Testen ändern.</li>
+  <li><code>-Djdk.tracePinnedThreads=full</code>: nur Java 21–23, druckt Stack Traces bei Pinning.</li>
+</ul>
+
+<h2>8. Senior-Punkte</h2>
+<div class="senior">
+<ol>
+  <li><b>Virtual Threads bringen Durchsatz, nicht Geschwindigkeit.</b> Sie helfen bei vielen gleichzeitigen, wartenden Tasks. Ein einzelner Request wird nicht schneller.</li>
+  <li><b>Der Engpass wandert.</b> Ohne Thread-Grenze wird der DB-Connection-Pool oder der Downstream das Limit. Grenzen bewusst setzen, z. B. Semaphore pro Downstream.</li>
+  <li><b>Java 25 statt 21 für Virtual Threads.</b> JEP 491 entfernt das grösste Risiko (Pinning in <code>synchronized</code>). Ein LTS-Upgrade ist hier ein echtes Argument.</li>
+  <li><b>Migration schrittweise:</b> Erst Lasttest mit JFR (Pinning, Heap, Connection-Wartezeit). Dann einschalten, Feature-Flag behalten.</li>
+  <li><b>Kein Ersatz für alles:</b> CPU-Arbeit gehört in einen begrenzten Platform-Pool oder ForkJoinPool. Reaktive Stacks bleiben sinnvoll für Streaming und Backpressure.</li>
+  <li><b>Structured Concurrency ist noch Preview</b> (bis Java 27). Für Produktionscode auf Java 25 LTS deshalb mit Vorsicht oder gar nicht.</li>
+</ol>
+</div>
+
+<h2>9. Aus dem Projekt</h2>
+<p>„Virtual Threads habe ich nicht in Produktion eingesetzt. Bei DAZiT liefen die Spring-Boot-Services auf Java 21; dort wären sie verfügbar gewesen, ich würde sie heute erst nach einem Lasttest mit JFR einschalten." <span class="small">(Prüfen und durch dein echtes Beispiel ersetzen.)</span></p>
+
+<h2>10. Fallen</h2>
+<div class="trap">
+<ul>
+  <li>„Virtual Threads sind schneller." → <b>Falsch.</b> Sie führen Code nicht schneller aus. Sie erlauben mehr gleichzeitige wartende Tasks.</li>
+  <li>„Man sollte Virtual Threads poolen." → <b>Falsch.</b> Pro Task ein neuer. Begrenzen mit Semaphore.</li>
+  <li>„<code>synchronized</code> pinnt immer." → <b>Veraltet.</b> Gilt nur für Java 21–23. Seit Java 24 (JEP 491) nicht mehr.</li>
+  <li>„Ab Java 24 gibt es kein Pinning mehr." → <b>Falsch.</b> Native Frames, Klassen-Laden und Klassen-Initialisierer pinnen weiter.</li>
+  <li>„Virtual Threads laufen im Common Pool." → <b>Falsch.</b> Sie haben einen eigenen ForkJoinPool im FIFO-Modus.</li>
+  <li>„Structured Concurrency ist in Java 21 final." → <b>Falsch.</b> Preview von Java 21 bis 27. Final erst mit JDK 28 geplant (JEP 543).</li>
+  <li>„Scoped Values sind noch Preview." → <b>Veraltet.</b> Final seit Java 25 (JEP 506).</li>
+</ul>
+</div>
+
+<h2>11. Fragen</h2>
+<details><summary>Was ist ein Virtual Thread?</summary><p>Ein Thread, den die JVM statt des Betriebssystems verwaltet. Er belegt einen OS-Thread nur, solange er rechnet, und gibt ihn beim Blockieren frei.</p></details>
+<details><summary>Seit wann gibt es Virtual Threads final?</summary><p>Seit Java 21 (JEP 444). In Java 19 und 20 waren sie Preview.</p></details>
+<details><summary>Welches Problem lösen sie?</summary><p>Thread-per-Request skaliert mit Platform Threads schlecht, weil OS-Threads teuer sind. Virtual Threads erlauben Millionen wartende Requests mit einfachem, blockierendem Code.</p></details>
+<details><summary>Was ist ein Carrier Thread?</summary><p>Ein Platform Thread des Virtual-Thread-Schedulers. Er führt gerade einen gemounteten Virtual Thread aus.</p></details>
+<details><summary>Was heisst mount und unmount?</summary><p>Mount: Der Scheduler setzt einen Virtual Thread auf einen Carrier. Unmount: Beim Blockieren speichert er seine Frames im Heap und gibt den Carrier frei.</p></details>
+<details><summary>Welcher Scheduler steckt dahinter?</summary><p>Ein eigener ForkJoinPool im FIFO-Modus, getrennt vom Common Pool. Standard: so viele Carrier wie CPUs.</p></details>
+<details><summary>Was ist Pinning?</summary><p>Der Virtual Thread kann beim Blockieren nicht unmounten. Er blockiert damit auch seinen Carrier und den OS-Thread.</p></details>
+<details><summary>Wann pinnt ein Virtual Thread in Java 21?</summary><p>In synchronized-Blöcken und -Methoden sowie in nativen Methoden und Foreign Functions.</p></details>
+<details><summary>Was hat JEP 491 geändert?</summary><p>Seit Java 24 gehören Monitore dem Virtual Thread, nicht dem Carrier. Blockieren in synchronized und in Object.wait() gibt den Carrier frei.</p></details>
+<details><summary>Wo pinnt ein Virtual Thread ab Java 24 noch?</summary><p>Wenn nativer Code zurück in blockierenden Java-Code ruft, beim Laden einer Klasse, in Klassen-Initialisierern und beim Warten auf deren Initialisierung.</p></details>
+<details><summary>Wie finden Sie Pinning?</summary><p>Mit dem JFR-Event jdk.VirtualThreadPinned, z. B. mit jfr print oder jfr view pinned-threads. In Java 21–23 zusätzlich -Djdk.tracePinnedThreads.</p></details>
+<details><summary>Kompensiert der Scheduler Pinning?</summary><p>Nein. Er kompensiert nur bestimmte blockierende JDK-Operationen wie Dateisystem-Zugriffe, bis maxPoolSize (Standard 256).</p></details>
+<details><summary>Sind Virtual Threads für CPU-lastige Arbeit gut?</summary><p>Nein. Mehr Threads als Kerne bringen bei CPU-Arbeit nichts. Dazu unterbricht der Scheduler rechnende Virtual Threads nicht.</p></details>
+<details><summary>Wann helfen Virtual Threads wirklich?</summary><p>Bei vielen gleichzeitigen Tasks (Tausende und mehr), die meist warten, z. B. auf HTTP oder DB.</p></details>
+<details><summary>Warum sollte man Virtual Threads nicht poolen?</summary><p>Sie sind billig. Ein Pool bringt nur Overhead und alte ThreadLocal-Zustände. Für eine Grenze nimmt man eine Semaphore.</p></details>
+<details><summary>Wie begrenzen Sie gleichzeitige Aufrufe an einen Dienst?</summary><p>Mit einer Semaphore: acquire vor dem Aufruf, release im finally. Die Zahl der Permits ist die Grenze.</p></details>
+<details><summary>Funktionieren ThreadLocals mit Virtual Threads?</summary><p>Ja, aber jeder der vielen Threads hat eine eigene Kopie. Das kostet Speicher. Für Kontext-Daten besser Scoped Values.</p></details>
+<details><summary>Was ist ein Scoped Value?</summary><p>Ein unveränderlicher Wert, gebunden für die Dauer eines Aufrufs mit ScopedValue.where(...).run(...). Kind-Threads in Structured Concurrency erben ihn. Final seit Java 25.</p></details>
+<details><summary>Was ist Structured Concurrency, und wie ist der Status?</summary><p>Eine API, die Unter-Tasks als Einheit mit gemeinsamer Lebensdauer behandelt. Fehler brechen die anderen ab. Preview von Java 21 bis 27, final geplant für JDK 28.</p></details>
+<details><summary>Welche Vorteile hat StructuredTaskScope gegenüber ExecutorService?</summary><p>Unter-Tasks enden mit dem Scope, es gibt keine Thread-Leaks. Ein Fehler bricht die anderen ab. Thread Dumps zeigen die Eltern-Kind-Beziehung.</p></details>
+<details><summary>Kann man Priorität oder Daemon-Status setzen?</summary><p>Nein. Virtual Threads sind immer Daemon und haben immer NORM_PRIORITY.</p></details>
+<details><summary>Wie sieht man Virtual Threads im Thread Dump?</summary><p>Mit jcmd Thread.dump_to_file, auch im JSON-Format. jstack zeigt nur Platform Threads und Carrier.</p></details>
+<details><summary>Wie schalten Sie Virtual Threads in Spring Boot ein?</summary><p>Mit spring.threads.virtual.enabled=true. Die Spring-Doku empfiehlt Java 24 oder neuer, wegen des Pinnings.</p></details>
+<details><summary>Virtual Threads oder reaktive Programmierung?</summary><p>Für typische Request-Response-Services mit blockierenden Treibern: Virtual Threads, weil der Code einfach bleibt. Für Streaming mit Backpressure bleibt Reactor sinnvoll.</p></details>
+<details><summary>Szenario: Nach dem Einschalten von Virtual Threads auf Java 21 friert der Service unter Last ein, CPU fast 0 %. Was prüfen Sie?</summary><p>Pinning: synchronized um I/O belegt alle Carrier. Prüfen mit JFR jdk.VirtualThreadPinned. Lösung: auf Java 25 wechseln oder den Block auf ReentrantLock umstellen.</p></details>
+<details><summary>Szenario: Mit Virtual Threads kommen plötzlich viele Timeouts beim Holen einer DB-Connection. Warum?</summary><p>Früher begrenzte der Thread Pool die Gleichzeitigkeit. Jetzt warten Tausende Threads auf wenige Connections. Lösung: Semaphore vor der DB oder Grenze bewusst setzen, Pool-Wartezeit messen.</p></details>
+<details><summary>Szenario: Ein Team will einen Bildverarbeitungs-Service auf Virtual Threads umstellen, damit er schneller wird. Ihr Rat?</summary><p>Das bringt wenig: Bildverarbeitung ist CPU-Arbeit. Virtual Threads helfen nur bei wartenden Tasks. Besser ein Pool mit etwa Kernanzahl Threads und Profiling.</p></details>
+
+</body>
+</html>

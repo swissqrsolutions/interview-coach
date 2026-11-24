@@ -1,0 +1,218 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Fehler rückgängig machen</title>
+<style>
+  body { font: 17px/1.55 -apple-system, system-ui, sans-serif; max-width: 760px; margin: 0 auto; padding: 16px; color: #1d1d1f; }
+  h1 { font-size: 28px; margin: 8px 0 4px; }
+  h2 { font-size: 21px; margin: 32px 0 8px; padding-top: 12px; border-top: 2px solid #e5e5ea; }
+  .kern { background: #eef6ff; border-left: 4px solid #0a66c2; padding: 10px 14px; border-radius: 6px; }
+  .senior { background: #f0faf0; border-left: 4px solid #2e7d32; padding: 10px 14px; border-radius: 6px; }
+  .trap { background: #fff4f2; border-left: 4px solid #c62828; padding: 10px 14px; border-radius: 6px; }
+  code { background: #f2f2f7; padding: 1px 5px; border-radius: 4px; font-size: 15px; }
+  pre { background: #1e1e1e; color: #e6e6e6; padding: 12px; border-radius: 8px; overflow-x: auto; font-size: 13.5px; line-height: 1.45; }
+  svg { width: 100%; height: auto; display: block; margin: 10px 0; }
+  ol li, ul li { margin: 4px 0; }
+  details { border: 1px solid #e5e5ea; border-radius: 8px; padding: 8px 12px; margin: 6px 0; }
+  summary { font-weight: 600; cursor: pointer; }
+  details p { margin: 6px 0 2px; }
+  .small { color: #6e6e73; font-size: 14px; }
+</style>
+</head>
+<body>
+
+<h1>Fehler rückgängig machen: reset, revert, restore, reflog</h1>
+<p class="small">Git · Tier 1 · Quellen: git-scm.com (Pro Git Kap. 2.4 „Undoing Things“, Kap. 7.7 „Reset Demystified“, Kap. 10.7 „Maintenance and Data Recovery“; Referenz <code>git-reset</code>, <code>git-restore</code>, <code>git-revert</code>, <code>git-reflog</code>, <code>git-gc</code>, <code>git-commit</code>), Git 2.56</p>
+
+<div class="kern">
+<b>Kern:</b> Git hat für jede der <b>drei Ebenen</b> (Commit-Geschichte, Index, Working Tree) eigene Werkzeuge zum Rückgängigmachen. <b>reset</b> verschiebt den Branch-Zeiger, <b>restore</b> setzt Dateien zurück, <b>revert</b> kehrt einen Commit mit einem neuen Commit um. Das <b>Reflog</b> merkt sich jede Bewegung von <code>HEAD</code> und rettet fast jeden Fehler.
+</div>
+
+<h2>1. Wo sitzen die drei Ebenen?</h2>
+<svg viewBox="0 0 720 300" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="a" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="10" y="20" width="200" height="70" rx="10" fill="#0a66c2"/><text x="110" y="48" text-anchor="middle" fill="#fff" font-weight="700">HEAD / Branch</text><text x="110" y="70" text-anchor="middle" fill="#fff" font-size="12">Commit-Geschichte</text>
+  <rect x="260" y="20" width="200" height="70" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="360" y="48" text-anchor="middle" font-weight="700">Index</text><text x="360" y="70" text-anchor="middle" font-size="12">nächster Commit (staged)</text>
+  <rect x="510" y="20" width="200" height="70" rx="10" fill="#fff" stroke="#555"/><text x="610" y="48" text-anchor="middle" font-weight="700">Working Tree</text><text x="610" y="70" text-anchor="middle" font-size="12">Dateien auf der Disk</text>
+  <rect x="10" y="120" width="200" height="34" rx="6" fill="#eee" stroke="#777"/><text x="110" y="142" text-anchor="middle" font-size="13">reset --soft</text>
+  <rect x="10" y="160" width="450" height="34" rx="6" fill="#eee" stroke="#777"/><text x="235" y="182" text-anchor="middle" font-size="13">reset --mixed (Standard)</text>
+  <rect x="10" y="200" width="700" height="34" rx="6" fill="#fff4f2" stroke="#c62828"/><text x="360" y="222" text-anchor="middle" font-size="13" fill="#c62828">reset --hard (überschreibt ungesicherte Änderungen)</text>
+  <rect x="260" y="240" width="200" height="34" rx="6" fill="#e8f5e9" stroke="#2e7d32"/><text x="360" y="262" text-anchor="middle" font-size="13">restore --staged</text>
+  <rect x="510" y="240" width="200" height="34" rx="6" fill="#e8f5e9" stroke="#2e7d32"/><text x="610" y="262" text-anchor="middle" font-size="13">restore</text>
+</svg>
+<ol>
+  <li><b>HEAD / Branch:</b> zeigt auf den letzten Commit. <code>reset</code> verschiebt diesen Zeiger.</li>
+  <li><b>Index</b> (Staging Area): enthält den Stand für den nächsten Commit. Beispiel: nach <code>git add</code>.</li>
+  <li><b>Working Tree:</b> die Dateien, die man editiert.</li>
+  <li>Die Balken zeigen, welche Ebenen ein Befehl ändert. <code>--soft</code> nur HEAD, <code>--mixed</code> HEAD und Index, <code>--hard</code> alle drei.</li>
+  <li><code>restore --staged</code> ändert nur den Index. <code>restore</code> ohne Option ändert nur den Working Tree.</li>
+</ol>
+
+<h2>2. Die Reise eines falschen Commits (die Geschichte zum Merken)</h2>
+<svg viewBox="0 0 720 260" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="b" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="270" y="10" width="180" height="56" rx="10" fill="#eee" stroke="#777"/><text x="360" y="34" text-anchor="middle" font-weight="700">Falscher Commit</text><text x="360" y="54" text-anchor="middle" font-size="12">Frage: schon gepusht?</text>
+  <line x1="300" y1="66" x2="150" y2="108" stroke="#555" stroke-width="2" marker-end="url(#b)"/><text x="200" y="80" font-size="12">nein</text>
+  <line x1="420" y1="66" x2="570" y2="108" stroke="#555" stroke-width="2" marker-end="url(#b)"/><text x="510" y="80" font-size="12">ja</text>
+  <rect x="10" y="110" width="280" height="80" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="150" y="134" text-anchor="middle" font-weight="700">Lokal: umschreiben ok</text><text x="150" y="156" text-anchor="middle" font-size="12">Nachricht: commit --amend</text><text x="150" y="176" text-anchor="middle" font-size="12">ganz weg: reset --soft/--hard</text>
+  <rect x="430" y="110" width="280" height="80" rx="10" fill="#e8f5e9" stroke="#2e7d32"/><text x="570" y="134" text-anchor="middle" font-weight="700">Geteilt: nichts umschreiben</text><text x="570" y="156" text-anchor="middle" font-size="12">git revert &lt;sha&gt;</text><text x="570" y="176" text-anchor="middle" font-size="12">neuer Gegen-Commit, normal pushen</text>
+  <rect x="150" y="210" width="420" height="44" rx="10" fill="#0a66c2"/><text x="360" y="237" text-anchor="middle" fill="#fff" font-weight="700">Zu viel gelöscht? git reflog → reset --hard HEAD@{n}</text>
+</svg>
+<ol>
+  <li><b>Der Fehler:</b> Ein Commit hat eine falsche Nachricht, eine vergessene Datei oder falschen Code.</li>
+  <li><b>Erste Frage:</b> Ist der Commit schon gepusht und haben andere ihn?</li>
+  <li><b>Nein, nur lokal:</b> Geschichte umschreiben ist erlaubt. <code>git commit --amend</code> für den letzten Commit. <code>git reset</code> für mehrere.</li>
+  <li><b>Ja, geteilt:</b> Nichts umschreiben. <code>git revert</code> erzeugt einen Gegen-Commit, der normal gepusht wird.</li>
+  <li><b>Zu viel weg:</b> Das Reflog zeigt jeden alten Stand von <code>HEAD</code>. <code>git reset --hard HEAD@{1}</code> holt ihn zurück.</li>
+  <li><b>Grenze:</b> Was nie committet oder gestaged war, kennt Git nicht. Nach <code>reset --hard</code> ist es weg.</li>
+</ol>
+
+<h2>3. Beispiel: alle Werkzeuge an drei Commits</h2>
+<pre># Commits C1, C2, C3 auf main
+git reset --soft HEAD~1;  git status -s; git log --oneline
+git commit -qm C3;  git reset HEAD~1;  git status -s
+git commit -qam C3; git reset --hard HEAD~1; cat a.txt
+git reflog -6
+git reset --hard HEAD@{1}; git log --oneline
+echo junk &gt;&gt; a.txt; git add a.txt
+git restore --staged a.txt; git status -s
+git restore a.txt
+git commit -q --amend -m "C3: correct message"; git log --oneline -2; git reflog -2</pre>
+<pre>M  a.txt
+a851f21 C2
+bc9fb9f C1
+
+Unstaged changes after reset:
+M	a.txt
+ M a.txt
+
+HEAD is now at a851f21 C2
+1
+2
+
+a851f21 HEAD@{0}: reset: moving to HEAD~1
+a934333 HEAD@{1}: commit: C3
+a851f21 HEAD@{2}: reset: moving to HEAD~1
+a934333 HEAD@{3}: commit: C3
+a851f21 HEAD@{4}: reset: moving to HEAD~1
+a934333 HEAD@{5}: commit: C3
+
+HEAD is now at a934333 C3
+a934333 C3
+a851f21 C2
+bc9fb9f C1
+
+ M a.txt
+
+d6faf55 C3: correct message
+a851f21 C2
+d6faf55 HEAD@{0}: commit (amend): C3: correct message
+a934333 HEAD@{1}: reset: moving to HEAD@{1}</pre>
+<p class="small">Echte Ausgabe, git 2.56.0.windows.3 (Scratch-Repo). Autor- und Commit-Datum waren fest gesetzt; darum hat C3 jedes Mal dieselbe ID <code>a934333</code>.</p>
+<ol>
+  <li><code>reset --soft</code>: C3 ist weg aus dem Log. Die Änderung ist <b>gestaged</b> (<code>M</code> in Spalte 1).</li>
+  <li><code>reset</code> (mixed): Die Änderung ist <b>nicht gestaged</b> (<code>M</code> in Spalte 2).</li>
+  <li><code>reset --hard</code>: Die Datei hat nur noch Zeilen 1 und 2. Die Änderung ist aus dem Working Tree weg.</li>
+  <li><code>git reflog</code> zeigt C3 als <code>HEAD@{1}</code>. <code>reset --hard HEAD@{1}</code> holt ihn zurück.</li>
+  <li><code>restore --staged</code> nimmt die Datei aus dem Index. <code>restore</code> verwirft die Änderung auf der Disk.</li>
+  <li><code>--amend</code> erzeugt einen <b>neuen</b> Commit <code>d6faf55</code>. Der alte <code>a934333</code> steht noch im Reflog.</li>
+</ol>
+
+<h2>4. Details, die Interviewer fragen</h2>
+<ol>
+  <li><b><code>reset --soft</code>:</b> verschiebt nur den Branch. Index und Dateien bleiben. Typisch: mehrere Commits zu einem zusammenfassen.</li>
+  <li><b><code>reset --mixed</code></b> (Standard): verschiebt den Branch und setzt den Index zurück. Dateien bleiben. Typisch: Commit neu aufteilen.</li>
+  <li><b><code>reset --hard</code>:</b> setzt alle drei Ebenen zurück. Ungesicherte Änderungen im Working Tree sind verloren.</li>
+  <li><b><code>reset --keep</code>:</b> wie <code>--hard</code>, bricht aber ab, wenn lokale Änderungen überschrieben würden.</li>
+  <li><b><code>git restore</code>:</b> setzt Dateien zurück, ohne den Branch zu bewegen. <code>--staged</code> nimmt aus dem Index. <code>--source=&lt;commit&gt;</code> holt eine alte Version.</li>
+  <li><b>switch und restore:</b> Sie teilen die Aufgaben des alten <code>git checkout</code>. <code>switch</code> wechselt Branches, <code>restore</code> setzt Dateien zurück.</li>
+  <li><b><code>git commit --amend</code>:</b> ersetzt den letzten Commit durch einen neuen. Neue ID, also Geschichte umgeschrieben. Nach Push: Force Push nötig.</li>
+  <li><b>Reflog:</b> Das <b>Reflog</b> ist ein lokales Protokoll jeder Bewegung von <code>HEAD</code> und jedes Branches. Es wird nicht gepusht. Standard-Ablauf: Einträge 90 Tage, unerreichbare Einträge 30 Tage (<code>gc.reflogExpire</code>, <code>gc.reflogExpireUnreachable</code>).</li>
+  <li><b>ORIG_HEAD:</b> Gefährliche Befehle wie <code>reset</code>, <code>merge</code> und <code>rebase</code> speichern den alten Stand in <code>ORIG_HEAD</code>. <code>git reset --hard ORIG_HEAD</code> geht einen Schritt zurück.</li>
+  <li><b>Garbage Collection:</b> <code>git gc</code> löscht unerreichbare lose Objekte, die älter als 2 Wochen sind (<code>gc.pruneExpire</code>). Darum ist ein „gelöschter“ Commit meist noch rettbar.</li>
+  <li><b>Gelöschter Branch:</b> Das Reflog von <code>HEAD</code> enthält den letzten Commit des Branches. <code>git branch name &lt;sha&gt;</code> stellt ihn wieder her.</li>
+  <li><b>Gepushtes Secret:</b> Revert hilft nicht, das Secret bleibt in der Geschichte. Zuerst das Secret <b>rotieren</b>. Dann Geschichte bereinigen (z. B. <code>git filter-repo</code>) und alle Klone neu ziehen.</li>
+</ol>
+
+<h2>5. Vergleich</h2>
+<ul>
+  <li><b>reset:</b> verschiebt den Branch, schreibt Geschichte um. Nur lokal.</li>
+  <li><b>revert:</b> neuer Gegen-Commit, Geschichte bleibt. Für geteilte Branches.</li>
+  <li><b>restore:</b> nur Dateien (Index oder Working Tree), kein Branch bewegt.</li>
+  <li><b>commit --amend:</b> letzten Commit ersetzen. Nur vor dem Push sicher.</li>
+  <li><b>stash:</b> lokale Änderungen kurz wegpacken, nichts geht verloren.</li>
+  <li><b>reflog:</b> kein Undo-Befehl, sondern die Landkarte, um den alten Stand zu finden.</li>
+</ul>
+
+<h2>6. In der Produktion</h2>
+<ol>
+  <li><b><code>reset --hard</code> mit ungesicherter Arbeit:</b> Nicht gestagte Änderungen sind weg. Lösung: vorher <code>git stash</code>; gestagte Dateien findet <code>git fsck --lost-found</code> als lose Blobs.</li>
+  <li><b>Reset auf einem gepushten Branch und Force Push:</b> Kollegen haben die alten Commits und mergen sie wieder herein. Lösung: auf geteilten Branches nur revert; Branch Protection verbietet Force Push.</li>
+  <li><b>Falscher Merge auf main:</b> <code>git revert -m 1 &lt;merge&gt;</code>. Beim späteren erneuten Merge zuerst den Revert reverten.</li>
+  <li><b>Secret committet:</b> Secret sofort rotieren. Geschichte umschreiben reicht nicht, Klone und Forks haben es schon.</li>
+  <li><b>Fehlerhaftes Deployment in GitOps:</b> Revert im Konfig-Repo, nicht <code>kubectl edit</code>. Sonst überschreibt der Agent die Änderung wieder.</li>
+</ol>
+
+<h2>7. Diagnose: Werkzeuge und Befehle</h2>
+<ul>
+  <li><code>git reflog</code> bzw. <code>git reflog show main</code>: alle alten Stände von HEAD oder einem Branch.</li>
+  <li><code>git log -g</code>: Reflog im Log-Format, mit Datum.</li>
+  <li><code>git fsck --lost-found</code>: findet <b>dangling</b> Commits und Blobs ohne Reflog-Eintrag.</li>
+  <li><code>git show HEAD@{2}</code> oder <code>main@{yesterday}</code>: einen alten Stand anschauen, bevor man zurücksetzt.</li>
+  <li><code>git status</code>: zeigt laufende Vorgänge und schlägt den passenden Undo-Befehl vor.</li>
+  <li><code>git diff ORIG_HEAD HEAD</code>: was der letzte Merge oder Rebase geändert hat.</li>
+</ul>
+
+<h2>8. Senior-Punkte</h2>
+<div class="senior">
+<ol>
+  <li><b>Die Grenze ist der Push.</b> Vorher darf man umschreiben, danach nur noch hinzufügen (revert).</li>
+  <li><b>Fast nichts ist verloren,</b> was einmal committet war. Reflog und <code>ORIG_HEAD</code> retten es. Verloren ist, was nie committet oder gestaged war.</li>
+  <li><b>Vor gefährlichen Befehlen einen Backup-Branch</b> anlegen: <code>git branch backup</code>. Kostet nichts.</li>
+  <li><b>Revert ist auch Rollback-Strategie.</b> In GitOps ist <code>git revert</code> der Standard-Weg zurück, mit Audit-Spur.</li>
+  <li><b>Secrets in Git sind ein Sicherheitsvorfall,</b> kein Git-Problem. Rotation zuerst, Aufräumen danach.</li>
+  <li><b>Server-Schutz:</b> Branch Protection gegen Force Push und Löschen auf <code>main</code> und Release-Branches.</li>
+</ol>
+</div>
+
+<h2>9. Aus dem Projekt</h2>
+<p>„Bei MATCH ist der Rollback ein <code>git revert</code>, und Secrets liegen nie im Repo, sondern in Vault und Azure Key Vault über External Secrets.“ <span class="small">(Prüfen und durch dein echtes Beispiel ersetzen.)</span></p>
+
+<h2>10. Fallen</h2>
+<div class="trap">
+<ul>
+  <li>„<code>reset --hard</code> löscht Commits sofort.“ → <b>Falsch.</b> Die Commits bleiben im Reflog und sind meist wochenlang rettbar. Verloren sind nur nicht committete Änderungen.</li>
+  <li>„Revert macht den Commit unsichtbar.“ → <b>Falsch.</b> Der Commit bleibt in der Geschichte, dazu kommt ein Gegen-Commit.</li>
+  <li>„<code>--amend</code> ändert den Commit.“ → <b>Falsch.</b> Es entsteht ein neuer Commit mit neuer ID.</li>
+  <li>„Das Reflog ist auf dem Server.“ → <b>Falsch.</b> Es ist lokal pro Klon und wird nicht gepusht.</li>
+  <li>„Ein gepushtes Secret entferne ich mit revert.“ → <b>Falsch.</b> Es bleibt in der Geschichte. Rotieren und Geschichte bereinigen.</li>
+  <li>„<code>git reset datei</code> verwirft meine Änderungen.“ → <b>Falsch.</b> Es nimmt die Datei nur aus dem Index. Die Änderung auf der Disk bleibt.</li>
+</ul>
+</div>
+
+<h2>11. Fragen</h2>
+<details><summary>Was ist der Unterschied zwischen reset --soft, --mixed und --hard?</summary><p>soft verschiebt nur den Branch. mixed setzt zusätzlich den Index zurück. hard setzt auch den Working Tree zurück und verwirft Änderungen.</p></details>
+<details><summary>Welcher Reset-Modus ist Standard?</summary><p>--mixed. Der Branch und der Index gehen zurück, die Dateien bleiben.</p></details>
+<details><summary>Wie fassen Sie die letzten drei Commits zu einem zusammen?</summary><p>git reset --soft HEAD~3, dann git commit. Alternativ interaktives Rebase mit squash.</p></details>
+<details><summary>Reset oder Revert?</summary><p>Reset für lokale, ungeteilte Commits. Revert für gepushte Commits, weil die Geschichte erhalten bleibt.</p></details>
+<details><summary>Was macht <code>git restore</code>?</summary><p>Es setzt Dateien zurück, ohne den Branch zu bewegen. --staged nimmt Dateien aus dem Index, ohne Option werden Änderungen auf der Disk verworfen.</p></details>
+<details><summary>Wie nehmen Sie eine Datei aus dem Staging?</summary><p>git restore --staged datei. Früher git reset HEAD datei.</p></details>
+<details><summary>Wie holen Sie eine Datei aus einem alten Commit?</summary><p>git restore --source=&lt;commit&gt; datei.</p></details>
+<details><summary>Was macht <code>git commit --amend</code>?</summary><p>Es ersetzt den letzten Commit durch einen neuen, mit neuer Nachricht oder neuen Dateien. Neue ID, darum nur vor dem Push.</p></details>
+<details><summary>Was ist das Reflog?</summary><p>Ein lokales Protokoll jeder Bewegung von HEAD und den Branches. Damit findet man alte Stände nach reset, rebase oder amend.</p></details>
+<details><summary>Wie lange bleiben Reflog-Einträge?</summary><p>Standard: 90 Tage, unerreichbare Einträge 30 Tage. Einstellbar mit gc.reflogExpire und gc.reflogExpireUnreachable.</p></details>
+<details><summary>Was ist ORIG_HEAD?</summary><p>Der Stand vor dem letzten gefährlichen Befehl wie reset, merge oder rebase. git reset --hard ORIG_HEAD macht ihn rückgängig.</p></details>
+<details><summary>Wie stellen Sie einen gelöschten Branch wieder her?</summary><p>Mit git reflog den letzten Commit des Branches finden. Dann git branch name &lt;sha&gt;.</p></details>
+<details><summary>Was ist ein dangling Commit?</summary><p>Ein Commit, den kein Branch und kein Tag erreicht. git fsck --lost-found findet ihn, gc löscht ihn nach Ablauf der Frist.</p></details>
+<details><summary>Was ist der Unterschied zwischen reset --hard und reset --keep?</summary><p>--keep bricht ab, wenn lokale Änderungen überschrieben würden. --hard überschreibt ohne Rückfrage.</p></details>
+<details><summary>Warum gibt es git switch und git restore?</summary><p>git checkout machte zu viel: Branches wechseln und Dateien zurücksetzen. switch und restore trennen diese Aufgaben und sind sicherer.</p></details>
+<details><summary>Was ist verloren nach reset --hard?</summary><p>Nicht committete Änderungen im Working Tree. Commits nicht, die sind im Reflog. Gestagte Inhalte findet fsck als Blobs.</p></details>
+<details><summary>Wie machen Sie einen Merge rückgängig, der schon gepusht ist?</summary><p>git revert -m 1 &lt;merge-commit&gt;. Kein Reset, weil andere die Commits schon haben.</p></details>
+<details><summary>Szenario: Sie haben ein Passwort in ein öffentliches Repo gepusht. Was tun Sie?</summary><p>Zuerst das Passwort rotieren. Dann die Geschichte mit git filter-repo bereinigen, force-pushen und das Team neu klonen lassen. Danach einen Secret-Scan in die Pipeline einbauen.</p></details>
+<details><summary>Szenario: Nach <code>git reset --hard HEAD~3</code> merken Sie, dass ein Commit wichtig war. Was tun Sie?</summary><p>git reflog öffnen, den Stand vor dem Reset finden (HEAD@{1}). Dann git reset --hard HEAD@{1} oder den einen Commit per cherry-pick holen.</p></details>
+<details><summary>Szenario: Ein Kollege hat auf main einen Reset und Force Push gemacht. Commits fehlen. Wie retten Sie?</summary><p>Ein Klon, der die alten Commits hat, findet sie im Reflog oder in origin/main@{1}. Von dort wieder pushen. Danach Force Push auf main mit Branch Protection verbieten.</p></details>
+
+</body>
+</html>

@@ -1,0 +1,260 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Fall: Verteilter Job-Scheduler</title>
+<style>
+  body { font: 17px/1.55 -apple-system, system-ui, sans-serif; max-width: 760px; margin: 0 auto; padding: 16px; color: #1d1d1f; }
+  h1 { font-size: 28px; margin: 8px 0 4px; }
+  h2 { font-size: 21px; margin: 32px 0 8px; padding-top: 12px; border-top: 2px solid #e5e5ea; }
+  .kern { background: #eef6ff; border-left: 4px solid #0a66c2; padding: 10px 14px; border-radius: 6px; }
+  .senior { background: #f0faf0; border-left: 4px solid #2e7d32; padding: 10px 14px; border-radius: 6px; }
+  .trap { background: #fff4f2; border-left: 4px solid #c62828; padding: 10px 14px; border-radius: 6px; }
+  code { background: #f2f2f7; padding: 1px 5px; border-radius: 4px; font-size: 15px; }
+  pre { background: #1e1e1e; color: #e6e6e6; padding: 12px; border-radius: 8px; overflow-x: auto; font-size: 13.5px; line-height: 1.45; }
+  svg { width: 100%; height: auto; display: block; margin: 10px 0; }
+  ol li, ul li { margin: 4px 0; }
+  details { border: 1px solid #e5e5ea; border-radius: 8px; padding: 8px 12px; margin: 6px 0; }
+  summary { font-weight: 600; cursor: pointer; }
+  details p { margin: 6px 0 2px; }
+  .small { color: #6e6e73; font-size: 14px; }
+</style>
+</head>
+<body>
+
+<h1>Fall: Verteilter Job-Scheduler</h1>
+<p class="small">System-Design-Fall · Tier 2 · Quellen: Kubernetes Docs (CronJob: concurrencyPolicy, startingDeadlineSeconds, Time zones, Job creation, History limits), PostgreSQL 17 Docs (SELECT … FOR UPDATE SKIP LOCKED, Advisory Locks, INSERT … ON CONFLICT), Kleppmann DDIA Kap. 8 (Leases, Fencing Tokens), Quartz Scheduler Docs (Clustering, Misfire Instructions)</p>
+
+<div class="kern">
+<b>Kern (die 1-Minuten-Antwort):</b> Ein <b>Job-Scheduler</b> startet Aufgaben zur richtigen Zeit genau einmal pro geplantem Termin, auch wenn Knoten abstürzen. Ein <b>Scheduler</b> erzeugt fällige <b>Runs</b> mit Unique-Key <code>(job_id, scheduled_for)</code>; <b>Worker</b> holen Runs atomar mit einer <b>Lease</b> und senden <b>Heartbeats</b>; ein <b>Reaper</b> gibt Runs abgestürzter Worker frei. Ausführung ist <b>at-least-once</b>, darum müssen Jobs <b>idempotent</b> sein.
+</div>
+
+<h2>1. Wo sitzt was? (Architektur)</h2>
+<svg viewBox="0 0 720 320" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="a" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="10" y="40" width="130" height="62" rx="8" fill="#fff" stroke="#555"/><text x="75" y="66" text-anchor="middle" font-weight="700">Admin-API</text><text x="75" y="85" text-anchor="middle" font-size="12">Jobs definieren</text>
+  <line x1="140" y1="71" x2="248" y2="130" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="10" y="200" width="130" height="62" rx="8" fill="#dbe9fb" stroke="#0a66c2"/><text x="75" y="226" text-anchor="middle" font-weight="700">Scheduler</text><text x="75" y="245" text-anchor="middle" font-size="12">Tick: fällige Runs</text>
+  <line x1="140" y1="231" x2="248" y2="175" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="250" y="110" width="180" height="90" rx="8" fill="#fff" stroke="#555"/><text x="340" y="136" text-anchor="middle" font-weight="700">PostgreSQL</text><text x="340" y="156" text-anchor="middle" font-size="12">jobs · job_runs</text><text x="340" y="174" text-anchor="middle" font-size="12">Status, Lease, Heartbeat</text>
+  <line x1="430" y1="140" x2="508" y2="80" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <line x1="430" y1="155" x2="508" y2="155" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="510" y="40" width="200" height="62" rx="8" fill="#0a66c2" stroke="#0a66c2"/><text x="610" y="66" text-anchor="middle" fill="#fff" font-weight="700">Worker A</text><text x="610" y="85" text-anchor="middle" fill="#fff" font-size="12">Claim, Heartbeat, Ausführen</text>
+  <rect x="510" y="125" width="200" height="62" rx="8" fill="#0a66c2" stroke="#0a66c2"/><text x="610" y="151" text-anchor="middle" fill="#fff" font-weight="700">Worker B</text><text x="610" y="170" text-anchor="middle" fill="#fff" font-size="12">Claim, Heartbeat, Ausführen</text>
+  <rect x="250" y="240" width="180" height="62" rx="8" fill="#fff4f2" stroke="#c62828"/><text x="340" y="266" text-anchor="middle" font-weight="700">Reaper</text><text x="340" y="285" text-anchor="middle" font-size="12">alte Leases freigeben</text>
+  <line x1="340" y1="240" x2="340" y2="202" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="510" y="230" width="200" height="62" rx="8" fill="#e8f5e9" stroke="#2e7d32"/><text x="610" y="256" text-anchor="middle" font-weight="700">Ziel-System</text><text x="610" y="275" text-anchor="middle" font-size="12">Spark, API, Batch</text>
+  <line x1="610" y1="187" x2="610" y2="228" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+</svg>
+<ol>
+  <li><b>Admin-API:</b> legt Jobs an: Name, Cron-Ausdruck, Zeitzone, Timeout, Retry-Regel. Beispiel: <code>tagesstatistik</code> täglich 02:00 Europe/Zurich.</li>
+  <li><b>Scheduler:</b> läuft z. B. jede Sekunde. Er sucht fällige Jobs und legt Runs an. Mehrere Instanzen dürfen laufen, weil der Unique-Key Duplikate blockt.</li>
+  <li><b>PostgreSQL:</b> Wahrheit für Definitionen, Runs, Status und Leases. Kein Zustand nur im Speicher.</li>
+  <li><b>Worker:</b> holen Runs mit <code>SKIP LOCKED</code>, senden alle 30 s einen Heartbeat und melden <code>done</code> oder <code>failed</code>.</li>
+  <li><b>Reaper:</b> findet Runs, deren Heartbeat zu alt ist, und setzt sie zurück auf <code>pending</code>.</li>
+  <li><b>Ziel-System:</b> die eigentliche Arbeit, z. B. ein Spark-Job über REST oder ein Batch-Endpoint.</li>
+</ol>
+
+<h2>2. Die Reise eines Runs (die Geschichte zum Merken)</h2>
+<svg viewBox="0 0 720 300" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="b" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker><marker id="r" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#c62828"/></marker></defs>
+  <rect x="10" y="20" width="160" height="62" rx="10" fill="#eee" stroke="#777"/><text x="90" y="45" text-anchor="middle" font-weight="700">1. Fällig</text><text x="90" y="65" text-anchor="middle" font-size="12">next_run_at ≤ jetzt</text>
+  <line x1="170" y1="51" x2="198" y2="51" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="200" y="20" width="150" height="62" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="275" y="45" text-anchor="middle" font-weight="700">2. Run anlegen</text><text x="275" y="65" text-anchor="middle" font-size="12">Unique-Key</text>
+  <line x1="350" y1="51" x2="378" y2="51" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="380" y="20" width="150" height="62" rx="10" fill="#0a66c2" stroke="#0a66c2"/><text x="455" y="45" text-anchor="middle" fill="#fff" font-weight="700">3. Claim</text><text x="455" y="65" text-anchor="middle" fill="#fff" font-size="12">running + Lease</text>
+  <line x1="530" y1="51" x2="558" y2="51" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="560" y="20" width="150" height="62" rx="10" fill="#fff" stroke="#555"/><text x="635" y="45" text-anchor="middle" font-weight="700">4. Heartbeat</text><text x="635" y="65" text-anchor="middle" font-size="12">alle 30 s</text>
+  <line x1="635" y1="82" x2="635" y2="128" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="540" y="130" width="170" height="62" rx="10" fill="#e8f5e9" stroke="#2e7d32"/><text x="625" y="155" text-anchor="middle" font-weight="700">5. done</text><text x="625" y="175" text-anchor="middle" font-size="12">Ergebnis idempotent</text>
+  <rect x="10" y="130" width="330" height="62" rx="10" fill="#fff4f2" stroke="#c62828"/><text x="175" y="155" text-anchor="middle" fill="#c62828" font-weight="700">6. Worker stirbt, Heartbeat bleibt aus</text><text x="175" y="175" text-anchor="middle" fill="#c62828" font-size="12">nach 5 min: Reaper setzt pending</text>
+  <path d="M600,82 C560,110 380,110 300,128" fill="none" stroke="#c62828" stroke-width="2" stroke-dasharray="6 4" marker-end="url(#r)"/>
+  <rect x="10" y="225" width="700" height="56" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="360" y="250" text-anchor="middle" font-weight="700">7. Neuer Claim durch Worker B: attempts = 2, gleiches Ergebnis wie beim ersten Versuch</text><text x="360" y="270" text-anchor="middle" font-size="12">nach max. Versuchen: failed + Alarm</text>
+  <line x1="175" y1="192" x2="175" y2="223" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+</svg>
+<ol>
+  <li><b>Fällig:</b> Es ist 02:00 in Zürich. Der Job <code>tagesstatistik</code> hat <code>next_run_at = 02:00</code>.</li>
+  <li><b>Run anlegen:</b> Der Scheduler schiebt <code>next_run_at</code> um einen Tag weiter und legt einen Run für 02:00 an. Laufen zwei Scheduler, blockt der Unique-Key den zweiten Run.</li>
+  <li><b>Claim:</b> Worker A holt den Run atomar: <code>running</code>, <code>worker = 'worker-a'</code>, <code>attempts = 1</code>.</li>
+  <li><b>Heartbeat:</b> Während der Arbeit setzt Worker A alle 30 s <code>heartbeat_at = now()</code>. So weiss das System: Er lebt.</li>
+  <li><b>Erfolg:</b> Worker A setzt <code>done</code>. Das Ergebnis überschreibt den ganzen Tag, statt etwas zu addieren.</li>
+  <li><b>Absturz:</b> Worker A stirbt nach 3 Minuten. Kein Heartbeat mehr. Nach 5 Minuten setzt der Reaper den Run zurück auf <code>pending</code>.</li>
+  <li><b>Zweiter Versuch:</b> Worker B holt den Run. Weil der Job idempotent ist, ist das Ergebnis gleich. Nach z. B. 3 Versuchen: <code>failed</code> und Alarm.</li>
+</ol>
+
+<h2>3. Beispiel: API, Datenmodell und die Queries laut gesagt</h2>
+<p><b>API:</b></p>
+<pre>POST  /v1/jobs            {name, schedule: "0 2 * * *", timezone: "Europe/Zurich",
+                           timeoutSec, maxAttempts, misfirePolicy: "run_once"} → 201
+PATCH /v1/jobs/{id}       {enabled: false}             (pausieren)
+POST  /v1/jobs/{id}:trigger                            (manuell, Idempotency-Key)
+GET   /v1/jobs/{id}/runs?status=failed&amp;cursor=…     → Historie</pre>
+<p><b>Datenmodell:</b></p>
+<pre>CREATE TABLE jobs (
+  id          bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  name        text NOT NULL UNIQUE,
+  every       interval NOT NULL,          -- vereinfacht statt Cron-Ausdruck
+  next_run_at timestamptz NOT NULL,
+  enabled     boolean NOT NULL DEFAULT true
+);
+CREATE TABLE job_runs (
+  id            bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  job_id        bigint NOT NULL REFERENCES jobs(id),
+  scheduled_for timestamptz NOT NULL,
+  status        text NOT NULL DEFAULT 'pending'
+                CHECK (status IN ('pending','running','done','failed')),
+  worker        text,
+  heartbeat_at  timestamptz,
+  attempts      int NOT NULL DEFAULT 0,
+  UNIQUE (job_id, scheduled_for)
+);
+CREATE INDEX job_runs_pending_idx ON job_runs (scheduled_for) WHERE status = 'pending';
+INSERT INTO jobs (name, every, next_run_at) VALUES
+  ('tagesstatistik', '1 day',      '2026-11-24 02:00+01'),
+  ('rechnungen',     '1 hour',     '2026-11-24 14:00+01'),
+  ('cleanup',        '15 minutes', '2026-11-24 15:30+01');</pre>
+<p><b>Query 1, laut gesagt:</b> „Um 15:00 schiebe ich jeden fälligen Job weiter und lege in derselben Anweisung den Run an. Der Unique-Key verhindert einen zweiten Run für denselben Termin.“</p>
+<pre>WITH due AS (
+  UPDATE jobs SET next_run_at = next_run_at + every
+  WHERE enabled AND next_run_at &lt;= '2026-11-24 15:00+01'
+  RETURNING id, next_run_at - every AS scheduled_for)
+INSERT INTO job_runs (job_id, scheduled_for)
+SELECT id, scheduled_for FROM due
+ON CONFLICT (job_id, scheduled_for) DO NOTHING
+RETURNING job_id, scheduled_for;
+ job_id |     scheduled_for
+--------+------------------------
+      1 | 2026-11-24 02:00:00+01
+      2 | 2026-11-24 14:00:00+01
+(2 rows)
+-- zweiter Scheduler versucht denselben Termin:
+INSERT INTO job_runs (job_id, scheduled_for) VALUES (1, '2026-11-24 02:00+01')
+ON CONFLICT (job_id, scheduled_for) DO NOTHING RETURNING job_id;
+(0 rows)</pre>
+<p><b>Query 2, laut gesagt:</b> „Worker A holt den ältesten offenen Run. Gesperrte Runs überspringt er.“</p>
+<pre>UPDATE job_runs SET status = 'running', worker = 'worker-a',
+       heartbeat_at = now(), attempts = attempts + 1
+WHERE id = (SELECT id FROM job_runs
+            WHERE status = 'pending'
+            ORDER BY scheduled_for
+            LIMIT 1
+            FOR UPDATE SKIP LOCKED)
+RETURNING id, job_id, worker, attempts;
+ id | job_id |  worker  | attempts
+----+--------+----------+----------
+  1 |      1 | worker-a |        1</pre>
+<p><b>Query 3, laut gesagt:</b> „Worker A stirbt; sein Heartbeat ist 10 Minuten alt. Der Reaper setzt alles mit Heartbeat älter als 5 Minuten zurück.“</p>
+<pre>UPDATE job_runs SET status = 'pending', worker = NULL
+WHERE status = 'running' AND heartbeat_at &lt; now() - interval '5 minutes'
+RETURNING id, job_id, status, attempts;
+ id | job_id | status  | attempts
+----+--------+---------+----------
+  1 |      1 | pending |        1
+
+SELECT r.id, j.name, r.scheduled_for, r.status, r.attempts
+FROM job_runs r JOIN jobs j ON j.id = r.job_id ORDER BY r.id;
+ id |      name      |     scheduled_for      | status  | attempts
+----+----------------+------------------------+---------+----------
+  1 | tagesstatistik | 2026-11-24 02:00:00+01 | pending |        1
+  2 | rechnungen     | 2026-11-24 14:00:00+01 | pending |        0</pre>
+<p class="small">Echte Ausgabe, PostgreSQL 17.12 (Schema <code>demo_job_scheduler</code>, Session-Zeitzone Europe/Zurich, danach gelöscht). Der Heartbeat wurde für die Demo per UPDATE künstlich gealtert.</p>
+<ol>
+  <li><b>Scheduler ohne Leader:</b> Der Unique-Key macht mehrere Scheduler-Instanzen sicher. Kein Leader-Election nötig für die Korrektheit.</li>
+  <li><b>Misfire sichtbar:</b> <code>rechnungen</code> war seit 14:00 fällig. Der Tick um 15:00 legt nur <b>einen</b> Run an (14:00) und schiebt auf 15:00. Wie viele verpasste Termine nachgeholt werden, ist eine bewusste <b>Misfire-Policy</b>.</li>
+  <li><b>Claim:</b> <code>SKIP LOCKED</code> plus Partial Index ist eine sichere Queue in der DB.</li>
+  <li><b>Recovery:</b> Der Run ist wieder <code>pending</code>, <code>attempts</code> bleibt 1. Der nächste Claim zählt hoch. So begrenzt <code>maxAttempts</code> endlose Neustarts.</li>
+</ol>
+
+<h2>4. Details, die Interviewer fragen</h2>
+<ol>
+  <li><b>Anforderungen:</b> Cron und einmalige Jobs, Zeitzonen, Retries, Timeouts, keine Doppel-Ausführung, Historie, Pausieren, manueller Start, Abhängigkeiten (Job B nach Job A).</li>
+  <li><b>Schätzung:</b> 100 000 Job-Definitionen, im Schnitt stündlich = ca. 28 Runs/s. Spitze zur vollen Stunde: viele Jobs mit <code>0 * * * *</code> fallen in dieselbe Sekunde. Darum Jitter oder Verteilung über die Minute.</li>
+  <li><b>Exactly-once gibt es nicht:</b> Ein Worker kann die Arbeit fertig haben und vor <code>done</code> sterben. Dann läuft sie nochmals. Darum <b>at-least-once plus idempotente Jobs</b>.</li>
+  <li><b>Idempotenz im Job:</b> Ergebnis ersetzen statt addieren, Upserts, Schlüssel pro <code>scheduled_for</code>. Beispiel: Statistik für einen Tag neu rechnen und überschreiben.</li>
+  <li><b>Lease und Heartbeat:</b> Eine <b>Lease</b> ist ein zeitlich begrenztes Recht auf einen Run. Ohne Heartbeat läuft sie ab. Der Timeout muss länger sein als GC-Pausen und Netzwackler.</li>
+  <li><b>Fencing Token:</b> Ein „toter“ Worker kann noch leben (lange GC-Pause) und später schreiben. Ein <b>Fencing Token</b> (z. B. <code>attempts</code>) wird beim Schreiben ins Ziel geprüft. Ältere Tokens werden abgelehnt.</li>
+  <li><b>Leader Election:</b> Alternative zum Unique-Key: nur ein aktiver Scheduler. Mittel: Kubernetes Lease, PostgreSQL <code>pg_try_advisory_lock</code>, etcd. Auch dann bleibt der Unique-Key als Schutz.</li>
+  <li><b>Misfire-Policy:</b> Was passiert nach 3 h Ausfall? „Alle nachholen“, „einmal nachholen“ oder „überspringen“. Kubernetes CronJob startet bei über 100 verpassten Terminen nur den letzten.</li>
+  <li><b>Zeitzonen und Sommerzeit:</b> In Europe/Zurich gibt es 02:30 am letzten Sonntag im März nicht, und im Oktober zweimal. Jobs in UTC planen oder die Regel der Bibliothek kennen.</li>
+  <li><b>Überlappung:</b> Läuft der 02:00-Run noch um 02:00 am nächsten Tag? Policies: erlauben, überspringen, ersetzen. Kubernetes nennt das <code>concurrencyPolicy</code>: <code>Allow</code> (Standard), <code>Forbid</code>, <code>Replace</code>.</li>
+  <li><b>Abhängigkeiten (DAG):</b> Job B startet erst, wenn A <code>done</code> ist. Einfach: Status-Bedingung im Claim. Komplex: ein Workflow-Tool wie Airflow.</li>
+  <li><b>Demand-driven statt Uhrzeit:</b> Oft ist die bessere Frage „gibt es Arbeit?“ statt „ist es 02:00?“. Der Worker startet teure Jobs nur, wenn etwas pending ist.</li>
+  <li><b>Skalierung:</b> Eine DB-Queue trägt einige hundert bis tausend Claims pro Sekunde. Darüber: Partitionierung nach <code>job_id</code> oder ein Broker für die Ausführung, DB nur für Status.</li>
+  <li><b>Historie:</b> <code>job_runs</code> wächst endlos. Partitionierung nach Monat und Aufräumen alter Partitionen.</li>
+</ol>
+
+<h2>5. Vergleich: drei Design-Varianten</h2>
+<ul>
+  <li><b>A. Kubernetes CronJob:</b> kein eigener Code, Zeitzone (<code>.spec.timeZone</code>, stabil seit v1.27), Concurrency-Policy. Aber: Laut Doku können zwei Jobs oder keiner entstehen, darum idempotent. Wenig Sicht über viele Jobs hinweg.</li>
+  <li><b>B. DB-basierter Scheduler (wie oben, Quartz Clustering, db-scheduler):</b> volle Kontrolle, Historie, Retries, Abhängigkeiten in SQL. Grenze: Durchsatz der DB.</li>
+  <li><b>C. Workflow-Engine (Airflow, Temporal):</b> DAGs, Retries, UI, Backfills. Mächtig, aber eigener Betrieb und Lernkurve. Lohnt bei vielen abhängigen Schritten.</li>
+</ul>
+
+<h2>6. In der Produktion</h2>
+<ol>
+  <li><b>Job lief zweimal:</b> Zwei Scheduler-Pods nach einem Rolling Update. Fix: Unique-Key auf <code>(job_id, scheduled_for)</code>, idempotenter Job.</li>
+  <li><b>Job lief nie:</b> Scheduler war zur Zeit des Termins down, Misfire-Policy „überspringen“. Fix: Policy bewusst wählen, Alarm auf „erwarteter Run fehlt“.</li>
+  <li><b>Runs hängen in running:</b> Worker OOM-killed, kein Reaper. Fix: Heartbeat plus Reaper, Timeout pro Job.</li>
+  <li><b>Reaper zu aggressiv:</b> Timeout kürzer als echte Laufzeit, ein lebender Worker verliert seinen Run. Fix: Heartbeat statt fester Laufzeit, Fencing Token.</li>
+  <li><b>Spitze zur vollen Stunde:</b> Tausende Jobs um xx:00. Fix: Jitter über die Minute, Kapazitätsgrenzen pro Job-Typ.</li>
+  <li><b>Sommerzeit:</b> Ein Job lief im Oktober zweimal. Fix: in UTC planen oder Bibliotheksregel testen.</li>
+</ol>
+
+<h2>7. Diagnose: Werkzeuge und Queries</h2>
+<ul>
+  <li><b>Backlog:</b> <code>SELECT count(*), now() - min(scheduled_for) FROM job_runs WHERE status = 'pending';</code></li>
+  <li><b>Hängende Runs:</b> <code>SELECT * FROM job_runs WHERE status = 'running' AND heartbeat_at &lt; now() - interval '2 minutes';</code></li>
+  <li><b>Fehlende Runs:</b> erwartete Termine gegen <code>job_runs</code> abgleichen (generate_series über die Cron-Zeiten).</li>
+  <li><b>Sperren:</b> <code>pg_locks</code> und <code>pg_stat_activity</code> bei langsamen Claims.</li>
+  <li><b>Kubernetes:</b> <code>kubectl get cronjobs</code>, <code>kubectl get jobs</code>, Events wie <code>TooManyMissedTimes</code>.</li>
+  <li><b>Metriken:</b> Laufzeit pro Job, Fehlerrate, Versuche pro Run, Backlog-Alter. Alarm auf Backlog-Alter, nicht nur auf Fehler.</li>
+</ul>
+
+<h2>8. Senior-Punkte</h2>
+<div class="senior">
+<ol>
+  <li><b>Korrektheit kommt aus Daten, nicht aus Prozessen.</b> Der Unique-Key schützt auch dann, wenn zwei Scheduler laufen.</li>
+  <li><b>At-least-once plus Idempotenz</b> ist die ehrliche Garantie. Ich designe Jobs als „ersetze das Ergebnis“.</li>
+  <li><b>Heartbeat statt fester Timeout,</b> und Fencing Tokens, wenn ein Zombie-Worker Schaden machen kann.</li>
+  <li><b>Misfire-Policy und Zeitzonen</b> sind fachliche Entscheidungen. Ich frage, was nach einem Ausfall passieren soll.</li>
+  <li><b>Demand-driven schlägt Uhrzeit,</b> wenn Arbeit unregelmässig kommt: kein leerer Job-Start, weniger Ressourcen.</li>
+  <li><b>Eigenen Scheduler nur, wenn nötig.</b> CronJob oder eine fertige Bibliothek decken viele Fälle ab.</li>
+</ol>
+</div>
+
+<h2>9. Aus dem Projekt</h2>
+<p>„Bei MATCH reicht ein .NET-Worker Spark-Jobs per REST nur ein, wenn Nachrichten pending sind; Spark claimt sie atomar (Pending → Processing), hängende Runs setzt eine Stale-Job-Recovery nach Timeout zurück, und die Statistik ersetzt das Tagesergebnis statt zu addieren, damit Retries sicher sind.“ <span class="small">(Prüfen und durch dein echtes Beispiel ersetzen.)</span></p>
+
+<h2>10. Fallen</h2>
+<div class="trap">
+<ul>
+  <li>„Mit Leader Election läuft jeder Job genau einmal.“ → <b>Falsch.</b> Ein alter Leader kann noch arbeiten. Idempotenz und Fencing bleiben nötig.</li>
+  <li>„Kubernetes CronJob startet garantiert genau einmal.“ → <b>Falsch.</b> Die Doku sagt: zwei Jobs oder keiner sind möglich.</li>
+  <li>„Ein Retry addiert einfach nochmals.“ → Doppelte Werte. Ergebnis ersetzen statt addieren.</li>
+  <li>„Zeitzone ist egal, der Server läuft in UTC.“ → Fachlich ist 02:00 Zürich gemeint. Sommerzeit verschiebt oder doppelt Runs.</li>
+  <li>„Timeout = erwartete Laufzeit.“ → Lange Runs werden zu Unrecht abgebrochen. Heartbeats nutzen.</li>
+</ul>
+</div>
+
+<h2>11. Fragen</h2>
+<details><summary>Skizzieren Sie den Job-Scheduler in einer Minute.</summary><p>Jobs in einer DB, ein Scheduler legt fällige Runs mit Unique-Key an, Worker claimen mit Lease und Heartbeat, ein Reaper gibt verwaiste Runs frei. Jobs sind idempotent, weil die Ausführung at-least-once ist.</p></details>
+<details><summary>Wie verhindern Sie doppelte Ausführung?</summary><p>Unique-Key auf Job und Termin beim Anlegen, atomarer Claim beim Holen. Gegen Zombie-Worker Fencing Tokens. Ganz ausschliessen kann man es nicht, darum idempotente Jobs.</p></details>
+<details><summary>Was ist eine Lease?</summary><p>Ein zeitlich begrenztes Recht auf einen Run. Der Worker verlängert sie per Heartbeat. Läuft sie ab, darf ein anderer übernehmen.</p></details>
+<details><summary>Was ist ein Fencing Token?</summary><p>Eine steigende Nummer pro Claim. Das Ziel-System lehnt Writes mit älterer Nummer ab. So kann ein Zombie-Worker nichts überschreiben.</p></details>
+<details><summary>Brauchen Sie Leader Election?</summary><p>Nicht für die Korrektheit, wenn der Unique-Key Duplikate blockt. Für Effizienz kann ein Leader sinnvoll sein, z. B. mit Kubernetes Lease oder Advisory Lock.</p></details>
+<details><summary>Was ist eine Misfire-Policy?</summary><p>Die Regel für verpasste Termine nach einem Ausfall: alle nachholen, einmal nachholen oder überspringen.</p></details>
+<details><summary>Wie gehen Sie mit Sommerzeit um?</summary><p>In UTC planen oder die Regel der Cron-Bibliothek kennen und testen. 02:30 fehlt im März und kommt im Oktober zweimal.</p></details>
+<details><summary>Was passiert, wenn ein Run länger dauert als das Intervall?</summary><p>Eine Concurrency-Policy entscheidet: parallel erlauben, neuen Run überspringen oder alten ersetzen.</p></details>
+<details><summary>Wie machen Sie einen Job idempotent?</summary><p>Ergebnis pro Termin ersetzen statt addieren, Upserts, Schlüssel aus Job und scheduled_for.</p></details>
+<details><summary>Wie bauen Sie Abhängigkeiten?</summary><p>B wird erst claimbar, wenn A done ist. Bei vielen Schritten eine Workflow-Engine.</p></details>
+<details><summary>Kubernetes CronJob oder eigener Scheduler?</summary><p>CronJob für wenige, einfache Jobs. Eigener oder Bibliotheks-Scheduler für Historie, Retries, Abhängigkeiten und viele Jobs.</p></details>
+<details><summary>Wie skaliert die DB-Queue?</summary><p>Mit SKIP LOCKED und Partial Index bis einige hundert bis tausend Claims pro Sekunde. Darüber Partitionierung oder ein Broker.</p></details>
+<details><summary>Was ist der Unterschied zwischen zeit- und bedarfsgesteuert?</summary><p>Zeitgesteuert startet zur Uhrzeit, auch ohne Arbeit. Bedarfsgesteuert startet nur, wenn Arbeit pending ist. Das spart Ressourcen bei unregelmässigen Daten.</p></details>
+<details><summary>Welche Metriken alarmieren Sie?</summary><p>Alter des ältesten pending Runs, hängende running Runs, fehlende erwartete Runs, Fehlerrate und Laufzeit pro Job.</p></details>
+<details><summary>Szenario: Ein täglicher Job lief heute zweimal. Wie untersuchen Sie das?</summary><p>job_runs für den Tag ansehen: zwei Runs mit anderem scheduled_for oder ein Retry nach Reaper? Ursachen: kein Unique-Key, Sommerzeit, zu kurzer Timeout. Dann Job idempotent machen.</p></details>
+<details><summary>Szenario: Nach einem Deployment hängen viele Runs in running. Was tun Sie?</summary><p>Die alten Pods wurden beendet, ohne Runs freizugeben. Reaper prüfen, Heartbeat-Timeout, graceful Shutdown, der Runs zurückgibt.</p></details>
+<details><summary>Szenario: Der Scheduler war 4 Stunden down. Was passiert beim Start?</summary><p>Die Misfire-Policy entscheidet. Bei „alle nachholen“ kommt eine Welle von Runs, darum Parallelität begrenzen. Fachlich klären, ob alte Termine überhaupt Sinn ergeben.</p></details>
+
+</body>
+</html>

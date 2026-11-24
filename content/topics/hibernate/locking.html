@@ -1,0 +1,232 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Optimistic und Pessimistic Locking</title>
+<style>
+  body { font: 17px/1.55 -apple-system, system-ui, sans-serif; max-width: 760px; margin: 0 auto; padding: 16px; color: #1d1d1f; }
+  h1 { font-size: 28px; margin: 8px 0 4px; }
+  h2 { font-size: 21px; margin: 32px 0 8px; padding-top: 12px; border-top: 2px solid #e5e5ea; }
+  .kern { background: #eef6ff; border-left: 4px solid #0a66c2; padding: 10px 14px; border-radius: 6px; }
+  .senior { background: #f0faf0; border-left: 4px solid #2e7d32; padding: 10px 14px; border-radius: 6px; }
+  .trap { background: #fff4f2; border-left: 4px solid #c62828; padding: 10px 14px; border-radius: 6px; }
+  code { background: #f2f2f7; padding: 1px 5px; border-radius: 4px; font-size: 15px; }
+  pre { background: #1e1e1e; color: #e6e6e6; padding: 12px; border-radius: 8px; overflow-x: auto; font-size: 13.5px; line-height: 1.45; }
+  svg { width: 100%; height: auto; display: block; margin: 10px 0; }
+  ol li, ul li { margin: 4px 0; }
+  details { border: 1px solid #e5e5ea; border-radius: 8px; padding: 8px 12px; margin: 6px 0; }
+  summary { font-weight: 600; cursor: pointer; }
+  details p { margin: 6px 0 2px; }
+  .small { color: #6e6e73; font-size: 14px; }
+</style>
+</head>
+<body>
+
+<h1>Optimistic und Pessimistic Locking</h1>
+<p class="small">Hibernate · Tier 1 · Quellen: Jakarta Persistence 3.2 (Spezifikation Kap. 2.5 Version, API-Doku <code>LockModeType</code>, <code>Timeout</code>, <code>EntityManager</code>), Introduction to Hibernate 7 (Kap. 3.8, 8.16), Hibernate ORM 7.0 Migration Guide, Hibernate-Quellcode <code>PostgreSQLDialect</code>, <code>PostgreSQLSqlAstTranslator</code>, <code>PostgreSQLLockingSupport</code> (6.6, 7.0–7.2), PostgreSQL 17 Doku (Explicit Locking)</p>
+
+<div class="kern">
+<b>Kern:</b> Locking schützt gleichzeitige Transaktionen vor <b>Lost Updates</b> (eine Änderung überschreibt eine andere unbemerkt). <b>Optimistic Locking</b> sperrt nichts und prüft beim Schreiben eine <code>@Version</code>-Spalte; bei Konflikt kommt eine <code>OptimisticLockException</code>. <b>Pessimistic Locking</b> sperrt die Zeile schon beim Lesen mit <code>SELECT … FOR UPDATE</code>; andere warten. Optimistic passt zu seltenen Konflikten, pessimistic zu häufigen und teuren.
+</div>
+
+<h2>1. Wo sitzt das Locking?</h2>
+<svg viewBox="0 0 720 290" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="a" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="10" y="20" width="330" height="250" rx="12" fill="#f7f7fa" stroke="#999" stroke-dasharray="5 4"/><text x="175" y="42" text-anchor="middle" font-weight="700">Optimistic (in der App)</text>
+  <rect x="30" y="58" width="290" height="50" rx="8" fill="#fff" stroke="#555"/><text x="175" y="80" text-anchor="middle">@Version int version</text><text x="175" y="98" text-anchor="middle" font-size="12">Entity-Feld, Hibernate zählt hoch</text>
+  <line x1="175" y1="108" x2="175" y2="128" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="30" y="130" width="290" height="60" rx="8" fill="#dbe9fb" stroke="#0a66c2"/><text x="175" y="154" text-anchor="middle" font-size="13">UPDATE … SET version=1</text><text x="175" y="174" text-anchor="middle" font-size="13">WHERE id=? AND version=0</text>
+  <line x1="175" y1="190" x2="175" y2="210" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="30" y="212" width="290" height="44" rx="8" fill="#fff4f2" stroke="#c62828"/><text x="175" y="239" text-anchor="middle" font-size="13">0 Zeilen → OptimisticLockException</text>
+  <rect x="380" y="20" width="330" height="250" rx="12" fill="#f7f7fa" stroke="#999" stroke-dasharray="5 4"/><text x="545" y="42" text-anchor="middle" font-weight="700">Pessimistic (in der Datenbank)</text>
+  <rect x="400" y="58" width="290" height="50" rx="8" fill="#fff" stroke="#555"/><text x="545" y="80" text-anchor="middle">LockModeType.PESSIMISTIC_WRITE</text><text x="545" y="98" text-anchor="middle" font-size="12">find / query / lock</text>
+  <line x1="545" y1="108" x2="545" y2="128" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="400" y="130" width="290" height="60" rx="8" fill="#0a66c2"/><text x="545" y="154" text-anchor="middle" fill="#fff" font-size="13">SELECT … FOR NO KEY UPDATE</text><text x="545" y="174" text-anchor="middle" fill="#fff" font-size="12">(PostgreSQL-Dialekt)</text>
+  <line x1="545" y1="190" x2="545" y2="210" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="400" y="212" width="290" height="44" rx="8" fill="#fff" stroke="#555"/><text x="545" y="239" text-anchor="middle" font-size="13">Row Lock bis COMMIT, andere warten</text>
+</svg>
+<ol>
+  <li><b>Optimistic:</b> lebt in der Anwendung. Die Datenbank sieht nur eine normale Spalte und ein UPDATE mit Zusatz-Bedingung.</li>
+  <li><b>Versionsprüfung:</b> Hibernate hängt <code>and version=?</code> an jedes UPDATE und DELETE. Trifft es 0 Zeilen, hat jemand anderes geändert.</li>
+  <li><b>Pessimistic:</b> lebt in der Datenbank. Hibernate erzeugt eine Lock-Klausel am SELECT. Die Datenbank hält die Zeilensperre bis zum Ende der Transaktion.</li>
+  <li><b>Unterschied:</b> Optimistic erkennt Konflikte <b>nachher</b>. Pessimistic verhindert sie <b>vorher</b>, kostet aber Wartezeit.</li>
+</ol>
+
+<h2>2. Die Reise zweier gleichzeitiger Buchungen (die Geschichte zum Merken)</h2>
+<svg viewBox="0 0 720 300" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="b" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker><marker id="r" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#c62828"/></marker></defs>
+  <text x="120" y="24" text-anchor="middle" font-weight="700">Transaktion A</text><text x="600" y="24" text-anchor="middle" font-weight="700">Transaktion B</text>
+  <line x1="120" y1="34" x2="120" y2="290" stroke="#bbb" stroke-width="2"/><line x1="600" y1="34" x2="600" y2="290" stroke="#bbb" stroke-width="2"/>
+  <rect x="20" y="44" width="200" height="40" rx="8" fill="#fff" stroke="#555"/><text x="120" y="69" text-anchor="middle" font-size="13">1 liest Konto: 100, v=0</text>
+  <rect x="500" y="44" width="200" height="40" rx="8" fill="#fff" stroke="#555"/><text x="600" y="69" text-anchor="middle" font-size="13">1 liest Konto: 100, v=0</text>
+  <rect x="20" y="104" width="200" height="40" rx="8" fill="#dbe9fb" stroke="#0a66c2"/><text x="120" y="129" text-anchor="middle" font-size="13">2 UPDATE … v=0 → 1 Zeile</text>
+  <rect x="20" y="164" width="200" height="40" rx="8" fill="#fff" stroke="#2e7d32"/><text x="120" y="189" text-anchor="middle" font-size="13">3 COMMIT, v=1</text>
+  <line x1="220" y1="184" x2="498" y2="224" stroke="#999" stroke-width="1.5" stroke-dasharray="5 4" marker-end="url(#b)"/>
+  <rect x="500" y="204" width="200" height="40" rx="8" fill="#fff4f2" stroke="#c62828"/><text x="600" y="229" text-anchor="middle" font-size="13">4 UPDATE … v=0 → 0 Zeilen</text>
+  <line x1="600" y1="244" x2="600" y2="262" stroke="#c62828" stroke-width="2" marker-end="url(#r)"/>
+  <text x="600" y="282" text-anchor="middle" fill="#c62828" font-size="13">5 OptimisticLockException → Retry</text>
+  <text x="330" y="130" text-anchor="middle" font-size="12" fill="#555">Ohne @Version:</text><text x="330" y="148" text-anchor="middle" font-size="12" fill="#555">B überschreibt A</text><text x="330" y="166" text-anchor="middle" font-size="12" fill="#c62828">= Lost Update</text>
+</svg>
+<ol>
+  <li><b>Beide lesen:</b> Zwei Benutzer öffnen dasselbe Konto. Beide sehen Saldo 100 und Version 0.</li>
+  <li><b>A schreibt zuerst:</b> Hibernate sendet <code>update account set balance=80, version=1 where id=1 and version=0</code>. Eine Zeile passt.</li>
+  <li><b>A committet:</b> Die Zeile hat jetzt Version 1.</li>
+  <li><b>B schreibt:</b> Dasselbe UPDATE mit <code>version=0</code> trifft jetzt 0 Zeilen.</li>
+  <li><b>Konflikt erkannt:</b> Hibernate wirft <code>OptimisticLockException</code> (Spring: <code>ObjectOptimisticLockingFailureException</code>). B lädt neu und versucht es noch einmal, oder zeigt dem Benutzer den Konflikt.</li>
+  <li><b>Pessimistic statt optimistic:</b> B hätte beim Lesen mit <code>PESSIMISTIC_WRITE</code> gewartet, bis A committet. Dann liest B schon 80 und rechnet richtig.</li>
+</ol>
+
+<h2>3. Beispiel: beide Verfahren in PostgreSQL</h2>
+<p><b>Optimistic:</b> das UPDATE, das Hibernate bei <code>@Version</code> sendet, zweimal hintereinander:</p>
+<pre>update account set balance=80, version=version+1 where id=1 and version=0;
+UPDATE 1
+update account set balance=70, version=version+1 where id=1 and version=0;
+UPDATE 0</pre>
+<p class="small">Echte Ausgabe, PostgreSQL 17.12.</p>
+<p><b>Pessimistic:</b> Sitzung 1 hält eine Zeilensperre (<code>begin; select … for no key update;</code>, dann 6 s offen). Sitzung 2 versucht dieselbe Zeile:</p>
+<pre>-- Sitzung 3 schaut zu
+select pid, pg_blocking_pids(pid) as blockiert_von, wait_event_type, wait_event, query
+from pg_stat_activity where datname='hib_demo' and pid&lt;&gt;pg_backend_pid();
+ pid | blockiert_von | wait_event_type |  wait_event   |                        query
+-----+---------------+-----------------+---------------+-----------------------------------------------------
+ 349 | {}            | Timeout         | PgSleep       | select pg_sleep(5)
+ 356 | {349}         | Lock            | transactionid | select id from account where id=1 for no key update
+
+-- Sitzung 2 mit Lock-Timeout
+set lock_timeout = '2s';
+select id, balance from account where id=1 for no key update;
+ERROR:  canceling statement due to lock timeout
+CONTEXT:  while locking tuple (0,4) in relation "account"
+real    0m2.164s
+
+-- NOWAIT: sofort Fehler
+select id, balance from account where id=1 for no key update nowait;
+ERROR:  could not obtain lock on row in relation "account"
+
+-- SKIP LOCKED: gesperrte Zeilen überspringen
+select id, owner from account order by id for no key update skip locked;
+ id | owner
+----+-------
+  2 | Beat</pre>
+<p class="small">Echte Ausgabe, PostgreSQL 17.12.</p>
+<p><b>Warum FOR NO KEY UPDATE?</b> Sitzung 1 sperrt einen Autor. Sitzung 2 fügt ein Buch mit Fremdschlüssel auf diesen Autor ein:</p>
+<pre>-- Sitzung 1: select id from author where id=1 for no key update;  (offen)
+set lock_timeout='2s'; insert into book values (5001,'Neu',1,10);
+INSERT 0 1
+real    0m0.153s
+
+-- Sitzung 1: select id from author where id=1 for update;  (offen)
+set lock_timeout='2s'; insert into book values (5002,'Neu 2',1,10);
+ERROR:  canceling statement due to lock timeout
+CONTEXT:  while locking tuple (0,1) in relation "author"
+SQL statement "SELECT 1 FROM ONLY "public"."author" x WHERE "id" OPERATOR(pg_catalog.=) $1 FOR KEY SHARE OF x"
+real    0m2.203s</pre>
+<p class="small">Echte Ausgabe, PostgreSQL 17.12.</p>
+<ol>
+  <li><code>UPDATE 0</code> ist der Konflikt. Hibernate macht daraus die <code>OptimisticLockException</code>.</li>
+  <li><code>pg_blocking_pids</code> zeigt, wer wen blockiert. Wartende Sitzungen haben <code>wait_event_type = Lock</code>.</li>
+  <li><code>lock_timeout</code> beendet das Warten nach 2 s mit SQLSTATE <code>55P03</code>. <code>NOWAIT</code> wirft sofort, <code>SKIP LOCKED</code> überspringt.</li>
+  <li>Die Fremdschlüssel-Prüfung beim INSERT nimmt <code>FOR KEY SHARE</code> auf den Elternteil. <code>FOR UPDATE</code> blockiert sie, <code>FOR NO KEY UPDATE</code> nicht.</li>
+  <li>Darum rendert Hibernate <code>PESSIMISTIC_WRITE</code> auf PostgreSQL als <code>for no key update</code>. Andere Datenbanken bekommen <code>for update</code>.</li>
+</ol>
+
+<h2>4. Details, die Interviewer fragen</h2>
+<ol>
+  <li><b>@Version-Typen</b> (JPA): <code>int</code>, <code>Integer</code>, <code>short</code>, <code>Short</code>, <code>long</code>, <code>Long</code>, <code>LocalDateTime</code>, <code>Instant</code>, <code>Timestamp</code>. Zahlen sind besser als Zeitstempel: zwei Änderungen in derselben Millisekunde sind sonst gleich.</li>
+  <li><b>Version nie selbst setzen.</b> Hibernate setzt und erhöht sie. Für REST: Version im DTO mitschicken (oder als ETag) und beim Speichern vergleichen.</li>
+  <li><b>LockModeType</b> (JPA):
+    <ul>
+      <li><code>OPTIMISTIC</code>: prüft die Version beim Commit, auch wenn das Entity nur gelesen wurde.</li>
+      <li><code>OPTIMISTIC_FORCE_INCREMENT</code>: erhöht die Version, z. B. am Aggregat-Root, wenn sich nur ein Kind ändert.</li>
+      <li><code>PESSIMISTIC_READ</code>: geteilte Sperre, PostgreSQL <code>for share</code>.</li>
+      <li><code>PESSIMISTIC_WRITE</code>: exklusive Sperre, PostgreSQL <code>for no key update</code>.</li>
+      <li><code>PESSIMISTIC_FORCE_INCREMENT</code>: Schreib-Sperre plus Versions-Erhöhung.</li>
+    </ul></li>
+  <li><b>Lock-Timeout setzen:</b> Hint <code>jakarta.persistence.lock.timeout</code> in Millisekunden. <code>0</code> = NOWAIT. <code>-2</code> = SKIP LOCKED (Hibernate-Wert). Seit JPA 3.2 auch typisiert: <code>em.find(Account.class, 1L, LockModeType.PESSIMISTIC_WRITE, Timeout.ms(2000))</code>.</li>
+  <li><b>Timeout auf PostgreSQL ist versionsabhängig:</b> PostgreSQL kennt kein <code>FOR UPDATE WAIT n</code>. Hibernate 6.6 ignoriert dort einen Zahlenwert (nur NOWAIT und SKIP LOCKED wirken). Ab Hibernate 7.1 setzt es dafür <code>lock_timeout</code> auf der Connection. Sicher ist immer: <code>lock_timeout</code> in der Datenbank oder Rolle setzen.</li>
+  <li><b>Exceptions:</b> SQLSTATE <code>55P03</code> wird in Hibernate 6.6 zu <code>PessimisticLockException</code>, in 7.x zu <code>LockTimeoutException</code>. Deadlock <code>40P01</code> wird <code>LockAcquisitionException</code>. In PostgreSQL ist die Transaktion nach dem Fehler abgebrochen. Man muss sie zurückrollen.</li>
+  <li><b>Hibernate 7:</b> Ein Lock auf einem detached Entity ist nicht mehr erlaubt.</li>
+  <li><b>Ohne Versions-Spalte:</b> <code>@OptimisticLocking(type = DIRTY)</code> oder <code>ALL</code> (Hibernate) vergleicht die alten Spaltenwerte im WHERE. Braucht <code>@DynamicUpdate</code>.</li>
+  <li><b>Spring Data:</b> <code>@Lock(LockModeType.PESSIMISTIC_WRITE)</code> auf der Repository-Methode, Timeout per <code>@QueryHints</code>.</li>
+</ol>
+
+<h2>5. Vergleich</h2>
+<ul>
+  <li><b>Optimistic:</b> keine Sperre, kein Warten, skaliert gut. Konflikt erst beim Schreiben, dann Retry oder Fehlermeldung. Gut bei seltenen Konflikten und langen „Benutzer-Transaktionen“ (Formular offen).</li>
+  <li><b>Pessimistic:</b> Sperre ab dem Lesen, kein Retry nötig. Kostet Wartezeit und kann Deadlocks erzeugen. Gut bei häufigen Konflikten auf wenigen Zeilen (Kontostand, Zähler, Lager).</li>
+  <li><b>Atomares UPDATE:</b> <code>update account set balance = balance - 20 where id=1 and balance &gt;= 20</code>. Kein Lesen, kein Lock-Fenster. Oft die einfachste Lösung für Zähler.</li>
+  <li><b>SKIP LOCKED:</b> für Job-Queues: jeder Worker holt sich ungesperrte Zeilen, keiner wartet.</li>
+  <li><b>Isolation Level SERIALIZABLE:</b> Die Datenbank erkennt Konflikte selbst und bricht ab (SQLSTATE 40001). Auch das braucht Retry.</li>
+</ul>
+
+<h2>6. In der Produktion</h2>
+<ol>
+  <li><b>Lost Update ohne @Version:</b> Zwei Sachbearbeiter speichern dasselbe Formular. Der zweite überschreibt still. Fix: <code>@Version</code>, Version im DTO mitschicken, Konflikt im UI anzeigen.</li>
+  <li><b>Retry-Sturm:</b> Viele Threads ändern dieselbe Zeile optimistisch. Fast alle scheitern und wiederholen. Fix: pessimistic Lock oder atomares UPDATE für diese Hot-Spot-Zeile. Retry mit Backoff und Limit.</li>
+  <li><b>Threads hängen ewig:</b> <code>PESSIMISTIC_WRITE</code> ohne Timeout, eine andere Transaktion bleibt offen. Fix: <code>lock_timeout</code> setzen, Transaktionen kurz halten, keine externen Aufrufe mit offener Sperre.</li>
+  <li><b>Deadlocks:</b> Transaktion A sperrt Konto 1 dann 2, B sperrt 2 dann 1. PostgreSQL bricht eine ab (<code>40P01</code>). Fix: immer in gleicher Reihenfolge sperren, z. B. nach ID sortiert.</li>
+  <li><b>Retry ohne neue Transaktion:</b> Nach einer Lock-Exception ist die PostgreSQL-Transaktion kaputt. Ein Retry in derselben Transaktion scheitert. Fix: Retry ausserhalb von <code>@Transactional</code> (z. B. Spring Retry um die Service-Methode).</li>
+  <li><b>Fremdschlüssel-Inserts blockiert:</b> Ein eigenes <code>FOR UPDATE</code> per Native Query auf Eltern-Zeilen bremst alle Kind-Inserts. Fix: <code>FOR NO KEY UPDATE</code>.</li>
+</ol>
+
+<h2>7. Diagnose: Werkzeuge und Befehle</h2>
+<ul>
+  <li><code>select pid, pg_blocking_pids(pid), wait_event_type, wait_event, state, query from pg_stat_activity;</code> zeigt Wartende und Blockierer.</li>
+  <li><code>select locktype, relation::regclass, mode, granted, pid from pg_locks where not granted;</code> zeigt offene Lock-Wünsche.</li>
+  <li><code>log_lock_waits = on</code>: PostgreSQL loggt jedes Warten länger als <code>deadlock_timeout</code>.</li>
+  <li><code>state = 'idle in transaction'</code> in <code>pg_stat_activity</code>: offene Transaktionen, die Sperren halten. Gegenmittel: <code>idle_in_transaction_session_timeout</code>.</li>
+  <li>Hibernate: <code>org.hibernate.SQL=DEBUG</code> zeigt die Lock-Klausel (<code>for no key update</code>, <code>nowait</code>, <code>skip locked</code>).</li>
+  <li>Metriken: Anzahl <code>OptimisticLockException</code> und Retries pro Endpoint messen. Ein Anstieg zeigt einen Hot Spot.</li>
+</ul>
+
+<h2>8. Senior-Punkte</h2>
+<div class="senior">
+<ol>
+  <li><b>Default: <code>@Version</code> auf jedem änderbaren Entity.</b> Kostet fast nichts und verhindert Lost Updates.</li>
+  <li><b>Pessimistic nur gezielt:</b> für wenige Hot-Spot-Zeilen, immer mit Timeout, immer in kurzer Transaktion.</li>
+  <li><b>Konflikt ist ein Fachfall.</b> Bei Benutzer-Daten nicht automatisch wiederholen, sondern dem Benutzer zeigen. Bei technischen Zählern automatisch wiederholen.</li>
+  <li><b>Lieber atomar als sperren.</b> Ein UPDATE mit Bedingung oder ein atomarer Claim (<code>UPDATE … RETURNING</code>) braucht kein Lock-Fenster.</li>
+  <li><b>Lock-Reihenfolge festlegen</b> verhindert Deadlocks. Deadlocks sind ein Design-Fehler, kein Zufall.</li>
+  <li><b>Versionsunterschiede kennen:</b> Timeout-Verhalten und Exception-Typen haben sich zwischen Hibernate 6.6 und 7 geändert. Vor dem Upgrade testen.</li>
+</ol>
+</div>
+
+<h2>9. Aus dem Projekt</h2>
+<p>„Bei MATCH holen sich Spark-Jobs ihre Nachrichten mit einem atomaren Claim (<code>UPDATE … OUTPUT INSERTED.*</code>, Pending → Processing) auf SQL Server, damit sich überlappende Läufe nicht doppelt verarbeiten; hängengebliebene Nachrichten setzt eine Stale-Job-Recovery nach Timeout zurück.“ <span class="small">(Prüfen und durch dein echtes Beispiel ersetzen. Das ist kein Hibernate-Locking, aber dasselbe Problem: konkurrierende Zugriffe ohne Lost Update.)</span></p>
+
+<h2>10. Fallen</h2>
+<div class="trap">
+<ul>
+  <li>„Optimistic Locking sperrt die Zeile.“ → <b>Falsch.</b> Es sperrt nichts. Es prüft die Version beim Schreiben.</li>
+  <li>„@Transactional verhindert Lost Updates.“ → Nein. In Read Committed können zwei Transaktionen dieselbe Zeile lesen und überschreiben.</li>
+  <li>„PESSIMISTIC_WRITE ist auf PostgreSQL immer FOR UPDATE.“ → Hibernate nutzt dort <code>FOR NO KEY UPDATE</code>, damit Fremdschlüssel-Inserts nicht blockieren.</li>
+  <li>„Der Lock-Timeout-Hint wirkt überall gleich.“ → Nein. Er ist laut JPA nur ein Hinweis. Auf PostgreSQL hängt er von der Hibernate-Version ab.</li>
+  <li>„Nach einer Lock-Exception einfach weitermachen.“ → In PostgreSQL ist die Transaktion danach abgebrochen. Nur Rollback und neue Transaktion helfen.</li>
+</ul>
+</div>
+
+<h2>11. Fragen</h2>
+<details><summary>Was ist ein Lost Update?</summary><p>Zwei Transaktionen lesen denselben Stand und schreiben nacheinander. Die zweite überschreibt die erste, ohne es zu merken.</p></details>
+<details><summary>Wie funktioniert Optimistic Locking in Hibernate?</summary><p>Mit einem @Version-Feld. Jedes UPDATE und DELETE prüft die alte Version im WHERE und erhöht sie. 0 Zeilen heisst Konflikt.</p></details>
+<details><summary>Welche Exception kommt bei einem optimistischen Konflikt?</summary><p>JPA: OptimisticLockException, Hibernate nativ: StaleObjectStateException, Spring: ObjectOptimisticLockingFailureException.</p></details>
+<details><summary>Welche Typen darf @Version haben?</summary><p>int, Integer, short, Short, long, Long, LocalDateTime, Instant und Timestamp. Zahlen sind sicherer als Zeitstempel.</p></details>
+<details><summary>Was macht PESSIMISTIC_WRITE in PostgreSQL?</summary><p>Hibernate hängt for no key update an das SELECT. Die Zeile ist bis zum Commit für andere Schreiber gesperrt.</p></details>
+<details><summary>Warum FOR NO KEY UPDATE statt FOR UPDATE?</summary><p>Die Fremdschlüssel-Prüfung bei Kind-Inserts nimmt FOR KEY SHARE. FOR UPDATE blockiert sie, FOR NO KEY UPDATE nicht.</p></details>
+<details><summary>Was ist PESSIMISTIC_READ?</summary><p>Eine geteilte Sperre, in PostgreSQL for share. Andere dürfen lesen und ebenfalls teilen, aber nicht ändern.</p></details>
+<details><summary>Wann nutzen Sie OPTIMISTIC_FORCE_INCREMENT?</summary><p>Wenn sich nur ein Kind ändert, aber das ganze Aggregat als geändert gelten soll. Die Version des Root steigt dann trotzdem.</p></details>
+<details><summary>Wie setzen Sie einen Lock-Timeout?</summary><p>Hint jakarta.persistence.lock.timeout in ms oder seit JPA 3.2 Timeout.ms(...) als Option. Auf PostgreSQL zusätzlich lock_timeout setzen.</p></details>
+<details><summary>Was bedeuten NOWAIT und SKIP LOCKED?</summary><p>NOWAIT wirft sofort einen Fehler, wenn die Zeile gesperrt ist. SKIP LOCKED überspringt gesperrte Zeilen, ideal für Job-Queues.</p></details>
+<details><summary>Wie ist der Timeout-Hint auf PostgreSQL umgesetzt?</summary><p>Hibernate 6.6 kennt dort nur NOWAIT (0) und SKIP LOCKED (-2). Ab 7.1 setzt Hibernate für Zahlen lock_timeout auf der Connection.</p></details>
+<details><summary>Was ist der Unterschied zwischen LockTimeoutException und PessimisticLockException?</summary><p>Laut JPA: LockTimeoutException bei Rollback nur des Statements, PessimisticLockException bei Rollback der Transaktion.</p></details>
+<details><summary>Wann wählen Sie pessimistic statt optimistic?</summary><p>Bei häufigen Konflikten auf wenigen Zeilen, wo Retries teuer wären. Zum Beispiel Kontostand oder Lagerbestand.</p></details>
+<details><summary>Wie vermeiden Sie Deadlocks?</summary><p>Zeilen immer in gleicher Reihenfolge sperren, Transaktionen kurz halten, Lock-Timeout setzen.</p></details>
+<details><summary>Wie geben Sie die Version über eine REST-API?</summary><p>Version im DTO oder als ETag ausliefern. Beim Speichern mitschicken und vergleichen. Bei Abweichung 409 oder 412 zurückgeben.</p></details>
+<details><summary>Warum ist ein atomares UPDATE oft besser als ein Lock?</summary><p>Es liest und schreibt in einem Statement. Es gibt kein Fenster zwischen Lesen und Schreiben und keine lange Sperre.</p></details>
+<details><summary>Wie finden Sie heraus, wer eine Zeile blockiert?</summary><p>pg_stat_activity mit pg_blocking_pids(pid), dazu pg_locks where not granted. log_lock_waits loggt lange Wartezeiten.</p></details>
+<details><summary>Szenario: Benutzer beschweren sich, dass ihre Änderungen manchmal verschwinden. Was prüfen Sie?</summary><p>Lost Updates: Fehlt @Version, oder wird die Version beim Speichern aus dem DTO ignoriert? Fix: @Version, Version mitschicken, Konflikt anzeigen.</p></details>
+<details><summary>Szenario: Unter Last steigen OptimisticLockExceptions auf einem Zähler stark an. Was tun Sie?</summary><p>Der Zähler ist ein Hot Spot. Atomares UPDATE (counter = counter + 1) oder PESSIMISTIC_WRITE mit Timeout statt optimistischer Retries.</p></details>
+<details><summary>Szenario: Requests hängen minutenlang, im Thread-Dump warten sie auf JDBC. Wie gehen Sie vor?</summary><p>In pg_stat_activity mit pg_blocking_pids den Blockierer finden, oft idle in transaction. Fix: Transaktion kürzen, lock_timeout und idle_in_transaction_session_timeout setzen.</p></details>
+
+</body>
+</html>

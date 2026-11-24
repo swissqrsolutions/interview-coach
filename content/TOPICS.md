@@ -2,7 +2,7 @@
 
 Generated from content/syllabus.json. Priority 1 = asked in almost every interview. Mark: **Projekt** = shown in CV/Gmail · **— kein Projekt** = no project experience · **? prüfen** = unclear, you decide.
 
-404 topics · P1 239 · P2 125 · P3 40 · written 174
+415 topics · P1 243 · P2 132 · P3 40 · written 267
 
 ## Java 21 (core + advanced) (40)
 Sources: Java SE 21/25 docs (docs.oracle.com) · JVM Specification · OpenJDK source + JEPs (openjdk.org) · Oracle Java SE 21 Developer exam 1Z0-830 topics
@@ -18,33 +18,33 @@ Sources: Java SE 21/25 docs (docs.oracle.com) · JVM Specification · OpenJDK so
 | 1 | Java Memory Model | ? prüfen | ✓ |
 | 1 | Threads | Projekt | ✓ |
 | 1 | Synchronisation und Locks | Projekt | ✓ |
-| 1 | ExecutorService, Thread Pools, ForkJoinPool, Konfiguration | Projekt |  |
-| 1 | Virtual Threads (Java 21), Pinning, Structured Concurrency | — kein Projekt |  |
+| 1 | ExecutorService und Thread Pools | Projekt | ✓ |
+| 1 | Virtual Threads | — kein Projekt | ✓ |
 | 1 | HashMap | Projekt | ✓ |
 | 1 | ConcurrentHashMap | Projekt | ✓ |
-| 1 | ArrayList vs LinkedList vs CopyOnWriteArrayList | Projekt |  |
-| 1 | equals() und hashCode(): Vertrag, Fehler, Records | Projekt |  |
-| 1 | String: Immutability, String Pool, intern, StringBuilder, Compact Strings | Projekt |  |
-| 1 | Generics: Type Erasure, Wildcards, PECS, Bounded Types | Projekt |  |
-| 1 | Exceptions: checked vs unchecked, try-with-resources, Best Practices | Projekt |  |
-| 1 | Stream API: lazy, intermediate vs terminal, Collectors, parallel Streams | Projekt |  |
-| 1 | Lambdas, Functional Interfaces, Method References | Projekt |  |
-| 1 | Records, Sealed Classes, Pattern Matching, Switch Expressions | Projekt |  |
+| 1 | Listen | Projekt | ✓ |
+| 1 | equals und hashCode | Projekt | ✓ |
+| 1 | String | Projekt | ✓ |
+| 1 | Generics | Projekt | ✓ |
+| 1 | Exceptions | Projekt | ✓ |
+| 1 | Stream API | Projekt | ✓ |
+| 1 | Lambdas | Projekt | ✓ |
+| 1 | Records und Sealed | Projekt | ✓ |
 | 1 | Interface vs abstrakte Klasse | Projekt | ✓ |
 | 1 | OOP-Grundlagen | Projekt | ✓ |
-| 1 | Java 8 bis 21 (und 25): wichtigste Neuerungen | Projekt |  |
-| 1 | Thread Dumps lesen und analysieren | ? prüfen |  |
-| 1 | Profiling: JFR, async-profiler, Heap-Analyse | ? prüfen |  |
+| 1 | Java-Versionen 8 bis 25 | Projekt | ✓ |
+| 1 | Thread Dumps lesen | ? prüfen | ✓ |
+| 1 | Profiling mit JFR und async-profiler | ? prüfen | ✓ |
 | 2 | Class Loading | Projekt | ✓ |
-| 2 | Atomic-Klassen und Compare-and-Swap (CAS) | ? prüfen |  |
-| 2 | CompletableFuture und asynchrone Programmierung | ? prüfen |  |
-| 2 | TreeMap, LinkedHashMap, EnumMap, WeakHashMap, IdentityHashMap | Projekt |  |
-| 2 | HashSet, TreeSet, LinkedHashSet, Queue, Deque, PriorityQueue | Projekt |  |
-| 2 | Comparable vs Comparator | Projekt |  |
-| 2 | Unveränderliche Objekte: Regeln, Vorteile, defensive Kopien | Projekt |  |
-| 2 | Optional: richtige und falsche Nutzung | Projekt |  |
-| 2 | static, final, finally, finalize | Projekt |  |
-| 2 | Primitive vs Wrapper, Autoboxing, Integer-Cache | Projekt |  |
+| 2 | Atomic-Klassen und CAS | ? prüfen | ✓ |
+| 2 | CompletableFuture | ? prüfen | ✓ |
+| 2 | Spezielle Maps | Projekt | ✓ |
+| 2 | Sets und Queues | Projekt | ✓ |
+| 2 | Comparable vs Comparator | Projekt | ✓ |
+| 2 | Unveränderliche Objekte | Projekt | ✓ |
+| 2 | Optional | Projekt | ✓ |
+| 2 | static, final, finally, finalize | Projekt | ✓ |
+| 2 | Autoboxing und Integer-Cache | Projekt | ✓ |
 | 2 | Reflection und Annotations: Funktion, Kosten, Nutzung in Frameworks | ? prüfen |  |
 | 3 | Serialisierung: Serializable, Risiken, Alternativen (JSON) | ? prüfen |  |
 | 3 | IO vs NIO: Streams, Buffers, Channels, Files API | ? prüfen |  |
@@ -68,12 +68,12 @@ Sources: Spring Framework reference · Spring Boot 3 reference · Spring Securit
 | 1 | Spring Data JPA | Projekt | ✓ |
 | 1 | Spring Security Architektur | Projekt | ✓ |
 | 1 | OAuth2 Resource Server mit JWT | Projekt | ✓ |
-| 1 | Spring Testing: @SpringBootTest, Slices, MockitoBean, Testcontainers | Projekt |  |
-| 1 | Spring Boot 3: Jakarta, Java 17+, Native Images, Observability | Projekt |  |
-| 2 | Bean Validation: @Valid, eigene Validatoren | Projekt |  |
-| 2 | Method Security: @PreAuthorize | ? prüfen |  |
-| 2 | Actuator, Health Checks, Micrometer, Observability | Projekt |  |
-| 2 | Spring WebFlux und reaktive Programmierung | — kein Projekt |  |
+| 1 | Spring Testing | Projekt | ✓ |
+| 1 | Spring Boot 3 und 4 | Projekt | ✓ |
+| 2 | Bean Validation | Projekt | ✓ |
+| 2 | Method Security | ? prüfen | ✓ |
+| 2 | Actuator und Micrometer | Projekt | ✓ |
+| 2 | Spring WebFlux | — kein Projekt | ✓ |
 | 2 | Spring Cloud: Config, Gateway, Resilience4j | — kein Projekt |  |
 | 2 | @Scheduled, @Async, Events | ? prüfen |  |
 | 2 | Spring Cache: @Cacheable, Cache-Provider | ? prüfen |  |
@@ -88,9 +88,9 @@ Sources: RFC 9110 HTTP Semantics · RFC 9457 Problem Details · OpenAPI 3.1 spec
 | 1 | HTTP-Statuscodes | Projekt | ✓ |
 | 1 | Ressourcen-Design | Projekt | ✓ |
 | 1 | Pagination und Filter | Projekt | ✓ |
-| 1 | API-Versionierung | ? prüfen |  |
-| 1 | OpenAPI, Contract-First, Code-Generierung | Projekt |  |
-| 1 | API-Sicherheit: Auth, CORS, CSRF, Rate Limiting | Projekt |  |
+| 1 | API-Versionierung | ? prüfen | ✓ |
+| 1 | OpenAPI und Contract-First | Projekt | ✓ |
+| 1 | API-Sicherheit | Projekt | ✓ |
 | 2 | JSON mit Jackson: Serialisierung, Annotations, Fallen | Projekt |  |
 | 2 | HTTP-Caching: Cache-Control, ETag | ? prüfen |  |
 | 2 | Fehlerformat: Problem Details (RFC 9457) | Projekt |  |
@@ -133,8 +133,8 @@ Sources: Apache Kafka documentation · Confluent developer docs · Confluent CCD
 | 1 | Replikation, ISR, min.insync.replicas | ? prüfen | ✓ |
 | 1 | Fehler, Retries, Dead Letter Topic | ? prüfen | ✓ |
 | 1 | Kafka vs RabbitMQ vs Event Hub vs Solace | Projekt | ✓ |
-| 2 | Retention und Log Compaction | ? prüfen |  |
-| 2 | Kafka-Transaktionen | — kein Projekt |  |
+| 2 | Retention und Log Compaction | ? prüfen | ✓ |
+| 2 | Kafka-Transaktionen | — kein Projekt | ✓ |
 | 2 | Schema Registry, Avro, Kompatibilität | ? prüfen |  |
 | 2 | Kafka Streams und Kafka Connect | — kein Projekt |  |
 | 2 | Performance und Tuning | ? prüfen |  |
@@ -145,7 +145,7 @@ Sources: Jakarta XML Web Services / JAXB specs · W3C SOAP 1.2 and WSDL · Sprin
 
 | P | Topic | Project | Written |
 |---|---|---|---|
-| 1 | SOAP vs REST | Projekt |  |
+| 1 | SOAP vs REST | Projekt | ✓ |
 | 2 | SOAP: Envelope, Header, Body, Fault | Projekt |  |
 | 2 | WSDL | Projekt |  |
 | 2 | XSD: Typen und Validierung | Projekt |  |
@@ -217,7 +217,7 @@ Sources: docs.python.org · pandas and pytest docs
 
 | P | Topic | Project | Written |
 |---|---|---|---|
-| 1 | Iteratoren und Generatoren | ? prüfen |  |
+| 1 | Iteratoren und Generatoren | ? prüfen | ✓ |
 | 2 | Listen, Dicts, Sets, Tuples: intern und Komplexität | Projekt |  |
 | 2 | Decorators und Context Manager | ? prüfen |  |
 | 2 | GIL, Threads, Multiprocessing, asyncio | ? prüfen |  |
@@ -244,11 +244,11 @@ Sources: PostgreSQL 16/17 documentation · Use The Index, Luke (Markus Winand)
 | 1 | Connection Pooling: HikariCP, PgBouncer | ? prüfen | ✓ |
 | 1 | Performance-Tuning: Konfiguration und Abfragen | ? prüfen | ✓ |
 | 1 | Mandantenfähigkeit: DB, Schema oder Zeile | Projekt | ✓ |
-| 2 | CTEs und rekursive Abfragen | ? prüfen |  |
-| 2 | Constraints, Keys, Sequences vs UUID | Projekt |  |
-| 2 | JSONB und Indizes darauf | ? prüfen |  |
-| 2 | Tabellen-Partitionierung | — kein Projekt |  |
-| 2 | Replikation und Hochverfügbarkeit | — kein Projekt |  |
+| 2 | CTEs und rekursive Abfragen | ? prüfen | ✓ |
+| 2 | Constraints, Keys, Sequences vs UUID | Projekt | ✓ |
+| 2 | JSONB und Indizes darauf | ? prüfen | ✓ |
+| 2 | Tabellen-Partitionierung | — kein Projekt | ✓ |
+| 2 | Replikation und Hochverfügbarkeit | — kein Projekt | ✓ |
 | 2 | Backup und Point-in-Time Recovery | — kein Projekt |  |
 | 2 | Volltextsuche in PostgreSQL | — kein Projekt |  |
 
@@ -268,9 +268,9 @@ Sources: Hibernate ORM 6 user guide · Jakarta Persistence 3 spec · Vlad Mihalc
 | 1 | Entity-Lebenszyklus | Projekt | ✓ |
 | 1 | Persistence Context | ? prüfen | ✓ |
 | 1 | Lazy vs Eager Loading | Projekt | ✓ |
-| 1 | N+1-Problem: erkennen und lösen | ? prüfen |  |
-| 1 | Optimistic vs Pessimistic Locking | ? prüfen |  |
-| 1 | Flyway und Liquibase | Projekt |  |
+| 1 | N+1-Problem | ? prüfen | ✓ |
+| 1 | Optimistic und Pessimistic Locking | ? prüfen | ✓ |
+| 1 | Flyway und Liquibase | Projekt | ✓ |
 | 2 | Second-Level Cache | — kein Projekt |  |
 | 2 | Beziehungen, Cascade, Inheritance Mapping | Projekt |  |
 
@@ -320,7 +320,7 @@ Sources: Apache Iceberg spec and docs (iceberg.apache.org)
 | 2 | Gleichzeitige Writes und optimistisches Commit | ? prüfen |  |
 | 2 | Branches und Tags | ? prüfen |  |
 
-## Lakehouse + medallion + ETL (11)
+## Lakehouse + medallion + ETL (14)
 Sources: Designing Data-Intensive Applications (Kleppmann) · Fundamentals of Data Engineering (Reis/Housley)
 
 | P | Topic | Project | Written |
@@ -334,8 +334,11 @@ Sources: Designing Data-Intensive Applications (Kleppmann) · Fundamentals of Da
 | 1 | Datenqualität und Data Contracts | ? prüfen | ✓ |
 | 1 | Dateiformate: Parquet, Avro, ORC, CSV | Projekt | ✓ |
 | 1 | Small-Files-Problem | Projekt | ✓ |
-| 2 | Change Data Capture | — kein Projekt |  |
-| 2 | Governance, Lineage, Datenschutz | ? prüfen |  |
+| 1 | Fall: SQL Server → Lakehouse-Migration | Projekt | ✓ |
+| 2 | Change Data Capture | — kein Projekt | ✓ |
+| 2 | Governance, Lineage, Datenschutz | ? prüfen | ✓ |
+| 2 | Fall: Streaming-Betrugserkennung | — kein Projekt | ✓ |
+| 2 | Fall: IoT-Datenaufnahme | — kein Projekt | ✓ |
 
 ## Dremio, Nessie, MinIO, Parquet (5)
 Sources: Dremio docs · Apache Arrow docs · Project Nessie docs · MinIO docs · Apache Parquet format spec
@@ -343,7 +346,7 @@ Sources: Dremio docs · Apache Arrow docs · Project Nessie docs · MinIO docs �
 | P | Topic | Project | Written |
 |---|---|---|---|
 | 1 | Project Nessie: Git für Daten | Projekt | ✓ |
-| 1 | Parquet intern: Row Groups, Column Chunks, Encoding, Predicate Pushdown | Projekt |  |
+| 1 | Parquet intern: Row Groups, Column Chunks, Encoding, Predicate Pushdown | Projekt | ✓ |
 | 2 | Dremio: Architektur und Reflections | Projekt |  |
 | 2 | Apache Arrow und Arrow Flight SQL | Projekt |  |
 | 2 | MinIO und S3-API | Projekt |  |
@@ -452,10 +455,10 @@ Sources: Terraform docs · Helm docs · Argo CD docs · OpenGitOps principles
 
 | P | Topic | Project | Written |
 |---|---|---|---|
-| 1 | Terraform: State, Plan, Apply, Module, Drift | Projekt |  |
-| 1 | Helm: Templates, Values, Releases | Projekt |  |
-| 1 | Argo CD: Sync, Prune, Self-Heal, Hooks, App of Apps | Projekt |  |
-| 1 | GitOps-Prinzipien | Projekt |  |
+| 1 | Terraform | Projekt | ✓ |
+| 1 | Helm | Projekt | ✓ |
+| 1 | Argo CD | Projekt | ✓ |
+| 1 | GitOps-Prinzipien | Projekt | ✓ |
 | 2 | Kustomize vs Helm | — kein Projekt |  |
 
 ## CI/CD (Azure DevOps, Jenkins, GitHub Actions, Sonar) (6)
@@ -463,8 +466,8 @@ Sources: Azure Pipelines, Jenkins, GitHub Actions docs · SonarQube docs
 
 | P | Topic | Project | Written |
 |---|---|---|---|
-| 1 | CI/CD-Pipeline: Stufen und Qualitäts-Gates | Projekt |  |
-| 1 | Branching-Strategien: Trunk-Based, GitFlow | ? prüfen |  |
+| 1 | CI/CD-Pipeline-Stufen | Projekt | ✓ |
+| 1 | Branching-Strategien | ? prüfen | ✓ |
 | 2 | Versionierung und Artefakte | ? prüfen |  |
 | 2 | SonarQube und Code-Qualität | Projekt |  |
 | 2 | Secrets in Pipelines | Projekt |  |
@@ -487,11 +490,11 @@ Sources: OWASP Top 10 (2025) · RFC 6749/9700 OAuth 2 · OpenID Connect Core · 
 |---|---|---|---|
 | 1 | Authentifizierung vs Autorisierung | Projekt | ✓ |
 | 1 | OAuth 2 Flows | ? prüfen | ✓ |
-| 1 | OpenID Connect | ? prüfen |  |
-| 1 | JWT: Aufbau, Signatur, Validierung, Risiken | Projekt |  |
-| 1 | OWASP Top 10 | ? prüfen |  |
-| 1 | Secret-Management mit Vault | Projekt |  |
-| 1 | XSS, CSRF, CORS, SQL Injection | ? prüfen |  |
+| 1 | OpenID Connect | ? prüfen | ✓ |
+| 1 | JWT | Projekt | ✓ |
+| 1 | OWASP Top 10 | ? prüfen | ✓ |
+| 1 | Secret-Management mit Vault | Projekt | ✓ |
+| 1 | Web-Angriffe | ? prüfen | ✓ |
 | 2 | Keycloak | Projekt |  |
 | 2 | TLS und mTLS | ? prüfen |  |
 | 2 | Datenschutz: DSG und DSGVO für Entwickler | Projekt |  |
@@ -509,9 +512,9 @@ Sources: angular.dev guides (v20) · RxJS docs
 | 1 | RxJS-Operatoren: switchMap, mergeMap, concatMap, exhaustMap | Projekt | ✓ |
 | 1 | Subject, BehaviorSubject, ReplaySubject | Projekt | ✓ |
 | 1 | Routing, Guards, Resolver, Lazy Loading | Projekt | ✓ |
-| 1 | Reactive Forms vs Template Forms | Projekt | ✓ |
+| 1 | Reactive, Template und Signal Forms | Projekt | ✓ |
 | 1 | HttpClient und Interceptors | Projekt | ✓ |
-| 1 | Angular 14 bis 20: was ist neu | ? prüfen | ✓ |
+| 1 | Angular 14 bis 22: was ist neu | ? prüfen | ✓ |
 | 2 | Performance: trackBy, @defer, Bundle-Grösse | ? prüfen |  |
 | 2 | Angular-Tests | ? prüfen |  |
 
@@ -535,9 +538,9 @@ Sources: JUnit 5 user guide · Mockito docs · Testcontainers docs · Playwright
 
 | P | Topic | Project | Written |
 |---|---|---|---|
-| 1 | Testpyramide und Teststrategie | Projekt |  |
-| 1 | JUnit 5 und Mockito | Projekt |  |
-| 1 | Testcontainers | Projekt |  |
+| 1 | Testpyramide und Teststrategie | Projekt | ✓ |
+| 1 | JUnit 6 und Mockito | Projekt | ✓ |
+| 1 | Testcontainers | Projekt | ✓ |
 | 2 | Mock, Stub, Spy, Fake | ? prüfen |  |
 | 2 | E2E: Playwright, Cypress, Selenium | Projekt |  |
 | 2 | TDD | ? prüfen |  |
@@ -602,12 +605,12 @@ Sources: The Scrum Guide 2020 · SAFe 6 framework
 
 | P | Topic | Project | Written |
 |---|---|---|---|
-| 1 | Scrum-Rollen: Product Owner, Scrum Master, Developers | Projekt |  |
-| 1 | Scrum Events | Projekt |  |
-| 1 | Artefakte, Definition of Done, Definition of Ready | Projekt |  |
-| 1 | Schätzung, Velocity, Burndown, Flow-Metriken | Projekt |  |
-| 1 | SAFe: ART, PI Planning | Projekt |  |
-| 1 | Code Reviews als Prozess | Projekt |  |
+| 1 | Scrum-Rollen | Projekt | ✓ |
+| 1 | Scrum Events | Projekt | ✓ |
+| 1 | Scrum-Artefakte | Projekt | ✓ |
+| 1 | Schätzung und Metriken | Projekt | ✓ |
+| 1 | SAFe: ART und PI Planning | Projekt | ✓ |
+| 1 | Code Reviews | Projekt | ✓ |
 | 2 | Kanban vs Scrum | ? prüfen |  |
 
 ## AI-assisted development (1)
@@ -615,9 +618,9 @@ Sources: vendor docs (GitHub Copilot, Claude Code) · company AI usage policies
 
 | P | Topic | Project | Written |
 |---|---|---|---|
-| 1 | KI-gestützte Entwicklung: Nutzen, Risiken, Regeln | Projekt |  |
+| 1 | KI-gestützte Entwicklung | Projekt | ✓ |
 
-## System-Design-Grundlagen (12)
+## System-Design-Grundlagen (20)
 Sources: Designing Data-Intensive Applications (Kleppmann) · System Design Interview vol. 1+2 (Alex Xu)
 
 | P | Topic | Project | Written |
@@ -633,22 +636,30 @@ Sources: Designing Data-Intensive Applications (Kleppmann) · System Design Inte
 | 1 | Rate Limiting: Algorithmen | — kein Projekt | ✓ |
 | 1 | Verfügbarkeit, Redundanz, Disaster Recovery | — kein Projekt | ✓ |
 | 1 | API-Design im System Design | — kein Projekt | ✓ |
-| 2 | Consistent Hashing | — kein Projekt |  |
+| 1 | Fall: Bild-Upload mit Erkennung und Suche | — kein Projekt | ✓ |
+| 1 | Fall: URL-Shortener | — kein Projekt | ✓ |
+| 1 | Fall: Benachrichtigungs-System | — kein Projekt | ✓ |
+| 2 | Consistent Hashing | — kein Projekt | ✓ |
+| 2 | Fall: News-Feed | — kein Projekt | ✓ |
+| 2 | Fall: Verteilter Job-Scheduler | — kein Projekt | ✓ |
+| 2 | Fall: Verteilter Cache | — kein Projekt |  |
+| 2 | Fall: E-Commerce-Checkout | — kein Projekt |  |
+| 2 | Fall: Dokumentensystem einer Behörde | — kein Projekt |  |
 
 ## Algorithmen und Datenstrukturen (14)
 Sources: NeetCode 150 / LeetCode pattern lists · Introduction to Algorithms (CLRS) for definitions
 
 | P | Topic | Project | Written |
 |---|---|---|---|
-| 1 | Big-O: Zeit und Speicher | — kein Projekt |  |
-| 1 | Arrays und Hashing | — kein Projekt |  |
-| 1 | Two Pointers | — kein Projekt |  |
-| 1 | Sliding Window | — kein Projekt |  |
-| 1 | Stack und Queue | — kein Projekt |  |
-| 1 | Binary Search | — kein Projekt |  |
-| 1 | Bäume: Traversierung, BST | — kein Projekt |  |
-| 1 | Graphen: BFS, DFS | — kein Projekt |  |
-| 1 | Heap und Priority Queue | — kein Projekt |  |
+| 1 | Big-O: Zeit und Speicher | — kein Projekt | ✓ |
+| 1 | Arrays und Hashing | — kein Projekt | ✓ |
+| 1 | Two Pointers | — kein Projekt | ✓ |
+| 1 | Sliding Window | — kein Projekt | ✓ |
+| 1 | Stack und Queue | — kein Projekt | ✓ |
+| 1 | Binary Search | — kein Projekt | ✓ |
+| 1 | Bäume: DFS, BFS, BST | — kein Projekt | ✓ |
+| 1 | Graphen: BFS, DFS, Topo-Sort | — kein Projekt | ✓ |
+| 1 | Heap und PriorityQueue | — kein Projekt | ✓ |
 | 2 | Linked Lists | — kein Projekt |  |
 | 2 | Intervalle | — kein Projekt |  |
 | 2 | Sortieralgorithmen | — kein Projekt |  |
@@ -660,10 +671,10 @@ Sources: Pro Git (git-scm.com/book) · git documentation
 
 | P | Topic | Project | Written |
 |---|---|---|---|
-| 1 | Merge vs Rebase | Projekt |  |
-| 1 | Merge-Konflikte lösen | Projekt |  |
-| 1 | Cherry-Pick, Revert, Reset | Projekt |  |
-| 1 | Fehler rückgängig machen: reflog, reset, revert | Projekt |  |
+| 1 | Merge vs Rebase | Projekt | ✓ |
+| 1 | Merge-Konflikte lösen | Projekt | ✓ |
+| 1 | Cherry-Pick und Revert | Projekt | ✓ |
+| 1 | Fehler rückgängig machen | Projekt | ✓ |
 | 2 | Branching-Modelle in Git | ? prüfen |  |
 
 ## Maven / Gradle (3)
@@ -680,10 +691,10 @@ Sources: Linux man pages · The Linux Command Line (Shotts)
 
 | P | Topic | Project | Written |
 |---|---|---|---|
-| 1 | Prozesse und Signale: ps, top, kill | ? prüfen |  |
-| 1 | Dateien und Rechte: chmod, chown, find, grep | ? prüfen |  |
-| 1 | Netzwerk-Befehle: curl, ss, dig, nc | ? prüfen |  |
-| 1 | Einen Server debuggen: Logs, Disk, Memory, CPU | ? prüfen |  |
+| 1 | Prozesse und Signale | ? prüfen | ✓ |
+| 1 | Dateien und Rechte | ? prüfen | ✓ |
+| 1 | Netzwerk-Befehle | ? prüfen | ✓ |
+| 1 | Einen Server debuggen | ? prüfen | ✓ |
 
 ## Netzwerk-Grundlagen (5)
 Sources: RFC 9110/9113/9114 (HTTP) · RFC 8446 (TLS 1.3) · MDN web docs

@@ -1,0 +1,305 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Fall: Bild-Upload mit Erkennung und Suche</title>
+<style>
+  body { font: 17px/1.55 -apple-system, system-ui, sans-serif; max-width: 760px; margin: 0 auto; padding: 16px; color: #1d1d1f; }
+  h1 { font-size: 28px; margin: 8px 0 4px; }
+  h2 { font-size: 21px; margin: 32px 0 8px; padding-top: 12px; border-top: 2px solid #e5e5ea; }
+  .kern { background: #eef6ff; border-left: 4px solid #0a66c2; padding: 10px 14px; border-radius: 6px; }
+  .senior { background: #f0faf0; border-left: 4px solid #2e7d32; padding: 10px 14px; border-radius: 6px; }
+  .trap { background: #fff4f2; border-left: 4px solid #c62828; padding: 10px 14px; border-radius: 6px; }
+  code { background: #f2f2f7; padding: 1px 5px; border-radius: 4px; font-size: 15px; }
+  pre { background: #1e1e1e; color: #e6e6e6; padding: 12px; border-radius: 8px; overflow-x: auto; font-size: 13.5px; line-height: 1.45; }
+  svg { width: 100%; height: auto; display: block; margin: 10px 0; }
+  ol li, ul li { margin: 4px 0; }
+  details { border: 1px solid #e5e5ea; border-radius: 8px; padding: 8px 12px; margin: 6px 0; }
+  summary { font-weight: 600; cursor: pointer; }
+  details p { margin: 6px 0 2px; }
+  .small { color: #6e6e73; font-size: 14px; }
+</style>
+</head>
+<body>
+
+<h1>Fall: Bild-Upload mit Erkennung und Suche</h1>
+<p class="small">System-Design-Fall · Tier 1 · Quellen: Microsoft Learn (Defender for Storage: Malware Scanning, Limits und Ergebnis-Kanäle), AWS S3 User Guide (Presigned URLs, Ablaufzeit), PostgreSQL 17 Docs (INSERT … ON CONFLICT, SELECT … FOR UPDATE SKIP LOCKED, Indexes, EXPLAIN), Apache Tika Docs (MIME-Erkennung), Kleppmann DDIA Kap. 3 und 11, Alex Xu „System Design Interview“ Vol. 1</p>
+
+<div class="kern">
+<b>Kern (die 1-Minuten-Antwort):</b> Der Client holt sich eine <b>Upload-Intent</b> und lädt das Bild <b>direkt in einen Quarantäne-Bucket</b>. Ein Event startet den <b>Malware-Scan</b>; erst ein sauberes Bild geht über eine <b>Queue</b> an Worker für Thumbnails und <b>Erkennung</b> (Labels, Embeddings). Metadaten liegen in <b>PostgreSQL</b> als Wahrheit, gesucht wird in einem <b>Suchindex</b>, ausgeliefert über ein <b>CDN</b>. Alles ist asynchron, idempotent und hat einen klaren <b>Status pro Bild</b>.
+</div>
+
+<h2>1. Wo sitzt was? (Architektur)</h2>
+<svg viewBox="0 0 720 360" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="a" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="10" y="150" width="100" height="60" rx="8" fill="#fff" stroke="#555"/><text x="60" y="176" text-anchor="middle" font-weight="700">Client</text><text x="60" y="195" text-anchor="middle" font-size="12">App / Web</text>
+  <line x1="110" y1="165" x2="168" y2="95" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="170" y="60" width="150" height="62" rx="8" fill="#dbe9fb" stroke="#0a66c2"/><text x="245" y="86" text-anchor="middle" font-weight="700">Upload-API</text><text x="245" y="105" text-anchor="middle" font-size="12">Auth, Intent, Status</text>
+  <line x1="110" y1="190" x2="168" y2="235" stroke="#555" stroke-width="2" marker-end="url(#a)"/><text x="120" y="232" font-size="12">PUT</text>
+  <rect x="170" y="210" width="150" height="62" rx="8" fill="#fff" stroke="#555"/><text x="245" y="236" text-anchor="middle" font-weight="700">Object Storage</text><text x="245" y="255" text-anchor="middle" font-size="12">quarantine/ → clean/</text>
+  <line x1="320" y1="241" x2="368" y2="241" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="370" y="210" width="130" height="62" rx="8" fill="#fff4f2" stroke="#c62828"/><text x="435" y="236" text-anchor="middle" font-weight="700">Malware-Scan</text><text x="435" y="255" text-anchor="middle" font-size="12">Event: Ergebnis</text>
+  <line x1="500" y1="241" x2="548" y2="241" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="550" y="210" width="160" height="62" rx="8" fill="#0a66c2" stroke="#0a66c2"/><text x="630" y="236" text-anchor="middle" fill="#fff" font-weight="700">Queue + Worker</text><text x="630" y="255" text-anchor="middle" fill="#fff" font-size="12">Thumbs, Erkennung</text>
+  <line x1="320" y1="91" x2="388" y2="91" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="390" y="60" width="140" height="62" rx="8" fill="#fff" stroke="#555"/><text x="460" y="86" text-anchor="middle" font-weight="700">PostgreSQL</text><text x="460" y="105" text-anchor="middle" font-size="12">Metadaten, Status</text>
+  <line x1="630" y1="210" x2="535" y2="115" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <line x1="530" y1="80" x2="568" y2="80" stroke="#555" stroke-width="2" marker-end="url(#a)"/><text x="549" y="72" text-anchor="middle" font-size="11">Outbox</text>
+  <rect x="570" y="50" width="140" height="62" rx="8" fill="#e8f5e9" stroke="#2e7d32"/><text x="640" y="76" text-anchor="middle" font-weight="700">Suchindex</text><text x="640" y="95" text-anchor="middle" font-size="12">Labels, Vektoren</text>
+  <rect x="170" y="300" width="150" height="50" rx="8" fill="#fff" stroke="#555"/><text x="245" y="330" text-anchor="middle" font-weight="700">CDN</text>
+  <line x1="245" y1="272" x2="245" y2="298" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <line x1="168" y1="320" x2="60" y2="212" stroke="#555" stroke-width="2" marker-end="url(#a)"/><text x="90" y="290" font-size="12">GET Bild</text>
+</svg>
+<ol>
+  <li><b>Upload-API:</b> prüft das Token, legt die Bild-Zeile an und gibt eine kurzlebige Upload-URL zurück. Beispiel: <code>POST /v1/images:upload-intent</code>.</li>
+  <li><b>Object Storage:</b> speichert die Bytes. Zwei Bereiche: <code>quarantine/</code> für Ungeprüftes, <code>clean/</code> für Freigegebenes.</li>
+  <li><b>Malware-Scan:</b> scannt jedes neue Objekt und meldet das Ergebnis als Event. Beispiel: Defender for Storage mit On-upload-Scanning.</li>
+  <li><b>Queue + Worker:</b> verarbeiten saubere Bilder asynchron: Format prüfen, EXIF entfernen, Thumbnails, Erkennung. Beispiel: 3 Labels und ein Embedding pro Bild.</li>
+  <li><b>PostgreSQL:</b> ist die <b>Source of Truth</b> für Besitzer, Status, Labels und Rechte. Beispiel: Tabelle <code>images</code> mit <code>status</code>.</li>
+  <li><b>Suchindex:</b> eine <b>Projektion</b>, also eine abgeleitete, schnell lesbare Kopie. Er wird über eine <b>Outbox</b> befüllt und ist jederzeit aus der DB neu baubar.</li>
+  <li><b>CDN:</b> liefert Thumbnails und Bilder mit signierten URLs aus. Die API liefert nie Bytes selbst.</li>
+</ol>
+
+<h2>2. Die Reise eines Bildes (die Geschichte zum Merken)</h2>
+<svg viewBox="0 0 720 330" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="b" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker><marker id="r" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#c62828"/></marker></defs>
+  <rect x="10" y="20" width="160" height="62" rx="10" fill="#eee" stroke="#777"/><text x="90" y="45" text-anchor="middle" font-weight="700">1. Intent</text><text x="90" y="65" text-anchor="middle" font-size="12">Zeile pending + URL</text>
+  <line x1="170" y1="51" x2="198" y2="51" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="200" y="20" width="150" height="62" rx="10" fill="#fff" stroke="#555"/><text x="275" y="45" text-anchor="middle" font-weight="700">2. PUT Bytes</text><text x="275" y="65" text-anchor="middle" font-size="12">in quarantine/</text>
+  <line x1="350" y1="51" x2="378" y2="51" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="380" y="20" width="150" height="62" rx="10" fill="#fff4f2" stroke="#c62828"/><text x="455" y="45" text-anchor="middle" font-weight="700">3. Scan</text><text x="455" y="65" text-anchor="middle" font-size="12">Event mit Ergebnis</text>
+  <line x1="530" y1="51" x2="558" y2="51" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="560" y="20" width="150" height="62" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="635" y="45" text-anchor="middle" font-weight="700">4. Freigabe</text><text x="635" y="65" text-anchor="middle" font-size="12">clean/ + uploaded</text>
+  <line x1="635" y1="82" x2="635" y2="128" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="540" y="130" width="170" height="70" rx="10" fill="#0a66c2" stroke="#0a66c2"/><text x="625" y="155" text-anchor="middle" fill="#fff" font-weight="700">5. Worker</text><text x="625" y="174" text-anchor="middle" fill="#fff" font-size="12">Claim, EXIF weg, Thumbs,</text><text x="625" y="190" text-anchor="middle" fill="#fff" font-size="12">Labels + Embedding</text>
+  <line x1="540" y1="165" x2="452" y2="165" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="280" y="130" width="170" height="70" rx="10" fill="#fff" stroke="#555"/><text x="365" y="155" text-anchor="middle" font-weight="700">6. Commit</text><text x="365" y="174" text-anchor="middle" font-size="12">Labels + ready + Outbox</text><text x="365" y="190" text-anchor="middle" font-size="12">in einer Transaktion</text>
+  <line x1="280" y1="165" x2="192" y2="165" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="10" y="130" width="180" height="70" rx="10" fill="#e8f5e9" stroke="#2e7d32"/><text x="100" y="155" text-anchor="middle" font-weight="700">7. Index + Push</text><text x="100" y="174" text-anchor="middle" font-size="12">Suchindex aktualisiert,</text><text x="100" y="190" text-anchor="middle" font-size="12">Client erfährt „fertig“</text>
+  <line x1="100" y1="200" x2="100" y2="248" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="10" y="250" width="330" height="62" rx="10" fill="#e8f5e9" stroke="#2e7d32"/><text x="175" y="275" text-anchor="middle" font-weight="700">8. Suche „berg“</text><text x="175" y="295" text-anchor="middle" font-size="12">Index → IDs → Rechte → CDN-URLs</text>
+  <rect x="380" y="250" width="330" height="62" rx="10" fill="#fff4f2" stroke="#c62828"/><text x="545" y="275" text-anchor="middle" fill="#c62828" font-weight="700">Malicious → löschen, rejected</text><text x="545" y="295" text-anchor="middle" fill="#c62828" font-size="12">nie in clean/, nie im Index</text>
+  <path d="M455,82 C455,200 545,200 545,248" fill="none" stroke="#c62828" stroke-width="2" stroke-dasharray="6 4" marker-end="url(#r)"/>
+</svg>
+<ol>
+  <li><b>Intent:</b> Anna wählt <code>ferien.jpg</code> (2,4 MB). Die App sendet Grösse, Typ und SHA-256. Die API prüft Token und Quota, legt die Zeile mit <code>status = 'pending'</code> an und gibt eine Upload-URL für 15 Minuten zurück.</li>
+  <li><b>Bytes hochladen:</b> Die App lädt direkt in <code>quarantine/42/7f3a</code>. Die API sieht die Bytes nie. So skaliert der Upload mit dem Storage, nicht mit den API-Pods.</li>
+  <li><b>Scan:</b> Das Storage meldet „neues Objekt“. Der Scanner prüft es und schickt das Ergebnis als Event.</li>
+  <li><b>Freigabe:</b> Ein kleiner Consumer liest das Ergebnis. „Sauber“: Objekt nach <code>clean/</code> kopieren, Status <code>uploaded</code>. „Malicious“: löschen, Status <code>rejected</code>.</li>
+  <li><b>Worker:</b> Ein Worker <b>claimt</b> das Bild atomar. Er prüft die <b>Magic Bytes</b> (echter Dateityp), entfernt EXIF mit GPS, rechnet Thumbnails und ruft das Erkennungsmodell auf.</li>
+  <li><b>Commit:</b> Labels, Status <code>ready</code> und ein Outbox-Eintrag gehen in <b>einer</b> Transaktion in die DB. Stürzt der Worker vorher ab, bleibt nichts halb.</li>
+  <li><b>Index und Push:</b> Ein Relay liest die Outbox und schreibt in den Suchindex. Die App erfährt per Push oder Polling auf <code>GET /v1/images/{id}</code>, dass das Bild fertig ist.</li>
+  <li><b>Suche:</b> Anna sucht „berg“. Der Index liefert IDs, die API filtert nach Rechten und gibt signierte CDN-URLs zurück.</li>
+</ol>
+
+<h2>3. Beispiel: API, Datenmodell und die Queries laut gesagt</h2>
+<p><b>API</b> (alle schreibenden Calls mit <code>Idempotency-Key</code>):</p>
+<pre>POST   /v1/images:upload-intent   {filename, bytes, contentType, sha256}
+       → 201 {imageId, uploadUrl, expiresAt}
+PUT    {uploadUrl}                 (Bytes direkt ins Storage)
+GET    /v1/images/{id}             → {status, labels[], thumbnails{}}
+GET    /v1/images?label=berg&amp;minConfidence=0.9&amp;cursor=…  → {items[], nextCursor}
+GET    /v1/search?q=sonnenuntergang+see&amp;cursor=…           (Volltext/Vektor)
+DELETE /v1/images/{id}             → 204 (Bytes, Labels, Index, CDN-Purge)</pre>
+<p><b>Datenmodell:</b></p>
+<pre>CREATE TABLE images (
+  id         bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  owner_id   bigint NOT NULL,
+  sha256     bytea  NOT NULL,
+  blob_key   text   NOT NULL,
+  mime       text,
+  bytes      bigint,
+  status     text   NOT NULL DEFAULT 'pending'
+             CHECK (status IN ('pending','uploaded','processing','ready','rejected')),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (owner_id, sha256)
+);
+CREATE TABLE image_labels (
+  image_id   bigint NOT NULL REFERENCES images(id) ON DELETE CASCADE,
+  label      text   NOT NULL,
+  confidence real   NOT NULL,
+  PRIMARY KEY (image_id, label)
+);
+CREATE INDEX image_labels_label_idx ON image_labels (label, confidence DESC);
+CREATE INDEX images_todo_idx ON images (created_at) WHERE status = 'uploaded';</pre>
+<p><b>Query 1, laut gesagt:</b> „Ich lege die Bild-Zeile an. Lädt Anna dasselbe Bild nochmals hoch, verhindert der Unique-Key auf Besitzer und Hash ein Duplikat.“</p>
+<pre>INSERT INTO images (owner_id, sha256, blob_key, mime, bytes)
+VALUES (42, sha256('foto-ferien.jpg'), 'quarantine/42/7f3a', 'image/jpeg', 2400000)
+ON CONFLICT (owner_id, sha256) DO NOTHING
+RETURNING id, status;
+   id   | status
+--------+---------
+ 200001 | pending
+(1 row)
+-- gleiche Query, zweiter Versuch (anderer blob_key):
+ id | status
+----+--------
+(0 rows)</pre>
+<p><b>Query 2, laut gesagt:</b> „Jeder Worker holt sich fünf Bilder im Status uploaded. <code>FOR UPDATE SKIP LOCKED</code> überspringt gesperrte Zeilen. So bekommen zwei Worker nie dasselbe Bild.“</p>
+<pre>UPDATE images SET status = 'processing'
+WHERE id IN (SELECT id FROM images
+             WHERE status = 'uploaded'
+             ORDER BY created_at
+             LIMIT 5
+             FOR UPDATE SKIP LOCKED)
+RETURNING id, blob_key;
+   id   |  blob_key
+--------+------------
+ 199800 | img/199800
+ 200000 | img/200000
+ 199600 | img/199600
+ 199700 | img/199700
+ 199900 | img/199900
+(5 rows)</pre>
+<p><b>Query 3, laut gesagt:</b> „Die Suche nach ‚berg‘ mit hoher Sicherheit, neueste zuerst, 20 Treffer. Ich prüfe mit EXPLAIN, ob ein Index greift.“</p>
+<pre>EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY ON)
+SELECT i.id, l.confidence, i.created_at
+FROM image_labels l JOIN images i ON i.id = l.image_id
+WHERE l.label = 'berg' AND l.confidence &gt;= 0.95 AND i.status = 'ready'
+ORDER BY i.created_at DESC
+LIMIT 20;
+ Limit (actual rows=20 loops=1)
+   -&gt;  Gather Merge (actual rows=20 loops=1)
+         -&gt;  Sort (actual rows=20 loops=3)
+               Sort Method: top-N heapsort  Memory: 26kB
+               -&gt;  Parallel Hash Join (actual rows=1204 loops=3)
+                     -&gt;  Parallel Seq Scan on images i (actual rows=66000 loops=3)
+                           Filter: (status = 'ready'::text)
+                     -&gt;  Parallel Hash (actual rows=1204 loops=3)
+                           -&gt;  Parallel Bitmap Heap Scan on image_labels l (actual rows=3612 loops=1)
+                                 -&gt;  Bitmap Index Scan on image_labels_label_idx (actual rows=3612 loops=1)
+ Execution Time: 46.419 ms
+
+-- Fix: Such-Projektion mit dem Sortierfeld im Index
+CREATE TABLE image_search AS
+SELECT l.label, i.created_at, i.id AS image_id, l.confidence
+FROM image_labels l JOIN images i ON i.id = l.image_id
+WHERE i.status = 'ready' AND l.confidence &gt;= 0.8;
+CREATE INDEX image_search_idx ON image_search (label, created_at DESC);
+
+ Limit (actual rows=20 loops=1)
+   -&gt;  Index Scan using image_search_idx on image_search (actual rows=20 loops=1)
+         Index Cond: (label = 'berg'::text)
+         Filter: (confidence &gt;= '0.95'::double precision)
+         Rows Removed by Filter: 98
+ Execution Time: 0.172 ms</pre>
+<p class="small">Echte Ausgabe, PostgreSQL 17.12 (Schema <code>demo_image_upload</code>, 200 000 Bilder, 540 000 Labels, danach gelöscht). Plan-Zeilen leicht gekürzt (Worker-Zeilen, Hash Cond).</p>
+<ol>
+  <li><b>Idempotenz über Daten:</b> Der Unique-Key <code>(owner_id, sha256)</code> macht den zweiten Upload zu „0 rows“. Die API liefert dann die bestehende ID zurück.</li>
+  <li><b>Work-Queue in der DB:</b> <code>SKIP LOCKED</code> plus Partial Index auf <code>status = 'uploaded'</code> gibt eine einfache, sichere Queue. Bei sehr hoher Last nimmt man eine echte Queue.</li>
+  <li><b>Join ist teuer:</b> Der Label-Index greift, aber die Sortierung nach <code>created_at</code> zwingt einen Seq Scan über alle Bilder: 46 ms.</li>
+  <li><b>Projektion für die Suche:</b> Eine denormalisierte Tabelle mit Index <code>(label, created_at DESC)</code> liest nur 118 Zeilen: 0,17 ms. Das ist genau die Idee hinter einem separaten Suchindex.</li>
+</ol>
+
+<h2>4. Details, die Interviewer fragen</h2>
+<ol>
+  <li><b>Anforderungen zuerst:</b> Funktional: hochladen, Status sehen, nach Labels und Text suchen, löschen. Nicht-funktional: Upload-Antwort unter 1 s, „suchbar“ nach Sekunden bis Minuten, keine Malware ausliefern, Bilder nur für Berechtigte.</li>
+  <li><b>Schätzung (Annahmen):</b> 1 Mio. Uploads pro Tag, 3 MB im Schnitt. Das sind ca. <b>12 Uploads/s</b>, Spitze ×5 ca. <b>60/s</b>. Eingehend ca. 3 TB pro Tag, ca. 35 MB/s im Schnitt, Spitze ca. 1,4 Gbit/s.</li>
+  <li><b>Speicher:</b> 3 TB pro Tag sind ca. <b>1,1 PB pro Jahr</b> Originale. Thumbnails kosten ca. 10 % dazu. Darum Lifecycle-Regeln: alte Originale in einen kalten Tier.</li>
+  <li><b>Metadaten:</b> 1 Mio. Zeilen pro Tag zu ca. 1 KB sind ca. 365 GB pro Jahr. 10 Labels pro Bild sind 3,65 Mrd. Label-Zeilen pro Jahr. Das passt nicht mehr bequem in eine Tabelle: Partitionierung oder Suchindex.</li>
+  <li><b>Erkennung:</b> Angenommen 200 ms GPU-Zeit pro Bild. Spitze 60 Bilder/s braucht ca. <b>12 parallele Inferenzen</b>. Mit Batching weniger GPUs. Die Queue puffert Spitzen, GPUs skalieren nach Queue-Länge.</li>
+  <li><b>Suche:</b> 5 Mio. Suchen pro Tag sind ca. 60 QPS, Spitze ca. 300 QPS. Das schafft ein kleiner Suchcluster leicht. Der Engpass ist eher die Rechte-Filterung.</li>
+  <li><b>Direkt-Upload:</b> Eine <b>Presigned URL</b> (S3) oder <b>SAS</b> (Azure) erlaubt einen PUT ohne Zugangsdaten. Bei S3 mit SigV4 maximal 7 Tage gültig; für Uploads nimmt man Minuten.</li>
+  <li><b>Grosse Dateien:</b> Über einige hundert MB nutzt man <b>Multipart</b> (S3) oder <b>Block-Upload</b> (Azure). Teile laufen parallel und sind einzeln wiederholbar. Achtung: Ein Scan von Teilstücken ist wertlos; gescannt wird das fertige Objekt.</li>
+  <li><b>Malware-Scan:</b> Defender for Storage scannt beim Upload Blobs bis 50 GB. Ergebnisse kommen als Blob Index Tags, Alerts, Event Grid oder Log Analytics. Index Tags sind nicht manipulationssicher; für Sicherheit Events nutzen.</li>
+  <li><b>Dateityp-Spoofing:</b> Die Endung und der Content-Type lügen oft. Der Worker prüft die <b>Magic Bytes</b>, z. B. mit Apache Tika, und <b>re-encodet</b> das Bild. Ein neu kodiertes JPEG enthält keinen versteckten Payload mehr.</li>
+  <li><b>Decompression Bomb:</b> Ein 50-KB-PNG kann 50 000 × 50 000 Pixel haben. Darum vor dem Dekodieren Pixel-Limit prüfen und Worker mit Speicherlimit laufen lassen.</li>
+  <li><b>Datenschutz:</b> EXIF enthält oft GPS-Koordinaten. Der Worker entfernt sie vor der Auslieferung. Gesichtserkennung ist rechtlich heikel und braucht eine eigene Grundlage.</li>
+  <li><b>Erkennung: Labels vs Embeddings:</b> <b>Labels</b> sind Wörter mit Konfidenz („berg 0,97“). <b>Embeddings</b> sind Vektoren; ähnliche Bilder liegen nah beieinander. Damit geht „finde ähnliche Bilder“ und Freitext-Suche.</li>
+  <li><b>Modell-Version:</b> Labels speichern mit <code>model_version</code>. Ein neues Modell bedeutet Re-Processing über die Queue, mit eigener niedriger Priorität.</li>
+  <li><b>Suchindex-Konsistenz:</b> Der Index ist <b>eventual consistent</b>. Die Outbox garantiert, dass jede Änderung ankommt. Ein Reindex-Job baut den Index aus der DB neu.</li>
+  <li><b>Rechte in der Suche:</b> Jeder Index-Eintrag trägt <code>owner_id</code> oder ACL-Gruppen. Die Suche filtert <b>im Index</b>, nicht erst danach. Sonst stimmen Seiten und Trefferzahlen nicht.</li>
+  <li><b>Löschen:</b> Löschen heisst: DB-Zeile, Original, Thumbnails, Index-Eintrag, CDN-Cache. Ein Lösch-Job mit Status ist sicherer als ein einzelner Call.</li>
+  <li><b>Fehler im Ablauf:</b> Worker-Absturz → Lease läuft ab, Bild geht zurück in die Queue. Modell-Timeout → Retry mit Backoff, nach N Versuchen <b>DLQ</b>. Scan-Timeout → Status <code>scan_timeout</code>, manuell prüfen, nie automatisch freigeben.</li>
+</ol>
+
+<h2>5. Vergleich: drei Design-Varianten</h2>
+<ul>
+  <li><b>A. Direkt-Upload mit Presigned URL:</b> API bleibt klein, Storage trägt die Last, Client kann fortsetzen. Aber: Bytes kommen ungeprüft an. Darum Quarantäne und Scan zwingend.</li>
+  <li><b>B. Upload über einen Service:</b> Der Service prüft JWT, Grösse und Typ <b>vor</b> dem ersten gespeicherten Byte. Gut bei Storage nur mit Private Endpoints. Aber: Der Service trägt die ganze Bandbreite und muss mitskalieren.</li>
+  <li><b>C. Synchrone Erkennung im Upload-Request:</b> Einfach, Ergebnis sofort. Aber: Upload-Latenz hängt am Modell, GPU-Spitzen schlagen auf den Nutzer durch, Retries doppeln Arbeit. Nur für kleine Last oder Prototypen.</li>
+</ul>
+<table style="border-collapse: collapse; width: 100%; font-size: 15px;">
+  <tr><th style="text-align:left; border-bottom:1px solid #ccc;">Suche</th><th style="text-align:left; border-bottom:1px solid #ccc;">PostgreSQL (+ pgvector)</th><th style="text-align:left; border-bottom:1px solid #ccc;">OpenSearch / Elasticsearch</th></tr>
+  <tr><td>Betrieb</td><td>eine DB, transaktional</td><td>eigener Cluster, async befüllt</td></tr>
+  <tr><td>Stärke</td><td>Rechte-Joins, kleine bis mittlere Mengen</td><td>Volltext, Facetten, grosse Mengen</td></tr>
+  <tr><td>Grenze</td><td>Milliarden Label-Zeilen</td><td>Konsistenz, Reindex-Aufwand</td></tr>
+</table>
+
+<h2>6. In der Produktion</h2>
+<ol>
+  <li><b>Bilder hängen in <code>pending</code>:</b> Der Client hat nie hochgeladen oder das Event ging verloren. Fix: Aufräum-Job löscht Intents nach 24 h; ein Reconciler vergleicht Storage und DB.</li>
+  <li><b>Scan-Ergebnisse kommen nicht an:</b> Bei Defender wird die Event-Grid-Zustellung an Topics ohne Public Network Access nicht unterstützt. Fix: bewusst geplante Ausnahme für Event Grid, Rest bleibt privat.</li>
+  <li><b>GPU-Kosten explodieren:</b> Ein Re-Processing aller Bilder läuft mit voller Priorität. Fix: eigene Queue mit niedriger Priorität und Rate Limit.</li>
+  <li><b>Suchtreffer zeigen gelöschte Bilder:</b> Index-Update fehlgeschlagen. Fix: Outbox mit Retry, API prüft Status in der DB vor der Auslieferung.</li>
+  <li><b>Worker OOM-killed:</b> Riesige oder bösartige Bilder. Fix: Pixel-Limit vor dem Dekodieren, Memory-Limit, Bild nach 3 Fehlern in die DLQ.</li>
+  <li><b>CDN liefert altes Bild nach Löschung:</b> Fix: versionierte URLs plus Purge beim Löschen, kurze Gültigkeit der signierten URLs.</li>
+</ol>
+
+<h2>7. Diagnose: Werkzeuge und Queries</h2>
+<ul>
+  <li><b>Status-Verteilung:</b> <code>SELECT status, count(*) FROM images GROUP BY 1;</code> Wächst <code>uploaded</code>, fehlen Worker.</li>
+  <li><b>Alter des ältesten Jobs:</b> <code>SELECT now() - min(created_at) FROM images WHERE status = 'uploaded';</code> Das ist die wichtigste Alarm-Metrik.</li>
+  <li><b>Queue-Metriken:</b> Länge, Alter der ältesten Nachricht, DLQ-Grösse, Verarbeitungszeit pro Stufe (Scan, Thumbs, Erkennung).</li>
+  <li><b>Defender:</b> Tabelle <code>StorageMalwareScanningResults</code> in Log Analytics für Scan-Historie und Audit.</li>
+  <li><b>EXPLAIN (ANALYZE, BUFFERS):</b> für Such- und Claim-Queries. Ziel: Index Scan, wenige gelesene Zeilen.</li>
+  <li><b>Tracing:</b> eine Trace-ID vom Intent bis zum Index-Update, z. B. mit OpenTelemetry. So sieht man, wo ein Bild hängt.</li>
+</ul>
+
+<h2>8. Senior-Punkte</h2>
+<div class="senior">
+<ol>
+  <li><b>Upload-Pfad und Verarbeitungs-Pfad trennen.</b> Der Nutzer wartet nur auf den Upload, nie auf Scan oder Modell.</li>
+  <li><b>Nie ungeprüfte Bytes ausliefern.</b> Quarantäne, Scan, Typ-Prüfung und Re-Encoding sind Pflicht bei fremden Dateien.</li>
+  <li><b>Ein Status-Automat pro Bild</b> macht Fehler sichtbar und Retries sicher: pending → uploaded → processing → ready oder rejected.</li>
+  <li><b>DB ist die Wahrheit, der Index eine Projektion.</b> Ich kann den Index jederzeit wegwerfen und neu bauen.</li>
+  <li><b>Rechte im Index filtern,</b> nicht nach der Suche. Sonst stimmen Paging und Trefferzahl nicht, und Daten können leaken.</li>
+  <li><b>Erst einfach:</b> PostgreSQL mit Labels und SKIP-LOCKED-Queue reicht für Millionen Bilder. Einen Suchcluster und eine echte Queue füge ich ein, wenn Zahlen es verlangen.</li>
+</ol>
+</div>
+
+<h2>9. Aus dem Projekt</h2>
+<p>„Bei DigiSanté habe ich einen ähnlichen Upload gebaut: Die Upload-Function prüft das JWT (RS256 gegen den Key-Vault-Schlüssel) und mit Apache Tika die Magic Bytes, antwortet direkt nach dem Blob-Write, und eine separate Event-Hub-Function gibt die Datei nach dem Defender-Scan frei oder löscht sie, alles im privaten Netz. Erkennung und Suche habe ich dort nicht gebaut.“ <span class="small">(Prüfen und durch dein echtes Beispiel ersetzen.)</span></p>
+
+<h2>10. Fallen</h2>
+<div class="trap">
+<ul>
+  <li>„Die API nimmt die Datei an und ruft das Modell auf.“ → <b>Falsch</b> bei Last. Upload und Verarbeitung entkoppeln, sonst bestimmt die GPU die Upload-Latenz.</li>
+  <li>„Content-Type <code>image/jpeg</code> reicht als Prüfung.“ → <b>Falsch.</b> Der Header kommt vom Client. Magic Bytes prüfen und re-encoden.</li>
+  <li>„Wir speichern Bilder in der Datenbank.“ → Nur Metadaten. Bytes gehören ins Object Storage, die DB hält den Schlüssel.</li>
+  <li>„Der Suchindex ist die Datenbank.“ → <b>Falsch.</b> Er ist async und kann Lücken haben. Wahrheit ist die DB.</li>
+  <li>„Blob Index Tags vom Scanner sind sicher genug für die Freigabe.“ → Laut Microsoft nicht manipulationssicher. Für die Freigabe Events oder Alerts nutzen.</li>
+  <li>„Rechte prüfe ich nach der Suche.“ → Falsch. Trefferzahl und Paging stimmen nicht, und Metadaten können leaken.</li>
+</ul>
+</div>
+
+<h2>11. Fragen</h2>
+<details><summary>Skizzieren Sie das System in einer Minute.</summary><p>Upload-Intent, direkter Upload in Quarantäne, Malware-Scan per Event, Queue mit Workern für Thumbnails und Erkennung, PostgreSQL als Wahrheit, Suchindex über Outbox, Auslieferung über CDN.</p></details>
+<details><summary>Welche Fragen stellen Sie zuerst?</summary><p>Wie viele Uploads pro Tag, welche Grösse, wie schnell muss ein Bild suchbar sein, wer darf was sehen, welche Erkennung (Labels, Text, ähnliche Bilder), wie lange aufbewahren.</p></details>
+<details><summary>Rechnen Sie Speicher und Durchsatz grob.</summary><p>1 Mio. Uploads à 3 MB sind 3 TB pro Tag, ca. 1,1 PB pro Jahr. Im Schnitt 12 Uploads/s, Spitze ca. 60/s.</p></details>
+<details><summary>Warum lädt der Client direkt ins Storage?</summary><p>Die API muss keine Bytes tragen und bleibt klein. Das Storage skaliert die Bandbreite. Die API vergibt nur kurzlebige, auf ein Objekt beschränkte Rechte.</p></details>
+<details><summary>Wann laden Sie trotzdem über einen Service hoch?</summary><p>Wenn das Storage nur privat erreichbar ist oder man vor dem ersten Byte prüfen muss, z. B. JWT und Dateityp. Preis: Der Service trägt die Bandbreite.</p></details>
+<details><summary>Wie verhindern Sie Malware im System?</summary><p>Quarantäne-Bereich, Scan jedes Objekts, Freigabe nur per Scan-Event, Magic-Bytes-Prüfung, Re-Encoding. Ungeprüftes wird nie ausgeliefert.</p></details>
+<details><summary>Warum asynchrone Erkennung?</summary><p>Das Modell ist langsam und teuer. Die Queue puffert Spitzen, Worker skalieren nach Queue-Länge, und Fehler werden einzeln wiederholt.</p></details>
+<details><summary>Wie verhindern Sie, dass zwei Worker dasselbe Bild verarbeiten?</summary><p>Atomarer Claim mit FOR UPDATE SKIP LOCKED oder die Lease einer Queue. Dazu idempotente Verarbeitung: Labels ersetzen, nicht anhängen.</p></details>
+<details><summary>Was passiert, wenn ein Worker mitten in der Arbeit abstürzt?</summary><p>Die Lease oder der Status läuft ab, ein anderer Worker übernimmt. Weil das Ergebnis in einer Transaktion geschrieben wird, gibt es keinen halben Zustand.</p></details>
+<details><summary>Wie machen Sie den Upload idempotent?</summary><p>Idempotency-Key am Intent und ein Unique-Key auf Besitzer und SHA-256. Ein Retry liefert dieselbe Bild-ID.</p></details>
+<details><summary>Wie bauen Sie die Suche?</summary><p>Labels und Text in einen Suchindex mit Besitzer- oder ACL-Feld. Für „ähnliche Bilder“ Embeddings in einem Vektorindex. Gefüllt über Outbox aus der DB.</p></details>
+<details><summary>Labels oder Embeddings?</summary><p>Labels sind einfach, erklärbar und filterbar. Embeddings finden ähnliche Bilder und Freitext. Oft beides: Labels für Filter, Vektoren für Ranking.</p></details>
+<details><summary>Wie bleibt der Suchindex konsistent?</summary><p>Gar nicht sofort. Die Outbox garantiert, dass jede Änderung ankommt. Ein Reindex-Job baut ihn aus der DB neu. Die API prüft den Status vor der Auslieferung.</p></details>
+<details><summary>Wie setzen Sie Rechte in der Suche um?</summary><p>Jeder Index-Eintrag trägt Besitzer oder ACL-Gruppen. Die Suche filtert im Index. So stimmen Trefferzahl und Paging.</p></details>
+<details><summary>Warum ist Ihre erste Such-Query langsam?</summary><p>Filter auf Labels, Sortierung nach Datum aus einer anderen Tabelle. Die DB muss alle Bilder lesen. Eine Projektion mit Index (label, created_at) macht daraus einen Index Scan.</p></details>
+<details><summary>Wie gehen Sie mit grossen Dateien um?</summary><p>Multipart- oder Block-Upload, Teile parallel und einzeln wiederholbar. Gescannt wird das fertige Objekt, nicht die Teile.</p></details>
+<details><summary>Was ist eine Decompression Bomb?</summary><p>Eine kleine Datei, die beim Dekodieren riesig wird. Schutz: Pixel-Limit vor dem Dekodieren, Speicherlimit im Worker.</p></details>
+<details><summary>Welche Datenschutz-Punkte nennen Sie?</summary><p>EXIF mit GPS entfernen, Rechte pro Bild, Löschung überall inklusive Index und CDN, Gesichtserkennung nur mit Rechtsgrundlage.</p></details>
+<details><summary>Wie löschen Sie ein Bild vollständig?</summary><p>Ein Lösch-Job mit Status: DB-Zeile, Original, Thumbnails, Index-Eintrag, CDN-Purge. Jeder Schritt idempotent und wiederholbar.</p></details>
+<details><summary>Was passiert bei einem neuen Erkennungsmodell?</summary><p>Labels tragen die Modell-Version. Ein Re-Processing läuft über eine eigene Queue mit niedriger Priorität und Rate Limit.</p></details>
+<details><summary>Welche Metriken alarmieren Sie?</summary><p>Alter des ältesten Jobs pro Stufe, DLQ-Grösse, Fehlerrate von Scan und Modell, Zeit vom Upload bis ready.</p></details>
+<details><summary>Wie skaliert die Datenbank?</summary><p>Metadaten sind klein. Label-Zeilen wachsen schnell: Partitionierung nach Zeit oder Auslagerung der Suche in einen Index. Lese-Replikate für Statusabfragen.</p></details>
+<details><summary>Szenario: Nach einem Marketing-Event kommen 10× mehr Uploads. Was passiert?</summary><p>Upload und Storage halten, weil sie direkt laufen. Die Queue wächst, Bilder sind später suchbar. Worker und GPUs skalieren nach Queue-Länge; die Nutzer sehen „in Bearbeitung“.</p></details>
+<details><summary>Szenario: Ein Nutzer findet ein Bild eines anderen Nutzers in seiner Suche. Was ist passiert?</summary><p>Wahrscheinlich fehlt der Rechte-Filter im Index oder ein Eintrag hat falsche ACL-Felder. Sofort: Rechte-Prüfung in der API vor der Auslieferung. Dann Index-Mapping korrigieren und neu indexieren.</p></details>
+<details><summary>Szenario: Viele Bilder bleiben im Status uploaded hängen. Wie gehen Sie vor?</summary><p>Alter des ältesten Jobs prüfen, Worker-Logs, DLQ. Typisch: Modell-Timeouts oder OOM. Fix: Retry mit Backoff, Pixel-Limit, mehr Worker; hängende Claims per Timeout zurücksetzen.</p></details>
+
+</body>
+</html>
