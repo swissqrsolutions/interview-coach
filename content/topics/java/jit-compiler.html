@@ -1,0 +1,199 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>JIT-Compiler</title>
+<style>
+  body { font: 17px/1.55 -apple-system, system-ui, sans-serif; max-width: 760px; margin: 0 auto; padding: 16px; color: #1d1d1f; }
+  h1 { font-size: 28px; margin: 8px 0 4px; }
+  h2 { font-size: 21px; margin: 32px 0 8px; padding-top: 12px; border-top: 2px solid #e5e5ea; }
+  .kern { background: #eef6ff; border-left: 4px solid #0a66c2; padding: 10px 14px; border-radius: 6px; }
+  .senior { background: #f0faf0; border-left: 4px solid #2e7d32; padding: 10px 14px; border-radius: 6px; }
+  .trap { background: #fff4f2; border-left: 4px solid #c62828; padding: 10px 14px; border-radius: 6px; }
+  code { background: #f2f2f7; padding: 1px 5px; border-radius: 4px; font-size: 15px; }
+  pre { background: #1e1e1e; color: #e6e6e6; padding: 12px; border-radius: 8px; overflow-x: auto; font-size: 13.5px; line-height: 1.45; }
+  svg { width: 100%; height: auto; display: block; margin: 10px 0; }
+  ol li, ul li { margin: 4px 0; }
+  details { border: 1px solid #e5e5ea; border-radius: 8px; padding: 8px 12px; margin: 6px 0; }
+  summary { font-weight: 600; cursor: pointer; }
+  details p { margin: 6px 0 2px; }
+  .small { color: #6e6e73; font-size: 14px; }
+</style>
+</head>
+<body>
+
+<h1>JIT-Compiler</h1>
+<p class="small">Java · Tier 1 · Quellen: OpenJDK HotSpot, JEP 197, JEP 483, JEP 515</p>
+
+<div class="kern">
+<b>Kern:</b> Der JIT-Compiler (<b>Just-in-Time</b>) übersetzt <b>heissen Bytecode</b> zur Laufzeit in <b>optimierten Maschinencode</b>. Er optimiert mit echten Messdaten aus dem laufenden Programm. Er macht die <b>Ausführung</b> schnell, nicht die Kompilierung.
+</div>
+
+<h2>1. Wo sitzt der JIT in der JVM?</h2>
+<svg viewBox="0 0 720 330" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="a" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="10" y="20" width="120" height="44" rx="8" fill="#fff" stroke="#555"/><text x="70" y="47" text-anchor="middle">Demo.java</text>
+  <line x1="130" y1="42" x2="178" y2="42" stroke="#555" stroke-width="2" marker-end="url(#a)"/><text x="154" y="34" text-anchor="middle" font-size="12">javac</text>
+  <rect x="180" y="20" width="120" height="44" rx="8" fill="#fff" stroke="#555"/><text x="240" y="40" text-anchor="middle">Demo.class</text><text x="240" y="56" text-anchor="middle" font-size="12">Bytecode</text>
+  <line x1="300" y1="42" x2="348" y2="42" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="350" y="8" width="360" height="314" rx="12" fill="#f7f7fa" stroke="#999" stroke-dasharray="5 4"/><text x="530" y="28" text-anchor="middle" font-weight="700">JVM</text>
+  <rect x="370" y="40" width="320" height="38" rx="8" fill="#fff" stroke="#555"/><text x="530" y="64" text-anchor="middle">Class Loader (laden, prüfen, verlinken)</text>
+  <line x1="530" y1="78" x2="530" y2="96" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="370" y="98" width="320" height="58" rx="8" fill="#fff" stroke="#555"/><text x="530" y="118" text-anchor="middle">Runtime Data Areas</text><text x="530" y="140" text-anchor="middle" font-size="12">Heap · Stacks · Metaspace · Code Cache</text>
+  <line x1="530" y1="156" x2="530" y2="174" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="370" y="176" width="320" height="100" rx="8" fill="#fff" stroke="#555"/><text x="530" y="196" text-anchor="middle" font-weight="700">Execution Engine</text>
+  <rect x="384" y="208" width="90" height="54" rx="6" fill="#eee" stroke="#777"/><text x="429" y="240" text-anchor="middle">Interpreter</text>
+  <rect x="486" y="208" width="104" height="54" rx="6" fill="#0a66c2" stroke="#0a66c2"/><text x="538" y="232" text-anchor="middle" fill="#fff" font-weight="700">JIT</text><text x="538" y="250" text-anchor="middle" fill="#fff" font-size="12">C1 + C2</text>
+  <rect x="602" y="208" width="76" height="54" rx="6" fill="#eee" stroke="#777"/><text x="640" y="240" text-anchor="middle">GC</text>
+  <line x1="530" y1="276" x2="530" y2="294" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <text x="530" y="312" text-anchor="middle">CPU (Maschinencode)</text>
+</svg>
+<ol>
+  <li><b>javac</b> übersetzt Java in <b>Bytecode</b>. Bytecode ist für keine echte CPU.</li>
+  <li>Der <b>Class Loader</b> lädt die Klasse und prüft den Bytecode.</li>
+  <li>Die <b>Execution Engine</b> führt ihn aus: zuerst der <b>Interpreter</b>, später der <b>JIT</b>.</li>
+  <li>Der JIT legt den fertigen Maschinencode in den <b>Code Cache</b>.</li>
+</ol>
+
+<h2>2. Die Reise einer Methode (die Geschichte zum Merken)</h2>
+<svg viewBox="0 0 720 300" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="b" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker><marker id="r" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#c62828"/></marker></defs>
+  <rect x="10" y="60" width="150" height="80" rx="10" fill="#eee" stroke="#777"/><text x="85" y="88" text-anchor="middle" font-weight="700">Stufe 0</text><text x="85" y="108" text-anchor="middle">Interpreter</text><text x="85" y="126" text-anchor="middle" font-size="12">zählt Aufrufe</text>
+  <line x1="160" y1="100" x2="238" y2="100" stroke="#555" stroke-width="2" marker-end="url(#b)"/><text x="199" y="90" text-anchor="middle" font-size="12">ca. 200×</text>
+  <rect x="240" y="60" width="180" height="80" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="330" y="88" text-anchor="middle" font-weight="700">Stufe 3 · C1</text><text x="330" y="108" text-anchor="middle">schnell kompiliert</text><text x="330" y="126" text-anchor="middle" font-size="12">sammelt Profil</text>
+  <line x1="420" y1="100" x2="498" y2="100" stroke="#555" stroke-width="2" marker-end="url(#b)"/><text x="459" y="90" text-anchor="middle" font-size="12">ca. 5000×</text>
+  <rect x="500" y="60" width="210" height="80" rx="10" fill="#0a66c2" stroke="#0a66c2"/><text x="605" y="88" text-anchor="middle" fill="#fff" font-weight="700">Stufe 4 · C2</text><text x="605" y="108" text-anchor="middle" fill="#fff">stark optimiert</text><text x="605" y="126" text-anchor="middle" fill="#fff" font-size="12">nutzt das Profil</text>
+  <path d="M605,140 C605,240 85,240 85,142" fill="none" stroke="#c62828" stroke-width="2" stroke-dasharray="6 4" marker-end="url(#r)"/>
+  <text x="345" y="232" text-anchor="middle" fill="#c62828" font-weight="700">Deoptimierung</text>
+  <text x="345" y="252" text-anchor="middle" fill="#c62828" font-size="12">Annahme falsch → zurück in den Interpreter → neu messen</text>
+  <rect x="240" y="8" width="180" height="34" rx="8" fill="#fff" stroke="#999"/><text x="330" y="30" text-anchor="middle" font-size="13">Code Cache</text>
+  <line x1="330" y1="60" x2="330" y2="44" stroke="#999" stroke-width="1.5" marker-end="url(#b)"/>
+  <line x1="605" y1="60" x2="422" y2="28" stroke="#999" stroke-width="1.5" marker-end="url(#b)"/>
+</svg>
+<ol>
+  <li><b>Start: Interpreter (Stufe 0).</b> Die JVM führt Bytecode Befehl für Befehl aus. Das ist langsam, aber sofort bereit. Sie <b>zählt</b> Aufrufe und Schleifen-Durchläufe jeder Methode.</li>
+  <li><b>Die Methode wird heiss: C1 (Stufe 3).</b> Nach ca. 200 Aufrufen kompiliert <b>C1</b> sie schnell zu Maschinencode. Dieser Code <b>sammelt ein Profil</b>: welche Klassen kommen vor, welche <code>if</code>-Zweige laufen.</li>
+  <li><b>Die Methode ist sehr heiss: C2 (Stufe 4).</b> Nach ca. 5000 Aufrufen kompiliert <b>C2</b> sie neu. C2 nutzt das Profil und <b>wettet</b>: „Hier kommt immer nur <code>ArrayList</code>.“ Damit optimiert er stark.</li>
+  <li><b>Code Cache.</b> Der Maschinencode liegt im Code Cache. Ab jetzt springt die JVM direkt dorthin.</li>
+  <li><b>Die Wette ist falsch: Deoptimierung.</b> Kommt plötzlich eine <code>LinkedList</code>, trifft der Code eine <b>uncommon trap</b>. Die JVM wirft den C2-Code weg (<b>made not entrant</b>), geht zurück in den Interpreter und misst neu.</li>
+  <li><b>Lange Schleife in <code>main</code>?</b> Die Methode wird nur einmal aufgerufen. Darum ersetzt die JVM den Code <b>mitten in der Schleife</b>: <b>On-Stack Replacement (OSR)</b>.</li>
+</ol>
+<p>Diese 5 Stufen (0–4) heissen <b>Tiered Compilation</b>. Sie ist seit Java 8 Standard. Stufe 1 und 2 nutzt C1 nur in Sonderfällen (z. B. wenn C2 überlastet ist).</p>
+
+<h2>3. Beispiel: den JIT bei der Arbeit sehen</h2>
+<pre>public class Demo {
+  static int square(int x) { return x * x; }
+  public static void main(String[] args) {
+    long sum = 0;
+    for (int i = 0; i &lt; 1_000_000; i++) sum += square(i);
+    System.out.println(sum);
+  }
+}</pre>
+<pre>$ java -XX:+PrintCompilation Demo
+15    6       3   Demo::square (4 bytes)
+16    7       4   Demo::square (4 bytes)
+16    6       3   Demo::square (4 bytes)   made not entrant
+16    8 %     3   Demo::main @ 4 (32 bytes)
+16   10 %     4   Demo::main @ 4 (32 bytes)</pre>
+<p class="small">Echte Ausgabe, OpenJDK 21. Spalten: Zeit in ms · Compile-ID · <code>%</code> = OSR · Stufe · Methode.</p>
+<ol>
+  <li><code>square</code> wird zuerst von <b>C1</b> (Stufe 3), dann von <b>C2</b> (Stufe 4) kompiliert.</li>
+  <li>Danach wird die C1-Version weggeworfen: <b>made not entrant</b>. Die C2-Version ersetzt sie.</li>
+  <li><code>main</code> läuft nur einmal, aber die Schleife ist heiss. Darum <b>OSR</b> (<code>%</code>) mitten in der Schleife.</li>
+</ol>
+<p><b>Gemessen (300 Mio. Durchläufe, gleicher Code):</b></p>
+<ul>
+  <li><code>-Xint</code> (nur Interpreter): <b>3700 ms</b></li>
+  <li><code>-XX:TieredStopAtLevel=1</code> (nur C1): <b>133 ms</b></li>
+  <li>Standard (C1 + C2): <b>120 ms</b></li>
+</ul>
+<p>Der JIT macht diesen Code also ca. <b>30× schneller</b>.</p>
+
+<h2>4. Die wichtigsten Optimierungen von C2</h2>
+<ol>
+  <li><b>Inlining</b> (die wichtigste): Der Code einer kleinen Methode wird direkt an der Aufrufstelle eingesetzt. Kein Aufruf mehr, und alle anderen Optimierungen sehen mehr Code. Grenzen: heisse Methoden bis 325 Bytes Bytecode, andere bis 35 Bytes.</li>
+  <li><b>Devirtualisierung:</b> Ein Interface-Aufruf hat oft nur eine echte Klasse. Der JIT ruft sie direkt auf und kann sie inlinen.
+    <ul><li><b>monomorph</b> (1 Klasse) und <b>bimorph</b> (2 Klassen): schnell.</li><li><b>megamorph</b> (3+ Klassen): langsamer Aufruf über die Methodentabelle, kein Inlining.</li></ul></li>
+  <li><b>Escape Analysis:</b> Verlässt ein Objekt die Methode nicht, muss es nicht auf den Heap. C2 zerlegt es in einzelne Variablen (<b>Scalar Replacement</b>). Weniger Arbeit für den GC.</li>
+  <li><b>Lock Elision und Lock Coarsening:</b> Ein Lock auf einem Objekt, das nur ein Thread sieht, fällt weg. Viele kleine Locks nacheinander werden zu einem.</li>
+  <li><b>Schleifen:</b> Loop Unrolling, Range-Check-Elimination (Array-Grenzen nur einmal prüfen), Vektorisierung (SIMD).</li>
+  <li><b>Dead Code Elimination</b> und <b>Constant Folding</b>: Unnötiger Code fällt weg, feste Werte werden vorher berechnet.</li>
+  <li><b>Intrinsics:</b> Für bekannte Methoden (z. B. <code>System.arraycopy</code>, <code>Math</code>, <code>String</code>) hat der JIT fertigen CPU-Code.</li>
+</ol>
+
+<h2>5. JIT vs AOT vs Interpreter</h2>
+<ul>
+  <li><b>Interpreter:</b> startet sofort, läuft langsam, kein Kompilieren.</li>
+  <li><b>JIT (HotSpot):</b> Warm-up nötig, dann höchste Leistung. Passt sich zur Laufzeit an. Braucht CPU und Speicher für Compiler und Code Cache.</li>
+  <li><b>AOT – GraalVM Native Image:</b> alles vorher kompiliert. Start in Millisekunden, wenig Speicher. Aber: lange Build-Zeit, Reflection braucht Konfiguration, keine Laufzeit-Optimierung, Spitzenleistung oft etwas tiefer. Spring Boot 3 unterstützt es.</li>
+  <li><b>Mittelweg – AOT Cache (Projekt Leyden):</b> Java 24 speichert geladene Klassen vorab (JEP 483). Java 25 speichert auch Profile (JEP 515). Der JIT startet so schneller warm, bleibt aber ein JIT.</li>
+  <li><b>CDS</b> (Class Data Sharing): geladene Klassen als Datei teilen. Schnellerer Start, älter und einfacher als Leyden.</li>
+</ul>
+
+<h2>6. In der Produktion</h2>
+<ol>
+  <li><b>Warm-up nach jedem Deployment:</b> Die ersten Requests sind langsam (Interpreter und C1). Lösung: Readiness Probe erst nach Warm-up-Requests auf „bereit“ setzen, AOT Cache oder CDS nutzen.</li>
+  <li><b>Kleine CPU-Limits in Kubernetes:</b> Die Compiler-Threads brauchen CPU. Bei 0,5 CPU dauert der Warm-up lange, und es gibt CPU-Throttling. Darum beim Start mehr CPU erlauben (Requests/Limits passend setzen).</li>
+  <li><b>Code Cache voll:</b> Meldung <code>CodeCache is full. Compiler has been disabled.</code> Danach wird neuer Code nur noch interpretiert, die Anwendung wird langsam. Lösung: <code>-XX:ReservedCodeCacheSize</code> erhöhen (Standard 240 MB).</li>
+  <li><b>Serverless</b> (z. B. Azure Functions): Kalte Starts mit JIT sind teuer. Native Image oder AOT Cache helfen.</li>
+  <li><b>Benchmarks:</b> Ohne Warm-up misst man den Interpreter. Und der JIT löscht Code, dessen Ergebnis niemand nutzt. Darum <b>JMH</b>.</li>
+  <li><b>Riesige Methoden:</b> Über 8000 Bytes Bytecode kompiliert HotSpot nicht (z. B. generierter Code). Lösung: Methode aufteilen.</li>
+</ol>
+
+<h2>7. Diagnose: Werkzeuge und Flags</h2>
+<ul>
+  <li><code>-XX:+PrintCompilation</code>: welche Methode wann auf welcher Stufe kompiliert wird.</li>
+  <li><code>-XX:+UnlockDiagnosticVMOptions -XX:+PrintInlining</code>: was inlined wird und warum nicht.</li>
+  <li><b>JFR</b> (Java Flight Recorder): Events <code>jdk.Compilation</code>, <code>jdk.Deoptimization</code>, <code>jdk.CodeCacheFull</code>. Geeignet für die Produktion.</li>
+  <li><code>jcmd &lt;pid&gt; Compiler.codecache</code>: wie voll der Code Cache ist.</li>
+  <li><code>-Xint</code> (nur Interpreter), <code>-XX:TieredStopAtLevel=1</code> (nur C1, schneller Start, z. B. lokal in der Entwicklung).</li>
+  <li><b>JITWatch</b>: JIT-Logs grafisch lesen.</li>
+</ul>
+
+<h2>8. Senior-Punkte</h2>
+<div class="senior">
+<ol>
+  <li><b>Der JIT wettet.</b> Er optimiert mit Annahmen aus dem Profil. Ist eine Annahme falsch, deoptimiert er. Darum kann Leistung kurz einbrechen, z. B. wenn neuer Code oder eine neue Klasse geladen wird.</li>
+  <li><b>Warm-up ist ein Betriebsthema,</b> nicht nur ein Java-Thema: Readiness Probe, CPU-Limits, Rolling Update langsam genug.</li>
+  <li><b>Lesbarer Code ist meist schneller Code.</b> Kleine Methoden werden inlined. Mikro-Optimierungen von Hand helfen selten.</li>
+  <li><b>Megamorphe Aufrufe</b> (viele Klassen hinter einem Interface an einer heissen Stelle) verhindern Inlining. Das sieht man im Profiler, nicht im Code-Review.</li>
+  <li><b>JIT oder Native Image ist eine Abwägung:</b> lange laufender Service mit viel Last → JIT. Kurz lebende Funktion, wenig Speicher → Native Image oder AOT Cache.</li>
+  <li><b>Erst messen,</b> dann Flags ändern. Standard-Einstellungen sind fast immer richtig.</li>
+</ol>
+</div>
+
+<h2>9. Aus dem Projekt</h2>
+<p>„Bei MATCH laufen Spark-Jobs auf der JVM. Kurze Jobs bleiben oft im Interpreter und C1. Darum lohnt es sich, kleine Jobs zu bündeln statt viele kurze Executors zu starten.“ <span class="small">(Prüfen und durch dein echtes Beispiel ersetzen.)</span></p>
+
+<h2>10. Fallen</h2>
+<div class="trap">
+<ul>
+  <li>„Der JIT macht das Kompilieren schneller.“ → <b>Falsch.</b> Er macht die <b>Ausführung</b> schneller. Kompilieren kostet sogar Zeit.</li>
+  <li>„Java ist interpretiert, darum langsam.“ → Nur am Anfang. Heisser Code läuft als optimierter Maschinencode.</li>
+  <li>„AOT ist immer schneller.“ → Nur beim Start. Bei langer Laufzeit ist der JIT oft schneller.</li>
+  <li>„javac optimiert den Code.“ → Kaum. Die echte Optimierung macht der JIT.</li>
+</ul>
+</div>
+
+<h2>11. Fragen</h2>
+<details><summary>Was ist der JIT-Compiler?</summary><p>Er übersetzt heissen Bytecode zur Laufzeit in optimierten Maschinencode. Er nutzt dafür Messdaten aus dem laufenden Programm.</p></details>
+<details><summary>Wie kommt Java-Code bis zur CPU?</summary><p>javac → Bytecode → Class Loader → Interpreter → heisse Methoden kompiliert der JIT (C1, dann C2) → Code Cache → CPU.</p></details>
+<details><summary>Warum interpretiert die JVM zuerst?</summary><p>Schneller Start. Und sie sammelt Profildaten, damit der JIT später besser optimiert.</p></details>
+<details><summary>Was ist der Unterschied zwischen C1 und C2?</summary><p>C1 kompiliert schnell und optimiert wenig. C2 kompiliert langsamer, optimiert stark und nutzt das Profil von C1.</p></details>
+<details><summary>Was ist Tiered Compilation?</summary><p>Die 5 Stufen 0–4: Interpreter, dann C1, dann C2. Seit Java 8 Standard. Verbindet schnellen Start mit hoher Spitzenleistung.</p></details>
+<details><summary>Wann wird eine Methode kompiliert?</summary><p>Wenn ihre Zähler (Aufrufe und Schleifen-Durchläufe) eine Schwelle überschreiten. Grob: C1 nach ca. 200, C2 nach ca. 5000 Aufrufen.</p></details>
+<details><summary>Was ist Inlining und warum ist es so wichtig?</summary><p>Der Code der aufgerufenen Methode wird direkt eingesetzt. Das spart den Aufruf und öffnet die Tür für alle anderen Optimierungen.</p></details>
+<details><summary>Was ist Deoptimierung?</summary><p>Eine Annahme von C2 stimmt nicht mehr, z. B. eine neue Klasse. Die JVM wirft den Code weg und geht zurück in den Interpreter. Später kompiliert sie neu.</p></details>
+<details><summary>Was ist OSR?</summary><p>On-Stack Replacement. Die JVM wechselt mitten in einer laufenden Schleife zum kompilierten Code. Wichtig für lange Schleifen in Methoden, die nur einmal laufen.</p></details>
+<details><summary>Was ist Escape Analysis?</summary><p>C2 prüft, ob ein Objekt die Methode verlässt. Wenn nicht, legt er es nicht auf den Heap, sondern zerlegt es in Variablen. Weniger GC-Arbeit, und Locks darauf fallen weg.</p></details>
+<details><summary>Was ist der Code Cache? Was passiert, wenn er voll ist?</summary><p>Speicher für den kompilierten Maschinencode. Ist er voll, stoppt der JIT. Neuer Code läuft nur noch im Interpreter. Lösung: <code>ReservedCodeCacheSize</code> erhöhen.</p></details>
+<details><summary>JIT oder GraalVM Native Image?</summary><p>JIT für lange laufende Services mit hoher Last. Native Image für schnellen Start und wenig Speicher, z. B. Serverless. Preis: Build-Zeit, Reflection-Konfiguration, keine Laufzeit-Optimierung.</p></details>
+<details><summary>Wie sehen Sie, was der JIT macht?</summary><p><code>-XX:+PrintCompilation</code>, <code>PrintInlining</code>, JFR-Events (<code>jdk.Compilation</code>, <code>jdk.Deoptimization</code>), <code>jcmd Compiler.codecache</code>, JITWatch.</p></details>
+<details><summary>Warum braucht ein Benchmark Warm-up?</summary><p>Sonst misst man den Interpreter. Und der JIT entfernt Code, dessen Ergebnis niemand nutzt. Darum JMH.</p></details>
+<details><summary>Szenario: Nach jedem Deployment sind die ersten Requests langsam. Warum, und was tun Sie?</summary><p>JIT-Warm-up: Der Code läuft noch im Interpreter oder in C1. Lösung: Warm-up-Requests, Readiness Probe erst danach, genug CPU beim Start, AOT Cache oder CDS. Prüfen mit JFR.</p></details>
+<details><summary>Szenario: Der Service ist nach Tagen plötzlich langsam, ohne mehr Last. Woran denken Sie?</summary><p>Unter anderem: Code Cache voll (Meldung im Log, <code>jcmd Compiler.codecache</code>). Dazu GC-Probleme und Memory Leaks prüfen.</p></details>
+<details><summary>Szenario: Der Pod hat nur 0,5 CPU und braucht Minuten zum Warmlaufen. Warum?</summary><p>Die Compiler-Threads bekommen zu wenig CPU, und es gibt Throttling. Lösung: CPU-Limit erhöhen oder beim Start mehr erlauben, oder AOT Cache.</p></details>
+
+</body>
+</html>

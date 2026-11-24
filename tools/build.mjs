@@ -76,9 +76,22 @@ const topics = [];
 for (const [t, list] of Object.entries(syllabus)) {
   if (!techIds.has(t)) errors.push(`syllabus: unknown tech "${t}"`);
   for (const [id, title, tier] of list) {
-    const f = C(path.join('topics', t, id + '.md'));
-    const entry = { tech: t, id, title, tier, done: fs.existsSync(f) };
-    if (entry.done) {
+    const f = C(path.join('topics', t, id + '.md')), fh = C(path.join('topics', t, id + '.html'));
+    const entry = { tech: t, id, title, tier, done: fs.existsSync(f) || fs.existsSync(fh) };
+    if (fs.existsSync(fh)) {
+      // gold-standard format: a full HTML page; the app shows its <body> (without the h1) as is
+      const src = read(fh);
+      const body = (src.match(/<body>([\s\S]*?)<\/body>/) || [])[1] || '';
+      entry.title = (src.match(/<title>([^<]+)<\/title>/) || [])[1] || title;
+      entry.html = body.replace(/<h1>[\s\S]*?<\/h1>/, '').trim();
+      entry.nq = (body.match(/<details>/g) || []).length;
+      entry.svg = (body.match(/<svg /g) || []).length;
+      // ids inside inline SVG markers must be unique per page (app shows one page at a time, still prefix them)
+      entry.html = entry.html.replace(/id="(\w+)"/g, `id="${t}-${id}-$1"`).replace(/url\(#(\w+)\)/g, `url(#${t}-${id}-$1)`);
+      for (const need of ['class="kern"', 'class="senior"', 'class="trap"', '<details>']) if (!body.includes(need)) errors.push(`${t}/${id}.html: missing ${need}`);
+      if (entry.nq < 15) errors.push(`${t}/${id}.html: only ${entry.nq} questions (need 15+)`);
+      if (entry.svg < 2) errors.push(`${t}/${id}.html: needs 2 SVG diagrams`);
+    } else if (entry.done) {
       const [meta, body] = frontMatter(read(f), `${t}/${id}.md`);
       const s = sections(body), order = Object.keys(s);
       const qa = k => (s[k] || '').split('\n').map(l => l.match(/^-\s+(.+?)\s+→\s+(.+)$/)).filter(Boolean)
@@ -92,7 +105,7 @@ for (const [t, list] of Object.entries(syllabus)) {
     topics.push(entry);
   }
 }
-const topicFiles = fs.existsSync(C('topics')) ? fs.readdirSync(C('topics')).flatMap(t => fs.readdirSync(C(path.join('topics', t))).map(f => `${t}/${f.replace(/\.md$/, '')}`)) : [];
+const topicFiles = fs.existsSync(C('topics')) ? fs.readdirSync(C('topics')).flatMap(t => fs.readdirSync(C(path.join('topics', t))).map(f => `${t}/${f.replace(/\.(md|html)$/, '')}`)) : [];
 for (const k of topicFiles) if (!topics.some(x => `${x.tech}/${x.id}` === k)) errors.push(`topic file not in syllabus: ${k}`);
 
 // ---- extra pages: content/pages/*.md → { id, title, html }

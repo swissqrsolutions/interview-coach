@@ -252,7 +252,7 @@
       <p class="sub">${PROOF[t.proof]} ${t.project ? '· ' + esc(t.project) : ''}</p>
       ${t.proof === 'study' ? `<div class="card hint">No project with this yet. In the interview say it honestly: <i>„Produktiv habe ich das noch nicht eingesetzt. Das Prinzip kenne ich. Bei uns war es ähnlich mit …“</i></div>` : ''}
       ${ts.length ? `<h2>Learn: all topics (${ts.filter(x => x.done).length}/${ts.length} written)</h2><div class="card"><ul class="list">${ts.map(x => x.done
-        ? `<li><a href="#k-${x.tech}--${x.id}"><span class="rnum">${x.tier}</span><span>${esc(x.title)}</span><span class="st">${x.qs.length} Q</span></a></li>`
+        ? `<li><a href="#k-${x.tech}--${x.id}"><span class="rnum">${x.tier}</span><span>${esc(x.title)}</span><span class="st">${x.nq || (x.qs || []).length} Q</span></a></li>`
         : `<li><a class="off"><span class="rnum">${x.tier}</span><span>${esc(x.title)}</span><span class="st new">coming</span></a></li>`).join('')}</ul>
         <p class="small">The number in the circle is the priority: 1 = asked in almost every interview.</p></div>` : ''}
       <h2>Practice cards (${cs.length})</h2>${cs.length ? `<div class="card"><ul class="list">${cs.map(rowCard).join('')}</ul></div>` : '<div class="card small">No cards yet.</div>'}`;
@@ -262,6 +262,11 @@
     const [tech, id] = key.split('--'), x = (D.topics || []).find(y => y.tech === tech && y.id === id);
     if (!x || !x.done) return techView(tech);
     const list = D.topics.filter(y => y.tech === tech && y.done), i = list.indexOf(x);
+    if (x.html) {
+      app.innerHTML = `<a href="#t-${tech}" class="small">← ${esc(techOf(tech).name)}</a><h1>${esc(x.title)}</h1><article class="topic">${x.html}</article>
+        <div class="pager">${i > 0 ? `<a class="btn ghost" href="#k-${tech}--${list[i - 1].id}">← ${esc(list[i - 1].title)}</a>` : ""}${i < list.length - 1 ? `<a class="btn" href="#k-${tech}--${list[i + 1].id}">${esc(list[i + 1].title)} →</a>` : ""}</div>`;
+      return;
+    }
     const qa = (arr, cls) => arr.map(q => `<details class="qa ${cls}"><summary>${q.q}</summary><div class="ans">${q.a}</div></details>`).join('');
     app.innerHTML = `<a href="#t-${tech}" class="small">← ${esc(techOf(tech).name)}</a><h1>${esc(x.title)}</h1>
       <p class="sub">Read it once from top to bottom. Then test yourself with the questions.</p>
