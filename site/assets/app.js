@@ -247,10 +247,29 @@
   function techView(id) {
     const t = techOf(id); if (!t) return libView();
     const cs = D.cards.filter(c => c.tech.includes(id));
+    const ts = (D.topics || []).filter(x => x.tech === id);
     app.innerHTML = `<a href="#lib" class="small">← Library</a><h1>${esc(t.name)}</h1>
       <p class="sub">${PROOF[t.proof]} ${t.project ? '· ' + esc(t.project) : ''}</p>
       ${t.proof === 'study' ? `<div class="card hint">No project with this yet. In the interview say it honestly: <i>„Produktiv habe ich das noch nicht eingesetzt. Das Prinzip kenne ich. Bei uns war es ähnlich mit …“</i></div>` : ''}
-      <h2>Cards (${cs.length})</h2>${cs.length ? `<div class="card"><ul class="list">${cs.map(rowCard).join('')}</ul></div>` : '<div class="card small">No cards yet.</div>'}`;
+      ${ts.length ? `<h2>Learn: all topics (${ts.filter(x => x.done).length}/${ts.length} written)</h2><div class="card"><ul class="list">${ts.map(x => x.done
+        ? `<li><a href="#k-${x.tech}--${x.id}"><span class="rnum">${x.tier}</span><span>${esc(x.title)}</span><span class="st">${x.qs.length} Q</span></a></li>`
+        : `<li><a class="off"><span class="rnum">${x.tier}</span><span>${esc(x.title)}</span><span class="st new">coming</span></a></li>`).join('')}</ul>
+        <p class="small">The number in the circle is the priority: 1 = asked in almost every interview.</p></div>` : ''}
+      <h2>Practice cards (${cs.length})</h2>${cs.length ? `<div class="card"><ul class="list">${cs.map(rowCard).join('')}</ul></div>` : '<div class="card small">No cards yet.</div>'}`;
+  }
+  // a deep topic: read everything, then test yourself (tap a question to see the answer)
+  function topicView(key) {
+    const [tech, id] = key.split('--'), x = (D.topics || []).find(y => y.tech === tech && y.id === id);
+    if (!x || !x.done) return techView(tech);
+    const list = D.topics.filter(y => y.tech === tech && y.done), i = list.indexOf(x);
+    const qa = (arr, cls) => arr.map(q => `<details class="qa ${cls}"><summary>${q.q}</summary><div class="ans">${q.a}</div></details>`).join('');
+    app.innerHTML = `<a href="#t-${tech}" class="small">← ${esc(techOf(tech).name)}</a><h1>${esc(x.title)}</h1>
+      <p class="sub">Read it once from top to bottom. Then test yourself with the questions.</p>
+      ${x.parts.map((p, n) => `<section class="card prose tpart"><h2>${esc(p.h)}</h2>${p.html}</section>`).join('')}
+      <h2>Interview questions (${x.qs.length})</h2><p class="small">Say your answer in your head, then tap to check.</p>
+      <div class="card">${qa(x.qs, '')}</div>
+      ${x.traps.length ? `<h2>Trick questions (${x.traps.length})</h2><div class="card">${qa(x.traps, 'trap')}</div>` : ''}
+      <div class="pager">${i > 0 ? `<a class="btn ghost" href="#k-${tech}--${list[i - 1].id}">← ${esc(list[i - 1].title)}</a>` : ''}${i < list.length - 1 ? `<a class="btn" href="#k-${tech}--${list[i + 1].id}">${esc(list[i + 1].title)} →</a>` : ''}</div>`;
   }
   function pageView(id) {
     const p = D.pages.find(x => x.id === id); if (!p) return libView();
@@ -309,7 +328,7 @@
   // ---------- router ----------
   function render() {
     // plain hash names (claude.ai pages only keep "#name"): #today #job #lib #progress #plan #evidence, #c-<card> #q-<card> #r-<round> #t-<tech> #page-<page>
-    const h = decodeURIComponent(location.hash.slice(1)), m = h.match(/^(c|q|r|t|page)-(.+)$/);
+    const h = decodeURIComponent(location.hash.slice(1)), m = h.match(/^(c|q|r|t|k|page)-(.+)$/);
     const p = m ? [m[1], m[2]] : [h === 'today' ? '' : h];
     scrollTo(0, 0); clearInterval(tick);
     if (p[0] === 'c' || p[0] === 'q') drill(p[1], p[0] === 'q');
@@ -317,12 +336,13 @@
     else if (p[0] === 'lib') libView();
     else if (p[0] === 'r') roundView(p[1]);
     else if (p[0] === 't') techView(p[1]);
+    else if (p[0] === 'k') topicView(p[1]);
     else if (p[0] === 'page') pageView(p[1]);
     else if (p[0] === 'evidence') evidenceView();
     else if (p[0] === 'progress') progressView();
     else if (p[0] === 'plan') planView();
     else todayView();
-    const tab = { '': 'today', plan: 'today', c: 'today', q: 'today', job: 'job', lib: 'lib', r: 'lib', t: 'lib', page: 'lib', evidence: 'lib', progress: 'progress' }[p[0]] || 'today';
+    const tab = { '': 'today', plan: 'today', c: 'today', q: 'today', job: 'job', lib: 'lib', r: 'lib', t: 'lib', k: 'lib', page: 'lib', evidence: 'lib', progress: 'progress' }[p[0]] || 'today';
     $$('.tabs a').forEach(a => a.classList.toggle('on', a.dataset.tab === tab));
   }
   addEventListener('hashchange', render);

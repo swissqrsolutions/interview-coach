@@ -70,6 +70,31 @@ for (const f of fs.readdirSync(C('cards')).filter(f => f.endsWith('.md')).sort()
 const dup = cards.map(c => c.id).filter((id, i, a) => a.indexOf(id) !== i);
 if (dup.length) errors.push('duplicate ids: ' + dup.join(', '));
 
+// ---- deep topic pages: content/topics/<tech>/<topic>.md, listed in content/syllabus.json
+const syllabus = JSON.parse(read(C('syllabus.json')));
+const topics = [];
+for (const [t, list] of Object.entries(syllabus)) {
+  if (!techIds.has(t)) errors.push(`syllabus: unknown tech "${t}"`);
+  for (const [id, title, tier] of list) {
+    const f = C(path.join('topics', t, id + '.md'));
+    const entry = { tech: t, id, title, tier, done: fs.existsSync(f) };
+    if (entry.done) {
+      const [meta, body] = frontMatter(read(f), `${t}/${id}.md`);
+      const s = sections(body), order = Object.keys(s);
+      const qa = k => (s[k] || '').split('\n').map(l => l.match(/^-\s+(.+?)\s+→\s+(.+)$/)).filter(Boolean)
+        .map(m => ({ q: marked.parseInline(m[1].trim()), a: marked.parseInline(m[2].trim()) }));
+      const qKey = order.find(k => /^interviewfragen/.test(k)), tKey = order.find(k => /^fangfragen/.test(k));
+      entry.title = meta.title || title;
+      entry.parts = order.filter(k => k !== qKey && k !== tKey && s[k].trim()).map(k => ({ h: body.match(new RegExp('^## (' + k.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + ')$', 'mi'))?.[1] || k, html: html(s[k]) }));
+      entry.qs = qKey ? qa(qKey) : []; entry.traps = tKey ? qa(tKey) : [];
+      if (entry.qs.length < 20) errors.push(`${t}/${id}.md: only ${entry.qs.length} interview questions (need 20+)`);
+    }
+    topics.push(entry);
+  }
+}
+const topicFiles = fs.existsSync(C('topics')) ? fs.readdirSync(C('topics')).flatMap(t => fs.readdirSync(C(path.join('topics', t))).map(f => `${t}/${f.replace(/\.md$/, '')}`)) : [];
+for (const k of topicFiles) if (!topics.some(x => `${x.tech}/${x.id}` === k)) errors.push(`topic file not in syllabus: ${k}`);
+
 // ---- extra pages: content/pages/*.md → { id, title, html }
 let pages = fs.existsSync(C('pages')) ? fs.readdirSync(C('pages')).filter(f => f.endsWith('.md')).sort().map(f => {
   const src = read(path.join(C('pages'), f));
@@ -91,7 +116,7 @@ if (todo.length) {
   pages.push({ id: 'fill-in', title: 'To fill in (only you know)', html: html(md) });
 }
 
-const data = { built: new Date().toISOString(), tech, rounds, cards, pages };
+const data = { built: new Date().toISOString(), tech, rounds, cards, pages, topics };
 const json = JSON.stringify(data);
 fs.writeFileSync(path.join(ROOT, 'site', 'data.json'), json);
 const h = s => crypto.createHash('sha1').update(s).digest('hex').slice(0, 8);
@@ -102,5 +127,5 @@ ih = ih.replace(/data\.json\?v=\w*/, 'data.json?v=' + h(json))
   .replace(/style\.css\?v=\w*/, 'style.css?v=' + h(read(path.join(ROOT, 'site', 'assets', 'style.css'))));
 fs.writeFileSync(idx, ih);
 const by = {}; for (const c of cards) by[c.round] = (by[c.round] || 0) + 1;
-console.log(`cards ${cards.length} · pages ${pages.length} · tech ${tech.length} · rounds ${rounds.length}`);
+console.log(`topics ${topics.filter(t => t.done).length}/${topics.length} written · cards ${cards.length} · pages ${pages.length} · tech ${tech.length} · rounds ${rounds.length}`);
 console.log('per round: ' + rounds.map(r => `${r.id} ${by[r.id] || 0}`).join(' · '));
