@@ -340,8 +340,14 @@
     const all = (D.topics || []), ids = [...new Set(all.map(t => t.tech))].filter(id => techOf(id) && !techOf(id).hidden);
     ids.sort((a, b) => ((ORDER.indexOf(a) + 1) || 99) - ((ORDER.indexOf(b) + 1) || 99));
     const done = all.filter(t => t.done).length;
-    app.innerHTML = `<h1>Topics</h1><p class="sub">${done} of ${all.length} topics written. Tap a technology.</p>
-      <div class="card"><ul class="list">${ids.map(id => { const ts = all.filter(t => t.tech === id), d = ts.filter(t => t.done).length; return `<li><a href="#t-${id}"><span>${esc(techOf(id).name)}</span><span class="st ${d ? "ok" : "new"}">${d}/${ts.length}</span></a></li>`; }).join("")}</ul></div>`;
+    const CATS = ['Datenbanken', 'System Design', 'Backend', 'Frontend', 'Cloud', 'Platform & DevOps', 'Data Engineering', 'Architektur & Qualität', 'Coding', 'Tools', 'Arbeitsweise'];
+    const cats = CATS.concat([...new Set(ids.map(id => techOf(id).group))].filter(g => !CATS.includes(g)));
+    const row = id => { const ts = all.filter(t => t.tech === id), d = ts.filter(t => t.done).length; return `<li><a href="#t-${id}"><span>${esc(techOf(id).name)}</span><span class="st ${d ? "ok" : "new"}">${d}/${ts.length}</span></a></li>`; };
+    app.innerHTML = `<h1>Topics</h1><p class="sub">${done} of ${all.length} topics written. Tap a technology.</p>` + cats.map(g => {
+      const list = ids.filter(id => techOf(id).group === g); if (!list.length) return '';
+      const tot = all.filter(t => list.includes(t.tech)), d0 = tot.filter(t => t.done).length;
+      return `<h2>${esc(g)} <span class="st">${d0}/${tot.length}</span></h2><div class="card"><ul class="list">${list.map(row).join('')}</ul></div>`;
+    }).join('');
   }
 
   // ---------- router ----------

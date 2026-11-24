@@ -1,0 +1,240 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ingress und Gateway API</title>
+<style>
+  body { font: 17px/1.55 -apple-system, system-ui, sans-serif; max-width: 760px; margin: 0 auto; padding: 16px; color: #1d1d1f; }
+  h1 { font-size: 28px; margin: 8px 0 4px; }
+  h2 { font-size: 21px; margin: 32px 0 8px; padding-top: 12px; border-top: 2px solid #e5e5ea; }
+  .kern { background: #eef6ff; border-left: 4px solid #0a66c2; padding: 10px 14px; border-radius: 6px; }
+  .senior { background: #f0faf0; border-left: 4px solid #2e7d32; padding: 10px 14px; border-radius: 6px; }
+  .trap { background: #fff4f2; border-left: 4px solid #c62828; padding: 10px 14px; border-radius: 6px; }
+  code { background: #f2f2f7; padding: 1px 5px; border-radius: 4px; font-size: 15px; }
+  pre { background: #1e1e1e; color: #e6e6e6; padding: 12px; border-radius: 8px; overflow-x: auto; font-size: 13.5px; line-height: 1.45; }
+  svg { width: 100%; height: auto; display: block; margin: 10px 0; }
+  ol li, ul li { margin: 4px 0; }
+  details { border: 1px solid #e5e5ea; border-radius: 8px; padding: 8px 12px; margin: 6px 0; }
+  summary { font-weight: 600; cursor: pointer; }
+  details p { margin: 6px 0 2px; }
+  .small { color: #6e6e73; font-size: 14px; }
+</style>
+</head>
+<body>
+
+<h1>Ingress und Gateway API</h1>
+<p class="small">Kubernetes · Tier 1 · Quellen: kubernetes.io Docs „Ingress“, „Ingress Controllers“, „Gateway API“; kubernetes.io Blog „Ingress NGINX Retirement“ (11.11.2025); gateway-api.sigs.k8s.io (API-Übersicht, Rollen, TLS, Release-Notes bis v1.7)</p>
+
+<div class="kern">
+<b>Kern:</b> <b>Ingress</b> und die <b>Gateway API</b> sind Kubernetes-APIs für den <b>L7-Eingang</b> in den Cluster: Routing nach Host und Pfad und TLS-Terminierung für viele Services über einen Load Balancer. Die API beschreibt nur Regeln; ein <b>Controller</b> (z. B. Envoy, Traefik, Cilium) setzt sie um. Ingress ist eingefroren, die Gateway API ist der offiziell empfohlene Nachfolger.
+</div>
+
+<h2>1. Wo sitzt der Eingang?</h2>
+<svg viewBox="0 0 720 320" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="a" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="10" y="10" width="200" height="56" rx="8" fill="#fff" stroke="#555"/><text x="110" y="34" text-anchor="middle" font-weight="700">GatewayClass</text><text x="110" y="52" text-anchor="middle" font-size="12">welcher Controller · Infra</text>
+  <rect x="10" y="110" width="200" height="56" rx="8" fill="#0a66c2"/><text x="110" y="134" text-anchor="middle" fill="#fff" font-weight="700">Gateway</text><text x="110" y="152" text-anchor="middle" fill="#fff" font-size="12">Listener :443 + TLS · Ops</text>
+  <rect x="10" y="210" width="200" height="56" rx="8" fill="#dbe9fb" stroke="#0a66c2"/><text x="110" y="234" text-anchor="middle" font-weight="700">HTTPRoute</text><text x="110" y="252" text-anchor="middle" font-size="12">Host, Pfad → Service · Dev</text>
+  <line x1="110" y1="108" x2="110" y2="68" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <line x1="110" y1="208" x2="110" y2="168" stroke="#555" stroke-width="2" marker-end="url(#a)"/><text x="120" y="192" font-size="11">parentRef</text>
+  <rect x="280" y="110" width="170" height="56" rx="8" fill="#fff" stroke="#555"/><text x="365" y="134" text-anchor="middle" font-weight="700">Controller</text><text x="365" y="152" text-anchor="middle" font-size="12">liest API, konfiguriert</text>
+  <line x1="210" y1="138" x2="278" y2="138" stroke="#555" stroke-width="1.5" stroke-dasharray="4 3" marker-end="url(#a)"/><text x="244" y="130" text-anchor="middle" font-size="11">watch</text>
+  <rect x="520" y="10" width="190" height="56" rx="8" fill="#eee" stroke="#777"/><text x="615" y="34" text-anchor="middle" font-weight="700">Cloud-LB</text><text x="615" y="52" text-anchor="middle" font-size="12">Service type LoadBalancer</text>
+  <rect x="520" y="110" width="190" height="56" rx="8" fill="#e8f5e9" stroke="#2e7d32"/><text x="615" y="134" text-anchor="middle" font-weight="700">Proxy-Pods</text><text x="615" y="152" text-anchor="middle" font-size="12">Envoy / Traefik / NGINX</text>
+  <line x1="450" y1="138" x2="518" y2="138" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <line x1="615" y1="66" x2="615" y2="108" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="520" y="230" width="90" height="50" rx="8" fill="#fff" stroke="#555"/><text x="565" y="260" text-anchor="middle" font-size="13">Svc shop</text>
+  <rect x="620" y="230" width="90" height="50" rx="8" fill="#fff" stroke="#555"/><text x="665" y="260" text-anchor="middle" font-size="13">Svc api</text>
+  <line x1="590" y1="166" x2="565" y2="228" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <line x1="640" y1="166" x2="665" y2="228" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <text x="360" y="300" text-anchor="middle" font-size="12">Ingress = alles in einem Objekt · Gateway API = drei Rollen, drei Objekte</text>
+</svg>
+<ol>
+  <li><b>GatewayClass</b>: cluster-weites Objekt. Es sagt, welcher Controller zuständig ist (<code>controllerName</code>). Rolle: <b>Infrastruktur-Anbieter</b>. Beispiel: <code>envoy-gateway</code>.</li>
+  <li><b>Gateway</b>: ein konkreter Eingang mit <b>Listeners</b> (Port, Protokoll, Hostname, TLS-Zertifikat). Rolle: <b>Cluster-Operator</b>. Beispiel: HTTPS auf 443 für <code>*.example.ch</code>.</li>
+  <li><b>HTTPRoute</b>: Routing-Regeln einer App. Sie hängt sich per <code>parentRefs</code> an ein Gateway. Rolle: <b>App-Entwickler</b>. Beispiel: <code>/api</code> → Service <code>api</code>.</li>
+  <li><b>Controller</b>: beobachtet die Objekte und konfiguriert den Proxy. Ohne Controller passiert nichts.</li>
+  <li><b>Proxy-Pods und Load Balancer</b>: der echte Datenpfad. Meist ein Service <code>type: LoadBalancer</code> vor Envoy-, Traefik- oder NGINX-Pods.</li>
+  <li><b>Ingress</b> (alt): ein Objekt mit Host, Pfad, TLS und Backend. <b>IngressClass</b> wählt den Controller. Alles andere läuft über controller-spezifische <b>Annotations</b>.</li>
+</ol>
+
+<h2>2. Die Reise eines HTTPS-Requests (die Geschichte zum Merken)</h2>
+<svg viewBox="0 0 720 300" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="b" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="10" y="20" width="140" height="60" rx="10" fill="#eee" stroke="#777"/><text x="80" y="45" text-anchor="middle" font-weight="700">1. Browser</text><text x="80" y="64" text-anchor="middle" font-size="12">shop.example.ch</text>
+  <line x1="150" y1="50" x2="198" y2="50" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="200" y="20" width="150" height="60" rx="10" fill="#fff" stroke="#555"/><text x="275" y="45" text-anchor="middle" font-weight="700">2. DNS + LB</text><text x="275" y="64" text-anchor="middle" font-size="12">L4, TCP 443</text>
+  <line x1="350" y1="50" x2="398" y2="50" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="400" y="20" width="310" height="60" rx="10" fill="#0a66c2"/><text x="555" y="45" text-anchor="middle" fill="#fff" font-weight="700">3. Gateway-Listener</text><text x="555" y="64" text-anchor="middle" fill="#fff" font-size="12">SNI → Zertifikat → TLS terminieren</text>
+  <line x1="555" y1="80" x2="555" y2="128" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="400" y="130" width="310" height="60" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="555" y="155" text-anchor="middle" font-weight="700">4. HTTPRoute-Match</text><text x="555" y="174" text-anchor="middle" font-size="12">Host · Pfad · Header · Methode</text>
+  <line x1="400" y1="160" x2="352" y2="160" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="200" y="130" width="150" height="60" rx="10" fill="#fff" stroke="#555"/><text x="275" y="155" text-anchor="middle" font-weight="700">5. Filter</text><text x="275" y="174" text-anchor="middle" font-size="12">Header, Rewrite</text>
+  <line x1="275" y1="190" x2="275" y2="238" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="160" y="240" width="230" height="50" rx="10" fill="#e8f5e9" stroke="#2e7d32"/><text x="275" y="262" text-anchor="middle" font-weight="700">6. Backend-Pod</text><text x="275" y="280" text-anchor="middle" font-size="12">90 % v1 · 10 % v2</text>
+</svg>
+<ol>
+  <li><b>Browser.</b> Er löst <code>shop.example.ch</code> auf. Der DNS-Eintrag zeigt auf die öffentliche IP des Load Balancers. Oft setzt <b>external-dns</b> ihn automatisch.</li>
+  <li><b>Load Balancer.</b> Der Cloud-LB arbeitet auf L4. Er reicht die TCP-Verbindung an die Proxy-Pods weiter.</li>
+  <li><b>Listener und TLS.</b> Der Proxy liest den Hostnamen aus dem TLS-Handshake (<b>SNI</b>). Er wählt den passenden Listener und das Zertifikat aus einem Kubernetes-<b>Secret</b> (<code>certificateRefs</code>). Er <b>terminiert TLS</b>: ab hier ist der Request entschlüsselt.</li>
+  <li><b>Route-Match.</b> Der Proxy sucht die passende HTTPRoute. Er prüft Host, Pfad (<code>PathPrefix</code>, <code>Exact</code>, <code>RegularExpression</code>), Header, Query und Methode. Die spezifischste Regel gewinnt.</li>
+  <li><b>Filter.</b> Die Route kann den Request ändern: Header setzen, Pfad umschreiben (<code>URLRewrite</code>), umleiten (<code>RequestRedirect</code>), spiegeln (<code>RequestMirror</code>).</li>
+  <li><b>Backend.</b> Der Proxy wählt ein Backend nach <b>Gewicht</b>, z. B. 90/10 für einen Canary. Er schickt den Request meist direkt an Pod-IPs aus den EndpointSlices, an kube-proxy vorbei. Optional wieder mit TLS (<b>BackendTLSPolicy</b>).</li>
+</ol>
+
+<h2>3. Beispiel: Gateway, HTTPRoute mit Canary, und dasselbe als Ingress</h2>
+<pre>apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata: { name: web, namespace: infra }
+spec:
+  gatewayClassName: envoy-gateway
+  listeners:
+  - name: https
+    protocol: HTTPS
+    port: 443
+    hostname: "*.example.ch"
+    tls:
+      mode: Terminate
+      certificateRefs: [{ name: wildcard-example-ch }]   # Secret, z. B. von cert-manager
+    allowedRoutes:
+      namespaces: { from: Selector, selector: { matchLabels: { gateway-access: "true" } } }
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata: { name: shop, namespace: shop }
+spec:
+  parentRefs: [{ name: web, namespace: infra, sectionName: https }]
+  hostnames: ["shop.example.ch"]
+  rules:
+  - matches: [{ path: { type: PathPrefix, value: /api } }]
+    backendRefs:
+    - { name: api-v1, port: 80, weight: 90 }
+    - { name: api-v2, port: 80, weight: 10 }</pre>
+<pre>$ kubectl get gateway -n infra
+NAME   CLASS           ADDRESS        PROGRAMMED   AGE
+web    envoy-gateway   20.103.45.17   True         2m
+
+$ kubectl get httproute shop -n shop -o jsonpath='{.status.parents[0].conditions[*].type}'
+Accepted ResolvedRefs</pre>
+<p class="small">Erwartetes Ergebnis (laut Doku, nicht ausgeführt). Der lokale k3s-Cluster war nicht erreichbar, und die Gateway-API-CRDs sind dort nicht standardmässig installiert. IP beispielhaft.</p>
+<pre># Dasselbe als Ingress: keine Gewichte im Standard, Canary nur über Controller-Annotations
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata: { name: shop, namespace: shop }
+spec:
+  ingressClassName: traefik
+  tls: [{ hosts: ["shop.example.ch"], secretName: shop-tls }]
+  rules:
+  - host: shop.example.ch
+    http:
+      paths:
+      - { path: /api, pathType: Prefix, backend: { service: { name: api-v1, port: { number: 80 } } } }</pre>
+<ol>
+  <li>Das <b>Gateway</b> liegt im Namespace <code>infra</code>. Nur Namespaces mit dem Label <code>gateway-access=true</code> dürfen Routes anhängen. Das ist die <b>Rollentrennung</b>.</li>
+  <li><code>PROGRAMMED True</code> heisst: Der Controller hat den Proxy konfiguriert und eine Adresse vergeben.</li>
+  <li>Die HTTPRoute meldet <code>Accepted</code> (Gateway nimmt sie an) und <code>ResolvedRefs</code> (alle Backends gefunden). Fehlt eine, steht der Grund in <code>status</code>.</li>
+  <li>Die Gewichte 90/10 sind <b>Teil des Standards</b>. Im Ingress braucht derselbe Canary Annotations, die je Controller anders heissen.</li>
+</ol>
+
+<h2>4. Details, die Interviewer fragen</h2>
+<ol>
+  <li><b>Ingress-Status:</b> Die Ingress-API ist GA und wird nicht entfernt. Sie ist aber <b>eingefroren</b>: keine neuen Funktionen. Kubernetes empfiehlt die Gateway API.</li>
+  <li><b>ingress-nginx ist retired:</b> Das Projekt <code>kubernetes/ingress-nginx</code> bekam seit März 2026 keine Releases und keine Security-Fixes mehr. Bestehende Installationen laufen weiter, aber ungepatcht. Gründe: zu wenige Maintainer und unsichere Funktionen wie <b>Snippet-Annotations</b> (siehe CVE-2025-1974 „IngressNightmare“).</li>
+  <li><b>Nicht verwechseln:</b> <b>ingress-nginx</b> (Community-Projekt, retired) ist nicht <b>NGINX Ingress Controller</b> von F5/NGINX. Und die <b>Ingress-API</b> ist nicht der Controller.</li>
+  <li><b>pathType:</b> <code>Exact</code>, <code>Prefix</code> (nach Pfad-Segmenten: <code>/api</code> passt auf <code>/api/x</code>, nicht auf <code>/apix</code>) und <code>ImplementationSpecific</code> (Controller entscheidet).</li>
+  <li><b>IngressClass:</b> wählt den Controller über <code>spec.ingressClassName</code>. Die Annotation <code>ingressclass.kubernetes.io/is-default-class: "true"</code> macht eine Klasse zum Standard.</li>
+  <li><b>Gateway-API-Ressourcen:</b> <b>GatewayClass</b>, <b>Gateway</b>, <b>HTTPRoute</b>, <b>GRPCRoute</b>, <b>ReferenceGrant</b>, <b>BackendTLSPolicy</b> sind im <b>Standard Channel</b>. <b>TCPRoute</b> und <b>UDPRoute</b> sind seit v1.6 GA. <b>TLSRoute</b> (TLS-Passthrough nach SNI) und <b>ListenerSet</b> je nach Version noch experimental.</li>
+  <li><b>Channels:</b> Die Gateway API sind <b>CRDs</b>, die man selbst installiert. <b>Standard</b> = stabil. <b>Experimental</b> = neue Felder und Ressourcen, können sich ändern.</li>
+  <li><b>ReferenceGrant:</b> Eine Route darf nur dann auf einen Service in einem <b>anderen Namespace</b> zeigen, wenn dort ein ReferenceGrant das erlaubt. Ingress kann das gar nicht.</li>
+  <li><b>TLS-Modi:</b> <code>Terminate</code> (Gateway entschlüsselt, Standard) und <code>Passthrough</code> (Gateway leitet verschlüsselt nach SNI weiter, mit TLSRoute). <b>Re-Encryption</b> zum Backend über BackendTLSPolicy.</li>
+  <li><b>Zertifikate:</b> Sie liegen als Secret vom Typ <code>kubernetes.io/tls</code>. <b>cert-manager</b> stellt sie aus und erneuert sie, z. B. mit Let's Encrypt, für Ingress und Gateway.</li>
+  <li><b>Status-Conditions:</b> Gateway: <code>Accepted</code>, <code>Programmed</code>. Route: <code>Accepted</code>, <code>ResolvedRefs</code>. Ingress hat fast keinen Status, nur die LB-Adresse.</li>
+  <li><b>Portabilität:</b> Ingress-Funktionen wie Rewrite, Timeouts, Canary stecken in Annotations. Sie sind <b>nicht portabel</b>. Die Gateway API hat sie als typisierte Felder mit <b>Conformance-Tests</b>.</li>
+  <li><b>GAMMA:</b> Die Gateway API beschreibt auch <b>Service-Mesh</b>-Routing (Ost-West). Eine HTTPRoute hängt sich dann an einen Service statt an ein Gateway.</li>
+</ol>
+
+<h2>5. Vergleich</h2>
+<ul>
+  <li><b>Service LoadBalancer:</b> L4, eine IP pro Service, kein Host-Routing, TLS nur in der App.</li>
+  <li><b>Ingress:</b> L7, ein Objekt, nur HTTP/HTTPS, Host und Pfad. Alles Weitere per Annotations. Eingefroren.</li>
+  <li><b>Gateway API:</b> L7 und L4, Rollen getrennt, Header-Matching, Gewichte, Filter, Cross-Namespace mit ReferenceGrant, gRPC/TCP/UDP. Empfohlener Standard.</li>
+  <li><b>Controller-Auswahl:</b> Envoy Gateway, Cilium, Istio, Traefik, NGINX Gateway Fabric, Contour, Kong. In Azure: <b>Application Gateway for Containers</b>. In k3s ist <b>Traefik</b> als Ingress-Controller vorinstalliert.</li>
+  <li><b>Service Mesh:</b> regelt Traffic zwischen Services (mTLS, Retries). Gateway regelt den Eingang. Die Gateway API deckt mit GAMMA beides ab.</li>
+</ul>
+
+<h2>6. In der Produktion</h2>
+<ol>
+  <li><b>Noch auf ingress-nginx:</b> keine Security-Patches mehr. Lösung: Migration planen, z. B. mit dem Tool <b>ingress2gateway</b>. Vorher Annotations und Sonderverhalten (Regex, Rewrite, Snippets) inventarisieren.</li>
+  <li><b>404 vom Controller:</b> Host oder Pfad passen nicht, falsche <code>ingressClassName</code>, oder Route nicht <code>Accepted</code>. Lösung: Status und Controller-Logs prüfen.</li>
+  <li><b>502/503:</b> Backend-Service hat keine Ready-Endpunkte, falscher Port, oder Network Policy blockt den Controller.</li>
+  <li><b>Zertifikat abgelaufen:</b> cert-manager konnte nicht erneuern (DNS- oder HTTP-Challenge scheitert). Lösung: <code>kubectl describe certificate</code>, Alarm auf Ablaufdatum.</li>
+  <li><b>Route hängt nicht am Gateway:</b> <code>allowedRoutes</code> erlaubt den Namespace nicht, oder ReferenceGrant fehlt. Status zeigt <code>NotAllowedByListeners</code> oder <code>RefNotPermitted</code>.</li>
+  <li><b>Client-IP fehlt:</b> LB macht SNAT. Lösung: <code>externalTrafficPolicy: Local</code> am Proxy-Service oder Proxy-Protocol, dann <code>X-Forwarded-For</code>.</li>
+  <li><b>Grosse Uploads brechen ab:</b> Body-Size- oder Timeout-Limits im Proxy. Bei Ingress per Annotation, bei Gateway per Feld oder Policy des Controllers.</li>
+</ol>
+
+<h2>7. Diagnose: Werkzeuge und Befehle</h2>
+<ul>
+  <li><code>kubectl get gatewayclass,gateway,httproute -A</code>: Übersicht inkl. <code>PROGRAMMED</code>.</li>
+  <li><code>kubectl describe httproute &lt;r&gt;</code>: Conditions mit Grund, z. B. <code>BackendNotFound</code>.</li>
+  <li><code>kubectl get ingress -A</code> und <code>kubectl describe ingress</code>: Adresse, Regeln, Events.</li>
+  <li><code>kubectl get ingressclass</code>: welche Klasse Standard ist.</li>
+  <li><code>kubectl logs -n &lt;controller-ns&gt; deploy/&lt;controller&gt;</code>: Konfig-Fehler und Access-Logs.</li>
+  <li><code>curl -v --resolve shop.example.ch:443:&lt;LB-IP&gt; https://shop.example.ch/api</code>: Test mit richtigem SNI ohne DNS.</li>
+  <li><code>openssl s_client -connect &lt;LB-IP&gt;:443 -servername shop.example.ch</code>: welches Zertifikat ausgeliefert wird.</li>
+  <li><code>kubectl get certificate,certificaterequest -A</code>: Status von cert-manager.</li>
+</ul>
+
+<h2>8. Senior-Punkte</h2>
+<div class="senior">
+<ol>
+  <li><b>Neue Plattformen auf Gateway API.</b> Ingress nur noch für Bestand. Die Wahl des Controllers ist wichtiger als die API.</li>
+  <li><b>Rollentrennung ist der eigentliche Gewinn:</b> Plattform-Team besitzt Gateway und Zertifikate, App-Teams besitzen ihre Routes.</li>
+  <li><b>Annotations sind Lock-in.</b> Jede Ingress-Annotation ist eine Migrationsaufgabe. Standardfelder sind portabel.</li>
+  <li><b>Wenige Gateways teilen</b> spart LBs und IPs. Aber ein gemeinsamer Eingang ist ein gemeinsamer Ausfallpunkt: HA, Limits und Monitoring einplanen.</li>
+  <li><b>TLS bis wohin?</b> Terminierung am Gateway ist einfach. Regulierte Umgebungen verlangen oft Re-Encryption oder mTLS bis zum Pod.</li>
+  <li><b>Retired Software ist ein Risiko-Thema,</b> kein reines Technik-Thema. Migration mit Inventar, Tests pro Route und schrittweiser Umstellung per DNS.</li>
+</ol>
+</div>
+
+<h2>9. Aus dem Projekt</h2>
+<p>„Ingress oder Gateway API habe ich in den Projekten nicht selbst betrieben. Bei MATCH wurden die Dienste über Services exponiert: lokal NodePort, auf AKS LoadBalancer, gesteuert über die Helm-Values.“ <span class="small">(Prüfen und durch dein echtes Beispiel ersetzen.)</span></p>
+
+<h2>10. Fallen</h2>
+<div class="trap">
+<ul>
+  <li>„Ingress ist deprecated und wird entfernt.“ → <b>Falsch.</b> Die API ist GA und eingefroren. Retired ist der Controller ingress-nginx.</li>
+  <li>„Ein Ingress-Objekt allein macht schon Routing.“ → <b>Falsch.</b> Ohne Controller passiert nichts.</li>
+  <li>„Gateway API ist nur ein neues Ingress.“ → <b>Zu kurz.</b> Rollenmodell, L4-Routes, Gewichte, Cross-Namespace-Regeln, Mesh-Support.</li>
+  <li>„Gateway API ist in Kubernetes eingebaut.“ → <b>Falsch.</b> Es sind CRDs, die man selbst installiert und versioniert.</li>
+  <li>„ingress-nginx und NGINX Ingress Controller sind dasselbe.“ → <b>Falsch.</b> Zwei verschiedene Projekte.</li>
+  <li>„<code>Prefix: /api</code> passt auf <code>/apix</code>.“ → <b>Falsch.</b> Prefix vergleicht ganze Pfad-Segmente.</li>
+</ul>
+</div>
+
+<h2>11. Fragen</h2>
+<details><summary>Was ist ein Ingress?</summary><p>Eine Kubernetes-API für HTTP-Routing von aussen nach Host und Pfad, mit TLS-Terminierung. Ein Ingress-Controller setzt sie um.</p></details>
+<details><summary>Was ist ein Ingress-Controller?</summary><p>Ein Proxy mit Controller, der Ingress-Objekte beobachtet und sich selbst konfiguriert, z. B. Traefik oder Envoy-basierte Controller.</p></details>
+<details><summary>Was ist mit ingress-nginx passiert?</summary><p>Das Community-Projekt ist retired. Seit März 2026 gibt es keine Releases und Security-Fixes mehr. Empfohlen: Migration auf Gateway API oder einen anderen Controller.</p></details>
+<details><summary>Ist die Ingress-API deprecated?</summary><p>Nein. Sie ist GA und bleibt, ist aber eingefroren. Neue Funktionen kommen nur in die Gateway API.</p></details>
+<details><summary>Welche Ressourcen hat die Gateway API?</summary><p>GatewayClass, Gateway, HTTPRoute, GRPCRoute, ReferenceGrant, BackendTLSPolicy, dazu TCPRoute/UDPRoute und TLSRoute.</p></details>
+<details><summary>Welches Rollenmodell hat die Gateway API?</summary><p>Infrastruktur-Anbieter (GatewayClass), Cluster-Operator (Gateway), App-Entwickler (Routes). Jede Rolle hat eigene Objekte und RBAC.</p></details>
+<details><summary>Was ist eine GatewayClass?</summary><p>Ein cluster-weites Objekt, das den zuständigen Controller nennt. Ähnlich wie StorageClass oder IngressClass.</p></details>
+<details><summary>Was ist ein Listener?</summary><p>Ein Eintrag im Gateway mit Port, Protokoll, optionalem Hostname, TLS-Einstellungen und erlaubten Routes.</p></details>
+<details><summary>Was ist ein ReferenceGrant?</summary><p>Eine Erlaubnis im Ziel-Namespace, dass Objekte aus einem anderen Namespace darauf verweisen dürfen. Schützt vor fremden Zugriffen auf Services oder Secrets.</p></details>
+<details><summary>Wie funktioniert TLS-Terminierung?</summary><p>Der Proxy wählt per SNI das Zertifikat aus einem TLS-Secret, entschlüsselt und leitet HTTP weiter. Mit BackendTLSPolicy wieder verschlüsselt zum Backend.</p></details>
+<details><summary>Was ist TLS-Passthrough?</summary><p>Der Proxy entschlüsselt nicht und leitet nach SNI weiter. Das Backend terminiert TLS. In Gateway API mit TLSRoute.</p></details>
+<details><summary>Welche pathTypes gibt es im Ingress?</summary><p>Exact, Prefix (segmentweise) und ImplementationSpecific (Controller entscheidet).</p></details>
+<details><summary>Wie machen Sie einen Canary mit Gateway API?</summary><p>Zwei backendRefs in einer HTTPRoute mit weight, z. B. 90 und 10. Gewicht schrittweise erhöhen.</p></details>
+<details><summary>Warum sind Ingress-Annotations ein Problem?</summary><p>Sie sind controller-spezifisch, ungetypt und nicht portabel. Snippet-Annotations waren zudem ein Sicherheitsrisiko.</p></details>
+<details><summary>Wie kommen Zertifikate in den Cluster?</summary><p>Als Secret vom Typ kubernetes.io/tls. Meist stellt cert-manager sie automatisch aus und erneuert sie.</p></details>
+<details><summary>Was bedeuten Accepted und Programmed?</summary><p>Accepted: Controller hat das Objekt angenommen. Programmed: Konfiguration ist im Proxy aktiv, Adresse vergeben.</p></details>
+<details><summary>Wie migrieren Sie von Ingress zur Gateway API?</summary><p>Annotations inventarisieren, ingress2gateway für Entwürfe nutzen, Gateway parallel aufbauen, Routes testen, DNS schrittweise umstellen.</p></details>
+<details><summary>Was ist GAMMA?</summary><p>Die Gateway-API-Initiative für Service Mesh. Routes hängen sich an Services und steuern Ost-West-Traffic.</p></details>
+<details><summary>Szenario: Ein Audit findet ingress-nginx im Cluster. Was empfehlen Sie?</summary><p>Risiko benennen: keine Security-Fixes seit März 2026. Annotations inventarisieren, Ziel-Controller mit Gateway API wählen, parallel aufbauen, per DNS umschalten.</p></details>
+<details><summary>Szenario: Die HTTPRoute ist angelegt, aber der Traffic kommt nie an. Wie gehen Sie vor?</summary><p>Route-Status prüfen: Accepted false heisst Listener oder allowedRoutes passen nicht. ResolvedRefs false heisst Service fehlt oder ReferenceGrant fehlt. Dann Controller-Logs.</p></details>
+<details><summary>Szenario: Kunden melden ein abgelaufenes Zertifikat. Was tun Sie?</summary><p>openssl s_client zeigt das ausgelieferte Zertifikat. cert-manager Certificate und Challenge prüfen, Ursache beheben, Erneuerung anstossen. Danach Alarm auf Ablaufdatum.</p></details>
+
+</body>
+</html>

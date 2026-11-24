@@ -1,0 +1,212 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>HPA, VPA, Cluster Autoscaler, Karpenter</title>
+<style>
+  body { font: 17px/1.55 -apple-system, system-ui, sans-serif; max-width: 760px; margin: 0 auto; padding: 16px; color: #1d1d1f; }
+  h1 { font-size: 28px; margin: 8px 0 4px; }
+  h2 { font-size: 21px; margin: 32px 0 8px; padding-top: 12px; border-top: 2px solid #e5e5ea; }
+  .kern { background: #eef6ff; border-left: 4px solid #0a66c2; padding: 10px 14px; border-radius: 6px; }
+  .senior { background: #f0faf0; border-left: 4px solid #2e7d32; padding: 10px 14px; border-radius: 6px; }
+  .trap { background: #fff4f2; border-left: 4px solid #c62828; padding: 10px 14px; border-radius: 6px; }
+  code { background: #f2f2f7; padding: 1px 5px; border-radius: 4px; font-size: 15px; }
+  pre { background: #1e1e1e; color: #e6e6e6; padding: 12px; border-radius: 8px; overflow-x: auto; font-size: 13.5px; line-height: 1.45; }
+  svg { width: 100%; height: auto; display: block; margin: 10px 0; }
+  ol li, ul li { margin: 4px 0; }
+  details { border: 1px solid #e5e5ea; border-radius: 8px; padding: 8px 12px; margin: 6px 0; }
+  summary { font-weight: 600; cursor: pointer; }
+  details p { margin: 6px 0 2px; }
+  .small { color: #6e6e73; font-size: 14px; }
+</style>
+</head>
+<body>
+
+<h1>HPA, VPA, Cluster Autoscaler, Karpenter</h1>
+<p class="small">Kubernetes · Tier 1 · Quellen: kubernetes.io (Horizontal Pod Autoscaling, HorizontalPodAutoscaler Walkthrough, Node Autoscaling), Kubernetes Autoscaler Repo (Cluster Autoscaler FAQ, Vertical Pod Autoscaler), karpenter.sh Doku v1 (NodePools, NodeClasses, Disruption), KEDA Doku (ScaledObject, ScaledJob), Microsoft Learn (AKS Cluster Autoscaler, Node Auto-Provisioning, KEDA Add-on)</p>
+
+<div class="kern">
+<b>Kern:</b> <b>Autoscaling</b> in Kubernetes ist das automatische Anpassen von Kapazität an die Last, auf zwei Ebenen. Auf Pod-Ebene ändert der <b>HPA</b> die Anzahl der Pods und der <b>VPA</b> ihre Requests. Auf Node-Ebene fügen <b>Cluster Autoscaler</b> oder <b>Karpenter</b> Nodes hinzu, wenn Pods keinen Platz finden, und entfernen leere Nodes wieder. Beide Ebenen arbeiten mit <b>Requests</b>, nicht mit echter Auslastung der Nodes.
+</div>
+
+<h2>1. Wo sitzen die Autoscaler?</h2>
+<svg viewBox="0 0 720 320" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="a" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="10" y="20" width="160" height="60" rx="8" fill="#fff" stroke="#555"/><text x="90" y="45" text-anchor="middle" font-weight="700">Metrics Server</text><text x="90" y="64" text-anchor="middle" font-size="12">CPU · Memory</text>
+  <rect x="10" y="100" width="160" height="60" rx="8" fill="#fff" stroke="#555"/><text x="90" y="125" text-anchor="middle" font-weight="700">KEDA / Adapter</text><text x="90" y="144" text-anchor="middle" font-size="12">Queue-Länge, Lag</text>
+  <line x1="170" y1="50" x2="238" y2="80" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <line x1="170" y1="130" x2="238" y2="100" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="240" y="55" width="150" height="70" rx="8" fill="#0a66c2"/><text x="315" y="83" text-anchor="middle" fill="#fff" font-weight="700">HPA</text><text x="315" y="103" text-anchor="middle" fill="#fff" font-size="12">Anzahl Pods</text>
+  <rect x="240" y="150" width="150" height="60" rx="8" fill="#dbe9fb" stroke="#0a66c2"/><text x="315" y="175" text-anchor="middle" font-weight="700">VPA</text><text x="315" y="194" text-anchor="middle" font-size="12">Requests pro Pod</text>
+  <line x1="390" y1="90" x2="458" y2="90" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <line x1="390" y1="180" x2="458" y2="110" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="460" y="60" width="250" height="60" rx="8" fill="#fff" stroke="#555"/><text x="585" y="85" text-anchor="middle" font-weight="700">Deployment / Pods</text><text x="585" y="104" text-anchor="middle" font-size="12">neue Pods evtl. Pending</text>
+  <line x1="585" y1="120" x2="585" y2="178" stroke="#555" stroke-width="2" marker-end="url(#a)"/><text x="595" y="154" font-size="11">unschedulable</text>
+  <rect x="460" y="180" width="250" height="60" rx="8" fill="#e8f5e9" stroke="#2e7d32"/><text x="585" y="205" text-anchor="middle" font-weight="700">Cluster Autoscaler / Karpenter</text><text x="585" y="224" text-anchor="middle" font-size="12">Nodes dazu / weg</text>
+  <line x1="585" y1="240" x2="585" y2="268" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="460" y="270" width="250" height="40" rx="8" fill="#eee" stroke="#777"/><text x="585" y="295" text-anchor="middle">Cloud: VMSS / VMs</text>
+</svg>
+<ol>
+  <li><b>Metrics Server:</b> sammelt CPU und Memory der Pods vom kubelet und bietet sie über <code>metrics.k8s.io</code> an. Beispiel: <code>kubectl top</code>.</li>
+  <li><b>KEDA / Metrics Adapter:</b> liefert externe Metriken über <code>external.metrics.k8s.io</code>, z. B. Kafka-Lag oder Service-Bus-Länge.</li>
+  <li><b>HPA:</b> ein Controller im <code>kube-controller-manager</code>. Er ändert <code>replicas</code> eines Deployments oder StatefulSets.</li>
+  <li><b>VPA:</b> ein Add-on mit drei Teilen: <b>Recommender</b> (berechnet Werte), <b>Updater</b> (ersetzt Pods), <b>Admission Controller</b> (setzt Requests beim Pod-Start).</li>
+  <li><b>Cluster Autoscaler / Karpenter:</b> sehen Pods im Status <code>Pending</code> mit <code>Unschedulable</code> und erzeugen Nodes. Sie entfernen Nodes, die unnötig sind.</li>
+</ol>
+
+<h2>2. Die Reise einer Lastspitze (Spark-Job um 6 Uhr)</h2>
+<svg viewBox="0 0 720 300" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="b" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker><marker id="r" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#2e7d32"/></marker></defs>
+  <rect x="10" y="20" width="150" height="70" rx="10" fill="#eee" stroke="#777"/><text x="85" y="46" text-anchor="middle" font-weight="700">1. Job startet</text><text x="85" y="66" text-anchor="middle" font-size="12">20 Executor-Pods</text>
+  <line x1="160" y1="55" x2="198" y2="55" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="200" y="20" width="150" height="70" rx="10" fill="#fff4f2" stroke="#c62828"/><text x="275" y="46" text-anchor="middle" font-weight="700">2. Pending</text><text x="275" y="66" text-anchor="middle" font-size="12">Insufficient cpu</text>
+  <line x1="350" y1="55" x2="388" y2="55" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="390" y="20" width="160" height="70" rx="10" fill="#0a66c2"/><text x="470" y="46" text-anchor="middle" fill="#fff" font-weight="700">3. Karpenter</text><text x="470" y="66" text-anchor="middle" fill="#fff" font-size="12">bündelt, wählt VM-Typ</text>
+  <line x1="550" y1="55" x2="588" y2="55" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="590" y="20" width="120" height="70" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="650" y="46" text-anchor="middle" font-weight="700">4. NodeClaim</text><text x="650" y="66" text-anchor="middle" font-size="12">VM in ~1–2 min</text>
+  <line x1="650" y1="90" x2="650" y2="148" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="490" y="150" width="220" height="70" rx="10" fill="#fff" stroke="#555"/><text x="600" y="176" text-anchor="middle" font-weight="700">5. Pods laufen</text><text x="600" y="196" text-anchor="middle" font-size="12">Job rechnet 40 min</text>
+  <line x1="490" y1="185" x2="392" y2="185" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="190" y="150" width="200" height="70" rx="10" fill="#e8f5e9" stroke="#2e7d32"/><text x="290" y="176" text-anchor="middle" font-weight="700">6. Node leer</text><text x="290" y="196" text-anchor="middle" font-size="12">consolidateAfter</text>
+  <path d="M290,220 C290,280 85,280 85,92" fill="none" stroke="#2e7d32" stroke-width="2" stroke-dasharray="6 4" marker-end="url(#r)"/>
+  <text x="200" y="272" text-anchor="middle" fill="#2e7d32" font-weight="700">7. Node gelöscht → Kosten wieder tief</text>
+</svg>
+<ol>
+  <li><b>Der Job startet.</b> Ein Spark-Driver fordert 20 Executor-Pods an, jeder mit <code>requests: cpu 4, memory 16Gi</code>.</li>
+  <li><b>Kein Platz.</b> Die vorhandenen Nodes haben nicht genug freie Requests. Der Scheduler markiert die Pods als <code>Unschedulable</code>. Sie bleiben <code>Pending</code>.</li>
+  <li><b>Karpenter sammelt.</b> Karpenter beobachtet Pending-Pods. Er bündelt sie kurz (<b>Batching</b>) und rechnet, welche VM-Typen alle Pods am billigsten aufnehmen. Er beachtet Node-Selector, Taints, Zonen und die Regeln im <b>NodePool</b>.</li>
+  <li><b>Neue Nodes.</b> Karpenter erzeugt <b>NodeClaims</b> und ruft direkt die Cloud-API. Auf AKS heisst das <b>Node Auto-Provisioning</b> (NAP). Nach ein bis zwei Minuten sind die Nodes Ready.</li>
+  <li><b>Pods laufen.</b> Der Scheduler bindet die Executors an die neuen Nodes. Der Job rechnet.</li>
+  <li><b>Job fertig.</b> Die Executors enden. Die Nodes sind leer oder kaum genutzt. Nach <code>consolidateAfter</code> prüft Karpenter die <b>Consolidation</b>: Kann ich Nodes löschen oder durch billigere ersetzen?</li>
+  <li><b>Zurück auf klein.</b> Karpenter markiert den Node mit einem Taint, räumt ihn unter Beachtung von <b>PodDisruptionBudgets</b> und löscht die VM. Kosten entstehen nur während der Spitze.</li>
+</ol>
+
+<h2>3. Beispiel: HPA auf CPU-Basis</h2>
+<pre>kubectl create namespace demo-autoscaling
+kubectl -n demo-autoscaling apply -f https://k8s.io/examples/application/php-apache.yaml   # requests: cpu 200m
+kubectl -n demo-autoscaling autoscale deployment php-apache --cpu-percent=50 --min=1 --max=10
+
+# Last erzeugen (zweites Terminal)
+kubectl -n demo-autoscaling run load --rm -i --image=busybox:1.36 --restart=Never -- \
+  /bin/sh -c "while sleep 0.01; do wget -q -O- http://php-apache; done"
+
+kubectl -n demo-autoscaling get hpa php-apache --watch</pre>
+<pre>NAME         REFERENCE               TARGETS        MINPODS   MAXPODS   REPLICAS   AGE
+php-apache   Deployment/php-apache   cpu: 0%/50%    1         10        1          18s
+php-apache   Deployment/php-apache   cpu: 305%/50%  1         10        1          3m
+php-apache   Deployment/php-apache   cpu: 305%/50%  1         10        7          3m
+php-apache   Deployment/php-apache   cpu: 51%/50%   1         10        7          5m
+# Last gestoppt: erst nach ca. 5 Minuten zurück auf 1
+php-apache   Deployment/php-apache   cpu: 0%/50%    1         10        1          11m</pre>
+<p class="small">Erwartetes Ergebnis (laut Doku, nicht ausgeführt). Ablauf aus dem kubernetes.io „HorizontalPodAutoscaler Walkthrough“; die genauen Zahlen hängen von der Hardware ab. Der lokale k3s-Cluster war nicht erreichbar.</p>
+<ol>
+  <li><code>TARGETS 305%/50%</code>: Die Pods nutzen 305 % ihres CPU-<b>Requests</b>. Ziel ist 50 %.</li>
+  <li>Formel: <code>desired = ceil(1 × 305 / 50) = 7</code>. Der HPA springt direkt auf 7 Replikas.</li>
+  <li>Mit 7 Pods liegt die Auslastung bei etwa 51 %. Das ist innerhalb der <b>Toleranz</b> von 10 %, also keine weitere Änderung.</li>
+  <li>Nach dem Lastende wartet der HPA das <b>Stabilization Window</b> für Scale-Down ab (Standard 300 s). Erst dann geht er zurück auf 1.</li>
+  <li>Aufräumen: <code>kubectl delete namespace demo-autoscaling</code>.</li>
+</ol>
+
+<h2>4. Details, die Interviewer fragen</h2>
+<ol>
+  <li><b>HPA-Formel:</b> <code>desiredReplicas = ceil(currentReplicas × currentMetric / targetMetric)</code>. Der Controller rechnet alle 15 Sekunden. Bei mehreren Metriken gewinnt die höchste Replika-Zahl.</li>
+  <li><b>Utilization braucht Requests:</b> Ziel in Prozent bezieht sich auf den Request. Fehlt der Request in einem Container, kann der HPA für diese Metrik nicht rechnen.</li>
+  <li><b>Metrik-Typen in <code>autoscaling/v2</code>:</b> <code>Resource</code> (CPU/Memory des Pods), <code>ContainerResource</code> (eines Containers, ohne Sidecars), <code>Pods</code> (eigene Metrik pro Pod, z. B. Requests pro Sekunde), <code>Object</code> (Metrik eines Objekts, z. B. Ingress), <code>External</code> (ausserhalb des Clusters, z. B. Queue-Länge).</li>
+  <li><b>behavior:</b> Steuert Tempo und Ruhe. Standard Scale-Up: sofort, pro 15 s bis +100 % oder +4 Pods (das Grössere). Standard Scale-Down: <code>stabilizationWindowSeconds: 300</code>, er nimmt die höchste Empfehlung der letzten 5 Minuten.</li>
+  <li><b>Pods im Start:</b> Pods, die noch nicht ready sind oder keine Metrik haben, rechnet der HPA vorsichtig. Beim Hochskalieren zählen sie als 0 %, das dämpft Überreaktionen.</li>
+  <li><b>Memory als HPA-Metrik:</b> oft ungeeignet. Viele Apps (z. B. die JVM) geben Speicher nicht zurück. Der HPA skaliert dann hoch und nie wieder runter.</li>
+  <li><b>VPA-Modi:</b> <code>Off</code> (nur Empfehlung), <code>Initial</code> (nur beim Pod-Start), <code>Recreate</code> (Pods ersetzen), <code>InPlaceOrRecreate</code> in neueren VPA-Versionen (zuerst In-place Resize). VPA nie mit HPA auf derselben CPU- oder Memory-Metrik kombinieren.</li>
+  <li><b>Cluster Autoscaler (CA):</b> arbeitet mit festen <b>Node-Gruppen</b> (auf AKS: Node Pools als VM Scale Sets). Er simuliert, ob ein neuer Node einer Gruppe die Pending-Pods aufnehmen würde. Scale-Down: Node unter 50 % Requests für 10 Minuten und Pods passen woanders hin.</li>
+  <li><b>CA blockiert:</b> Pods mit lokalem Storage, ohne Controller, mit strengen PDBs oder mit der Annotation <code>cluster-autoscaler.kubernetes.io/safe-to-evict: "false"</code> verhindern Scale-Down.</li>
+  <li><b>Karpenter-Objekte (v1):</b> <b>NodePool</b> (Regeln: erlaubte VM-Familien, Spot/On-Demand, Zonen, Limits, Disruption), <b>NodeClass</b> (Cloud-Details, auf AKS <code>AKSNodeClass</code>), <b>NodeClaim</b> (ein konkreter Node in Arbeit).</li>
+  <li><b>Karpenter Disruption:</b> <code>consolidationPolicy: WhenEmptyOrUnderutilized</code> oder <code>WhenEmpty</code>, dazu <code>consolidateAfter</code>. <b>Disruption Budgets</b> begrenzen, wie viele Nodes gleichzeitig gehen. <code>karpenter.sh/do-not-disrupt: "true"</code> schützt einen Pod.</li>
+  <li><b>AKS Node Auto-Provisioning:</b> von Microsoft verwaltetes Karpenter auf AKS mit <code>NodePool</code> und <code>AKSNodeClass</code>. Einschränkungen laut Doku: keine Windows-Node-Pools, kein Service Principal (nur Managed Identity). In AKS Automatic ist es vorkonfiguriert.</li>
+  <li><b>KEDA:</b> <b>Kubernetes Event-driven Autoscaling</b>. Ein <b>ScaledObject</b> beschreibt Ziel und <b>Scaler</b> (Kafka, Service Bus, Prometheus, Cron). KEDA erzeugt darunter einen HPA und übernimmt selbst den Schritt 0 ↔ 1. Ein <b>ScaledJob</b> startet pro Arbeitspaket einen Job. Auf AKS gibt es ein KEDA-Add-on.</li>
+  <li><b>Scale-to-zero:</b> Der normale HPA geht nur bis <code>minReplicas: 1</code>. Null braucht das Alpha-Feature-Gate <code>HPAScaleToZero</code> oder KEDA. Preis: Kaltstart beim ersten Event.</li>
+</ol>
+
+<h2>5. Vergleich</h2>
+<ul>
+  <li><b>HPA:</b> mehr oder weniger Pods. Für zustandslose Services mit wechselnder Last. Braucht Requests und eine passende Metrik.</li>
+  <li><b>VPA:</b> grössere oder kleinere Pods. Für Workloads, die nicht horizontal skalieren, und als Empfehlung für Requests. Ersetzt Pods, ausser In-place wird genutzt.</li>
+  <li><b>KEDA:</b> HPA mit Event-Quellen und Scale-to-zero. Für Consumer von Queues und Topics.</li>
+  <li><b>Cluster Autoscaler:</b> skaliert vorhandene Node-Gruppen. Bewährt, vorhersehbar, aber nur mit vorher definierten VM-Grössen. Langsamer bei vielen Gruppen.</li>
+  <li><b>Karpenter / AKS NAP:</b> wählt VM-Typen pro Bedarf, ohne feste Gruppen. Schneller, bessere Auslastung, Consolidation und Spot. Dafür mehr Bewegung im Cluster (Pods werden öfter verschoben).</li>
+</ul>
+
+<h2>6. In der Produktion</h2>
+<ol>
+  <li><b>HPA tut nichts:</b> <code>TARGETS &lt;unknown&gt;</code>. Ursache: kein Metrics Server oder fehlende Requests. Lösung: Metrics Server prüfen, Requests in jedem Container setzen.</li>
+  <li><b>Flapping:</b> Die Replika-Zahl springt hoch und runter. Lösung: <code>behavior</code> mit Stabilization Window und Policies, realistisches Ziel (z. B. 60–70 % CPU).</li>
+  <li><b>Scale-Up zu langsam:</b> HPA reagiert, aber neue Pods brauchen einen neuen Node (Minuten) und eine JVM-Warm-up-Zeit. Lösung: Puffer mit niedrig priorisierten Platzhalter-Pods (<b>Overprovisioning</b>), schneller startende Images, Karpenter.</li>
+  <li><b>Node wird nicht abgebaut:</b> Ein Pod mit <code>emptyDir</code>, ein Pod ohne Controller oder ein PDB mit <code>maxUnavailable: 0</code> blockiert. Lösung: Events des Autoscalers lesen, PDBs korrigieren.</li>
+  <li><b>Lange Jobs werden unterbrochen:</b> Consolidation räumt einen Node mitten in einem Batch-Job. Lösung: <code>karpenter.sh/do-not-disrupt: "true"</code> auf Job-Pods, Disruption Budgets, eigener NodePool für Batch.</li>
+  <li><b>Kosten explodieren:</b> Ein Fehler erzeugt endlos Pods, Karpenter liefert Nodes. Lösung: <code>limits</code> im NodePool (max. CPU/Memory), <code>maxReplicas</code> im HPA, ResourceQuota.</li>
+  <li><b>Spot-Nodes verschwinden:</b> Die Cloud nimmt Spot-VMs zurück. Lösung: nur unterbrechbare Arbeit auf Spot, Fallback auf On-Demand im NodePool.</li>
+</ol>
+
+<h2>7. Diagnose: Werkzeuge und Befehle</h2>
+<ul>
+  <li><code>kubectl get hpa</code> und <code>kubectl describe hpa &lt;name&gt;</code>: Ziel, aktueller Wert, Conditions (<code>AbleToScale</code>, <code>ScalingActive</code>, <code>ScalingLimited</code>) und Events.</li>
+  <li><code>kubectl top pods</code>: ob der Metrics Server Werte liefert.</li>
+  <li><code>kubectl get --raw /apis/external.metrics.k8s.io/v1beta1</code>: ob ein externer Adapter (KEDA) registriert ist.</li>
+  <li><code>kubectl get pods --field-selector=status.phase=Pending -A</code> und <code>describe</code>: Grund <code>FailedScheduling</code>.</li>
+  <li>Karpenter: <code>kubectl get nodepools,nodeclaims</code>, <code>kubectl describe nodeclaim</code>, Logs des Karpenter-Controllers, Events wie <code>DisruptionBlocked</code>.</li>
+  <li>Cluster Autoscaler: ConfigMap <code>cluster-autoscaler-status</code> in <code>kube-system</code>, Events <code>TriggeredScaleUp</code> und <code>NotTriggerScaleUp</code>.</li>
+  <li>VPA: <code>kubectl describe vpa &lt;name&gt;</code> zeigt <code>Target</code>, <code>Lower Bound</code>, <code>Upper Bound</code>.</li>
+</ul>
+
+<h2>8. Senior-Punkte</h2>
+<div class="senior">
+<ol>
+  <li><b>Pod- und Node-Autoscaling gehören zusammen.</b> Ein HPA ohne Node-Autoscaler endet in Pending-Pods. Ein Node-Autoscaler ohne gute Requests baut falsche Nodes.</li>
+  <li><b>Die richtige Metrik ist die halbe Arbeit.</b> CPU passt für rechenlastige Services. Für Consumer ist Queue-Länge oder Lag besser (KEDA).</li>
+  <li><b>Scale-Up schnell, Scale-Down langsam.</b> Zu früh abbauen kostet bei der nächsten Spitze Latenz und Warm-up.</li>
+  <li><b>Karpenter tauscht Stabilität gegen Effizienz.</b> Consolidation spart Geld, verschiebt aber Pods. PDBs, Graceful Shutdown und do-not-disrupt sind Pflicht.</li>
+  <li><b>Batch und Services trennen.</b> Eigene NodePools mit Taints für Spark oder Jobs verhindern, dass Batch-Spitzen Services verdrängen.</li>
+  <li><b>Immer Obergrenzen.</b> maxReplicas, NodePool-Limits und Budgets schützen vor Kosten durch Fehler.</li>
+</ol>
+</div>
+
+<h2>9. Aus dem Projekt</h2>
+<p>„Bei MATCH skaliert Karpenter die Nodes für die Spark-Spitzen: Spark ist bursty, also kommen Nodes bei einem Job hinzu und gehen danach wieder weg.“ <span class="small">(Prüfen und durch dein echtes Beispiel ersetzen.)</span></p>
+
+<h2>10. Fallen</h2>
+<div class="trap">
+<ul>
+  <li>„Der Cluster Autoscaler skaliert, wenn die Nodes zu 90 % ausgelastet sind.“ → <b>Falsch.</b> Er reagiert auf Pending-Pods, also auf Requests, nicht auf CPU-Auslastung.</li>
+  <li>„HPA-CPU-Ziel 50 % heisst 50 % der Node-CPU.“ → <b>Falsch.</b> Es sind 50 % des Pod-Requests.</li>
+  <li>„HPA und VPA zusammen auf CPU sind ideal.“ → <b>Falsch.</b> Sie arbeiten gegeneinander. VPA nur auf Memory oder nur als Empfehlung.</li>
+  <li>„HPA kann auf null skalieren.“ → <b>Nicht standardmässig.</b> Nur mit Alpha-Feature-Gate oder KEDA.</li>
+  <li>„Karpenter ist nur für AWS.“ → <b>Falsch.</b> Es gibt einen Azure-Provider, und AKS Node Auto-Provisioning basiert darauf.</li>
+</ul>
+</div>
+
+<h2>11. Fragen</h2>
+<details><summary>Was macht der HPA?</summary><p>Er ändert die Anzahl der Replikas eines Deployments oder StatefulSets anhand von Metriken. Er rechnet alle 15 Sekunden.</p></details>
+<details><summary>Wie berechnet der HPA die Replika-Zahl?</summary><p>desired = ceil(current × aktuelle Metrik / Zielmetrik). Bei mehreren Metriken nimmt er das Maximum.</p></details>
+<details><summary>Warum braucht der HPA Requests?</summary><p>Utilization ist Nutzung geteilt durch Request. Ohne Request gibt es keinen Prozentwert.</p></details>
+<details><summary>Was ist die HPA-Toleranz?</summary><p>Liegt das Verhältnis innerhalb von 10 % um das Ziel, ändert der HPA nichts. Das verhindert Zappeln.</p></details>
+<details><summary>Was steuert behavior im HPA?</summary><p>Tempo und Ruhezeiten: Stabilization Window und Policies pro Richtung. Standard: Scale-Up sofort, Scale-Down nach 300 Sekunden.</p></details>
+<details><summary>Welche Metrik-Typen kennt autoscaling/v2?</summary><p>Resource, ContainerResource, Pods, Object und External.</p></details>
+<details><summary>Warum ist Memory oft eine schlechte HPA-Metrik?</summary><p>Viele Laufzeiten geben Speicher nicht zurück. Der HPA skaliert hoch und kommt nicht mehr runter.</p></details>
+<details><summary>Was macht der VPA?</summary><p>Er empfiehlt oder setzt CPU- und Memory-Requests pro Container anhand der Historie. Komponenten: Recommender, Updater, Admission Controller.</p></details>
+<details><summary>Welche VPA-Modi gibt es?</summary><p>Off, Initial, Recreate und in neueren Versionen InPlaceOrRecreate. Off liefert nur Empfehlungen.</p></details>
+<details><summary>Warum nicht HPA und VPA auf CPU gleichzeitig?</summary><p>Der VPA erhöht den Request, dadurch sinkt die Utilization, und der HPA skaliert runter. Die beiden kämpfen gegeneinander.</p></details>
+<details><summary>Wann skaliert der Cluster Autoscaler hoch?</summary><p>Wenn Pods wegen fehlender Ressourcen Pending sind und ein neuer Node einer Gruppe sie aufnehmen würde.</p></details>
+<details><summary>Wann skaliert der Cluster Autoscaler runter?</summary><p>Wenn ein Node lange (Standard 10 Minuten) unter etwa 50 % Requests liegt und seine Pods woanders Platz haben, unter Beachtung von PDBs.</p></details>
+<details><summary>Was ist der Unterschied zwischen Cluster Autoscaler und Karpenter?</summary><p>Der CA vergrössert feste Node-Gruppen. Karpenter wählt VM-Typ und Grösse pro Bedarf direkt über die Cloud-API und konsolidiert aktiv.</p></details>
+<details><summary>Was sind NodePool und NodeClaim in Karpenter?</summary><p>NodePool sind die Regeln für neue Nodes. NodeClaim ist ein konkreter Node, den Karpenter gerade erzeugt oder verwaltet.</p></details>
+<details><summary>Was ist Consolidation?</summary><p>Karpenter löscht leere oder schwach genutzte Nodes oder ersetzt sie durch billigere. Gesteuert über consolidationPolicy, consolidateAfter und Budgets.</p></details>
+<details><summary>Wie schützt man einen Pod vor Karpenter-Disruption?</summary><p>Mit der Annotation karpenter.sh/do-not-disrupt: "true" und mit PodDisruptionBudgets.</p></details>
+<details><summary>Was ist AKS Node Auto-Provisioning?</summary><p>Von Microsoft verwaltetes Karpenter auf AKS mit NodePool und AKSNodeClass. In AKS Automatic ist es vorkonfiguriert.</p></details>
+<details><summary>Was ist KEDA?</summary><p>Ein Operator für eventgesteuertes Autoscaling. Er liest Quellen wie Kafka oder Service Bus, erzeugt einen HPA und kann auf null skalieren.</p></details>
+<details><summary>Wie kommt man auf null Pods?</summary><p>Mit KEDA oder mit dem Alpha-Feature-Gate HPAScaleToZero. Der Preis ist ein Kaltstart beim ersten Event.</p></details>
+<details><summary>Was ist Overprovisioning?</summary><p>Platzhalter-Pods mit niedriger Priority halten Kapazität frei. Echte Pods verdrängen sie sofort, und der Autoscaler baut im Hintergrund nach.</p></details>
+<details><summary>Szenario: Der HPA zeigt TARGETS &lt;unknown&gt;. Was prüfen Sie?</summary><p>Ob der Metrics Server läuft (kubectl top) und ob jeder Container einen CPU-Request hat. Dann describe hpa für die genaue Condition.</p></details>
+<details><summary>Szenario: Ein Spark-Job wartet jeden Morgen 5 Minuten, bevor er rechnet. Was tun Sie?</summary><p>Die Executors sind Pending, bis neue Nodes da sind. Karpenter mit passenden VM-Typen, schnelleren Images, eventuell kleinem warmem Puffer oder geplanter Vorab-Skalierung.</p></details>
+<details><summary>Szenario: Die Cloud-Rechnung ist hoch, obwohl die Nodes nachts kaum genutzt werden. Was tun Sie?</summary><p>Prüfen, warum Nodes nicht abgebaut werden: PDBs, lokale Volumes, safe-to-evict, zu hohe Requests. Consolidation aktivieren, Requests mit VPA-Empfehlungen senken, minReplicas überprüfen.</p></details>
+
+</body>
+</html>

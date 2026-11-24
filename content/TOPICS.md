@@ -2,7 +2,7 @@
 
 Generated from content/syllabus.json. Priority 1 = asked in almost every interview. Mark: **Projekt** = shown in CV/Gmail · **— kein Projekt** = no project experience · **? prüfen** = unclear, you decide.
 
-404 topics · P1 239 · P2 125 · P3 40 · written 83
+404 topics · P1 239 · P2 125 · P3 40 · written 88
 
 ## Java 21 (core + advanced) (40)
 Sources: Java SE 21/25 docs (docs.oracle.com) · JVM Specification · OpenJDK source + JEPs (openjdk.org) · Oracle Java SE 21 Developer exam 1Z0-830 topics
@@ -128,7 +128,7 @@ Sources: Apache Kafka documentation · Confluent developer docs · Confluent CCD
 | 1 | Producer intern: Batching, acks, Idempotenz, Partitioner | ? prüfen | ✓ |
 | 1 | Consumer Groups und Rebalancing | Projekt | ✓ |
 | 1 | Offsets und Commit-Strategien | Projekt | ✓ |
-| 1 | At-most-once, At-least-once, Exactly-once | Projekt |  |
+| 1 | At-most-once, At-least-once, Exactly-once | Projekt | ✓ |
 | 1 | Reihenfolge und Keys | Projekt | ✓ |
 | 1 | Replikation, ISR, min.insync.replicas | ? prüfen | ✓ |
 | 1 | Fehler, Retries, Dead Letter Topic | ? prüfen | ✓ |
@@ -425,12 +425,12 @@ Sources: kubernetes.io documentation · CKA and CKAD curricula (CNCF)
 | 1 | Pods und Sidecars | Projekt | ✓ |
 | 1 | Deployments und Rollouts | Projekt | ✓ |
 | 1 | Services und DNS | Projekt | ✓ |
-| 1 | Ingress und Gateway API | ? prüfen |  |
+| 1 | Ingress und Gateway API | ? prüfen | ✓ |
 | 1 | ConfigMaps und Secrets | Projekt | ✓ |
 | 1 | PV, PVC, StorageClass, StatefulSet | ? prüfen | ✓ |
 | 1 | Liveness, Readiness, Startup Probes | Projekt | ✓ |
 | 1 | Requests, Limits, QoS-Klassen, OOMKilled | Projekt | ✓ |
-| 1 | HPA, VPA, Cluster Autoscaler, Karpenter | Projekt |  |
+| 1 | HPA, VPA, Cluster Autoscaler, Karpenter | Projekt | ✓ |
 | 1 | RBAC und ServiceAccounts | ? prüfen | ✓ |
 | 1 | Network Policies und CNI (Cilium) | Projekt | ✓ |
 | 1 | Troubleshooting: CrashLoopBackOff, Pending, ImagePullBackOff | Projekt | ✓ |
@@ -506,7 +506,7 @@ Sources: angular.dev guides (v20) · RxJS docs
 | 1 | Change Detection: Zone.js, OnPush, Zoneless | ? prüfen | ✓ |
 | 1 | Dependency Injection in Angular, inject() | Projekt | ✓ |
 | 1 | RxJS: Observable, Subscription, Hot vs Cold | Projekt | ✓ |
-| 1 | RxJS-Operatoren: switchMap, mergeMap, concatMap, exhaustMap | Projekt |  |
+| 1 | RxJS-Operatoren: switchMap, mergeMap, concatMap, exhaustMap | Projekt | ✓ |
 | 1 | Subject, BehaviorSubject, ReplaySubject | Projekt |  |
 | 1 | Routing, Guards, Resolver, Lazy Loading | Projekt |  |
 | 1 | Reactive Forms vs Template Forms | Projekt |  |
@@ -525,7 +525,7 @@ Sources: angular.dev signals guide · NgRx docs (Store, Effects, Entity, SignalS
 | 1 | Signals und RxJS | — kein Projekt | ✓ |
 | 1 | NgRx Store | — kein Projekt | ✓ |
 | 1 | NgRx Effects | — kein Projekt | ✓ |
-| 1 | NgRx SignalStore | — kein Projekt |  |
+| 1 | NgRx SignalStore | — kein Projekt | ✓ |
 | 1 | Welches State Management wann? | — kein Projekt |  |
 | 2 | linkedSignal und resource() | — kein Projekt |  |
 | 2 | NgRx Entity | — kein Projekt |  |
