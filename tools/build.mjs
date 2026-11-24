@@ -33,17 +33,22 @@ function frontMatter(src, file) {
   return [meta, m[2]];
 }
 const sections = body => {
-  const out = {}; let cur = null;
+  const out = {}; let cur = null, fence = false;
   for (const line of body.split('\n')) {
-    const h = line.match(/^## (.+)$/);
+    if (/^```/.test(line)) fence = !fence;
+    const h = !fence && line.match(/^## (.+)$/);
     if (h) { cur = h[1].trim().toLowerCase(); out[cur] = ''; continue; }
     if (cur) out[cur] += line + '\n';
   }
   return out;
 };
-const cards = [];
+const cards = [], todo = [];
 for (const f of fs.readdirSync(C('cards')).filter(f => f.endsWith('.md')).sort()) {
-  const [meta, body] = frontMatter(read(path.join(C('cards'), f)), f);
+  const src = read(path.join(C('cards'), f));
+  const [meta, body] = frontMatter(src, f);
+  // placeholders the candidate must fill in: *(Ihr echtes Beispiel …)*, *(Prüfen …)*, *(Beispiel …)*
+  const ph = [...src.matchAll(/\*\(((?:Ihr|Prüfen|Beispiel|Nur|Vorschlag|Hier)[^*]*?)\)\*/g)].map(m => m[1].trim());
+  if (ph.length) todo.push({ id: meta.id || f.replace(/\.md$/, ''), q: meta.q, round: meta.round, ph: [...new Set(ph)] });
   const s = sections(body);
   const id = meta.id || f.replace(/\.md$/, '');
   const ts = [].concat(meta.tech || []);
@@ -66,13 +71,25 @@ const dup = cards.map(c => c.id).filter((id, i, a) => a.indexOf(id) !== i);
 if (dup.length) errors.push('duplicate ids: ' + dup.join(', '));
 
 // ---- extra pages: content/pages/*.md → { id, title, html }
-const pages = fs.existsSync(C('pages')) ? fs.readdirSync(C('pages')).filter(f => f.endsWith('.md')).sort().map(f => {
+let pages = fs.existsSync(C('pages')) ? fs.readdirSync(C('pages')).filter(f => f.endsWith('.md')).sort().map(f => {
   const src = read(path.join(C('pages'), f));
   const title = (src.match(/^# (.+)$/m) || [])[1] || f;
   return { id: f.replace(/^\d+-/, '').replace(/\.md$/, ''), title, html: html(src.replace(/^# .+\n/, '')) };
 }) : [];
 
 if (errors.length) { console.error('CONTENT ERRORS:\n  ' + errors.join('\n  ')); process.exit(1); }
+
+// generated page: everything only the candidate can fill in, grouped by round
+if (todo.length) {
+  const esc = s => String(s).replace(/[<>]/g, c => ({ '<': '&lt;', '>': '&gt;' }[c]));
+  let md = `${todo.reduce((a, t) => a + t.ph.length, 0)} gaps in ${todo.length} cards. Only you know these facts. Fill them in, then the answers are fully yours.\n\nTell Claude your answers (for example: "rate 120 CHF, reason for change: …") and they get written into the cards.\n`;
+  for (const r of rounds) {
+    const ts = todo.filter(t => t.round === r.id); if (!ts.length) continue;
+    md += `\n## ${r.n}. ${r.name}\n`;
+    for (const t of ts) md += `\n**[${esc(t.q)}](#c-${t.id})**\n${t.ph.map(p => `- ${esc(p)}`).join('\n')}\n`;
+  }
+  pages.push({ id: 'fill-in', title: 'To fill in (only you know)', html: html(md) });
+}
 
 const data = { built: new Date().toISOString(), tech, rounds, cards, pages };
 const json = JSON.stringify(data);
