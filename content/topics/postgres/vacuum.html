@@ -33,13 +33,13 @@
 <body>
 
 <h1>VACUUM, Autovacuum, Bloat</h1>
-<p class="small">PostgreSQL · Tier 1 · Quellen: PostgreSQL 17 Doku (aktuell ist PostgreSQL 19; wichtige Unterschiede in 18/19 laut Release Notes stehen im Text): „Routine Vacuuming“ (Recovering Disk Space, Updating Planner Statistics, Updating the Visibility Map, Preventing Transaction ID Wraparound Failures, The Autovacuum Daemon), SQL-Befehl <code>VACUUM</code>, „Automatic Vacuuming“ und „Resource Consumption“ (Cost-based Vacuum Delay), „The Cumulative Statistics System“ (<code>pg_stat_user_tables</code>), „Progress Reporting“ (<code>pg_stat_progress_vacuum</code>), Modul <code>pgstattuple</code>, PostgreSQL 17, 18 und 19 Release Notes, PostgreSQL 19 Doku „Routine Vacuuming“ und „Automatic Vacuuming“ (Parameter-Standardwerte)</p>
+<!-- sources: PostgreSQL · Tier 1 · Quellen: PostgreSQL 17 Doku (aktuell ist PostgreSQL 19; wichtige Unterschiede in 18/19 laut Release Notes stehen im Text): „Routine Vacuuming“ (Recovering Disk Space, Updating Planner Statistics, Updating the Visibility Map, Preventing Transaction ID Wraparound Failures, The Autovacuum Daemon), SQL-Befehl VACUUM, „Automatic Vacuuming“ und „Resource Consumption“ (Cost-based Vacuum Delay), „The Cumulative Statistics System“ (pg_stat_user_tables), „Progress Reporting“ (pg_stat_progress_vacuum), Modul pgstattuple, PostgreSQL 17, 18 und 19 Release Notes, PostgreSQL 19 Doku „Routine Vacuuming“ und „Automatic Vacuuming“ (Parameter-Standardwerte) -->
 
 <div class="geruest"><h2>Gerüst</h2><dl>
   <dt>Warum?</dt><dd>MVCC lässt tote Versionen liegen. Ohne VACUUM: Bloat, keine Visibility Map, am Ende xid-Wraparound.</dd>
   <dt>Wie innen?</dt><dd>Heap scannen, tote TIDs sammeln, jeden Index aufräumen, Slots freigeben, FSM und VM setzen. Lock SHARE UPDATE EXCLUSIVE: Lesen und Schreiben laufen weiter.</dd>
-  <dt>Zahlen</dt><dd>Start ab 50 + 20 % tote Zeilen (seit 18 höchstens 100 Mio.). Cost Limit 200, Delay 2 ms. Pflicht ab 200 Mio. xid-Alter, Failsafe ab 1.6 Mrd.</dd>
-  <dt>Vergleich</dt><dd>VACUUM: online, Datei bleibt gross. VACUUM FULL: ACCESS EXCLUSIVE, Datei klein. Online neu schreiben: pg_repack, seit 19 <code>REPACK (CONCURRENTLY)</code>.</dd>
+  <dt>Zahlen</dt><dd>Start ab 50 + 20 % tote Zeilen (seit 18 höchstens 100 Mio.; <a href="https://www.postgresql.org/docs/18/release-18.html#RELEASE-18-SERVER-CONFIG">PG 18 Release Notes</a>). Cost Limit 200, Delay 2 ms. Pflicht ab 200 Mio. xid-Alter, Failsafe ab 1.6 Mrd.</dd>
+  <dt>Vergleich</dt><dd>VACUUM: online, Datei bleibt gross. VACUUM FULL: ACCESS EXCLUSIVE, Datei klein. Online neu schreiben: pg_repack, seit 19 <code>REPACK (CONCURRENTLY)</code> (<a href="https://www.postgresql.org/docs/19/release-19.html#RELEASE-19-UTILITY">PG 19 Release Notes</a>).</dd>
   <dt>Produktion</dt><dd>Alter Snapshot, Slot oder prepared xact → „dead but not yet removable“. Anti-Wraparound-Lauf weicht nicht aus → Migration ohne <code>lock_timeout</code> hängt.</dd>
   <dt>Design</dt><dd>Autovacuum nie abschalten, grosse Tabellen einzeln schärfen (<code>scale_factor</code> 0.01). Viel löschen → partitionieren und droppen.</dd>
 </dl></div>
@@ -76,7 +76,7 @@
 </svg>
 <ol>
   <li><b>Autovacuum Launcher:</b> ein Hintergrundprozess. Er startet pro Datenbank etwa alle <code>autovacuum_naptime</code> (1 min) einen Worker.</li>
-  <li><b>Autovacuum Worker:</b> prüft jede Tabelle gegen die Schwellen und führt <code>VACUUM</code> und <code>ANALYZE</code> aus. Standard: höchstens 3 gleichzeitig. Seit PostgreSQL 18 lässt sich <code>autovacuum_max_workers</code> ohne Neustart erhöhen, bis <code>autovacuum_worker_slots</code> (meist 16).</li>
+  <li><b>Autovacuum Worker:</b> prüft jede Tabelle gegen die Schwellen und führt <code>VACUUM</code> und <code>ANALYZE</code> aus. Standard: höchstens 3 gleichzeitig. Seit PostgreSQL 18 lässt sich <code>autovacuum_max_workers</code> ohne Neustart erhöhen, bis <code>autovacuum_worker_slots</code> (meist 16; <a href="https://www.postgresql.org/docs/18/release-18.html#RELEASE-18-SERVER-CONFIG">PG 18 Release Notes</a>).</li>
   <li><b>pg_stat_user_tables:</b> die Statistik pro Tabelle. Hier stehen tote Zeilen und Änderungen seit dem letzten Lauf.</li>
   <li><b>Heap:</b> VACUUM entfernt tote Tuples aus den Seiten. Der Platz bleibt in der Datei, wird aber wiederverwendbar.</li>
   <li><b>Indexe:</b> VACUUM entfernt auch die Index-Einträge, die auf tote Tuples zeigen.</li>
@@ -155,9 +155,9 @@ SELECT pg_size_pretty(pg_relation_size('t'));</pre>
   <li><b>VACUUM:</b> Lock <b>SHARE UPDATE EXCLUSIVE</b>. Lesen und Schreiben laufen weiter. Nur DDL und ein zweites VACUUM warten. Die Datei schrumpft meist nicht.</li>
   <li><b>VACUUM FULL:</b> schreibt Tabelle und Indexe komplett neu. Lock <b>ACCESS EXCLUSIVE</b>: Auch Lesen ist blockiert. Braucht Platz für eine zweite Kopie. Gibt Speicher an das Betriebssystem zurück.</li>
   <li><b>Autovacuum-Schwelle (Updates/Deletes):</b> <code>autovacuum_vacuum_threshold</code> (50) + <code>autovacuum_vacuum_scale_factor</code> (0.2) × Zeilenzahl. Bei 100 Mio. Zeilen sind das 20 Mio. tote Zeilen. Viel zu spät.</li>
-  <li><b>Obergrenze seit PostgreSQL 18:</b> <code>autovacuum_vacuum_max_threshold</code> (Standard 100 Mio.) deckelt die Schwelle. Formel: Minimum aus 100 Mio. und 50 + 0.2 × Zeilenzahl. Ab ca. 500 Mio. Zeilen greift der Deckel. Für die meisten grossen Tabellen bleibt Tuning pro Tabelle nötig.</li>
+  <li><b>Obergrenze seit PostgreSQL 18:</b> <code>autovacuum_vacuum_max_threshold</code> (Standard 100 Mio.) deckelt die Schwelle (<a href="https://www.postgresql.org/docs/18/release-18.html#RELEASE-18-SERVER-CONFIG">PG 18 Release Notes</a>). Formel: Minimum aus 100 Mio. und 50 + 0.2 × Zeilenzahl. Ab ca. 500 Mio. Zeilen greift der Deckel. Für die meisten grossen Tabellen bleibt Tuning pro Tabelle nötig.</li>
   <li><b>Insert-Schwelle:</b> Seit PostgreSQL 13 startet Autovacuum auch nach vielen Inserts. Aktuelle Formel (Doku 19): 1000 + 0.2 × Zeilenzahl × Anteil <b>nicht gefrorener</b> Seiten. Eine schon gefrorene Tabelle löst also seltener aus. So bekommen Append-only-Tabellen Visibility Map und Freezing.</li>
-  <li><b>Eager Freezing (seit 18):</b> Ein normaler VACUUM friert auch einige all-visible Seiten ein, die er sonst überspringen würde. Das spart Arbeit beim nächsten aggressiven Lauf. Regler: <code>vacuum_max_eager_freeze_failure_rate</code> (Standard 0.03).</li>
+  <li><b>Eager Freezing (seit 18):</b> Ein normaler VACUUM friert auch einige all-visible Seiten ein, die er sonst überspringen würde. Das spart Arbeit beim nächsten aggressiven Lauf. Regler: <code>vacuum_max_eager_freeze_failure_rate</code> (Standard 0.03; <a href="https://www.postgresql.org/docs/18/release-18.html#RELEASE-18-PERFORMANCE">PG 18 Release Notes</a>).</li>
   <li><b>ANALYZE-Schwelle:</b> 50 + 0.1 × Zeilenzahl geänderte Zeilen (<code>autovacuum_analyze_scale_factor</code>).</li>
   <li><b>Pro Tabelle einstellen:</b> <code>ALTER TABLE orders SET (autovacuum_vacuum_scale_factor = 0.01, autovacuum_vacuum_threshold = 1000);</code> Das ist der übliche Hebel für grosse Tabellen.</li>
   <li><b>Cost-based Delay:</b> VACUUM sammelt Kostenpunkte pro Seite (Treffer 1, Disk-Lesen 2, dirty machen 20). Bei 200 Punkten (<code>vacuum_cost_limit</code>) schläft er 2 ms (<code>autovacuum_vacuum_cost_delay</code>). Das Limit teilen sich alle Worker.</li>
@@ -167,8 +167,8 @@ SELECT pg_size_pretty(pg_relation_size('t'));</pre>
   <li><b>Was VACUUM blockiert:</b> lange oder „idle in transaction“ Sessions, verwaiste <b>Replication Slots</b>, vergessene <b>prepared Transactions</b>, lange Queries auf Replicas mit <code>hot_standby_feedback</code>. VERBOSE zeigt dann „dead but not yet removable“.</li>
   <li><b>Speicher:</b> <code>maintenance_work_mem</code> bzw. <code>autovacuum_work_mem</code> bestimmt, wie viele tote TIDs pro Runde passen. PostgreSQL 17 speichert sie viel kompakter. Die alte, stille Grenze von 1 GB fällt weg.</li>
   <li><b>Index-Bloat:</b> VACUUM macht Index-Seiten wiederverwendbar, schrumpft den Index aber kaum. Abhilfe: <code>REINDEX INDEX CONCURRENTLY</code> (seit 12), ohne lange Sperre.</li>
-  <li><b>Truncate am Ende:</b> Das Abschneiden leerer Endseiten braucht kurz einen ACCESS EXCLUSIVE Lock. Auf Replicas kann das Queries abbrechen. Abschaltbar mit <code>vacuum_truncate = off</code> pro Tabelle, seit 18 auch global als Server-Parameter.</li>
-  <li><b>Neu in PostgreSQL 19:</b> Autovacuum kann Indexe mit parallelen Workern bearbeiten und wählt die Reihenfolge der Tabellen über ein Punkte-System. Die View <code>pg_stat_autovacuum_scores</code> zeigt die Punkte pro Tabelle.</li>
+  <li><b>Truncate am Ende:</b> Das Abschneiden leerer Endseiten braucht kurz einen ACCESS EXCLUSIVE Lock. Auf Replicas kann das Queries abbrechen. Abschaltbar mit <code>vacuum_truncate = off</code> pro Tabelle, seit 18 auch global als Server-Parameter (<a href="https://www.postgresql.org/docs/18/release-18.html#RELEASE-18-PERFORMANCE">PG 18 Release Notes</a>).</li>
+  <li><b>Neu in PostgreSQL 19:</b> Autovacuum kann Indexe mit parallelen Workern bearbeiten (<a href="https://www.postgresql.org/docs/19/release-19.html#RELEASE-19-PERFORMANCE">PG 19 Release Notes</a>) und wählt die Reihenfolge der Tabellen über ein Punkte-System (<a href="https://www.postgresql.org/docs/19/release-19.html#RELEASE-19-SERVER-CONFIG">PG 19 Release Notes</a>). Die View <code>pg_stat_autovacuum_scores</code> zeigt die Punkte pro Tabelle (<a href="https://www.postgresql.org/docs/19/release-19.html#RELEASE-19-SYSTEM-VIEWS">PG 19 Release Notes</a>).</li>
 </ol>
 
 <h2>5. Vergleich</h2>
@@ -177,7 +177,7 @@ SELECT pg_size_pretty(pg_relation_size('t'));</pre>
   <li><b>VACUUM FULL:</b> Tabelle neu schreiben, Datei klein, aber volle Sperre und doppelter Platz. Nur im Wartungsfenster.</li>
   <li><b>pg_repack</b> (Extension): schreibt die Tabelle online neu. Nur kurze Sperren am Anfang und Ende. Braucht auch doppelten Platz und einen Primary Key.</li>
   <li><b>CLUSTER:</b> schreibt neu und sortiert nach einem Index. Gleiche Sperre wie VACUUM FULL.</li>
-  <li><b>REPACK (seit PostgreSQL 19):</b> ersetzt VACUUM FULL und CLUSTER; die alten Befehle bleiben für Kompatibilität. <code>REPACK (CONCURRENTLY)</code> arbeitet fast die ganze Zeit mit SHARE UPDATE EXCLUSIVE. ACCESS EXCLUSIVE nimmt es nur kurz am Ende, zum Tauschen der Dateien. Bedingungen: Primary Key oder Replica Identity, Platz für Tabelle plus Indexe, ein freier Slot in <code>max_repack_replication_slots</code>. Damit braucht man pg_repack auf 19 oft nicht mehr.</li>
+  <li><b>REPACK (seit PostgreSQL 19):</b> ersetzt VACUUM FULL und CLUSTER; die alten Befehle bleiben für Kompatibilität (<a href="https://www.postgresql.org/docs/19/release-19.html#RELEASE-19-UTILITY">PG 19 Release Notes</a>). <code>REPACK (CONCURRENTLY)</code> arbeitet fast die ganze Zeit mit SHARE UPDATE EXCLUSIVE. ACCESS EXCLUSIVE nimmt es nur kurz am Ende, zum Tauschen der Dateien. Bedingungen: Primary Key oder Replica Identity, Platz für Tabelle plus Indexe, ein freier Slot in <code>max_repack_replication_slots</code>. Damit braucht man pg_repack auf 19 oft nicht mehr.</li>
   <li><b>VACUUM FREEZE:</b> friert alle Zeilen sofort ein. Gut nach einem grossen Import, bevor das Pflicht-Autovacuum zur Unzeit kommt.</li>
   <li><b>ANALYZE:</b> nur Statistik für den Planner, kein Aufräumen.</li>
   <li><b>TRUNCATE:</b> leert eine Tabelle sofort ohne tote Zeilen. Lock ACCESS EXCLUSIVE.</li>
@@ -186,13 +186,13 @@ SELECT pg_size_pretty(pg_relation_size('t'));</pre>
 
 <h2>6. In der Produktion</h2>
 <ol>
-  <li><b>Grosse Tabelle, Autovacuum zu spät:</b> 20 % Schwelle bei 500 Mio. Zeilen sind 100 Mio. tote Zeilen; der Deckel aus PostgreSQL 18 hilft hier noch nicht. Abfragen werden über Wochen langsamer. Lösung: <code>scale_factor</code> pro Tabelle auf 0.01 oder tiefer.</li>
+  <li><b>Grosse Tabelle, Autovacuum zu spät:</b> 20 % Schwelle bei 500 Mio. Zeilen sind 100 Mio. tote Zeilen; der Deckel aus PostgreSQL 18 (<a href="https://www.postgresql.org/docs/18/release-18.html#RELEASE-18-SERVER-CONFIG">PG 18 Release Notes</a>) hilft hier noch nicht. Abfragen werden über Wochen langsamer. Lösung: <code>scale_factor</code> pro Tabelle auf 0.01 oder tiefer.</li>
   <li><b>Autovacuum zu langsam:</b> Er läuft dauernd, wird aber nie fertig. Lösung: <code>autovacuum_vacuum_cost_limit</code> erhöhen (z. B. 1000–2000), mehr Worker, <code>maintenance_work_mem</code> erhöhen.</li>
   <li><b>Bloat trotz Autovacuum:</b> VERBOSE zeigt viele „dead but not yet removable“. Ursache: alter Snapshot. Lösung: Blocker finden (<code>backend_xmin</code>, Slots, prepared xacts) und Timeouts setzen.</li>
   <li><b>Pflicht-Autovacuum zur Spitzenzeit:</b> Eine grosse, nie geänderte Tabelle erreicht 200 Mio. Alter. Ein langer Lauf mit viel I/O startet. Lösung: nach Imports <code>VACUUM (FREEZE)</code>, Alter überwachen.</li>
   <li><b>Migration hängt hinter Autovacuum:</b> Ein Anti-Wraparound-Lauf gibt seinen Lock nicht ab. <code>ALTER TABLE</code> wartet, dahinter alle Queries. Lösung: <code>lock_timeout</code> in Migrationen, Wraparound-Läufe nicht abbrechen.</li>
   <li><b>Queue-Tabelle bläht sich auf:</b> Hoher Durchsatz mit UPDATE und DELETE. Lösung: aggressives Autovacuum pro Tabelle, kurze Transaktionen. Oder Partitionen pro Tag und alte droppen.</li>
-  <li><b>VACUUM FULL in Produktion:</b> Die Tabelle ist minutenlang komplett gesperrt. Lösung: pg_repack, ab 19 <code>REPACK (CONCURRENTLY)</code>, oder Partitionierung statt VACUUM FULL.</li>
+  <li><b>VACUUM FULL in Produktion:</b> Die Tabelle ist minutenlang komplett gesperrt. Lösung: pg_repack, ab 19 <code>REPACK (CONCURRENTLY)</code> (<a href="https://www.postgresql.org/docs/19/release-19.html#RELEASE-19-UTILITY">PG 19 Release Notes</a>), oder Partitionierung statt VACUUM FULL.</li>
 </ol>
 
 <h2>7. Diagnose: Werkzeuge und Abfragen</h2>
@@ -217,7 +217,7 @@ SELECT tuple_percent, dead_tuple_percent, free_percent FROM pgstattuple('orders'
   <li><code>pg_stat_user_tables</code>: <code>n_dead_tup</code>, <code>n_mod_since_analyze</code>, <code>n_ins_since_vacuum</code>, <code>last_vacuum</code>, <code>last_autovacuum</code>.</li>
   <li><code>pg_stat_progress_vacuum</code>: Phase und Fortschritt. Seit 17 heisst <code>max_dead_tuples</code> jetzt <code>max_dead_tuple_bytes</code> und <code>num_dead_tuples</code> jetzt <code>num_dead_item_ids</code>. Neu ist <code>dead_tuple_bytes</code>.</li>
   <li><code>pgstattuple</code> / <code>pgstattuple_approx</code>: echter Anteil toter und freier Bytes. <code>pgstatindex</code> für Indexe.</li>
-  <li><code>log_autovacuum_min_duration</code>: loggt Läufe über der Dauer (Standard seit 15: 10 min). Für Analyse auf 0 oder 1 s setzen. Seit 19 gilt er nur für Vacuum; Analyze loggt <code>log_autoanalyze_min_duration</code>.</li>
+  <li><code>log_autovacuum_min_duration</code>: loggt Läufe über der Dauer (Standard seit 15: 10 min). Für Analyse auf 0 oder 1 s setzen. Seit 19 gilt er nur für Vacuum; Analyze loggt <code>log_autoanalyze_min_duration</code> (<a href="https://www.postgresql.org/docs/19/release-19.html#RELEASE-19-MONITORING">PG 19 Release Notes</a>).</li>
   <li><code>pg_stat_activity</code>, <code>pg_replication_slots</code>, <code>pg_prepared_xacts</code>: Blocker finden.</li>
   <li><code>VACUUM (VERBOSE)</code>: „removable cutoff“ und „dead but not yet removable“ zeigen, ob ein Snapshot bremst.</li>
 </ul>
@@ -228,7 +228,7 @@ SELECT tuple_percent, dead_tuple_percent, free_percent FROM pgstattuple('orders'
   <li><b>Autovacuum nie abschalten.</b> Lieber pro Tabelle schärfer einstellen. Abschalten verschiebt das Problem zum Wraparound.</li>
   <li><b>Standardwerte passen für kleine Tabellen.</b> Für grosse Tabellen ist 20 % viel zu spät. Grosse und heisse Tabellen bekommen eigene Werte.</li>
   <li><b>Bloat ist meist ein Symptom.</b> Die Ursache ist oft ein alter Snapshot, nicht ein zu langsamer VACUUM.</li>
-  <li><b>VACUUM FULL ist kein Wartungsjob.</b> Es ist eine Notoperation mit voller Sperre. Online: pg_repack oder ab 19 <code>REPACK (CONCURRENTLY)</code>.</li>
+  <li><b>VACUUM FULL ist kein Wartungsjob.</b> Es ist eine Notoperation mit voller Sperre. Online: pg_repack oder ab 19 <code>REPACK (CONCURRENTLY)</code> (<a href="https://www.postgresql.org/docs/19/release-19.html#RELEASE-19-UTILITY">PG 19 Release Notes</a>).</li>
   <li><b>Datenlebenszyklus planen.</b> Wer viel löscht, partitioniert und droppt Partitionen. Das ist billiger als jeder VACUUM.</li>
   <li><b>Monitoring:</b> <code>n_dead_tup</code>, Alter von <code>datfrozenxid</code>, älteste Transaktion, Slot-Lag. Alle vier gehören auf ein Dashboard mit Alarm.</li>
 </ol>
@@ -259,18 +259,18 @@ SELECT tuple_percent, dead_tuple_percent, free_percent FROM pgstattuple('orders'
 <details><summary>Welchen Lock nimmt VACUUM?</summary><p>SHARE UPDATE EXCLUSIVE. SELECT, INSERT, UPDATE und DELETE laufen weiter. VACUUM FULL nimmt ACCESS EXCLUSIVE.</p></details>
 <details><summary>Was ist Freezing?</summary><p>VACUUM markiert alte Zeilen als für alle sichtbar. Ihr xmin zählt dann nicht mehr. Das verhindert Probleme beim xid-Wraparound.</p></details>
 <details><summary>Was ist ein aggressiver VACUUM?</summary><p>Ab vacuum_freeze_table_age scannt VACUUM alle Seiten, die nicht all-frozen sind. Nur so kann er relfrozenxid vorrücken.</p></details>
-<details><summary>Was ist Eager Freezing?</summary><p>Seit PostgreSQL 18 friert ein normaler VACUUM auch einige all-visible Seiten ein. Der nächste aggressive Lauf hat dann weniger Arbeit. Regler: vacuum_max_eager_freeze_failure_rate.</p></details>
+<details><summary>Was ist Eager Freezing?</summary><p>Seit PostgreSQL 18 friert ein normaler VACUUM auch einige all-visible Seiten ein. Der nächste aggressive Lauf hat dann weniger Arbeit. Regler: vacuum_max_eager_freeze_failure_rate (<a href="https://www.postgresql.org/docs/18/release-18.html#RELEASE-18-PERFORMANCE">PG 18 Release Notes</a>).</p></details>
 <details><summary>Was macht maintenance_work_mem bei VACUUM?</summary><p>Es begrenzt den Speicher für tote TIDs. Ist er voll, muss VACUUM alle Indexe mehrmals scannen. PostgreSQL 17 speichert die TIDs viel kompakter.</p></details>
 <details><summary>Warum schrumpft ein Index nicht durch VACUUM?</summary><p>VACUUM gibt Index-Seiten nur zur Wiederverwendung frei. Die Datei bleibt gross. Kleiner wird sie nur mit REINDEX.</p></details>
 <h3>Zahlen</h3>
-<details><summary>Wann startet Autovacuum?</summary><p>Wenn tote Zeilen über 50 + 20 % der Zeilen liegen, seit 18 höchstens 100 Mio. Oder Inserts über 1000 + 20 % (bezogen auf den nicht gefrorenen Teil). Oder das xid-Alter über autovacuum_freeze_max_age (200 Mio.).</p></details>
+<details><summary>Wann startet Autovacuum?</summary><p>Wenn tote Zeilen über 50 + 20 % der Zeilen liegen, seit 18 höchstens 100 Mio. (<a href="https://www.postgresql.org/docs/18/release-18.html#RELEASE-18-SERVER-CONFIG">PG 18 Release Notes</a>). Oder Inserts über 1000 + 20 % (bezogen auf den nicht gefrorenen Teil). Oder das xid-Alter über autovacuum_freeze_max_age (200 Mio.).</p></details>
 <details><summary>Warum reicht die Standard-Schwelle für eine Tabelle mit 100 Mio. Zeilen nicht?</summary><p>50 + 20 % sind 20 Mio. tote Zeilen, bevor Autovacuum startet. Bis dahin ist die Tabelle stark aufgebläht. Darum scale_factor pro Tabelle senken.</p></details>
 <details><summary>Was ist der Cost-based Vacuum Delay?</summary><p>VACUUM zählt Kosten pro Seite. Beim Limit (200) schläft er kurz (2 ms bei Autovacuum). Das schont I/O, kann VACUUM aber zu langsam machen.</p></details>
 <details><summary>Was ist der Failsafe-Modus?</summary><p>Ab 1.6 Mrd. xid-Alter ignoriert VACUUM den Cost Delay und überspringt Index-Arbeit. Ziel: so schnell wie möglich freezen.</p></details>
 <h3>Vergleich</h3>
 <details><summary>VACUUM vs VACUUM FULL?</summary><p>VACUUM läuft online und macht Platz intern wiederverwendbar. VACUUM FULL schreibt die Tabelle neu, gibt Platz zurück, sperrt aber alles.</p></details>
-<details><summary>Was ist REPACK in PostgreSQL 19?</summary><p>Der neue Befehl für VACUUM FULL und CLUSTER. Mit CONCURRENTLY läuft er fast ganz unter SHARE UPDATE EXCLUSIVE und sperrt nur kurz am Ende. Er braucht einen Primary Key oder eine Replica Identity.</p></details>
-<details><summary>Wie entfernen Sie Bloat ohne Downtime?</summary><p>Tabellen mit pg_repack oder ab 19 REPACK (CONCURRENTLY), Indexe mit REINDEX CONCURRENTLY. Vorher die Ursache beheben, sonst kommt er zurück.</p></details>
+<details><summary>Was ist REPACK in PostgreSQL 19?</summary><p>Der neue Befehl für VACUUM FULL und CLUSTER (<a href="https://www.postgresql.org/docs/19/release-19.html#RELEASE-19-UTILITY">PG 19 Release Notes</a>). Mit CONCURRENTLY läuft er fast ganz unter SHARE UPDATE EXCLUSIVE und sperrt nur kurz am Ende. Er braucht einen Primary Key oder eine Replica Identity.</p></details>
+<details><summary>Wie entfernen Sie Bloat ohne Downtime?</summary><p>Tabellen mit pg_repack oder ab 19 REPACK (CONCURRENTLY) (<a href="https://www.postgresql.org/docs/19/release-19.html#RELEASE-19-UTILITY">PG 19 Release Notes</a>), Indexe mit REINDEX CONCURRENTLY. Vorher die Ursache beheben, sonst kommt er zurück.</p></details>
 <details><summary>Warum ist DELETE auf grossen Tabellen teurer als eine Partition zu droppen?</summary><p>Jede gelöschte Zeile wird ein dead tuple, das VACUUM aufräumen muss. DROP oder DETACH einer Partition entfernt die Datei ohne tote Zeilen.</p></details>
 <h3>Produktion</h3>
 <details><summary>Was kann VACUUM am Aufräumen hindern?</summary><p>Alte Transaktionen, idle in transaction, Replication Slots, prepared Transactions und Replica-Queries mit hot_standby_feedback.</p></details>
@@ -282,7 +282,7 @@ SELECT tuple_percent, dead_tuple_percent, free_percent FROM pgstattuple('orders'
 <h3>Design</h3>
 <details><summary>Warum sollte man Autovacuum nie abschalten?</summary><p>Bloat wächst, Statistiken veralten, und ab 200 Mio. xid-Alter kommt das Pflicht-Autovacuum trotzdem, oft zur Unzeit.</p></details>
 <details><summary>Wie stellt man Autovacuum für eine grosse Tabelle ein?</summary><p>Mit Storage-Parametern pro Tabelle, z. B. autovacuum_vacuum_scale_factor = 0.01. Dazu eventuell ein höheres Cost Limit.</p></details>
-<details><summary>Szenario: Eine 200-GB-Tabelle hat 60 % Bloat, Downtime ist nicht erlaubt. Ihr Plan?</summary><p>Zuerst die Ursache beheben und Autovacuum pro Tabelle schärfen. Dann pg_repack oder auf 19 REPACK (CONCURRENTLY), mit genug freiem Platz. Langfristig partitionieren, wenn alte Daten gelöscht werden.</p></details>
+<details><summary>Szenario: Eine 200-GB-Tabelle hat 60 % Bloat, Downtime ist nicht erlaubt. Ihr Plan?</summary><p>Zuerst die Ursache beheben und Autovacuum pro Tabelle schärfen. Dann pg_repack oder auf 19 REPACK (CONCURRENTLY) (<a href="https://www.postgresql.org/docs/19/release-19.html#RELEASE-19-UTILITY">PG 19 Release Notes</a>), mit genug freiem Platz. Langfristig partitionieren, wenn alte Daten gelöscht werden.</p></details>
 
 </body>
 </html>

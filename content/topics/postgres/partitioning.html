@@ -19,12 +19,37 @@
   summary { font-weight: 600; cursor: pointer; }
   details p { margin: 6px 0 2px; }
   .small { color: #6e6e73; font-size: 14px; }
+  h3 { font-size: 17px; margin: 20px 0 6px; }
+  .geruest { border: 2px solid #1d1d1f; border-radius: 6px; padding: 10px 14px; margin: 14px 0; font-size: 15px; line-height: 1.4; }
+  .geruest h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; margin: 0 0 8px; padding: 0; border: 0; }
+  .geruest dl { display: grid; grid-template-columns: 6.6em 1fr; gap: 6px 10px; margin: 0; }
+  .geruest dt { font-weight: 700; font-size: 12px; text-transform: uppercase; letter-spacing: .05em; padding-top: 1px; }
+  .geruest dd { margin: 0; }
+  .muster { border: 1px solid #e5e5ea; border-left: 4px solid #1d1d1f; border-radius: 6px; padding: 10px 14px; margin: 14px 0; }
+  .muster h3 { margin: 0 0 6px; font-size: 13px; text-transform: uppercase; letter-spacing: .06em; }
+  .muster .mq { margin: 0 0 6px; }
 </style>
 </head>
 <body>
 
 <h1>Tabellen-Partitionierung</h1>
-<p class="small">PostgreSQL 19 (aktuell seit 19.11.2026; Beispiele auf 17.12 ausgeführt) · Quellen: PostgreSQL 19 Doku, Kapitel 5.12 „Table Partitioning“ (Declarative Partitioning, Partition Maintenance, Limitations, Partition Pruning, Best Practices), <code>CREATE TABLE … PARTITION BY / PARTITION OF</code>, <code>ALTER TABLE</code> (<code>ATTACH</code>/<code>DETACH PARTITION</code>, Lock-Stufen), <code>CREATE INDEX</code> (<code>ON ONLY</code>), Kapitel 19.7 „Query Planning“ (<code>enable_partition_pruning</code>, <code>enable_partitionwise_*</code>); Release Notes 17 (Identity und Exclusion Constraints auf partitionierten Tabellen), 18 (<code>VACUUM/ANALYZE ONLY</code>, keine UNLOGGED partitionierten Tabellen), 19 (<code>COPY TO</code> direkt aus partitionierter Tabelle, <code>vacuumdb --analyze-only</code> analysiert Parents)</p>
+<!-- sources: PostgreSQL 19 (aktuell seit 19.11.2026; Beispiele auf 17.12 ausgeführt) · Quellen: PostgreSQL 19 Doku, Kapitel 5.12 „Table Partitioning“ (Declarative Partitioning, Partition Maintenance, Limitations, Partition Pruning, Best Practices), CREATE TABLE … PARTITION BY / PARTITION OF, ALTER TABLE (ATTACH/DETACH PARTITION, Lock-Stufen), CREATE INDEX (ON ONLY), Kapitel 19.7 „Query Planning“ (enable_partition_pruning, enable_partitionwise_*); Release Notes 17 (Identity und Exclusion Constraints auf partitionierten Tabellen), 18 (VACUUM/ANALYZE ONLY, keine UNLOGGED partitionierten Tabellen), 19 (COPY TO direkt aus partitionierter Tabelle, vacuumdb - -analyze-only analysiert Parents) -->
+
+<div class="geruest"><h2>Gerüst</h2><dl>
+  <dt>Warum?</dt><dd>Retention per DETACH + DROP statt DELETE: kein Bloat, kein VACUUM. Kleinere Indizes, VACUUM pro Partition.</dd>
+  <dt>Wie innen?</dt><dd>Parent ohne Daten (<code>relkind p</code>), Tuple Routing beim INSERT. Pruning beim Planen (Konstante) oder beim Start (<code>$1</code>).</dd>
+  <dt>Zahlen</dt><dd>Doku: einige tausend Partitionen gehen, wenn fast alle geprunt werden. Pruning standardmässig an, partitionwise Join/Aggregate aus.</dd>
+  <dt>Vergleich</dt><dd>RANGE für Zeit, LIST für Mandant, HASH für Verteilung. Ersetzt keinen Index, ist kein Sharding (ein Server).</dd>
+  <dt>Produktion</dt><dd>Monats-Partition fehlt → alle Inserts scheitern. Funktion auf dem Key → kein Pruning. Parent ohne ANALYZE → schlechte Pläne.</dd>
+  <dt>Design</dt><dd>Key = Spalte in fast jedem WHERE und in der Retention. PK muss den Key enthalten: kein globaler Unique-Index.</dd>
+</dl></div>
+
+<div class="muster"><h3>Antwort-Muster</h3><p class="mq"><b>Frage:</b> Wann und wie partitionieren Sie eine Tabelle?</p><ol>
+  <li>Mechanismus: Ich teile sie mit <code>PARTITION BY RANGE</code> nach Datum. Der Planner liest dank Pruning nur passende Partitionen.</li>
+  <li>Zahl: Die Doku nennt einige tausend Partitionen als machbar, wenn Abfragen fast alle wegprunen.</li>
+  <li>Trade-off: Ich gewinne schnelles Löschen per DROP, verliere aber globale Unique-Indizes und zahle Planungszeit.</li>
+  <li>Produktion: Ich lege Partitionen per Job vorab an und alarmiere, wenn der nächste Monat fehlt.</li>
+</ol></div>
 
 <div class="kern">
 <b>Kern:</b> <b>Partitionierung</b> teilt eine grosse logische Tabelle in kleinere physische Tabellen, die <b>Partitionen</b>, nach einem <b>Partition Key</b> wie dem Datum. Abfragen lesen dank <b>Partition Pruning</b> nur die passenden Partitionen. Alte Daten löscht man mit <code>DETACH</code> und <code>DROP</code> in Millisekunden statt mit einem riesigen <code>DELETE</code>.
@@ -197,11 +222,11 @@ DETAIL:  Partition key of the failing row contains (eingang) = (2026-12-05).
   <li><b>Index ohne lange Sperre:</b> <code>CREATE INDEX</code> auf dem Parent kann nicht <code>CONCURRENTLY</code>. Weg: <code>CREATE INDEX … ON ONLY meldung</code>, dann pro Partition <code>CONCURRENTLY</code> und <code>ALTER INDEX … ATTACH PARTITION</code>.</li>
   <li><b>Pruning-Voraussetzung:</b> Der Filter muss direkt auf den Key-Spalten stehen. Funktionen oder Rechnungen auf dem Key verhindern Pruning. <code>enable_partition_pruning</code> ist standardmässig an.</li>
   <li><b>Partitionwise Join und Aggregate:</b> <code>enable_partitionwise_join</code> und <code>enable_partitionwise_aggregate</code> lassen gleich partitionierte Tabellen Partition für Partition joinen. Beide sind standardmässig aus, weil sie Planungszeit und Speicher kosten.</li>
-  <li><b>Statistiken:</b> Autovacuum bearbeitet nur die Partitionen, nicht den Parent. Der Parent braucht ein manuelles <code>ANALYZE</code> für Abfragen über alle Partitionen. Seit 18 gibt es <code>ANALYZE ONLY meldung</code> nur für den Parent.</li>
-  <li><b>Foreign Keys:</b> Eine partitionierte Tabelle kann einen FK haben und Ziel eines FK sein. Seit 18 auch als <code>NOT VALID</code>.</li>
+  <li><b>Statistiken:</b> Autovacuum bearbeitet nur die Partitionen, nicht den Parent. Der Parent braucht ein manuelles <code>ANALYZE</code> für Abfragen über alle Partitionen. Seit 18 gibt es <code>ANALYZE ONLY meldung</code> nur für den Parent (<a href="https://www.postgresql.org/docs/release/18.0/#RELEASE-18-UTILITY">Release Notes 18, Utility Commands</a>). Seit 19 analysiert <code>vacuumdb --analyze-only</code> ohne Ziel auch partitionierte Tabellen; vorher übersprang es sie (<a href="https://www.postgresql.org/docs/release/19.0/#RELEASE-19-SERVER-APPS">Release Notes 19, Server Applications</a>).</li>
+  <li><b>Foreign Keys:</b> Eine partitionierte Tabelle kann einen FK haben und Ziel eines FK sein. Seit 18 auch als <code>NOT VALID</code> (<a href="https://www.postgresql.org/docs/release/18.0/#RELEASE-18-CONSTRAINTS">Release Notes 18, Constraints</a>).</li>
   <li><b>Neu in 17:</b> Identity-Spalten und Exclusion Constraints auf partitionierten Tabellen. Der Exclusion Constraint muss die Key-Spalten mit <code>=</code> vergleichen.</li>
-  <li><b>Neu in 18 und 19:</b> 18 verbietet UNLOGGED partitionierte Tabellen. 19 erlaubt <code>COPY meldung TO …</code> direkt, vorher brauchte man <code>COPY (SELECT …)</code>.</li>
-  <li><b>Kein SPLIT/MERGE:</b> Auch PostgreSQL 19 hat kein <code>SPLIT PARTITION</code> oder <code>MERGE PARTITIONS</code>. Umbauen heisst: neue Partition anlegen, Daten kopieren, alte abhängen.</li>
+  <li><b>Neu in 18 und 19:</b> 18 verbietet UNLOGGED partitionierte Tabellen; vorher wirkte <code>UNLOGGED</code> dort gar nicht auf die Partitionen (<a href="https://www.postgresql.org/docs/release/18.0/#RELEASE-18-MIGRATION">Release Notes 18, Migration</a>). 18 plant Abfragen über viele Partitionen effizienter (<a href="https://www.postgresql.org/docs/release/18.0/#RELEASE-18-OPTIMIZER">Release Notes 18, Optimizer</a>). 19 erlaubt <code>COPY meldung TO …</code> direkt, vorher brauchte man <code>COPY (SELECT …)</code> (<a href="https://www.postgresql.org/docs/release/19.0/#RELEASE-19-COPY">Release Notes 19, COPY</a>).</li>
+  <li><b>Kein SPLIT/MERGE:</b> Auch PostgreSQL 19 hat kein <code>SPLIT PARTITION</code> oder <code>MERGE PARTITIONS</code> (nicht in der <a href="https://www.postgresql.org/docs/19/sql-altertable.html">ALTER-TABLE-Doku 19</a>). Umbauen heisst: neue Partition anlegen, Daten kopieren, alte abhängen.</li>
   <li><b>Anzahl Partitionen:</b> Die Doku nennt einige tausend Partitionen als gut machbar, wenn Abfragen fast alle wegprunen. Jede berührte Partition kostet Planungszeit und Speicher pro Session.</li>
   <li><b>Einschränkungen:</b> Partitionen haben keine eigenen Zusatzspalten. Ein <code>BEFORE ROW</code>-Trigger kann das Ziel nicht ändern. Generated Columns dürfen nicht im Partition Key sein.</li>
 </ol>
@@ -263,35 +288,45 @@ DETAIL:  Partition key of the failing row contains (eingang) = (2026-12-05).
   <li>„Autovacuum hält die Statistiken des Parents aktuell.“ → <b>Falsch.</b> Nur die der Partitionen. Der Parent braucht manuelles ANALYZE.</li>
   <li>„DETACH ist immer ohne Sperre.“ → <b>Falsch.</b> Nur mit CONCURRENTLY, und das geht nicht mit DEFAULT-Partition.</li>
   <li>„WHERE date_trunc('day', eingang) = … prunt.“ → <b>Falsch.</b> Ein Ausdruck auf dem Key verhindert Pruning. Ein Bereich auf der Spalte prunt.</li>
-  <li>„PostgreSQL kann Partitionen splitten.“ → <b>Falsch.</b> Auch in 19 gibt es kein SPLIT oder MERGE PARTITION.</li>
+  <li>„PostgreSQL kann Partitionen splitten.“ → <b>Falsch.</b> Auch in 19 gibt es kein SPLIT oder MERGE PARTITION (<a href="https://www.postgresql.org/docs/19/sql-altertable.html">ALTER-TABLE-Doku 19</a>).</li>
 </ul>
 </div>
 
-<h2>11. Fragen</h2>
+<h2>11. Selbsttest</h2>
+<h3>Warum?</h3>
 <details><summary>Was ist Tabellen-Partitionierung?</summary><p>Eine logische Tabelle wird nach einem Key in mehrere physische Tabellen geteilt. Abfragen und Wartung arbeiten auf kleineren Teilen.</p></details>
 <details><summary>Welche Probleme löst sie?</summary><p>Schnelles Löschen alter Daten, kleinere Indizes, schnellere Abfragen auf Teilbereiche und VACUUM pro Partition.</p></details>
+<details><summary>Warum ist DROP einer Partition so viel billiger als ein DELETE?</summary><p>DROP entfernt die Dateien der Partition auf einmal. DELETE markiert jede Zeile einzeln, schreibt WAL pro Zeile und hinterlässt tote Tupel für VACUUM.</p></details>
+<details><summary>Wie lösche ich alte Daten effizient?</summary><p>Die Partition abhängen und droppen. Kein DELETE, kein Bloat, kein VACUUM.</p></details>
+<h3>Wie innen?</h3>
 <details><summary>Welche Methoden gibt es?</summary><p>RANGE, LIST und HASH. Kombinationen über Sub-Partitionierung.</p></details>
 <details><summary>Hat die partitionierte Tabelle eigene Daten?</summary><p>Nein. Sie ist virtuell, alle Zeilen liegen in den Partitionen.</p></details>
 <details><summary>Was passiert mit einer Zeile ohne passende Partition?</summary><p>Der Insert scheitert, ausser es gibt eine DEFAULT-Partition.</p></details>
 <details><summary>Was ist Partition Pruning?</summary><p>Der Planner oder Executor lässt Partitionen weg, die laut Filter keine Treffer haben können.</p></details>
 <details><summary>Wann passiert Pruning zur Laufzeit?</summary><p>Wenn der Wert beim Planen unbekannt ist, z. B. ein Parameter im generischen Plan oder ein Wert aus einem Join. EXPLAIN zeigt dann Subplans Removed.</p></details>
 <details><summary>Warum prunt WHERE eingang + 1 = … nicht?</summary><p>Der Filter ist ein Ausdruck auf dem Key. Der Planner kann ihn nicht mit den Grenzen vergleichen.</p></details>
-<details><summary>Warum muss der PK den Partition Key enthalten?</summary><p>Es gibt keinen globalen Index. Jede Partition prüft Eindeutigkeit nur lokal; mit dem Key im PK reicht das.</p></details>
+<details><summary>Was passiert bei UPDATE des Partition Keys?</summary><p>Die Zeile wandert in die passende Partition. Intern ist das DELETE plus INSERT.</p></details>
+<h3>Zahlen</h3>
+<details><summary>Wie viele Partitionen sind sinnvoll?</summary><p>Die Doku nennt einige tausend als machbar bei gutem Pruning. Für OLTP plane ich eher Dutzende bis wenige hundert.</p></details>
+<details><summary>Was ist Partitionwise Join?</summary><p>Zwei gleich partitionierte Tabellen werden Partition für Partition gejoint. Standardmässig aus.</p></details>
+<details><summary>Warum zeigt EXPLAIN ANALYZE „Subplans Removed: 2“?</summary><p>Der Wert war beim Planen unbekannt, z. B. <code>$1</code> im generischen Plan. Der Executor hat beim Start 2 von 3 Partitionen entfernt. Nur eine wurde gelesen.</p></details>
+<h3>Vergleich</h3>
 <details><summary>Gibt es globale Indizes?</summary><p>Nein. Ein Index auf dem Parent besteht aus einem Index pro Partition.</p></details>
-<details><summary>Wie lege ich einen Index ohne lange Sperre an?</summary><p>CREATE INDEX ON ONLY auf dem Parent, dann pro Partition CONCURRENTLY, dann ALTER INDEX … ATTACH PARTITION.</p></details>
-<details><summary>Wie hänge ich eine Partition ohne Daten-Scan an?</summary><p>Vorher einen CHECK mit genau den Grenzen anlegen. ATTACH nutzt ihn und prüft nicht erneut. Danach den CHECK löschen.</p></details>
+<details><summary>Partitionierung oder Sharding?</summary><p>Partitionierung bleibt auf einem Server. Sharding verteilt auf mehrere Server und braucht z. B. Citus.</p></details>
+<details><summary>Kann PostgreSQL Partitionen splitten oder zusammenlegen?</summary><p>Nein, auch 19 nicht (<a href="https://www.postgresql.org/docs/19/sql-altertable.html">ALTER-TABLE-Doku 19</a>). Man legt neue Partitionen an, kopiert und hängt alte ab.</p></details>
+<details><summary>Warum eignet sich HASH-Partitionierung nicht für Retention?</summary><p>Jede HASH-Partition enthält Zeilen aus allen Zeiträumen. Man kann also keinen alten Monat abhängen. Pruning geht ausserdem nur bei Gleichheit.</p></details>
+<h3>Produktion</h3>
 <details><summary>Welche Sperre braucht ATTACH PARTITION?</summary><p>SHARE UPDATE EXCLUSIVE auf dem Parent und ACCESS EXCLUSIVE auf der neuen Tabelle und einer DEFAULT-Partition.</p></details>
 <details><summary>Was macht DETACH PARTITION CONCURRENTLY?</summary><p>Es löst eine Partition mit schwacher Sperre in zwei Transaktionen. Nicht im Transaktionsblock, nicht mit DEFAULT-Partition.</p></details>
-<details><summary>Wie lösche ich alte Daten effizient?</summary><p>Die Partition abhängen und droppen. Kein DELETE, kein Bloat, kein VACUUM.</p></details>
-<details><summary>Was passiert bei UPDATE des Partition Keys?</summary><p>Die Zeile wandert in die passende Partition. Intern ist das DELETE plus INSERT.</p></details>
 <details><summary>Analysiert Autovacuum die partitionierte Tabelle?</summary><p>Nein, nur die Partitionen. Für den Parent braucht es manuelles ANALYZE.</p></details>
-<details><summary>Was ist Partitionwise Join?</summary><p>Zwei gleich partitionierte Tabellen werden Partition für Partition gejoint. Standardmässig aus.</p></details>
-<details><summary>Wie viele Partitionen sind sinnvoll?</summary><p>Die Doku nennt einige tausend als machbar bei gutem Pruning. Für OLTP plane ich eher Dutzende bis wenige hundert.</p></details>
-<details><summary>Kann PostgreSQL Partitionen splitten oder zusammenlegen?</summary><p>Nein, auch 19 nicht. Man legt neue Partitionen an, kopiert und hängt alte ab.</p></details>
-<details><summary>Partitionierung oder Sharding?</summary><p>Partitionierung bleibt auf einem Server. Sharding verteilt auf mehrere Server und braucht z. B. Citus.</p></details>
-<details><summary>Wie legt man Partitionen automatisch an?</summary><p>Mit einem geplanten Job oder der Erweiterung pg_partman, die Partitionen vorab anlegt und alte entfernt.</p></details>
+<details><summary>Was geht kaputt, wenn die DEFAULT-Partition gross wird?</summary><p>Jedes spätere ATTACH muss sie scannen und sperrt sie dabei mit ACCESS EXCLUSIVE. DETACH CONCURRENTLY geht mit DEFAULT-Partition gar nicht. Lösung: DEFAULT überwachen oder weglassen.</p></details>
 <details><summary>Szenario: Am 1. des Monats schlagen alle Inserts fehl. Was ist los?</summary><p>Die Partition für den neuen Monat fehlt. Sofort anlegen, dann Vorab-Anlage automatisieren und überwachen.</p></details>
 <details><summary>Szenario: Ein Report über einen Tag liest trotz Partitionierung alle Partitionen. Was prüfen Sie?</summary><p>Den Filter: Steht er direkt als Bereich auf der Key-Spalte, ohne Funktion? EXPLAIN zeigt, welche Partitionen gelesen werden.</p></details>
+<h3>Design</h3>
+<details><summary>Warum muss der PK den Partition Key enthalten?</summary><p>Es gibt keinen globalen Index. Jede Partition prüft Eindeutigkeit nur lokal; mit dem Key im PK reicht das.</p></details>
+<details><summary>Wie lege ich einen Index ohne lange Sperre an?</summary><p>CREATE INDEX ON ONLY auf dem Parent, dann pro Partition CONCURRENTLY, dann ALTER INDEX … ATTACH PARTITION.</p></details>
+<details><summary>Wie hänge ich eine Partition ohne Daten-Scan an?</summary><p>Vorher einen CHECK mit genau den Grenzen anlegen. ATTACH nutzt ihn und prüft nicht erneut. Danach den CHECK löschen.</p></details>
+<details><summary>Wie legt man Partitionen automatisch an?</summary><p>Mit einem geplanten Job oder der Erweiterung pg_partman, die Partitionen vorab anlegt und alte entfernt.</p></details>
 <details><summary>Szenario: Eine Log-Tabelle mit 2 TB wächst, das nächtliche DELETE älterer Daten dauert Stunden. Was schlagen Sie vor?</summary><p>RANGE-Partitionierung nach Datum mit der Retention als Grenze. Dann löscht DETACH und DROP einen Monat in Sekunden. Migration: neue partitionierte Tabelle, alte Daten schrittweise umziehen.</p></details>
 
 </body>

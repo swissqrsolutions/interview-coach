@@ -19,12 +19,37 @@
   summary { font-weight: 600; cursor: pointer; }
   details p { margin: 6px 0 2px; }
   .small { color: #6e6e73; font-size: 14px; }
+  h3 { font-size: 17px; margin: 20px 0 6px; }
+  .geruest { border: 2px solid #1d1d1f; border-radius: 6px; padding: 10px 14px; margin: 14px 0; font-size: 15px; line-height: 1.4; }
+  .geruest h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; margin: 0 0 8px; padding: 0; border: 0; }
+  .geruest dl { display: grid; grid-template-columns: 6.6em 1fr; gap: 6px 10px; margin: 0; }
+  .geruest dt { font-weight: 700; font-size: 12px; text-transform: uppercase; letter-spacing: .05em; padding-top: 1px; }
+  .geruest dd { margin: 0; }
+  .muster { border: 1px solid #e5e5ea; border-left: 4px solid #1d1d1f; border-radius: 6px; padding: 10px 14px; margin: 14px 0; }
+  .muster h3 { margin: 0 0 6px; font-size: 13px; text-transform: uppercase; letter-spacing: .06em; }
+  .muster .mq { margin: 0 0 6px; }
 </style>
 </head>
 <body>
 
 <h1>Volltextsuche in PostgreSQL</h1>
-<p class="small">PostgreSQL 19 (aktuell seit 19.11.2026; Beispiele auf 17.12 ausgeführt) · Quellen: PostgreSQL 19 Doku, Kapitel 12 „Full Text Search“ (Introduction, Tables and Indexes, Controlling Text Search: Parsing Queries, Ranking, Highlighting, Dictionaries, Configuration Example, Preferred Index Types, Limitations), Kapitel 8.11 „Text Search Types“, Kapitel 9.13 „Text Search Functions and Operators“, Module <code>pg_trgm</code> und <code>unaccent</code>; Release Notes 18 (FTS nutzt den Collation-Provider des Clusters: Reindex), 19 (Locale-Provider beim Parsen, neue Stemmer für Polnisch, geänderte Stemmer u. a. für Deutsch und Englisch: Reindex und <code>tsvector</code> neu berechnen)</p>
+<!-- sources: PostgreSQL 19 (aktuell seit 19.11.2026; Beispiele auf 17.12 ausgeführt) · Quellen: PostgreSQL 19 Doku, Kapitel 12 „Full Text Search“ (Introduction, Tables and Indexes, Controlling Text Search: Parsing Queries, Ranking, Highlighting, Dictionaries, Configuration Example, Preferred Index Types, Limitations), Kapitel 8.11 „Text Search Types“, Kapitel 9.13 „Text Search Functions and Operators“, Module pg_trgm und unaccent; Release Notes 18 (FTS nutzt den Collation-Provider des Clusters: Reindex), 19 (Locale-Provider beim Parsen, neue Stemmer für Polnisch, geänderte Stemmer u. a. für Deutsch und Englisch: Reindex und tsvector neu berechnen) -->
+
+<div class="geruest"><h2>Gerüst</h2><dl>
+  <dt>Warum?</dt><dd><code>LIKE '%x%'</code> nutzt keinen B-Tree, kennt keine Beugung und kein Ranking. Volltext löst alle drei mit Lexemen, GIN und <code>ts_rank</code>.</dd>
+  <dt>Wie innen?</dt><dd>Parser → Tokens → Dictionaries (Stopwörter, Snowball) → <code>tsvector</code>. GIN: pro Lexem eine Zeilenliste; Phrasen und Gewichte per Recheck.</dd>
+  <dt>Zahlen</dt><dd><code>tsvector</code> &lt; 1 MB, Positionen bis 16 383, max. 256 pro Lexem. Gewichte D–A: 0.1 / 0.2 / 0.4 / 1.0. <code>pg_trgm</code>-Schwelle 0.3.</dd>
+  <dt>Vergleich</dt><dd>GIN genau und schnell beim Lesen; GiST kleiner, aber verlustbehaftet (Signatur 124 Byte). Tippfehler: <code>pg_trgm</code>. BM25, Fuzzy, Facetten: Suchmaschine.</dd>
+  <dt>Produktion</dt><dd>Andere Konfiguration als im Index → Seq Scan. <code>ts_rank</code>/<code>ts_headline</code> über alle Treffer → langsam. Upgrade auf 19: neue Stemmer → Reindex.</dd>
+  <dt>Design</dt><dd>Gespeicherte, gewichtete Spalte + GIN, Konfiguration immer explizit. Volltext für Sätze, Trigramme für Namen und Codes.</dd>
+</dl></div>
+
+<div class="muster"><h3>Antwort-Muster</h3><p class="mq"><b>Frage:</b> Wie bauen Sie eine Volltextsuche in PostgreSQL?</p><ol>
+  <li>Mechanismus: <code>to_tsvector('german', …)</code> macht Text zu Lexemen, <code>websearch_to_tsquery</code> macht die Eingabe zur Anfrage, <code>@@</code> vergleicht.</li>
+  <li>Zahl: Im Beispiel findet ein GIN-Index 100 Treffer aus 100 000 Zeilen per Bitmap Index Scan.</li>
+  <li>Trade-off: GIN macht Lesen schnell, aber jedes Insert pflegt einen Eintrag pro Lexem. Tippfehler und Komposita findet Volltext nicht.</li>
+  <li>Produktion: Ich speichere den <code>tsvector</code> als Generated Column, gebe die Konfiguration überall an und rufe <code>ts_headline</code> erst nach dem <code>LIMIT</code> auf.</li>
+</ol></div>
 
 <div class="kern">
 <b>Kern:</b> <b>Volltextsuche</b> ist die Suche nach Wörtern in natürlicher Sprache, unabhängig von Beugung und Füllwörtern. PostgreSQL zerlegt Text in normalisierte <b>Lexeme</b> (<code>tsvector</code>), vergleicht sie mit einer Anfrage (<code>tsquery</code>) über den Operator <code>@@</code> und beschleunigt das mit einem <b>GIN-Index</b>. Sie ersetzt <code>LIKE '%wort%'</code>, das weder Sprache versteht noch einen normalen Index nutzt.
@@ -171,7 +196,7 @@ DROP SCHEMA demo_full_text_search CASCADE;</pre>
  volltext | trigramm_aehnlichkeit
 ----------+-----------------------
  f        |                  0.45</pre>
-<p class="small">Echte Ausgabe, PostgreSQL 17.12. Gekürzt: Kopfzeilen „QUERY PLAN“, „(n rows)“ und <code>CREATE</code>-Meldungen. Achtung: Ab 19 sind u. a. der deutsche und der englische Stemmer aktualisiert; einzelne Lexeme können dort anders aussehen.</p>
+<p class="small">Echte Ausgabe, PostgreSQL 17.12. Gekürzt: Kopfzeilen „QUERY PLAN“, „(n rows)“ und <code>CREATE</code>-Meldungen. Achtung: Ab 19 sind u. a. der deutsche und der englische Stemmer aktualisiert; einzelne Lexeme können dort anders aussehen (<a href="https://www.postgresql.org/docs/19/release-19.html#RELEASE-19-FUNCTIONS">Release Notes 19</a>).</p>
 <ol>
   <li><b>Lexeme:</b> „Die“, „ihre“, „an“ sind Stopwörter und fallen weg; die Positionen zählen sie trotzdem mit. „Händler“ wird <code>handl</code>, Umlaute werden normalisiert.</li>
   <li><b>Keine Kompositum-Zerlegung:</b> „Stromhandelsgeschäfte“ bleibt ein Lexem. Eine Suche nach „Stromhandel“ findet es nicht. Dafür bräuchte es ein Ispell-Wörterbuch mit Kompositum-Regeln.</li>
@@ -199,7 +224,7 @@ DROP SCHEMA demo_full_text_search CASCADE;</pre>
   <li><b>unaccent:</b> Das Modul entfernt Akzente als Wörterbuch-Schritt. So findet „Zurich“ auch „Zürich“.</li>
   <li><b>pg_trgm:</b> Es zerlegt Text in Dreier-Gruppen von Zeichen. Mit GIN oder GiST beschleunigt es <code>LIKE '%x%'</code>, <code>ILIKE</code>, Regex und Ähnlichkeitssuche mit <code>%</code>.</li>
   <li><b>Grenzen:</b> Ein <code>tsvector</code> muss kleiner als 1 MB sein. Positionen gehen bis 16 383, pro Lexem höchstens 256. Ein Lexem muss kürzer als 2 kB sein.</li>
-  <li><b>Upgrade-Falle 18 und 19:</b> Volltext nutzt seit 18 den Collation-Provider des Clusters, seit 19 auch beim Parsen. Stemmer wurden in 19 aktualisiert. Nach <code>pg_upgrade</code>: FTS- und Trigramm-Indizes neu bauen und gespeicherte <code>tsvector</code> neu berechnen.</li>
+  <li><b>Upgrade-Falle 18 und 19:</b> Seit 18 liest Volltext Konfigurationsdateien und Wörterbücher mit dem Standard-Collation-Provider des Clusters statt immer mit libc (<a href="https://www.postgresql.org/docs/18/release-18.html#RELEASE-18-MIGRATION">Release Notes 18</a>). Seit 19 klassifizieren Volltext und <code>pg_trgm</code> Zeichen beim Parsen mit dem Locale-Provider der Datenbank (<a href="https://www.postgresql.org/docs/19/release-19.html#RELEASE-19-MIGRATION">Release Notes 19</a>). Beides betrifft Cluster mit ICU- oder builtin-Provider. Dazu liefern in 19 die Stemmer u. a. für Deutsch, Englisch und Französisch andere Stämme für manche Wörter; Niederländisch hat einen neuen Algorithmus (<a href="https://www.postgresql.org/docs/19/release-19.html#RELEASE-19-FUNCTIONS">Release Notes 19</a>). Nach <code>pg_upgrade</code>: FTS- und Trigramm-Indizes neu bauen und gespeicherte <code>tsvector</code> neu berechnen.</li>
 </ol>
 
 <h2>5. Vergleich</h2>
@@ -218,8 +243,8 @@ DROP SCHEMA demo_full_text_search CASCADE;</pre>
   <li><b>Langsam bei häufigen Wörtern:</b> Ein Suchbegriff trifft 2 Millionen Zeilen, und <code>ts_rank</code> rechnet für alle. Lösung: Treffer vorher begrenzen, Ranking-Zeit messen, ggf. Suchmaschine.</li>
   <li><b>Ergebnisseite langsam:</b> <code>ts_headline</code> läuft für alle Treffer. Lösung: erst <code>LIMIT</code> in einer Unterabfrage, dann <code>ts_headline</code>.</li>
   <li><b>„Ich finde mein Wort nicht“:</b> Stopwort, Kompositum oder anderes Stemming. Lösung: mit <code>ts_debug</code> prüfen, Konfiguration anpassen, für Teilwörter <code>pg_trgm</code> dazunehmen.</li>
-  <li><b>Inserts langsamer:</b> GIN-Pflege für jedes Lexem. Lösung: GIN-Pending-List (Seite Index-Typen), Bulk-Loads ohne Index und danach anlegen.</li>
-  <li><b>Andere Treffer nach Upgrade:</b> Stemmer oder Collation-Verhalten änderte sich (18, 19). Lösung: nach dem Upgrade <code>REINDEX</code> und Generated Column neu berechnen.</li>
+  <li><b>Inserts langsamer:</b> GIN-Pflege für jedes Lexem. Lösung: GIN-Pending-List (Seite Index-Typen), Bulk-Loads ohne Index und danach anlegen. Seit 18 kann <code>CREATE INDEX</code> einen GIN-Index parallel bauen (<a href="https://www.postgresql.org/docs/18/release-18.html#RELEASE-18-INDEXES">Release Notes 18</a>).</li>
+  <li><b>Andere Treffer nach Upgrade:</b> Stemmer oder Collation-Verhalten änderte sich (<a href="https://www.postgresql.org/docs/18/release-18.html#RELEASE-18-MIGRATION">18</a>, <a href="https://www.postgresql.org/docs/19/release-19.html#RELEASE-19-FUNCTIONS">19</a>). Lösung: nach dem Upgrade <code>REINDEX</code> und Generated Column neu berechnen.</li>
   <li><b>Mehrsprachige Inhalte:</b> Ein Stemmer für alles passt nicht. Lösung: Spalte mit Sprache und <code>to_tsvector(sprache::regconfig, inhalt)</code>, Anfrage mit derselben Sprache.</li>
 </ol>
 
@@ -242,7 +267,7 @@ DROP SCHEMA demo_full_text_search CASCADE;</pre>
   <li><b>Gespeicherte, gewichtete Spalte</b> plus GIN ist mein Standard. Sie macht Index, Ranking und Recheck billig.</li>
   <li><b>Volltext und Trigramme kombinieren:</b> Volltext für Sätze, <code>pg_trgm</code> für Namen, Codes und Tippfehler.</li>
   <li><b>Sprache bewusst wählen:</b> Für deutsche Texte mit vielen Komposita reicht Snowball nicht immer. Ein Ispell-Wörterbuch hilft, kostet aber Pflege.</li>
-  <li><b>Upgrades testen:</b> Seit 18/19 ändern Collation und Stemmer die Lexeme. Reindex gehört in den Upgrade-Plan.</li>
+  <li><b>Upgrades testen:</b> Seit 18/19 ändern Collation und Stemmer die Lexeme (<a href="https://www.postgresql.org/docs/18/release-18.html#RELEASE-18-MIGRATION">Release Notes 18</a>, <a href="https://www.postgresql.org/docs/19/release-19.html#RELEASE-19-FUNCTIONS">Release Notes 19</a>). Reindex gehört in den Upgrade-Plan.</li>
 </ol>
 </div>
 
@@ -258,36 +283,46 @@ DROP SCHEMA demo_full_text_search CASCADE;</pre>
   <li>„Der deutsche Stemmer zerlegt Komposita.“ → <b>Falsch.</b> Snowball kürzt nur Endungen. Komposita braucht Ispell.</li>
   <li>„GIN speichert die Gewichte.“ → <b>Falsch.</b> Nur Lexeme. Gewichtete Abfragen brauchen einen Recheck an der Zeile.</li>
   <li>„ts_headline ist billig.“ → <b>Falsch.</b> Es parst den Originaltext neu. Nur auf die angezeigten Treffer anwenden.</li>
-  <li>„Nach einem Upgrade bleiben die Suchergebnisse gleich.“ → <b>Falsch.</b> 18 und 19 ändern Collation-Verhalten und Stemmer. Reindex nötig.</li>
+  <li>„Nach einem Upgrade bleiben die Suchergebnisse gleich.“ → <b>Falsch.</b> 18 und 19 ändern Collation-Verhalten und Stemmer (<a href="https://www.postgresql.org/docs/19/release-19.html#RELEASE-19-FUNCTIONS">Release Notes 19</a>). Reindex nötig.</li>
 </ul>
 </div>
 
-<h2>11. Fragen</h2>
-<details><summary>Was ist ein tsvector?</summary><p>Eine sortierte Liste normalisierter Lexeme mit Positionen und optional Gewichten. Er stellt ein Dokument für die Suche dar.</p></details>
-<details><summary>Was ist eine tsquery?</summary><p>Eine Suchanfrage aus Lexemen mit Operatoren wie &amp;, |, !, &lt;-&gt; und :*.</p></details>
-<details><summary>Was macht der Operator @@?</summary><p>Er prüft, ob ein tsvector zu einer tsquery passt.</p></details>
-<details><summary>Was ist eine Text Search Configuration?</summary><p>Die Kombination aus Parser und Wörterbüchern für eine Sprache, z. B. 'german' oder 'simple'.</p></details>
+<h2>11. Selbsttest</h2>
+<h3>Warum?</h3>
+<details><summary>Warum reicht LIKE '%wort%' nicht?</summary><p>Es kann keinen B-Tree nutzen, versteht keine Beugung und kennt kein Ranking. Volltext löst alle drei.</p></details>
 <details><summary>Was macht ein Stemmer?</summary><p>Er kürzt Wörter auf einen Stamm, z. B. Händler zu handl. So finden verschiedene Formen dasselbe.</p></details>
 <details><summary>Was sind Stopwörter?</summary><p>Sehr häufige Wörter ohne Suchwert wie „die“ oder „und“. Sie fallen aus dem tsvector, die Positionen zählen weiter.</p></details>
+<h3>Wie innen?</h3>
+<details><summary>Was ist ein tsvector?</summary><p>Eine sortierte Liste normalisierter Lexeme mit Positionen und optional Gewichten. Er stellt ein Dokument für die Suche dar.</p></details>
+<details><summary>Was ist eine tsquery?</summary><p>Eine Suchanfrage aus Lexemen mit Operatoren wie &amp;, |, !, &lt;-&gt; und :*. Der Operator @@ prüft, ob ein tsvector zu ihr passt.</p></details>
+<details><summary>Was ist eine Text Search Configuration?</summary><p>Die Kombination aus Parser und Wörterbüchern für eine Sprache, z. B. 'german' oder 'simple'.</p></details>
+<details><summary>Warum braucht eine gewichtete Abfrage einen Recheck an der Zeile?</summary><p>GIN speichert nur die Lexeme, keine Gewichte. Gewichte und Phrasen prüft PostgreSQL darum an der Tabellenzeile nach.</p></details>
+<h3>Zahlen</h3>
+<details><summary>Welche Grenzen hat ein tsvector?</summary><p>Kleiner als 1 MB, Positionen bis 16 383, höchstens 256 Positionen pro Lexem. Ein Lexem ist kürzer als 2 kB.</p></details>
+<details><summary>Welche Standardgewichte nutzt ts_rank?</summary><p>0.1, 0.2, 0.4 und 1.0 für D, C, B und A. Ein Titel mit A zählt also 2,5-mal so viel wie Inhalt mit B.</p></details>
+<details><summary>Warum findet pg_trgm „Hendler“, aber Volltext nicht?</summary><p>Volltext vergleicht ganze Lexeme. „Hendler“ ergibt ein anderes Lexem als „Händler“ (handl). Trigramme sehen 0,45 Ähnlichkeit, das liegt über der Standard-Schwelle 0,3.</p></details>
+<h3>Vergleich</h3>
 <details><summary>plainto_tsquery, phraseto_tsquery oder websearch_to_tsquery?</summary><p>plainto verbindet alle Wörter mit UND. phraseto verlangt die Reihenfolge. websearch versteht Anführungszeichen, or und Minus und wirft keine Syntaxfehler. Für Nutzereingaben: websearch.</p></details>
 <details><summary>Warum sollte man to_tsquery nicht mit Nutzereingaben nutzen?</summary><p>to_tsquery erwartet die Operator-Syntax und wirft bei falscher Eingabe einen Fehler.</p></details>
-<details><summary>Welcher Index für Volltext?</summary><p>GIN ist bevorzugt: genau und schnell beim Lesen. GiST ist kleiner, aber verlustbehaftet mit mehr Rechecks.</p></details>
-<details><summary>Ausdrucksindex oder gespeicherte Spalte?</summary><p>Die gespeicherte Spalte vermeidet Neuberechnung bei Recheck und Ranking und erlaubt Gewichte über mehrere Felder.</p></details>
-<details><summary>Warum nutzt meine Abfrage den Volltext-Index nicht?</summary><p>Meist weicht die Konfiguration ab, oder die Abfrage nutzt die Ein-Argument-Form von to_tsvector. Der Ausdruck muss exakt zum Index passen.</p></details>
-<details><summary>Wie gewichte ich Titel stärker als Inhalt?</summary><p>Mit setweight: Titel A, Inhalt B, dann mit || verbinden. ts_rank berücksichtigt die Gewichte.</p></details>
+<details><summary>Welcher Index für Volltext?</summary><p>GIN ist bevorzugt: genau und schnell beim Lesen. GiST ist kleiner, aber verlustbehaftet (Signatur 124 Byte) mit mehr Rechecks.</p></details>
 <details><summary>ts_rank vs ts_rank_cd?</summary><p>ts_rank bewertet nach Häufigkeit. ts_rank_cd bewertet zusätzlich, wie nah die Treffer beieinander liegen.</p></details>
-<details><summary>Was macht ts_headline?</summary><p>Es liefert einen Textausschnitt mit markierten Treffern. Es ist teuer und gehört nach das LIMIT.</p></details>
+<details><summary>Ausdrucksindex oder gespeicherte Spalte?</summary><p>Die gespeicherte Spalte vermeidet Neuberechnung bei Recheck und Ranking und erlaubt Gewichte über mehrere Felder.</p></details>
+<details><summary>PostgreSQL-Volltext oder Elasticsearch?</summary><p>PostgreSQL für einfache Suche nahe an den Daten und ohne zweites System. Elasticsearch für Fuzzy, Facetten, BM25-Tuning und sehr grosse Mengen.</p></details>
+<h3>Produktion</h3>
+<details><summary>Warum nutzt meine Abfrage den Volltext-Index nicht?</summary><p>Meist weicht die Konfiguration ab, oder die Abfrage nutzt die Ein-Argument-Form von to_tsvector. Der Ausdruck muss exakt zum Index passen.</p></details>
+<details><summary>Wie debugge ich, warum ein Wort nicht gefunden wird?</summary><p>Mit ts_debug: Es zeigt Token, Wörterbuch und erzeugtes Lexem.</p></details>
+<details><summary>Was geht kaputt, wenn ts_headline für alle Treffer läuft?</summary><p>ts_headline parst den Originaltext neu. Bei vielen Treffern wird die Suchseite sekundenlang. Darum erst LIMIT, dann ts_headline.</p></details>
+<details><summary>Was muss ich beim Upgrade auf 18 oder 19 beachten?</summary><p>Collation- und Locale-Provider (bei ICU oder builtin) und in 19 die Stemmer haben sich geändert (<a href="https://www.postgresql.org/docs/19/release-19.html#RELEASE-19-FUNCTIONS">Release Notes 19</a>). Volltext- und Trigramm-Indizes neu bauen und gespeicherte tsvector neu berechnen.</p></details>
+<details><summary>Szenario: Die Suchseite braucht 4 Sekunden, EXPLAIN zeigt den GIN-Index. Wo suchen Sie?</summary><p>Beim Ranking und bei ts_headline über alle Treffer. Lösung: erst begrenzen, dann ts_headline nur für die angezeigte Seite; tsvector gespeichert statt berechnet.</p></details>
+<details><summary>Szenario: Nach dem Upgrade auf PostgreSQL 19 liefert die Suche andere Treffer. Warum?</summary><p>19 hat Stemmer aktualisiert und nutzt den Locale-Provider beim Parsen (<a href="https://www.postgresql.org/docs/19/release-19.html#RELEASE-19-MIGRATION">Release Notes 19</a>). Alte Indizes und gespeicherte tsvector passen nicht mehr. Lösung: tsvector neu berechnen und reindexen.</p></details>
+<h3>Design</h3>
+<details><summary>Wie gewichte ich Titel stärker als Inhalt?</summary><p>Mit setweight: Titel A, Inhalt B, dann mit || verbinden. ts_rank berücksichtigt die Gewichte.</p></details>
 <details><summary>Wie mache ich Präfix- oder Autocomplete-Suche?</summary><p>Mit :* in der tsquery, z. B. 'strom:*'. Für Teile mitten im Wort: pg_trgm.</p></details>
 <details><summary>Wie gehe ich mit Tippfehlern um?</summary><p>Mit pg_trgm: similarity() oder der Operator % mit GIN- oder GiST-Index.</p></details>
 <details><summary>Wie entferne ich Akzente?</summary><p>Mit dem Modul unaccent als Wörterbuch in einer eigenen Text Search Configuration.</p></details>
-<details><summary>Welche Grenzen hat ein tsvector?</summary><p>Kleiner als 1 MB, Positionen bis 16 383, höchstens 256 Positionen pro Lexem.</p></details>
-<details><summary>Wie debugge ich, warum ein Wort nicht gefunden wird?</summary><p>Mit ts_debug: Es zeigt Token, Wörterbuch und erzeugtes Lexem.</p></details>
-<details><summary>Was muss ich beim Upgrade auf 18 oder 19 beachten?</summary><p>Collation-Provider und Stemmer haben sich geändert. Volltext- und Trigramm-Indizes neu bauen und gespeicherte tsvector neu berechnen.</p></details>
-<details><summary>PostgreSQL-Volltext oder Elasticsearch?</summary><p>PostgreSQL für einfache Suche nahe an den Daten und ohne zweites System. Elasticsearch für Fuzzy, Facetten, BM25-Tuning und sehr grosse Mengen.</p></details>
+<details><summary>Warum Volltext und pg_trgm kombinieren?</summary><p>Volltext versteht Sprache, aber keine Tippfehler und Teilwörter. pg_trgm kennt keine Sprache, findet aber Namen, Codes und Tippfehler.</p></details>
 <details><summary>Wie suche ich in mehrsprachigen Daten?</summary><p>Die Sprache pro Zeile speichern und to_tsvector(sprache::regconfig, text) nutzen; die Anfrage mit derselben Sprache bauen.</p></details>
 <details><summary>Szenario: Nutzer finden „Stromhandel“ nicht in Dokumenten mit „Stromhandelsgeschäfte“. Was tun Sie?</summary><p>Mit ts_debug bestätigen, dass das Kompositum ein Lexem bleibt. Optionen: Ispell-Wörterbuch mit Kompositum-Regeln, Präfixsuche stromhandel:* oder pg_trgm ergänzen.</p></details>
-<details><summary>Szenario: Die Suchseite braucht 4 Sekunden, EXPLAIN zeigt den GIN-Index. Wo suchen Sie?</summary><p>Beim Ranking und bei ts_headline über alle Treffer. Lösung: erst begrenzen, dann ts_headline nur für die angezeigte Seite; tsvector gespeichert statt berechnet.</p></details>
-<details><summary>Szenario: Nach dem Upgrade auf PostgreSQL 19 liefert die Suche andere Treffer. Warum?</summary><p>19 hat Stemmer aktualisiert und nutzt den Locale-Provider beim Parsen. Alte Indizes und gespeicherte tsvector passen nicht mehr. Lösung: tsvector neu berechnen und reindexen.</p></details>
 
 </body>
 </html>

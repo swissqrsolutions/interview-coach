@@ -19,12 +19,37 @@
   summary { font-weight: 600; cursor: pointer; }
   details p { margin: 6px 0 2px; }
   .small { color: #6e6e73; font-size: 14px; }
+  h3 { font-size: 17px; margin: 20px 0 6px; }
+  .geruest { border: 2px solid #1d1d1f; border-radius: 6px; padding: 10px 14px; margin: 14px 0; font-size: 15px; line-height: 1.4; }
+  .geruest h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; margin: 0 0 8px; padding: 0; border: 0; }
+  .geruest dl { display: grid; grid-template-columns: 6.6em 1fr; gap: 6px 10px; margin: 0; }
+  .geruest dt { font-weight: 700; font-size: 12px; text-transform: uppercase; letter-spacing: .05em; padding-top: 1px; }
+  .geruest dd { margin: 0; }
+  .muster { border: 1px solid #e5e5ea; border-left: 4px solid #1d1d1f; border-radius: 6px; padding: 10px 14px; margin: 14px 0; }
+  .muster h3 { margin: 0 0 6px; font-size: 13px; text-transform: uppercase; letter-spacing: .06em; }
+  .muster .mq { margin: 0 0 6px; }
 </style>
 </head>
 <body>
 
 <h1>JSONB und Indizes darauf</h1>
-<p class="small">PostgreSQL 19 (aktuell seit 19.11.2026; Beispiele auf 17.12 ausgeführt) · Quellen: PostgreSQL 19 Doku, Kapitel 8.14 „JSON Types“ (Containment, jsonb Indexing, Subscripting), Kapitel 9.16 „JSON Functions and Operators“ (SQL/JSON Path, <code>JSON_TABLE</code>, <code>JSON_VALUE</code>/<code>JSON_QUERY</code>/<code>JSON_EXISTS</code>), Kapitel 65.1 „TOAST“, Kapitel 5.4 „Generated Columns“, <code>CREATE STATISTICS</code>; Release Notes 14 (Subscripting, Statistiken auf Ausdrücken, LZ4), 17 (<code>JSON_TABLE</code>, SQL/JSON-Funktionen), 18 (virtuelle Generated Columns als Standard), 19 (neue jsonpath-String-Methoden, <code>COPY … (FORMAT json)</code>)</p>
+<!-- sources: PostgreSQL 19 (aktuell seit 19.11.2026; Beispiele auf 17.12 ausgeführt) · Quellen: PostgreSQL 19 Doku, Kapitel 8.14 „JSON Types“ (Containment, jsonb Indexing, Subscripting), Kapitel 9.16 „JSON Functions and Operators“ (SQL/JSON Path, JSON_TABLE, JSON_VALUE/JSON_QUERY/JSON_EXISTS), Kapitel 65.1 „TOAST“, Kapitel 5.4 „Generated Columns“, CREATE STATISTICS; Release Notes 14 (Subscripting, Statistiken auf Ausdrücken, LZ4), 17 (JSON_TABLE, SQL/JSON-Funktionen), 18 (virtuelle Generated Columns als Standard), 19 (neue jsonpath-String-Methoden, COPY … (FORMAT json)) -->
+
+<div class="geruest"><h2>Gerüst</h2><dl>
+  <dt>Warum?</dt><dd>Einmal parsen beim Schreiben → schneller Feldzugriff und GIN-Suche nach Inhalt. <code>json</code> parst bei jedem Zugriff neu.</dd>
+  <dt>Wie innen?</dt><dd>Binär mit Offsets, Keys sortiert, letzter doppelter Key gewinnt. GIN: Posting List pro Key/Wert oder Hash(Pfad, Wert), danach Recheck.</dd>
+  <dt>Zahlen</dt><dd>TOAST ab ca. 2 kB Zeile, max. 1 GB. Planner rät 0,5 % bei <code>=</code>, ein Drittel bei <code>&lt;</code>. jsonb_path_ops hier 25 % kleiner.</dd>
+  <dt>Vergleich</dt><dd>jsonb_ops: auch <code>?</code>, <code>?|</code>, <code>?&amp;</code>. jsonb_path_ops: nur <code>@&gt;</code>, <code>@?</code>, <code>@@</code>. GIN für „enthält“, Ausdrucks-B-Tree für <code>=</code> und Sortierung.</dd>
+  <dt>Produktion</dt><dd><code>doc-&gt;&gt;'x' = 'y'</code> ignoriert GIN → Seq Scan. Zähler im 50-kB-Dokument → jedes Update schreibt 50 kB neu.</dd>
+  <dt>Design</dt><dd>Hybrid: Kern-Felder als Spalten, Rest JSONB. Statistik per <code>CREATE STATISTICS</code>, Format per CHECK.</dd>
+</dl></div>
+
+<div class="muster"><h3>Antwort-Muster</h3><p class="mq"><b>Frage:</b> Wie indizieren Sie eine JSONB-Spalte?</p><ol>
+  <li>Mechanismus: Ein GIN-Index speichert Keys und Werte invertiert und beantwortet <code>@&gt;</code>. Für ein einzelnes Feld nehme ich einen B-Tree auf den Ausdruck.</li>
+  <li>Zahl: Bei 200 000 Zeilen war <code>jsonb_path_ops</code> 25 % kleiner als <code>jsonb_ops</code>.</li>
+  <li>Trade-off: <code>jsonb_path_ops</code> ist kleiner, kann aber kein <code>?</code>. Jeder GIN macht Inserts teurer.</li>
+  <li>Produktion: Ich prüfe mit EXPLAIN, ob der Operator der Abfrage zur Opclass passt.</li>
+</ol></div>
 
 <div class="kern">
 <b>Kern:</b> <b>JSONB</b> ist der binäre JSON-Typ von PostgreSQL: Das Dokument wird beim Schreiben einmal geparst und zerlegt gespeichert. Dadurch sind Zugriffe auf Felder schnell, und ein <b>GIN-Index</b> findet Dokumente nach Inhalt. Der Preis: keine Statistiken über innere Felder und jedes Update schreibt das ganze Dokument neu.
@@ -208,9 +233,10 @@ DROP SCHEMA demo_jsonb CASCADE;</pre>
   <li><b>Jedes Update schreibt alles neu:</b> MVCC erzeugt eine neue Zeilenversion mit dem ganzen Dokument. Ist es getoastet, wird der TOAST-Wert neu geschrieben. Ein unverändertes TOAST-Feld kostet beim Update nichts.</li>
   <li><b>TOAST:</b> Ab etwa 2 kB Zeilenbreite wird komprimiert (<code>pglz</code> Standard oder <code>lz4</code>) und ausgelagert. Jeder Feldzugriff muss den Wert dann ganz holen und entpacken.</li>
   <li><b>Statistiken:</b> Für innere Felder gibt es keine. Lösung: Ausdrucksindex (bekommt eigene Statistik) oder <code>CREATE STATISTICS</code> auf den Ausdruck (seit 14).</li>
-  <li><b>Generated Column:</b> Ein Feld als Spalte herausziehen: <code>firma text GENERATED ALWAYS AS (doc-&gt;&gt;'firma') STORED</code>. Seit 18 ist <code>VIRTUAL</code> der Standard; für Index und Speicherung schreibe ich <code>STORED</code> explizit.</li>
+  <li><b>Generated Column:</b> Ein Feld als Spalte herausziehen: <code>firma text GENERATED ALWAYS AS (doc-&gt;&gt;'firma') STORED</code>. Seit 18 ist <code>VIRTUAL</code> der Standard (<a href="https://www.postgresql.org/docs/release/18.0/#RELEASE-18-UTILITY">Release Notes 18, Utility Commands</a>); für Index und Speicherung schreibe ich <code>STORED</code> explizit.</li>
   <li><b>Zahlen:</b> jsonb speichert Zahlen als <code>numeric</code>. <code>1.230e-5</code> wird zu <code>0.00001230</code>, Nullen am Ende bleiben, <code>NaN</code> ist verboten.</li>
-  <li><b>Neu in 19:</b> jsonpath bekommt String-Methoden wie <code>lower()</code>, <code>upper()</code>, <code>replace()</code>. <code>COPY TO</code> kann JSON ausgeben. Ein leeres <code>json_array()</code> aus einer Abfrage liefert jetzt <code>[]</code> statt NULL.</li>
+  <li><b>Neu in 19:</b> jsonpath bekommt String-Methoden wie <code>lower()</code>, <code>upper()</code>, <code>replace()</code> (<a href="https://www.postgresql.org/docs/release/19.0/#RELEASE-19-DATATYPES">Release Notes 19, Data Types</a>). <code>COPY TO</code> kann JSON ausgeben (<a href="https://www.postgresql.org/docs/release/19.0/#RELEASE-19-COPY">Release Notes 19, COPY</a>). Ein <code>json_array()</code> über eine Abfrage ohne Zeilen liefert jetzt <code>[]</code> statt NULL (<a href="https://www.postgresql.org/docs/release/19.0/#RELEASE-19-MIGRATION">Release Notes 19, Migration</a>).</li>
+  <li><b>Neu in 18:</b> Ein jsonb-<code>null</code> lässt sich in einen Skalar-Typ casten und ergibt SQL-NULL; vorher gab das einen Fehler (<a href="https://www.postgresql.org/docs/release/18.0/#RELEASE-18-DATATYPES">Release Notes 18, Data Types</a>). Beispiel: <code>('{"menge": null}'::jsonb-&gt;'menge')::int</code>.</li>
 </ol>
 
 <h2>5. Vergleich</h2>
@@ -273,32 +299,43 @@ DROP SCHEMA demo_jsonb CASCADE;</pre>
 </ul>
 </div>
 
-<h2>11. Fragen</h2>
+<h2>11. Selbsttest</h2>
+<h3>Warum?</h3>
 <details><summary>Was ist der Unterschied zwischen json und jsonb?</summary><p>json speichert den Text unverändert. jsonb speichert binär, mit sortierten Keys, ohne Duplikate, und ist indizierbar.</p></details>
+<details><summary>Warum speichert man JSON überhaupt in einer relationalen Datenbank?</summary><p>Für variable Attribute und externe Payloads, die nicht für jedes Feld eine Migration wert sind. Man behält dabei Transaktionen, Joins und Backups an einem Ort.</p></details>
+<details><summary>Warum ist jsonb beim Lesen schneller als json?</summary><p>jsonb wird einmal beim Schreiben geparst. Ein Header mit Offsets findet einen Key ohne neues Parsen. json muss bei jedem Zugriff den Text neu parsen.</p></details>
+<h3>Wie innen?</h3>
 <details><summary>Was passiert mit doppelten Keys in jsonb?</summary><p>Nur der letzte Wert bleibt.</p></details>
 <details><summary>Was ist der Unterschied zwischen -&gt; und -&gt;&gt;?</summary><p>-&gt; liefert jsonb, -&gt;&gt; liefert text. Für Vergleiche mit Strings und für Casts nimmt man -&gt;&gt;.</p></details>
 <details><summary>Was macht @&gt;?</summary><p>Containment: Enthält das linke Dokument das rechte als Teilstruktur, ab der Wurzel? Array-Reihenfolge spielt keine Rolle.</p></details>
 <details><summary>Findet ? einen verschachtelten Key?</summary><p>Nein. ? prüft nur Keys oder String-Elemente auf der obersten Ebene.</p></details>
-<details><summary>Welche Indizes gibt es für JSONB?</summary><p>GIN mit jsonb_ops oder jsonb_path_ops, GIN auf ein Unterobjekt, B-Tree auf einen Ausdruck wie doc-&gt;&gt;'firma', und B-Tree/Hash für ganze Dokumente.</p></details>
-<details><summary>jsonb_ops oder jsonb_path_ops?</summary><p>jsonb_ops, wenn Key-Existenz mit ? gebraucht wird. Sonst jsonb_path_ops: kleiner, genauer, für @&gt;, @? und @@.</p></details>
 <details><summary>Wie baut jsonb_path_ops seine Index-Einträge?</summary><p>Ein Eintrag pro Wert, als Hash aus dem Wert und allen Keys auf dem Weg dorthin.</p></details>
-<details><summary>Warum nutzt WHERE doc-&gt;&gt;'firma' = 'F42' meinen GIN nicht?</summary><p>Weil der Operator = auf text nicht zur GIN-Opclass gehört. Lösung: doc @&gt; '{"firma":"F42"}' oder ein Ausdrucksindex.</p></details>
 <details><summary>Warum braucht ein GIN-Scan einen Recheck?</summary><p>Die Index-Einträge sind Hashes und können kollidieren. Darum wird jedes gefundene Dokument noch einmal geprüft.</p></details>
-<details><summary>Hat der Planner Statistiken für JSON-Felder?</summary><p>Nein. Er rät mit festen Anteilen. Ein Ausdrucksindex oder CREATE STATISTICS auf den Ausdruck liefert echte Statistiken.</p></details>
-<details><summary>Was kostet ein Update auf ein Feld?</summary><p>Eine neue Zeilenversion mit dem ganzen Dokument, plus WAL und eventuell neuer TOAST-Wert.</p></details>
 <details><summary>Was ist TOAST?</summary><p>Die Technik für grosse Werte: Ab etwa 2 kB Zeilenbreite wird komprimiert und in eine eigene Tabelle ausgelagert. Maximal 1 GB pro Wert.</p></details>
 <details><summary>Was ist SQL/JSON Path?</summary><p>Eine Pfadsprache für JSON, z. B. '$.tags[*] ? (@ == "storno")'. Nutzbar mit @?, @@ und den jsonb_path_*-Funktionen.</p></details>
-<details><summary>Was ist der Unterschied zwischen lax und strict?</summary><p>lax ist Standard und ignoriert Strukturfehler. strict wirft bei fehlenden Keys oder falschen Typen einen Fehler.</p></details>
 <details><summary>Was macht JSON_TABLE?</summary><p>Seit 17: Es macht aus JSON Zeilen und Spalten, mit NESTED PATH auch aus verschachtelten Arrays. Es steht im FROM-Teil.</p></details>
-<details><summary>JSON_VALUE vs JSON_QUERY?</summary><p>JSON_VALUE liefert einen Skalar als SQL-Wert. JSON_QUERY liefert ein JSON-Stück, z. B. ein Objekt oder Array.</p></details>
 <details><summary>Wie ändere ich einen Wert in einem Dokument?</summary><p>Mit jsonb_set, mit Subscripting doc['key'] = '…' seit 14, oder mit || für flaches Zusammenführen.</p></details>
-<details><summary>Wie validiere ich JSONB-Inhalte in der DB?</summary><p>Mit CHECK-Constraints wie doc ? 'firma' oder jsonb_typeof(doc-&gt;'menge') = 'number'. Komplexe Schemata prüft meist die App.</p></details>
-<details><summary>Wann ziehe ich ein Feld in eine Spalte heraus?</summary><p>Wenn es oft gefiltert, gejoint, sortiert, referenziert oder oft geändert wird.</p></details>
-<details><summary>Kann ich ein JSON-Feld als Generated Column abbilden?</summary><p>Ja: GENERATED ALWAYS AS (doc-&gt;&gt;'firma') STORED. Seit 18 ist VIRTUAL der Standard, darum STORED ausdrücklich angeben, wenn der Wert gespeichert werden soll.</p></details>
+<h3>Zahlen</h3>
+<details><summary>Hat der Planner Statistiken für JSON-Felder?</summary><p>Nein. Er rät mit festen Anteilen. Ein Ausdrucksindex oder CREATE STATISTICS auf den Ausdruck liefert echte Statistiken.</p></details>
+<details><summary>Warum schätzt der Planner bei (doc-&gt;&gt;'menge')::int &lt; 10 genau 66 667 von 200 000 Zeilen?</summary><p>Ohne Statistik nimmt er für einen Bereichsfilter fest ein Drittel an. Wahr waren 4 000. Mit CREATE STATISTICS auf den Ausdruck schätzte er 4 050.</p></details>
+<details><summary>Was kostet ein Update auf ein Feld?</summary><p>Eine neue Zeilenversion mit dem ganzen Dokument, plus WAL und eventuell neuer TOAST-Wert.</p></details>
 <details><summary>Wie gross sind meine Dokumente?</summary><p>pg_column_size(doc) zeigt die gespeicherte Grösse nach Kompression. Der Durchschnitt über eine Stichprobe reicht meist.</p></details>
+<h3>Vergleich</h3>
+<details><summary>Welche Indizes gibt es für JSONB?</summary><p>GIN mit jsonb_ops oder jsonb_path_ops, GIN auf ein Unterobjekt, B-Tree auf einen Ausdruck wie doc-&gt;&gt;'firma', und B-Tree/Hash für ganze Dokumente.</p></details>
+<details><summary>jsonb_ops oder jsonb_path_ops?</summary><p>jsonb_ops, wenn Key-Existenz mit ? gebraucht wird. Sonst jsonb_path_ops: kleiner, genauer, für @&gt;, @? und @@.</p></details>
+<details><summary>Was ist der Unterschied zwischen lax und strict?</summary><p>lax ist Standard und ignoriert Strukturfehler. strict wirft bei fehlenden Keys oder falschen Typen einen Fehler.</p></details>
+<details><summary>JSON_VALUE vs JSON_QUERY?</summary><p>JSON_VALUE liefert einen Skalar als SQL-Wert. JSON_QUERY liefert ein JSON-Stück, z. B. ein Objekt oder Array.</p></details>
+<details><summary>Warum reicht JSONB oft statt MongoDB?</summary><p>JSONB gibt Dokumente mit Transaktionen, Joins und Constraints in derselben Datenbank. MongoDB lohnt sich eher bei nativem Sharding und sehr grossen, oft teilweise geänderten Dokumenten.</p></details>
+<h3>Produktion</h3>
+<details><summary>Warum nutzt WHERE doc-&gt;&gt;'firma' = 'F42' meinen GIN nicht?</summary><p>Weil der Operator = auf text nicht zur GIN-Opclass gehört. Lösung: doc @&gt; '{"firma":"F42"}' oder ein Ausdrucksindex.</p></details>
 <details><summary>Szenario: Eine Suche über JSONB ist trotz GIN langsam. Was prüfen Sie?</summary><p>Den Operator in der Abfrage: Passt er zur Opclass? Dann EXPLAIN ANALYZE: Index genutzt, Schätzung richtig, Recheck teuer? Lösung: Abfrage als @&gt; umschreiben oder Ausdrucksindex.</p></details>
 <details><summary>Szenario: Ein Join mit JSONB-Filter wählt einen Nested Loop und braucht Minuten. Warum?</summary><p>Der Planner schätzt den Filter falsch, weil er keine Statistik für das Feld hat. Lösung: CREATE STATISTICS auf den Ausdruck oder Generated Column, dann ANALYZE.</p></details>
 <details><summary>Szenario: Die WAL-Menge explodiert, seit ein Status-Feld im JSON-Dokument oft aktualisiert wird. Was tun Sie?</summary><p>Das Status-Feld als eigene Spalte herausziehen. Dann bleibt ein grosses, ausgelagertes Dokument beim Update unverändert im TOAST und wird nicht neu geschrieben.</p></details>
+<h3>Design</h3>
+<details><summary>Wann ziehe ich ein Feld in eine Spalte heraus?</summary><p>Wenn es oft gefiltert, gejoint, sortiert, referenziert oder oft geändert wird.</p></details>
+<details><summary>Kann ich ein JSON-Feld als Generated Column abbilden?</summary><p>Ja: GENERATED ALWAYS AS (doc-&gt;&gt;'firma') STORED. Seit 18 ist VIRTUAL der Standard (<a href="https://www.postgresql.org/docs/release/18.0/#RELEASE-18-UTILITY">Release Notes 18</a>), darum STORED ausdrücklich angeben, wenn der Wert gespeichert werden soll.</p></details>
+<details><summary>Wie validiere ich JSONB-Inhalte in der DB?</summary><p>Mit CHECK-Constraints wie doc ? 'firma' oder jsonb_typeof(doc-&gt;'menge') = 'number'. Komplexe Schemata prüft meist die App.</p></details>
+<details><summary>Was geht kaputt, wenn alle Daten in einer JSONB-Spalte liegen?</summary><p>Keine FKs, keine Typen, keine Planner-Statistik pro Feld. Jede App schreibt ein eigenes Format. Besser: Kern-Felder als Spalten, nur variable Attribute als JSONB.</p></details>
 
 </body>
 </html>

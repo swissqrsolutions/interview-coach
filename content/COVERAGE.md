@@ -182,3 +182,128 @@ Frage pro Winkel: Hat der Seiten-Text (nicht nur das Gerüst) mindestens 2 konkr
 - locking.html: Flyway-Standard `flyway.postgresql.transactional.lock = true` und SQL-Server-Escalation „ca. 5000“ nicht geprüft (unverändert).
 - case-image-upload.html: Gerüst, Muster und Selbsttest-Gruppen sind jetzt gebaut (vorher offen, siehe oben).
 - Alle Beispiele: Docker (pg17) lief nicht; „Erwartetes Ergebnis“ bzw. die frühere echte Ausgabe bleiben.
+
+## postgres/normalization.html
+
+| Winkel | vorher (Anzahl Fakten) | was ergänzt wurde |
+|---|---|---|
+| Warum? | 4 (Einfüge-, Update-, Lösch-Anomalie, Preis Joins) | nichts |
+| Wie innen? | 8+ (funktionale Abhängigkeit, 1NF–BCNF, MV, Generated Column) | Details: Generated Columns `VIRTUAL` seit 18 Standard (Release Notes 18, verlinkt); REFRESH CONCURRENTLY: UNIQUE-Index nur auf Spaltennamen, ohne WHERE (19-Doku) |
+| Zahlen | 1 (FK legt keinen Index an) | Details: „Grössen, die zählen“: TOAST ab ca. 2 kB Zeile, max. 1 GB pro Wert, 0 Indexe durch FK (19-Doku TOAST) |
+| Vergleich | 7 | nichts |
+| Produktion | 6 | nichts |
+| Design | 6 (Senior-Punkte) | nichts |
+
+## postgres/constraints-keys.html
+
+| Winkel | vorher (Anzahl Fakten) | was ergänzt wurde |
+|---|---|---|
+| Warum? | 3 (Regel für alle Schreiber, Race Condition, App + DB) | nichts |
+| Wie innen? | 8+ (Unique B-Tree, GiST, RI-Trigger, FOR KEY SHARE, Deferred, Sequence) | nichts |
+| Zahlen | 8+ (8/16 Byte, 2 147 483 647, CACHE 1, allocationSize 50, SQLSTATEs, 11/19/15 MB) | nichts |
+| Vergleich | 7 | nichts |
+| Produktion | 7 | nichts |
+| Design | 7 (Senior-Punkte) | nichts; alle 18/19-Aussagen (uuidv7, WITHOUT OVERLAPS, NOT ENFORCED, NOT NULL in pg_constraint, 23001, conenforced, CHECK ENFORCED umschaltbar in 19) mit Release-Notes-Link |
+
+## postgres/jsonb.html
+
+| Winkel | vorher (Anzahl Fakten) | was ergänzt wurde |
+|---|---|---|
+| Warum? | 3 (einmal parsen, GIN nach Inhalt, json parst neu) | nichts |
+| Wie innen? | 10+ (Header/Offsets, sortierte Keys, Opclasses, Posting List, Recheck, TOAST) | nichts |
+| Zahlen | 6 (2 kB, 1 GB, 0,5 %, ein Drittel, 25 %, 66 667 vs 4 000) | nichts |
+| Vergleich | 6 | nichts |
+| Produktion | 7 | nichts |
+| Design | 6 (Senior-Punkte) | Details: „Neu in 18“: jsonb-`null` → SQL-NULL beim Cast (Release Notes 18, verlinkt); 19-Neuerungen verlinkt |
+
+## postgres/partitioning.html
+
+| Winkel | vorher (Anzahl Fakten) | was ergänzt wurde |
+|---|---|---|
+| Warum? | 3 (DROP statt DELETE, kleinere Indizes, VACUUM pro Partition) | nichts |
+| Wie innen? | 8+ (relkind p, Routing, Plan-/Laufzeit-Pruning, Row Movement, Lock-Stufen) | nichts |
+| Zahlen | 4 (einige tausend Partitionen, Pruning an, partitionwise aus, Subplans Removed 2) | nichts |
+| Vergleich | 7 | nichts |
+| Produktion | 7 | Details: 19 `vacuumdb --analyze-only` analysiert Parents (verlinkt); 18 effizientere Planung bei vielen Partitionen (verlinkt) |
+| Design | 6 (Senior-Punkte) | nichts |
+
+## postgres/replication-ha.html
+
+| Winkel | vorher (Anzahl Fakten) | was ergänzt wurde |
+|---|---|---|
+| Warum? | 3 (Ausfall, Leselast, kein Backup) | nichts |
+| Wie innen? | 8+ (walsender, walreceiver, Startup, Slot, Timeline, pg_rewind) | Details: `WAIT FOR LSN`: Standard-Modus `standby_replay`, ohne TIMEOUT unbegrenzt, `NO_THROW` (19-Doku) |
+| Zahlen | 5 (10 walsender, 30 s, 16 MB, -1, 46/175 MB) | Details: `idle_replication_slot_timeout` Standard 0 = aus, geprüft beim Checkpoint (19-Doku) |
+| Vergleich | 6 | nichts |
+| Produktion | 7 | Diagnose: 19 benennt `sync_error_count` → `sync_table_error_count` um (verlinkt); Sequenzen vor Upgrade-Umschaltung per `REFRESH SEQUENCES` |
+| Design | 7 (Senior-Punkte) | Details: pg_rewind: Checksums seit 18 Standard bei initdb (verlinkt) |
+
+## Rollout-Writer (normalization, constraints-keys, jsonb, partitioning, replication-ha): nicht verifiziert
+
+- Alle fünf Seiten: Docker (pg17) lief nicht; neue Beispiele wurden nicht ausgeführt. Bestehende „Echte Ausgabe, PostgreSQL 17.12“ bzw. „Erwartetes Ergebnis“ unverändert.
+- partitioning.html: „kein SPLIT/MERGE PARTITION in 19“ ist eine Negativ-Aussage. Es gibt dazu keinen Release-Notes-Eintrag; belegt nur dadurch, dass die ALTER-TABLE-Doku 19 die Befehle nicht kennt (verlinkt).
+- constraints-keys.html: Indexgrössen 11/19/15 MB und jsonb.html Indexgrössen/Pläne stammen aus früheren echten Läufen auf 17.12; nicht neu ausgeführt.
+- replication-ha.html: Vergleich Patroni / CloudNativePG / repmgr / Azure nicht neu geprüft (unverändert).
+
+## postgres/connection-pooling.html
+
+| Winkel | vorher (Anzahl Fakten) | was ergänzt wurde |
+|---|---|---|
+| Warum? | 3 (Prozess pro Verbindung, Fork/Auth/TLS, kleiner Pool schneller) | nichts |
+| Wie innen? | 8+ (Hikari-Ausleihe, PgBouncer-Modi, Grenzen Transaction Mode, Prepared Statements) | Details: welche Werte PgBouncer pro Client wiederherstellt; `search_path` wird seit PostgreSQL 18 gemeldet und seit PgBouncer 1.26 standardmässig verfolgt, `app.tenant_id` nicht (Release Notes 18, PgBouncer-Changelog 1.26, verlinkt) |
+| Zahlen | 10+ (100, 3, Hikari-Standards, 5, 200, 1.21/1.24, Azure 50/5000/0) | Diagnose: `log_connections = 'setup_durations'` (seit 18, drei Zeiten: gesamt, Fork, Authentifizierung; Release Notes 18 verlinkt) |
+| Vergleich | 7 | nichts |
+| Produktion | 7 | Produktion: Session-Wert-Leck präzisiert (search_path nur noch vor PG 18 / PgBouncer 1.26) |
+| Design | 6 (Senior-Punkte) | nichts |
+
+## postgres/backup-pitr.html
+
+| Winkel | vorher (Anzahl Fakten) | was ergänzt wurde |
+|---|---|---|
+| Warum? | 3 (Replikation kopiert Fehler, Ransomware, RPO) | nichts |
+| Wie innen? | 10+ (Basis-Backup, WAL-Archiv, recovery.signal, Timeline, Manifest, inkrementell) | nichts |
+| Zahlen | 5 (16 MB, 49 MB, recovery_target_inclusive, pause, seit 17) | Details: `archive_timeout` (Archivierung nur volle Segmente, früh geschlossene Dateien bleiben 16 MB; 19-Doku) |
+| Vergleich | 7 | nichts |
+| Produktion | 7 | Diagnose: `pg_stat_recovery` (seit 19, verlinkt); Links für alle 18/19-Aussagen (standard_conforming_strings, `--statistics` mit Standard `--no-statistics`, erweiterte Statistiken, Checksums, `backup_type`, `pg_verifybackup` tar) |
+| Design | 7 (Senior-Punkte) | nichts |
+
+## postgres/performance-tuning.html
+
+| Winkel | vorher (Anzahl Fakten) | was ergänzt wurde |
+|---|---|---|
+| Warum? | 3 (Abfragen vor Konfiguration, Gesamtzeit, N+1) | nichts |
+| Wie innen? | 8+ (shared_buffers, OS-Cache, work_mem pro Knoten, Checkpoint, Full Page Writes) | Details: asynchrones I/O seit 18 (`io_method` Standard `worker`), I/O-Worker automatisch seit 19 (`io_min_workers` 2, `io_max_workers` 8, `io_workers` entfernt) – verlinkt |
+| Zahlen | 10+ (128 MB, 25 %, 40 %, 4 GB, 4 MB, 2.0, 64 MB, 5 min, 1 GB, 0.9, 4.0) | Details: `effective_io_concurrency` 16 seit 18 (verlinkt) |
+| Vergleich | 6 | Details: JIT seit 19 standardmässig aus (Release Notes 19 Migration, verlinkt) |
+| Produktion | 7 | Diagnose: BUFFERS automatisch in EXPLAIN ANALYZE seit 18; `generic_plan_calls` / `custom_plan_calls` in pg_stat_statements seit 19 (beide verlinkt) |
+| Design | 6 (Senior-Punkte) | nichts |
+
+## postgres/full-text-search.html
+
+| Winkel | vorher (Anzahl Fakten) | was ergänzt wurde |
+|---|---|---|
+| Warum? | 3 (kein B-Tree, keine Beugung, kein Ranking) | nichts |
+| Wie innen? | 8+ (Parser, Dictionaries, tsvector, tsquery, GIN, Recheck) | nichts |
+| Zahlen | 7 (1 MB, 16 383, 256, 2 kB, 124 Byte, Gewichte, 0.3) | nichts |
+| Vergleich | 6 | nichts |
+| Produktion | 7 | Produktion: paralleler GIN-Build seit 18 (verlinkt) |
+| Design | 6 (Senior-Punkte) | Upgrade-Falle präzisiert: 18/19-Provider-Änderung betrifft ICU/builtin-Cluster; Stemmer-Änderung 19 (Deutsch, Englisch, Französisch …, Niederländisch neuer Algorithmus) – alle verlinkt |
+
+## postgres/multi-tenancy.html
+
+| Winkel | vorher (Anzahl Fakten) | was ergänzt wurde |
+|---|---|---|
+| Warum? | 3 (Isolation vs Kosten, fail closed, Noisy Neighbour) | nichts |
+| Wie innen? | 8+ (Routing, search_path, RLS USING/WITH CHECK, set_config, FORCE, @TenantId) | Details: `search_path` hinter PgBouncer (PG 18 meldet, PgBouncer 1.26 verfolgt; verlinkt) |
+| Zahlen | 1 (200 × 5 × 3 = 3000) | Details: DB-Namen max. 63 Byte (still gekürzt, 19-Doku „Lexical Structure“); CR/LF in DB-/Rollennamen seit 19 verboten (verlinkt); Azure `pgbouncer.default_pool_size` 50 pro User/DB-Paar → bis 10 000 Server-Verbindungen bei 200 Mandanten-DBs (Microsoft Learn) |
+| Vergleich | 6 | nichts |
+| Produktion | 7 | Produktion: PgBouncer setzt eigene Werte wie `app.tenant_id` nicht zurück |
+| Design | 7 (Senior-Punkte) | nichts |
+
+## Rollout-Writer (connection-pooling, backup-pitr, performance-tuning, full-text-search, multi-tenancy): nicht verifiziert
+
+- connection-pooling.html: Flyway-Standard „transaktionaler Advisory Lock“ / `flyway.postgresql.transactional.lock`, HikariCP-Wiki-Formel und Pool-Deadlock-Formel, „PostgreSQL 14 hat Snapshots verbessert“, `reserved_connections` „seit 16“ nicht neu geprüft (unverändert).
+- performance-tuning.html: „VACUUM-Speicher seit 17 ohne 1-GB-Limit“, Hibernate-Aussagen (IDENTITY schaltet Batching ab, `default_batch_fetch_size`) und Azure Query Store / Intelligent Performance nicht neu geprüft (unverändert).
+- backup-pitr.html: Werkzeug-Vergleich (pgBackRest, Barman, WAL-G) nicht neu geprüft.
+- multi-tenancy.html: Flyway-API und Hibernate-6-Multitenancy-Klassen nicht neu geprüft; „Azure PITR stellt immer den ganzen Server her“ nicht neu geprüft.
+- Alle fünf Seiten: Docker (pg17) nicht genutzt; keine neuen Beispiele ausgeführt. Bestehende „Echte Ausgabe, PostgreSQL 17.12“ bzw. „Erwartetes Ergebnis“ unverändert.

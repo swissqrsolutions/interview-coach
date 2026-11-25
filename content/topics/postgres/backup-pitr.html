@@ -19,12 +19,37 @@
   summary { font-weight: 600; cursor: pointer; }
   details p { margin: 6px 0 2px; }
   .small { color: #6e6e73; font-size: 14px; }
+  h3 { font-size: 17px; margin: 20px 0 6px; }
+  .geruest { border: 2px solid #1d1d1f; border-radius: 6px; padding: 10px 14px; margin: 14px 0; font-size: 15px; line-height: 1.4; }
+  .geruest h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; margin: 0 0 8px; padding: 0; border: 0; }
+  .geruest dl { display: grid; grid-template-columns: 6.6em 1fr; gap: 6px 10px; margin: 0; }
+  .geruest dt { font-weight: 700; font-size: 12px; text-transform: uppercase; letter-spacing: .05em; padding-top: 1px; }
+  .geruest dd { margin: 0; }
+  .muster { border: 1px solid #e5e5ea; border-left: 4px solid #1d1d1f; border-radius: 6px; padding: 10px 14px; margin: 14px 0; }
+  .muster h3 { margin: 0 0 6px; font-size: 13px; text-transform: uppercase; letter-spacing: .06em; }
+  .muster .mq { margin: 0 0 6px; }
 </style>
 </head>
 <body>
 
 <h1>Backup und Point-in-Time Recovery</h1>
-<p class="small">PostgreSQL 19 (aktuell seit 19.11.2026; Beispiele auf 17.12 ausgeführt) · Quellen: PostgreSQL 19 Doku, Kapitel 25 „Backup and Restore“ (SQL Dump, File System Level Backup, Continuous Archiving and PITR inkl. Incremental Backup, Timelines, Caveats), Kapitel 19.5 „Write Ahead Log“ (Archiving, Recovery Target, <code>summarize_wal</code>), Programme <code>pg_dump</code>, <code>pg_dumpall</code>, <code>pg_restore</code>, <code>pg_basebackup</code>, <code>pg_combinebackup</code>, <code>pg_verifybackup</code>; Release Notes 17 (inkrementelle Backups), 18 (<code>pg_dump --statistics</code>/<code>--no-data</code>, Checksums standardmässig an, <code>pg_verifybackup</code> für tar), 19 (<code>standard_conforming_strings</code> immer an, <code>pg_dump</code> mit erweiterten Statistiken)</p>
+<!-- sources: PostgreSQL 19 (aktuell seit 19.11.2026; Beispiele auf 17.12 ausgeführt) · Quellen: PostgreSQL 19 Doku, Kapitel 25 „Backup and Restore“ (SQL Dump, File System Level Backup, Continuous Archiving and PITR inkl. Incremental Backup, Timelines, Caveats), Kapitel 19.5 „Write Ahead Log“ (Archiving, Recovery Target, summarize_wal), Programme pg_dump, pg_dumpall, pg_restore, pg_basebackup, pg_combinebackup, pg_verifybackup; Release Notes 17 (inkrementelle Backups), 18 (pg_dump - -statistics/- -no-data, Checksums standardmässig an, pg_verifybackup für tar), 19 (standard_conforming_strings immer an, pg_dump mit erweiterten Statistiken, pg_stat_recovery) -->
+
+<div class="geruest"><h2>Gerüst</h2><dl>
+  <dt>Warum?</dt><dd>Replikation kopiert ein falsches <code>DELETE</code> sofort mit. Nur Backup plus WAL-Archiv holt den Stand davor zurück.</dd>
+  <dt>Wie innen?</dt><dd>Basis-Backup + lückenloses WAL-Archiv. Recovery spielt WAL bis zum Ziel ab, pausiert, danach beginnt eine neue Timeline.</dd>
+  <dt>Zahlen</dt><dd>WAL-Segment 16 MB. Inkrementell seit 17, nur mit <code>summarize_wal = on</code> (Standard off). <code>recovery_target_action</code> Standard <code>pause</code>.</dd>
+  <dt>Vergleich</dt><dd><code>pg_dump</code>: logisch, eine DB, versionsübergreifend, kein PITR. Physisch: ganzer Cluster, gleiche Hauptversion, schneller Restore, PITR.</dd>
+  <dt>Produktion</dt><dd><code>archive_command</code> scheitert → <code>pg_wal</code> läuft voll. Nie getesteter Restore → Backup wertlos. Ein langer Dump hält VACUUM auf.</dd>
+  <dt>Design</dt><dd>RPO wählt die Methode: täglicher Dump = bis 24 h Verlust, WAL-Archiv = Minuten. PITR auf Neben-Server, Speicher unveränderbar.</dd>
+</dl></div>
+
+<div class="muster"><h3>Antwort-Muster</h3><p class="mq"><b>Frage:</b> Wie sichern Sie eine PostgreSQL-Datenbank, damit Sie auf einen Zeitpunkt zurück können?</p><ol>
+  <li>Mechanismus: Ein physisches Basis-Backup plus das lückenlos archivierte WAL. Beim Restore spielt PostgreSQL das WAL bis zum Zielzeitpunkt ab.</li>
+  <li>Zahl: Archiviert wird pro WAL-Segment von 16 MB. Der Datenverlust liegt damit bei Sekunden bis Minuten statt bei 24 h mit einem täglichen Dump.</li>
+  <li>Trade-off: Physische Backups gehen nur für den ganzen Cluster und dieselbe Hauptversion. Für einzelne Tabellen nehme ich zusätzlich <code>pg_dump</code>.</li>
+  <li>Produktion: Ich nutze ein fertiges Werkzeug oder den Managed Service, alarmiere auf Archiv-Fehler und teste den Restore regelmässig.</li>
+</ol></div>
 
 <div class="kern">
 <b>Kern:</b> Ein <b>Backup</b> ist eine Kopie der Datenbank, aus der man nach Fehlern, Löschungen oder Ausfällen wiederherstellen kann. <b>Point-in-Time Recovery</b> (PITR) kombiniert ein physisches <b>Basis-Backup</b> mit dem archivierten <b>WAL</b>. So lässt sich die Datenbank auf jeden Zeitpunkt zurücksetzen, z. B. eine Sekunde vor einem falschen <code>DELETE</code>.
@@ -143,16 +168,17 @@ pg_basebackup: removing data directory "/tmp/demo_incr"
   <li><b>pg_dump-Formate:</b> <code>-Fp</code> Klartext-SQL für <code>psql</code>. <code>-Fc</code> custom, komprimiert, selektiver Restore. <code>-Fd</code> directory, eine Datei pro Tabelle, einziges Format für paralleles <code>pg_dump -j</code>. <code>-Ft</code> tar.</li>
   <li><b>Konsistenz:</b> <code>pg_dump</code> nutzt eine Transaktion mit einem Snapshot. Er blockiert Schreiber nicht, hält aber lange einen Snapshot und blockiert so VACUUM-Aufräumen (Seite VACUUM).</li>
   <li><b>Locks von pg_dump:</b> Er nimmt <code>ACCESS SHARE</code> auf jede Tabelle. Ein <code>ALTER TABLE</code> wartet dann, und hinter ihm stauen sich alle anderen (Seite Locking).</li>
-  <li><b>Dump zwischen Versionen:</b> Man nutzt das <code>pg_dump</code> der <b>neuen</b> Version. Seit 19 ist <code>standard_conforming_strings</code> immer an; alte Dumps mit <code>off</code> laden nicht mehr.</li>
-  <li><b>Statistiken im Dump:</b> Seit 18 kann <code>pg_dump --statistics</code> Planner-Statistiken mitnehmen; seit 19 auch erweiterte Statistiken. Sonst nach dem Restore immer <code>ANALYZE</code>.</li>
+  <li><b>Dump zwischen Versionen:</b> Man nutzt das <code>pg_dump</code> der <b>neuen</b> Version. Seit 19 ist <code>standard_conforming_strings</code> immer an; Dumps älterer <code>pg_dump</code>-Versionen mit <code>off</code> laden nicht mehr richtig (<a href="https://www.postgresql.org/docs/19/release-19.html#RELEASE-19-MIGRATION">Release Notes 19</a>).</li>
+  <li><b>Statistiken im Dump:</b> Seit 18 kann <code>pg_dump --statistics</code> Planner-Statistiken mitnehmen (<a href="https://www.postgresql.org/docs/18/release-18.html#RELEASE-18-PGDUMP">Release Notes 18</a>). Standard bleibt <code>--no-statistics</code>. Seit 19 kommen auch erweiterte Statistiken mit (<a href="https://www.postgresql.org/docs/19/release-19.html#RELEASE-19-SERVER-APPS">Release Notes 19</a>). Ohne diese Option nach dem Restore immer <code>ANALYZE</code>.</li>
   <li><b>Basis-Backup:</b> <code>pg_basebackup</code> nutzt eine Replikationsverbindung. <code>-Xs</code> streamt WAL parallel, <code>-Ft -z</code> schreibt komprimiertes tar. Manuell geht es mit <code>pg_backup_start()</code> und <code>pg_backup_stop()</code>.</li>
   <li><b>archive_command-Regeln:</b> Exit-Code 0 nur bei echtem Erfolg. Bestehende Dateien nicht überschreiben. Bei Fehlern versucht PostgreSQL es erneut, und <code>pg_wal</code> wächst bis zur vollen Platte.</li>
+  <li><b>archive_timeout:</b> Archiviert wird nur ein <b>volles</b> WAL-Segment. Bei wenig Schreiblast bleibt ein Segment lange offen, das RPO wächst. <code>archive_timeout</code> erzwingt nach dieser Zeit einen Segmentwechsel. Früh geschlossene Dateien sind trotzdem 16 MB gross; sehr kurze Werte blähen das Archiv auf.</li>
   <li><b>Recovery-Ziele:</b> <code>recovery_target_time</code>, <code>recovery_target_name</code>, <code>recovery_target_lsn</code>, <code>recovery_target_xid</code> oder <code>recovery_target = 'immediate'</code> (nur bis konsistent). Das Ziel muss nach dem Ende des Basis-Backups liegen.</li>
   <li><b>recovery_target_inclusive:</b> Standard <code>true</code>: Die Ziel-Transaktion ist noch dabei. <code>false</code> hält direkt davor an.</li>
   <li><b>Timeline:</b> Nach jeder PITR beginnt eine neue Timeline mit einer History-Datei im Archiv. So kann man mehrmals zu verschiedenen Zeitpunkten zurück, ohne alte WAL-Dateien zu überschreiben.</li>
   <li><b>Inkrementelle Backups (seit 17):</b> <code>summarize_wal = on</code> schreibt WAL-Zusammenfassungen. <code>pg_basebackup --incremental=&lt;manifest&gt;</code> kopiert nur geänderte Blöcke. <code>pg_combinebackup</code> baut daraus ein volles Backup für den Restore.</li>
   <li><b>Kette verwalten:</b> PostgreSQL merkt sich nicht, welche Backups ein inkrementelles braucht. Das muss das Backup-Werkzeug oder der Betrieb tun.</li>
-  <li><b>Data Checksums:</b> Seit 18 schaltet <code>initdb</code> sie standardmässig ein. Sie erkennen kaputte Seiten beim Lesen, und Werkzeuge prüfen sie beim Backup.</li>
+  <li><b>Data Checksums:</b> Seit 18 schaltet <code>initdb</code> sie standardmässig ein (<a href="https://www.postgresql.org/docs/18/release-18.html#RELEASE-18-MIGRATION">Release Notes 18</a>). Sie erkennen kaputte Seiten beim Lesen, und Werkzeuge prüfen sie beim Backup.</li>
   <li><b>Snapshot des Dateisystems:</b> Ein konsistenter Snapshot (z. B. Cloud-Disk-Snapshot) aller Volumes gleichzeitig ist auch ein gültiges Backup. Er ist dann wie ein Crash-Zustand und braucht beim Start WAL-Recovery.</li>
 </ol>
 
@@ -181,9 +207,10 @@ pg_basebackup: removing data directory "/tmp/demo_incr"
 <h2>7. Diagnose: Werkzeuge und Abfragen</h2>
 <ul>
   <li><b>Archivierung:</b> <code>SELECT archived_count, last_archived_wal, failed_count, last_failed_wal, last_failed_time FROM pg_stat_archiver;</code></li>
-  <li><b>Backup-Fortschritt:</b> <code>pg_stat_progress_basebackup</code>; seit 19 mit Spalte <code>backup_type</code> (full oder incremental).</li>
-  <li><b>Backup prüfen:</b> <code>pg_verifybackup &lt;dir&gt;</code> prüft Manifest, Prüfsummen und WAL. Seit 18 auch für tar-Backups.</li>
+  <li><b>Backup-Fortschritt:</b> <code>pg_stat_progress_basebackup</code>; seit 19 mit Spalte <code>backup_type</code> (full oder incremental) (<a href="https://www.postgresql.org/docs/19/release-19.html#RELEASE-19-SYSTEM-VIEWS">Release Notes 19</a>).</li>
+  <li><b>Backup prüfen:</b> <code>pg_verifybackup &lt;dir&gt;</code> prüft Manifest, Prüfsummen und WAL. Seit 18 auch für tar-Backups (<a href="https://www.postgresql.org/docs/18/release-18.html#RELEASE-18-SERVER-APPS">Release Notes 18</a>).</li>
   <li><b>WAL-Summaries:</b> <code>pg_available_wal_summaries()</code>, <code>pg_get_wal_summarizer_state()</code>.</li>
+  <li><b>Recovery-Status als View:</b> Seit 19 zeigt <code>pg_stat_recovery</code> den Zustand der Recovery in höchstens einer Zeile (<a href="https://www.postgresql.org/docs/19/release-19.html#RELEASE-19-SYSTEM-VIEWS">Release Notes 19</a>).</li>
   <li><b>Recovery beobachten:</b> <code>pg_is_in_recovery()</code>, <code>pg_last_wal_replay_lsn()</code>, <code>pg_is_wal_replay_paused()</code>, Server-Log mit „recovery stopping before …“.</li>
   <li><b>WAL-Datei zur LSN:</b> <code>pg_walfile_name(lsn)</code>; Inhalt mit <code>pg_waldump</code>, z. B. um den Zeitpunkt eines falschen DELETE zu finden.</li>
   <li><b>pgBackRest:</b> <code>pgbackrest info</code> zeigt Backups, WAL-Bereich und Grösse; <code>pgbackrest check</code> testet die Archivierung.</li>
@@ -218,31 +245,43 @@ pg_basebackup: removing data directory "/tmp/demo_incr"
 </ul>
 </div>
 
-<h2>11. Fragen</h2>
-<details><summary>Welche Backup-Arten gibt es in PostgreSQL?</summary><p>Logisch mit pg_dump/pg_dumpall, physisch mit pg_basebackup oder Dateisystem-Snapshot, und kontinuierliche WAL-Archivierung für PITR.</p></details>
+<h2>11. Selbsttest</h2>
+<h3>Warum?</h3>
 <details><summary>Was ist PITR?</summary><p>Wiederherstellung auf einen beliebigen Zeitpunkt: Basis-Backup einspielen, dann archiviertes WAL bis zum Ziel abspielen.</p></details>
+<details><summary>Warum ist eine Replica kein Backup?</summary><p>Replikation übernimmt jeden Fehler sofort, auch ein DELETE ohne WHERE. Sie schützt vor Hardware-Ausfall, nicht vor Löschung, Bugs oder Ransomware.</p></details>
+<details><summary>Was sind RPO und RTO beim Backup?</summary><p>RPO: wie viel Datenverlust erlaubt ist, bestimmt durch Archiv-Frequenz. RTO: wie lange der Restore dauern darf, bestimmt durch Backup-Grösse und WAL-Menge.</p></details>
+<h3>Wie innen?</h3>
+<details><summary>Welche Backup-Arten gibt es in PostgreSQL?</summary><p>Logisch mit pg_dump/pg_dumpall, physisch mit pg_basebackup oder Dateisystem-Snapshot, und kontinuierliche WAL-Archivierung für PITR.</p></details>
 <details><summary>Was braucht man für PITR?</summary><p>wal_level replica oder höher, archive_mode on, eine funktionierende Archivierung, ein Basis-Backup und das lückenlose WAL danach.</p></details>
 <details><summary>Wie startet man eine PITR?</summary><p>Basis-Backup in leeres PGDATA, restore_command und Recovery-Ziel setzen, recovery.signal anlegen, Server starten.</p></details>
-<details><summary>Welche Recovery-Ziele gibt es?</summary><p>Zeit, Name eines Restore Points, LSN, Transaktions-ID oder immediate.</p></details>
 <details><summary>Was passiert am Recovery-Ziel?</summary><p>Standardmässig pausiert der Server. Man prüft und beendet mit pg_wal_replay_resume(). Dann entsteht eine neue Timeline.</p></details>
-<details><summary>Was ist eine Timeline?</summary><p>Ein Zweig der WAL-Geschichte. Jede beendete Archiv-Recovery startet eine neue, mit History-Datei im Archiv.</p></details>
-<details><summary>Was muss ein archive_command erfüllen?</summary><p>Exit 0 nur bei echtem Erfolg, nie bestehende Dateien überschreiben, und die Datei dauerhaft speichern.</p></details>
-<details><summary>Was passiert, wenn die Archivierung scheitert?</summary><p>PostgreSQL versucht es weiter, pg_wal wächst. Ist die Platte voll, stoppt der Server mit PANIC.</p></details>
-<details><summary>Welche pg_dump-Formate gibt es?</summary><p>plain, custom, directory und tar. Custom und directory erlauben selektiven und parallelen Restore.</p></details>
-<details><summary>Wie mache ich pg_dump parallel?</summary><p>Mit -Fd und -j n. Der Restore mit pg_restore -j geht für custom und directory.</p></details>
-<details><summary>Blockiert pg_dump die Datenbank?</summary><p>Nicht für normale Lese- und Schreibzugriffe. Er hält aber ACCESS SHARE auf allen Tabellen und einen langen Snapshot.</p></details>
-<details><summary>Was sichert pg_dumpall zusätzlich?</summary><p>Globale Objekte wie Rollen und Tablespaces, und alle Datenbanken.</p></details>
+<details><summary>Warum gibt es Timelines?</summary><p>Jede beendete Archiv-Recovery startet einen neuen Zweig der WAL-Geschichte mit History-Datei. So überschreibt das neue WAL nicht das alte, und man kann mehrmals zu verschiedenen Zeitpunkten zurück.</p></details>
 <details><summary>Was macht pg_basebackup -Xs?</summary><p>Es streamt das WAL während des Backups mit. Das Backup ist damit allein startfähig.</p></details>
 <details><summary>Was ist das backup_manifest?</summary><p>Eine Liste aller Dateien mit Prüfsummen. pg_verifybackup prüft das Backup dagegen, und inkrementelle Backups bauen darauf auf.</p></details>
 <details><summary>Wie funktionieren inkrementelle Backups?</summary><p>Seit 17: summarize_wal erfasst geänderte Blöcke. pg_basebackup --incremental kopiert nur diese, pg_combinebackup baut ein volles Backup daraus.</p></details>
 <details><summary>Was ist ein Restore Point?</summary><p>Eine benannte Marke im WAL, gesetzt mit pg_create_restore_point(). Ziel für recovery_target_name.</p></details>
+<h3>Zahlen</h3>
+<details><summary>Wie gross ist ein WAL-Segment, und wann wird es archiviert?</summary><p>Normalerweise 16 MB. archive_command läuft erst für ein volles Segment.</p></details>
+<details><summary>Warum hilft archive_timeout beim RPO?</summary><p>Bei wenig Schreiblast bleibt ein Segment lange offen und ist nicht gesichert. archive_timeout erzwingt einen Wechsel nach fester Zeit. Zu kurz bläht es das Archiv auf, weil jede Datei 16 MB bleibt.</p></details>
+<details><summary>Was ist der Standard von recovery_target_inclusive und recovery_target_action?</summary><p>inclusive = true: Die Ziel-Transaktion ist noch dabei. action = pause: Der Server wartet auf Prüfung.</p></details>
+<h3>Vergleich</h3>
 <details><summary>Logisches oder physisches Backup?</summary><p>Physisch für den ganzen Cluster, schnellen Restore und PITR. Logisch für einzelne Tabellen, Migrationen und Versionswechsel.</p></details>
-<details><summary>Was sind RPO und RTO beim Backup?</summary><p>RPO: wie viel Datenverlust erlaubt ist, bestimmt durch Archiv-Frequenz. RTO: wie lange der Restore dauern darf, bestimmt durch Backup-Grösse und WAL-Menge.</p></details>
+<details><summary>Welche pg_dump-Formate gibt es?</summary><p>plain, custom, directory und tar. Custom und directory erlauben selektiven und parallelen Restore.</p></details>
+<details><summary>Wie mache ich pg_dump parallel?</summary><p>Mit -Fd und -j n. Der Restore mit pg_restore -j geht für custom und directory.</p></details>
+<details><summary>Was sichert pg_dumpall zusätzlich?</summary><p>Globale Objekte wie Rollen und Tablespaces, und alle Datenbanken.</p></details>
+<details><summary>Warum kann ich ein physisches Backup nicht in eine neuere Hauptversion einspielen?</summary><p>Die Datendateien sind an das Format der Hauptversion gebunden. Für Upgrades: pg_upgrade, Dump mit dem neuen pg_dump oder logische Replikation.</p></details>
 <details><summary>Welche Werkzeuge nutzt man in Produktion?</summary><p>pgBackRest, Barman oder WAL-G, oder die Backups des Managed Service.</p></details>
+<h3>Produktion</h3>
+<details><summary>Was muss ein archive_command erfüllen?</summary><p>Exit 0 nur bei echtem Erfolg, nie bestehende Dateien überschreiben, und die Datei dauerhaft speichern.</p></details>
+<details><summary>Was geht kaputt, wenn die Archivierung dauerhaft scheitert?</summary><p>PostgreSQL versucht es weiter, pg_wal wächst. Ist die Platte voll, stoppt der Server mit PANIC.</p></details>
+<details><summary>Blockiert pg_dump die Datenbank?</summary><p>Nicht für normale Lese- und Schreibzugriffe. Er hält aber ACCESS SHARE auf allen Tabellen und einen langen Snapshot.</p></details>
 <details><summary>Wie prüfe ich, ob die Archivierung läuft?</summary><p>pg_stat_archiver: last_archived_wal, failed_count und last_failed_time.</p></details>
-<details><summary>Warum nach einem Restore ANALYZE?</summary><p>Ein Dump enthält standardmässig keine Planner-Statistiken. Ohne ANALYZE plant der Planner blind. Seit 18 kann pg_dump Statistiken mitnehmen.</p></details>
+<details><summary>Warum nach einem Restore ANALYZE?</summary><p>Ein Dump enthält standardmässig keine Planner-Statistiken. Ohne ANALYZE plant der Planner blind. Seit 18 kann pg_dump sie mit --statistics mitnehmen (<a href="https://www.postgresql.org/docs/18/release-18.html#RELEASE-18-PGDUMP">Release Notes 18</a>).</p></details>
 <details><summary>Szenario: Jemand hat um 14:32 eine Tabelle gelöscht. Wie holen Sie sie zurück?</summary><p>PITR auf einen Neben-Server bis 14:31:59 oder bis vor die Transaktion, dort prüfen, dann die Tabelle mit pg_dump/pg_restore in die Produktion kopieren.</p></details>
 <details><summary>Szenario: pg_wal wächst und die Platte ist zu 90 % voll. Was prüfen Sie zuerst?</summary><p>pg_stat_archiver auf Fehler, dann pg_replication_slots auf alte Slots. Ursache beheben, nie WAL-Dateien von Hand löschen.</p></details>
+<h3>Design</h3>
+<details><summary>Warum PITR auf einen Neben-Server statt auf die Produktion?</summary><p>Eine PITR auf der Produktion verwirft alle Änderungen nach dem Ziel. Auf einem Neben-Server holt man nur die verlorenen Daten und behält den Rest des Tages.</p></details>
+<details><summary>Wie oft machen Sie Basis-Backups?</summary><p>So oft, dass das Einspielen des WAL seit dem letzten Backup ins RTO passt. Zwischen Voll-Backups helfen inkrementelle Backups.</p></details>
 <details><summary>Szenario: Die Datenbank hat 3 TB, der nächtliche pg_dump passt nicht mehr ins Zeitfenster. Was schlagen Sie vor?</summary><p>Physische Backups mit pgBackRest: wöchentlich voll, täglich inkrementell oder differentiell, dazu WAL-Archiv für PITR. pg_dump nur noch für einzelne Schemas.</p></details>
 
 </body>

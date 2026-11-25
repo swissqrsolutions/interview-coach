@@ -33,12 +33,12 @@
 <body>
 
 <h1>Locks, Row Locks, Deadlocks, SELECT FOR UPDATE, SKIP LOCKED</h1>
-<p class="small">PostgreSQL · Tier 1 · Quellen: PostgreSQL 17 Doku (aktuell ist PostgreSQL 19; wichtige Unterschiede in 18/19 laut Release Notes stehen im Text): „Explicit Locking“ (Table-Level Locks, Row-Level Locks, Page-Level Locks, Deadlocks, Advisory Locks), SQL-Befehle <code>SELECT</code> (The Locking Clause), <code>LOCK</code>, <code>UPDATE</code> (RETURNING), „Client Connection Defaults“ (<code>lock_timeout</code>, <code>statement_timeout</code>), „Lock Management“ (<code>deadlock_timeout</code>), Views <code>pg_locks</code>, <code>pg_stat_activity</code>, Funktionen <code>pg_blocking_pids</code>, Advisory Lock Functions, PostgreSQL 19 Doku „Lock Management“ und „Error Reporting and Logging“, PostgreSQL 18 und 19 Release Notes</p>
+<!-- sources: PostgreSQL · Tier 1 · Quellen: PostgreSQL 17 Doku (aktuell ist PostgreSQL 19; wichtige Unterschiede in 18/19 laut Release Notes stehen im Text): „Explicit Locking“ (Table-Level Locks, Row-Level Locks, Page-Level Locks, Deadlocks, Advisory Locks), SQL-Befehle SELECT (The Locking Clause), LOCK, UPDATE (RETURNING), „Client Connection Defaults“ (lock_timeout, statement_timeout), „Lock Management“ (deadlock_timeout), Views pg_locks, pg_stat_activity, Funktionen pg_blocking_pids, Advisory Lock Functions, PostgreSQL 19 Doku „Lock Management“ und „Error Reporting and Logging“, PostgreSQL 18 und 19 Release Notes -->
 
 <div class="geruest"><h2>Gerüst</h2><dl>
   <dt>Warum?</dt><dd>MVCC trennt Leser und Schreiber, nicht Schreiber und Schreiber. Ohne Locks: Lost Updates, doppelte Jobs, DDL mitten in einer Query.</dd>
   <dt>Wie innen?</dt><dd>Table Locks in der Lock Table im Shared Memory. Row Locks im Tuple (<code>xmax</code> + Bits); Wartende warten auf die xid. Keine Lock Escalation.</dd>
-  <dt>Zahlen</dt><dd>8 Table-, 4 Row-Lock-Stufen. <code>deadlock_timeout</code> 1 s. <code>max_locks_per_transaction</code> 128 (vor 19: 64). 40P01 = Deadlock, 55P03 = NOWAIT.</dd>
+  <dt>Zahlen</dt><dd>8 Table-, 4 Row-Lock-Stufen. <code>deadlock_timeout</code> 1 s. <code>max_locks_per_transaction</code> 128 (vor 19: 64; <a href="https://www.postgresql.org/docs/19/release-19.html#RELEASE-19-MIGRATION">PG 19 Release Notes</a>). 40P01 = Deadlock, 55P03 = NOWAIT.</dd>
   <dt>Vergleich</dt><dd>Warten vs NOWAIT (Fehler) vs SKIP LOCKED (andere Zeile). FOR NO KEY UPDATE blockiert FK-Checks nicht. SQL Server: READPAST, Escalation.</dd>
   <dt>Produktion</dt><dd>Wartendes <code>ALTER TABLE</code> in der Lock Queue staut alle SELECTs. Unsortierte Batch-Updates → Deadlocks.</dd>
   <dt>Design</dt><dd>Claim mit <code>FOR UPDATE SKIP LOCKED</code> + <code>RETURNING</code>, dann committen und arbeiten. Migration mit <code>lock_timeout</code>. Nach Key sortiert sperren.</dd>
@@ -75,7 +75,7 @@
   <line x1="518" y1="160" x2="472" y2="110" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
 </svg>
 <ol>
-  <li><b>Lock Table:</b> ein Bereich im Shared Memory. Hier stehen Table Locks, Advisory Locks und Locks auf Transaktions-IDs. Grösse: <code>max_locks_per_transaction</code> (64, seit PostgreSQL 19: 128) × (Verbindungen + prepared Transactions). Gezählt werden Objekte wie Tabellen, nicht Zeilen. Die Zahl ist ein Durchschnitt: Eine Transaktion darf mehr sperren, solange die Tabelle insgesamt reicht.</li>
+  <li><b>Lock Table:</b> ein Bereich im Shared Memory. Hier stehen Table Locks, Advisory Locks und Locks auf Transaktions-IDs. Grösse: <code>max_locks_per_transaction</code> (64, seit PostgreSQL 19: 128; <a href="https://www.postgresql.org/docs/19/release-19.html#RELEASE-19-MIGRATION">PG 19 Release Notes</a>) × (Verbindungen + prepared Transactions). Gezählt werden Objekte wie Tabellen, nicht Zeilen. Die Zahl ist ein Durchschnitt: Eine Transaktion darf mehr sperren, solange die Tabelle insgesamt reicht.</li>
   <li><b>Table Lock:</b> Jeder Befehl nimmt automatisch einen. <code>SELECT</code> nimmt den schwächsten, <code>DROP TABLE</code> den stärksten.</li>
   <li><b>Row Lock:</b> steht <b>nicht</b> im Speicher, sondern im Tuple selbst: <code>xmax</code> plus Lock-Bits. Darum kann man Millionen Zeilen sperren, ohne Speicher zu füllen.</li>
   <li><b>Warten auf eine Zeile:</b> B sieht <code>xmax = 801</code> und wartet auf den <b>transactionid</b>-Lock von 801. Er ist frei, sobald 801 endet.</li>
@@ -238,9 +238,9 @@ SELECT pg_terminate_backend(4711);   -- Verbindung beenden</pre>
   <li><code>pg_stat_activity</code>: <code>wait_event_type = 'Lock'</code> mit <code>wait_event</code> <code>relation</code>, <code>transactionid</code>, <code>tuple</code> oder <code>advisory</code>.</li>
   <li><code>pg_blocking_pids(pid)</code>: die direkten Blocker. Der Anfang der Kette ist oft „idle in transaction“.</li>
   <li><code>pg_locks</code>: <code>granted = false</code> zeigt wartende Locks.</li>
-  <li><code>log_lock_waits = on</code>: loggt jedes Warten länger als <code>deadlock_timeout</code>. Sehr nützlich. Seit PostgreSQL 19 ist es standardmässig an.</li>
-  <li><code>log_lock_failures</code> (seit 18, Standard aus): loggt Details, wenn ein <code>NOWAIT</code> keinen Lock bekommt.</li>
-  <li><code>pg_stat_lock</code> (seit 19): Statistik pro Lock-Typ.</li>
+  <li><code>log_lock_waits = on</code>: loggt jedes Warten länger als <code>deadlock_timeout</code>. Sehr nützlich. Seit PostgreSQL 19 ist es standardmässig an (<a href="https://www.postgresql.org/docs/19/release-19.html#RELEASE-19-MONITORING">PG 19 Release Notes</a>).</li>
+  <li><code>log_lock_failures</code> (seit 18, Standard aus; <a href="https://www.postgresql.org/docs/18/release-18.html#RELEASE-18-MONITORING">PG 18 Release Notes</a>): loggt Details, wenn ein <code>NOWAIT</code> keinen Lock bekommt.</li>
+  <li><code>pg_stat_lock</code> (seit 19; <a href="https://www.postgresql.org/docs/19/release-19.html#RELEASE-19-SYSTEM-VIEWS">PG 19 Release Notes</a>): Statistik pro Lock-Typ.</li>
   <li><code>pg_stat_database.deadlocks</code>: Zähler für Deadlocks. Details im Server-Log.</li>
   <li><code>pgrowlocks</code> (Extension): zeigt Row Locks einer Tabelle.</li>
 </ul>
@@ -287,8 +287,8 @@ SELECT pg_terminate_backend(4711);   -- Verbindung beenden</pre>
 <details><summary>Was ist die Lock Queue?</summary><p>Wartende Lock-Anfragen stehen in einer Reihe. Spätere Anfragen warten hinter einer starken wartenden Anfrage, auch wenn sie kompatibel wären.</p></details>
 <details><summary>Gibt es Lock Escalation in PostgreSQL?</summary><p>Nein. Row Locks liegen auf der Disk und werden nie zu Table Locks.</p></details>
 <h3>Zahlen</h3>
-<details><summary>Was macht NOWAIT?</summary><p>Ist die Zeile gesperrt, kommt sofort der Fehler 55P03 statt Warten. Seit 18 loggt log_lock_failures solche Fehler im Detail.</p></details>
-<details><summary>Wie gross ist die Lock Table?</summary><p>max_locks_per_transaction × (Verbindungen + prepared Transactions). Der Standard ist seit PostgreSQL 19 128, vorher 64. Gezählt werden Objekte wie Tabellen, nicht Zeilen.</p></details>
+<details><summary>Was macht NOWAIT?</summary><p>Ist die Zeile gesperrt, kommt sofort der Fehler 55P03 statt Warten. Seit 18 loggt log_lock_failures solche Fehler im Detail (<a href="https://www.postgresql.org/docs/18/release-18.html#RELEASE-18-MONITORING">PG 18 Release Notes</a>).</p></details>
+<details><summary>Wie gross ist die Lock Table?</summary><p>max_locks_per_transaction × (Verbindungen + prepared Transactions). Der Standard ist seit PostgreSQL 19 128, vorher 64 (<a href="https://www.postgresql.org/docs/19/release-19.html#RELEASE-19-MIGRATION">PG 19 Release Notes</a>). Gezählt werden Objekte wie Tabellen, nicht Zeilen.</p></details>
 <details><summary>Was geht kaputt, wenn eine Transaktion tausende Partitionen anfasst?</summary><p>Die Lock Table läuft voll: „out of shared memory“ mit HINT auf max_locks_per_transaction. Lösung: Parameter erhöhen (Neustart) oder weniger Partitionen pro Abfrage.</p></details>
 <h3>Vergleich</h3>
 <details><summary>Was ist der Unterschied zwischen FOR UPDATE und FOR NO KEY UPDATE?</summary><p>FOR UPDATE blockiert auch Foreign-Key-Checks. FOR NO KEY UPDATE nicht. Ein normales UPDATE ohne Key-Änderung nimmt NO KEY UPDATE.</p></details>
@@ -298,7 +298,7 @@ SELECT pg_terminate_backend(4711);   -- Verbindung beenden</pre>
 <h3>Produktion</h3>
 <details><summary>Was ist lock_timeout und warum ist es wichtig?</summary><p>Es bricht ab, wenn ein Lock zu lange wartet. In Migrationen verhindert es, dass ein wartendes ALTER TABLE die ganze App blockiert.</p></details>
 <details><summary>Was geht kaputt, wenn Session-Advisory-Locks über PgBouncer laufen?</summary><p>Im Transaction Pooling gehört die Verbindung nach der Transaktion jemand anderem. Session-Locks hängen dann falsch. Lösung: pg_advisory_xact_lock.</p></details>
-<details><summary>Wie finden Sie, wer wen blockiert?</summary><p>pg_stat_activity mit pg_blocking_pids(pid), dazu pg_locks mit granted = false. log_lock_waits für die Historie, seit 19 standardmässig an.</p></details>
+<details><summary>Wie finden Sie, wer wen blockiert?</summary><p>pg_stat_activity mit pg_blocking_pids(pid), dazu pg_locks mit granted = false. log_lock_waits für die Historie, seit 19 standardmässig an (<a href="https://www.postgresql.org/docs/19/release-19.html#RELEASE-19-MONITORING">PG 19 Release Notes</a>).</p></details>
 <details><summary>Szenario: Nach einem Deployment mit Migration hängt die ganze Anwendung. Was ist passiert?</summary><p>Wahrscheinlich wartet ein ALTER TABLE auf ACCESS EXCLUSIVE hinter einer langen Transaktion. Alle Queries stauen sich dahinter. Sofort: Migration abbrechen. Künftig: lock_timeout und Retry.</p></details>
 <details><summary>Szenario: Im Log stehen jede Nacht Deadlocks aus einem Batch-Job. Was tun Sie?</summary><p>Die beiden Queries im Server-Log ansehen. Meist sperren zwei Pfade Zeilen in anderer Reihenfolge. Lösung: sortiert sperren, Batches kleiner, Retry für 40P01.</p></details>
 <h3>Design</h3>

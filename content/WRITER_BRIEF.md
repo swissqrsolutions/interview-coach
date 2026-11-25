@@ -7,7 +7,7 @@ Interview-prep pages for a senior engineer (14 years) in Switzerland. Each topic
 Read completely before writing:
 - C:/code/interview-coach/content/topics/java/jit-compiler.html
 - C:/code/interview-coach/content/topics/java/hashmap.html
-Copy their `<head>`/`<style>` block, classes (`.kern`, `.senior`, `.trap`, `.small`), and section order. File: `C:/code/interview-coach/content/topics/<tech>/<id>.html` (create the folder if missing; other writers may add files there — never touch them).
+Copy their `<head>`/`<style>` block, classes (`.kern`, `.senior`, `.trap`, `.small`), and section order. Sources go ONLY in a hidden `<!-- sources: … -->` comment right after `<h1>` — never visible, no tier. File: `C:/code/interview-coach/content/topics/<tech>/<id>.html` (create the folder if missing; other writers may add files there — never touch them).
 
 ## Section order (same on every page)
 1. **Kern** (`.kern`): 2–3 sentences.
@@ -34,7 +34,7 @@ Copy their `<head>`/`<style>` block, classes (`.kern`, `.senior`, `.trap`, `.sma
 
 ## Facts
 - Current versions as of November 2026. Check the official release page first and use the version that is current TODAY (e.g. Angular 22 active / 21 LTS, Kubernetes 1.37, Spring Boot 4.2 / Framework 7.1, Java 25 LTS, PostgreSQL 19, Kafka 4.4). Mention older versions only where interviewers still ask about the difference.
-- Official docs and specs only (list them under the title in the `.small` line). No outdated tutorials as sources.
+- Official docs and specs only (list them in the hidden `<!-- sources: … -->` comment after the title — never as visible text). No outdated tutorials as sources.
 - QUALITY RULE: every version number, default value, limit and "since X" claim must be checked with WebFetch on the official page. If you cannot confirm it, either drop it or write it without the number. Do not leave "from memory" facts in the page.
 - Before finishing, re-read each page once as an interviewer: is every answer correct, complete, and current? Fix what is wrong.
 

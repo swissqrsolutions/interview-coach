@@ -15,6 +15,10 @@ Read first, completely:
 6. **Page styles**: add the same small `.geruest` / `.muster` / `h3` styles to the page's own `<style>` block as in the pilot pages (copy them). Do not edit `site/assets/style.css` (already done).
 7. **Review of unreviewed pages** (pages written by earlier writers): while you are in the page, check facts you touch; fix anything wrong. Version-sensitive facts (versions, defaults, limits, "since X") must be verified with WebFetch on the official page; if you cannot verify, remove the number or list it as unverified in your report.
 
+8. **New-version claims get a source link:** every claim about a feature or default that changed in the newest major versions (e.g. PostgreSQL 18/19, Kafka 4.x, Kubernetes 1.36/1.37, Angular 21/22, Spring Boot 4, Java 24–27) gets an inline link `<a href="…">` to the exact release-notes / changelog entry (use the section anchor when the page has one, e.g. `https://www.postgresql.org/docs/release/19.0/` or `https://www.postgresql.org/docs/19/release-19.html#…`). If you cannot find an entry for the claim, remove the claim.
+
+9. **No sources or tier on the page:** directly after `<h1>` the page has ONLY a hidden comment `<!-- sources: … -->` (plain text, no `--` inside) listing the sources for fact checks. Never a visible sources line, never "Tier 1", never a `.small` sources paragraph. The app shows only the title and a technology chip; the build strips all HTML comments.
+
 ## Rules
 - Edit ONLY the pages assigned to you, plus appending to `content/COVERAGE.md`.
 - Keep the 12-part structure, `.kern`/`.senior`/`.trap`, 2 SVGs, ≥ 15 `<details>` questions.

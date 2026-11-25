@@ -19,12 +19,37 @@
   summary { font-weight: 600; cursor: pointer; }
   details p { margin: 6px 0 2px; }
   .small { color: #6e6e73; font-size: 14px; }
+  h3 { font-size: 17px; margin: 20px 0 6px; }
+  .geruest { border: 2px solid #1d1d1f; border-radius: 6px; padding: 10px 14px; margin: 14px 0; font-size: 15px; line-height: 1.4; }
+  .geruest h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; margin: 0 0 8px; padding: 0; border: 0; }
+  .geruest dl { display: grid; grid-template-columns: 6.6em 1fr; gap: 6px 10px; margin: 0; }
+  .geruest dt { font-weight: 700; font-size: 12px; text-transform: uppercase; letter-spacing: .05em; padding-top: 1px; }
+  .geruest dd { margin: 0; }
+  .muster { border: 1px solid #e5e5ea; border-left: 4px solid #1d1d1f; border-radius: 6px; padding: 10px 14px; margin: 14px 0; }
+  .muster h3 { margin: 0 0 6px; font-size: 13px; text-transform: uppercase; letter-spacing: .06em; }
+  .muster .mq { margin: 0 0 6px; }
 </style>
 </head>
 <body>
 
 <h1>Performance-Tuning: Konfiguration und Abfragen</h1>
-<p class="small">PostgreSQL · Quellen: PostgreSQL 17 Doku (aktuell ist PostgreSQL 19; wichtige Unterschiede in 18/19 laut Release Notes stehen im Text) (19.4 Resource Consumption, 19.5 WAL/Checkpoints, 19.7 Query Planning, 19.8 Logging, 28.5 WAL Configuration, F.32 pg_stat_statements, F.4 auto_explain, 11.8 Partial Indexes, 14.4 Populating a Database, 27.2 pg_stat_checkpointer), pgJDBC Doku (reWriteBatchedInserts), Hibernate ORM 6 User Guide (Fetching, Batching)</p>
+<!-- sources: PostgreSQL · Quellen: PostgreSQL 17 Doku (aktuell ist PostgreSQL 19; wichtige Unterschiede in 18/19 laut Release Notes stehen im Text) (19.4 Resource Consumption, 19.5 WAL/Checkpoints, 19.7 Query Planning, 19.8 Logging, 28.5 WAL Configuration, F.32 pg_stat_statements, F.4 auto_explain, 11.8 Partial Indexes, 14.4 Populating a Database, 27.2 pg_stat_checkpointer), pgJDBC Doku (reWriteBatchedInserts), Hibernate ORM 6 User Guide (Fetching, Batching), PostgreSQL 19 Doku „Resource Consumption“ (Asynchronous I/O) und „Query Planning“ (jit), Release Notes 18 und 19 -->
+
+<div class="geruest"><h2>Gerüst</h2><dl>
+  <dt>Warum?</dt><dd>Index oder behobenes N+1 bringt oft Faktor 100, ein Parameter selten mehr als Faktor 2. Darum zuerst Abfragen, dann Konfiguration.</dd>
+  <dt>Wie innen?</dt><dd>shared_buffers + OS-Cache halten Seiten. <code>work_mem</code> gilt pro Sort/Hash-Knoten. Checkpoint schreibt dirty Pages, danach Full Page Writes.</dd>
+  <dt>Zahlen</dt><dd>Standards: shared_buffers 128 MB (Start 25 % RAM), work_mem 4 MB, maintenance 64 MB, max_wal_size 1 GB, checkpoint 5 min, random_page_cost 4.0.</dd>
+  <dt>Vergleich</dt><dd>shared_buffers reserviert, effective_cache_size ist nur ein Hinweis. pg_stat_statements = Summen (N+1), Slow Log = Einzelfälle.</dd>
+  <dt>Produktion</dt><dd>work_mem global 1 GB × 200 Verbindungen → OOM-Killer. Zu kleines max_wal_size → I/O-Spitzen alle paar Minuten.</dd>
+  <dt>Design</dt><dd>Messen → eine Änderung → neu messen. work_mem pro Rolle, Partial Index für seltene Werte, Statement-Anzahl in der CI prüfen.</dd>
+</dl></div>
+
+<div class="muster"><h3>Antwort-Muster</h3><p class="mq"><b>Frage:</b> Die Datenbank ist langsam. Wie gehen Sie vor?</p><ol>
+  <li>Mechanismus: Ich sortiere <code>pg_stat_statements</code> nach Gesamtzeit und lese den Plan der Top-Abfrage mit <code>EXPLAIN (ANALYZE, BUFFERS)</code>.</li>
+  <li>Zahl: Eine Abfrage mit 0,07 ms kann bei 2,4 Mio. Aufrufen mehr kosten als ein Report mit 10 s.</li>
+  <li>Trade-off: Ein Index macht Lesen schnell, kostet aber bei jedem Schreiben und bei VACUUM.</li>
+  <li>Produktion: Ich ändere genau eine Sache, messe neu und erhöhe <code>work_mem</code> nur pro Rolle oder Session.</li>
+</ol></div>
 
 <div class="kern">
 <b>Kern:</b> <b>Performance-Tuning</b> in PostgreSQL ist ein Kreislauf: messen, die teuerste Abfrage finden, gezielt verbessern, wieder messen. Die meisten Gewinne kommen aus <b>Abfragen und Indizes</b>, nicht aus Konfiguration. Die Konfiguration setzt nur den Rahmen: Speicher (<code>shared_buffers</code>, <code>work_mem</code>) und Schreiblast (Checkpoints).
@@ -129,6 +154,9 @@ SELECT * FROM orders WHERE status = 'OPEN' ORDER BY created_at LIMIT 50;</pre>
   <li><b>Checkpoint:</b> Ein <b>Checkpoint</b> schreibt alle geänderten Seiten (dirty pages) auf Disk. Danach kann altes WAL weg. Ausgelöst durch <code>checkpoint_timeout</code> (Standard 5 min) oder durch WAL-Menge über <code>max_wal_size</code> (Standard 1 GB).</li>
   <li><b>Checkpoint-Spitzen:</b> Zu häufige Checkpoints erzeugen I/O-Spitzen und viele <b>Full Page Writes</b> (die erste Änderung einer Seite nach einem Checkpoint schreibt die ganze Seite ins WAL). <code>checkpoint_completion_target = 0.9</code> verteilt das Schreiben über 90 % des Intervalls.</li>
   <li><b>Checkpoint-Warnung:</b> Das Log meldet <code>checkpoints are occurring too frequently</code>. Lösung: <code>max_wal_size</code> erhöhen. In PostgreSQL 17 zeigt <code>pg_stat_checkpointer</code> (<code>num_timed</code> vs. <code>num_requested</code>) das an. Früher stand es in <code>pg_stat_bgwriter</code>.</li>
+  <li><b>Asynchrones I/O (seit 18):</b> Backends können mehrere Lese-Anfragen gleichzeitig absetzen. Das beschleunigt Seq Scans, Bitmap Heap Scans und VACUUM. Gesteuert über <code>io_method</code>, Standard <code>worker</code> (<a href="https://www.postgresql.org/docs/18/release-18.html#RELEASE-18-PERFORMANCE">Release Notes 18</a>). <code>effective_io_concurrency</code> ist seit 18 standardmässig 16 (<a href="https://www.postgresql.org/docs/18/release-18.html#RELEASE-18-PERFORMANCE">Release Notes 18</a>).</li>
+  <li><b>I/O-Worker (seit 19):</b> Die Zahl der I/O-Worker passt sich selbst an, zwischen <code>io_min_workers</code> (2) und <code>io_max_workers</code> (8). Der alte Parameter <code>io_workers</code> ist entfernt (<a href="https://www.postgresql.org/docs/19/release-19.html#RELEASE-19-PERFORMANCE">Release Notes 19</a>).</li>
+  <li><b>JIT (seit 19 aus):</b> <code>jit</code> ist jetzt standardmässig <code>off</code>. Grund laut Release Notes: Die Kostenschätzung für JIT war unzuverlässig. Wer viele grosse Analyse-Abfragen hat, schaltet JIT selbst ein (<a href="https://www.postgresql.org/docs/19/release-19.html#RELEASE-19-MIGRATION">Release Notes 19</a>).</li>
   <li><b>random_page_cost</b> (Standard 4.0): Kosten eines zufälligen Seitenzugriffs relativ zu sequenziell (1.0). Auf SSD oft 1.1. Sonst unterschätzt der Planer Index Scans.</li>
   <li><b>pg_stat_statements:</b> Eine Extension, die normalisierte Abfragen mit Aufrufen, Zeiten, Zeilen und Block-I/O sammelt. Braucht <code>shared_preload_libraries</code>. Mit <code>track_io_timing = on</code> sieht man auch I/O-Zeit.</li>
   <li><b>Slow Query Log:</b> <code>log_min_duration_statement = '500ms'</code> loggt jede Abfrage ab 500 ms mit Dauer. <b>auto_explain</b> loggt zusätzlich den Plan (<code>auto_explain.log_min_duration</code>). <code>log_analyze</code> dort kostet Overhead auf jeder Abfrage.</li>
@@ -164,7 +192,8 @@ SELECT * FROM orders WHERE status = 'OPEN' ORDER BY created_at LIMIT 50;</pre>
 <ul>
   <li><code>SELECT query, calls, total_exec_time, mean_exec_time, rows, shared_blks_hit, shared_blks_read FROM pg_stat_statements ORDER BY total_exec_time DESC LIMIT 10;</code></li>
   <li><b>Cache-Hit-Ratio:</b> <code>SELECT sum(blks_hit) * 100.0 / sum(blks_hit + blks_read) FROM pg_stat_database;</code>. Bei OLTP meist über 99 %.</li>
-  <li><code>EXPLAIN (ANALYZE, BUFFERS, SETTINGS)</code>: echter Plan, Seitenzugriffe und geänderte Einstellungen.</li>
+  <li><code>EXPLAIN (ANALYZE, BUFFERS, SETTINGS)</code>: echter Plan, Seitenzugriffe und geänderte Einstellungen. Seit 18 zeigt <code>EXPLAIN ANALYZE</code> die Buffers automatisch (<a href="https://www.postgresql.org/docs/18/release-18.html#RELEASE-18-EXPLAIN">Release Notes 18</a>).</li>
+  <li><b>Generic vs Custom Plan:</b> Seit 19 zählt <code>pg_stat_statements</code> <code>generic_plan_calls</code> und <code>custom_plan_calls</code> (<a href="https://www.postgresql.org/docs/19/release-19.html#RELEASE-19-MODULES">Release Notes 19</a>). So sieht man, ob ein Prepared Statement einen Generic Plan nutzt, der z. B. einen Partial Index nicht verwenden kann.</li>
   <li><code>pg_stat_user_tables</code>: <code>seq_scan</code> vs. <code>idx_scan</code>, <code>n_dead_tup</code>, <code>last_autoanalyze</code>.</li>
   <li><code>pg_stat_user_indexes</code> mit <code>idx_scan = 0</code>: ungenutzte Indizes, die nur Writes kosten.</li>
   <li><code>SELECT * FROM pg_stat_checkpointer;</code> (PostgreSQL 17): geplante vs. erzwungene Checkpoints.</li>
@@ -200,32 +229,46 @@ SELECT * FROM orders WHERE status = 'OPEN' ORDER BY created_at LIMIT 50;</pre>
 </ul>
 </div>
 
-<h2>11. Fragen</h2>
+<h2>11. Selbsttest</h2>
+<h3>Warum?</h3>
+<details><summary>Warum zuerst Abfragen und Indizes, nicht Konfiguration?</summary><p>Ein Index oder ein behobenes N+1 bringt oft Faktor 100. Ein Parameter bringt selten mehr als Faktor 2.</p></details>
 <details><summary>Wie gehen Sie bei einer langsamen PostgreSQL-Datenbank vor?</summary><p>pg_stat_statements nach Gesamtzeit sortieren, Top-Abfrage mit EXPLAIN (ANALYZE, BUFFERS) prüfen, eine gezielte Änderung, neu messen.</p></details>
-<details><summary>Was ist shared_buffers und wie setzen Sie es?</summary><p>Der eigene Seiten-Cache von PostgreSQL, Standard 128 MB. Startwert etwa 25 % des RAM auf einem dedizierten Server, Neustart nötig.</p></details>
-<details><summary>Was macht effective_cache_size?</summary><p>Es sagt dem Planer, wie viel Cache insgesamt verfügbar ist. Es reserviert nichts und beeinflusst, ob Index Scans günstig wirken.</p></details>
-<details><summary>Was ist work_mem und warum ist es gefährlich?</summary><p>Speicher pro Sort- oder Hash-Operation. Er kann pro Abfrage mehrfach und pro Verbindung anfallen. Global hoch führt zu OOM.</p></details>
-<details><summary>Wie erkennen Sie, dass work_mem zu klein ist?</summary><p>EXPLAIN ANALYZE zeigt „external merge Disk“ oder Hash Batches &gt; 1. log_temp_files loggt Temp-Dateien.</p></details>
-<details><summary>Wofür ist maintenance_work_mem?</summary><p>Für VACUUM, CREATE INDEX und ADD FOREIGN KEY. Höher macht diese Operationen schneller, Standard 64 MB.</p></details>
-<details><summary>Was ist ein Checkpoint?</summary><p>Alle geänderten Seiten werden auf Disk geschrieben, danach kann altes WAL entfernt werden. Ausgelöst durch Zeit oder WAL-Menge.</p></details>
-<details><summary>Was tun bei „checkpoints are occurring too frequently“?</summary><p>max_wal_size erhöhen, damit Checkpoints zeitgesteuert statt mengengesteuert kommen. checkpoint_completion_target bei 0.9 lassen.</p></details>
-<details><summary>Was ist checkpoint_completion_target?</summary><p>Der Anteil des Intervalls, über den der Checkpoint seine Writes verteilt. Standard 0.9, das glättet I/O.</p></details>
-<details><summary>Wie richten Sie pg_stat_statements ein?</summary><p>shared_preload_libraries = 'pg_stat_statements', Neustart, CREATE EXTENSION. Optional track_io_timing = on.</p></details>
-<details><summary>Welche Spalten von pg_stat_statements schauen Sie an?</summary><p>calls, total_exec_time, mean_exec_time, rows, shared_blks_hit und shared_blks_read. Viele calls mit kleiner mean deuten auf N+1.</p></details>
-<details><summary>Wie richten Sie ein Slow Query Log ein?</summary><p>log_min_duration_statement auf z. B. 500 ms. Mit auto_explain zusätzlich den Plan langsamer Abfragen loggen.</p></details>
 <details><summary>Was ist das N+1-Problem?</summary><p>Eine Abfrage lädt N Elemente, dann folgt pro Element eine weitere Abfrage. Ursache meist Lazy Loading in einer Schleife.</p></details>
-<details><summary>Wie lösen Sie N+1 in Hibernate?</summary><p>JOIN FETCH oder @EntityGraph für den Use Case, oder default_batch_fetch_size für IN-Abfragen. Danach Statement-Anzahl im Test prüfen.</p></details>
-<details><summary>Wie machen Sie Inserts mit Hibernate schnell?</summary><p>jdbc.batch_size und order_inserts setzen, SEQUENCE statt IDENTITY, pgJDBC reWriteBatchedInserts=true. Für Massenimport COPY.</p></details>
-<details><summary>Warum verhindert IDENTITY das Insert-Batching?</summary><p>Hibernate braucht die ID sofort nach jedem Insert. Bei IDENTITY liefert erst die DB sie, also muss jeder Insert einzeln laufen.</p></details>
-<details><summary>Was ist ein Partial Index?</summary><p>Ein Index nur über Zeilen mit einer WHERE-Bedingung. Klein und schnell für seltene, oft gesuchte Werte.</p></details>
-<details><summary>Wann nutzt der Planer einen Partial Index nicht?</summary><p>Wenn die Abfrage-Bedingung das Index-Prädikat nicht beweisbar impliziert, z. B. bei einem Parameter im Generic Plan.</p></details>
-<details><summary>Warum random_page_cost auf SSD senken?</summary><p>Zufälliger Zugriff ist auf SSD fast so billig wie sequenzieller. Mit 4.0 unterschätzt der Planer Index Scans.</p></details>
-<details><summary>Was ist bei EXPLAIN ANALYZE auf einem UPDATE zu beachten?</summary><p>Es führt das UPDATE wirklich aus. Darum in BEGIN … ROLLBACK packen.</p></details>
+<h3>Wie innen?</h3>
+<details><summary>Was ist shared_buffers?</summary><p>Der eigene Seiten-Cache von PostgreSQL in 8-kB-Seiten, geteilt von allen Backends. Daten liegen oft zusätzlich im OS-Cache.</p></details>
+<details><summary>Was macht effective_cache_size?</summary><p>Es sagt dem Planer, wie viel Cache insgesamt verfügbar ist. Es reserviert nichts und beeinflusst, ob Index Scans günstig wirken.</p></details>
+<details><summary>Warum ist work_mem gefährlich?</summary><p>Es gilt pro Sort- oder Hash-Operation, also oft mehrfach pro Abfrage und pro Verbindung. Global hoch führt zu OOM.</p></details>
+<details><summary>Was ist ein Checkpoint?</summary><p>Alle geänderten Seiten werden auf Disk geschrieben, danach kann altes WAL entfernt werden. Ausgelöst durch Zeit oder WAL-Menge.</p></details>
+<details><summary>Was ist checkpoint_completion_target?</summary><p>Der Anteil des Intervalls, über den der Checkpoint seine Writes verteilt. Standard 0.9, das glättet I/O.</p></details>
+<details><summary>Was ist asynchrones I/O in PostgreSQL 18?</summary><p>Backends setzen mehrere Lese-Anfragen gleichzeitig ab, über io_method (Standard worker). Das hilft Seq Scans, Bitmap Heap Scans und VACUUM (<a href="https://www.postgresql.org/docs/18/release-18.html#RELEASE-18-PERFORMANCE">Release Notes 18</a>).</p></details>
 <details><summary>Was hat sich in PostgreSQL 17 für VACUUM geändert?</summary><p>Eine neue Speicherstruktur für tote Tupel braucht viel weniger Speicher. Das 1-GB-Limit fällt weg.</p></details>
-<details><summary>Wo sehen Sie Checkpoint-Statistiken in PostgreSQL 17?</summary><p>In pg_stat_checkpointer mit num_timed und num_requested. Vorher in pg_stat_bgwriter.</p></details>
+<h3>Zahlen</h3>
+<details><summary>Welche Standardwerte haben shared_buffers, work_mem und maintenance_work_mem?</summary><p>128 MB, 4 MB und 64 MB. Für shared_buffers nennt die Doku 25 % des RAM als Startwert auf einem dedizierten Server.</p></details>
+<details><summary>Wann wird ein Checkpoint ausgelöst?</summary><p>Nach checkpoint_timeout (Standard 5 min) oder wenn das WAL max_wal_size (Standard 1 GB) erreicht.</p></details>
+<details><summary>Warum random_page_cost auf SSD senken?</summary><p>Standard ist 4.0. Zufälliger Zugriff ist auf SSD fast so billig wie sequenzieller. Mit 4.0 unterschätzt der Planer Index Scans, oft setzt man 1.1.</p></details>
+<details><summary>Wie viel Speicher darf eine Hash-Operation nutzen?</summary><p>work_mem × hash_mem_multiplier, Standard 2.0. Mit 4 MB also 8 MB.</p></details>
+<details><summary>Welche Spalten von pg_stat_statements schauen Sie an?</summary><p>calls, total_exec_time, mean_exec_time, rows, shared_blks_hit und shared_blks_read. Viele calls mit kleiner mean deuten auf N+1.</p></details>
+<h3>Vergleich</h3>
+<details><summary>pg_stat_statements oder Slow Query Log?</summary><p>pg_stat_statements summiert über alle Aufrufe und zeigt N+1. Das Slow Log zeigt einzelne langsame Ausführungen.</p></details>
+<details><summary>work_mem oder maintenance_work_mem?</summary><p>work_mem pro Abfrage-Operation, maintenance_work_mem pro Wartungsoperation. Der zweite darf viel grösser sein, weil es wenige gleichzeitig gibt.</p></details>
+<details><summary>Warum nutzt der Planer einen Partial Index manchmal nicht?</summary><p>Die Abfrage-Bedingung muss das Index-Prädikat beweisbar implizieren. Bei einem Parameter im Generic Plan geht das nicht.</p></details>
+<details><summary>JOIN FETCH oder Batch Fetch?</summary><p>JOIN FETCH lädt alles in einer Abfrage, kann aber bei mehreren Collections ein kartesisches Produkt erzeugen. Batch Fetch nutzt wenige IN-Abfragen.</p></details>
+<h3>Produktion</h3>
+<details><summary>Wie erkennen Sie, dass work_mem zu klein ist?</summary><p>EXPLAIN ANALYZE zeigt „external merge Disk“ oder Hash Batches &gt; 1. log_temp_files loggt Temp-Dateien.</p></details>
+<details><summary>Was tun bei „checkpoints are occurring too frequently“?</summary><p>max_wal_size erhöhen, damit Checkpoints zeitgesteuert statt mengengesteuert kommen. checkpoint_completion_target bei 0.9 lassen.</p></details>
+<details><summary>Wie richten Sie pg_stat_statements ein?</summary><p>shared_preload_libraries = 'pg_stat_statements', Neustart, CREATE EXTENSION. Optional track_io_timing = on.</p></details>
+<details><summary>Wie richten Sie ein Slow Query Log ein?</summary><p>log_min_duration_statement auf z. B. 500 ms. Mit auto_explain zusätzlich den Plan langsamer Abfragen loggen.</p></details>
+<details><summary>Wo sehen Sie Checkpoint-Statistiken?</summary><p>Seit 17 in pg_stat_checkpointer mit num_timed und num_requested. Vorher in pg_stat_bgwriter.</p></details>
+<details><summary>Was geht kaputt, wenn Sie EXPLAIN ANALYZE auf ein UPDATE ausführen?</summary><p>Es führt das UPDATE wirklich aus. Darum in BEGIN … ROLLBACK packen.</p></details>
+<details><summary>Analytische Abfragen sind nach dem Upgrade auf 19 langsamer. Woran denken Sie?</summary><p>Seit 19 ist jit standardmässig off (<a href="https://www.postgresql.org/docs/19/release-19.html#RELEASE-19-MIGRATION">Release Notes 19</a>). Für grosse Analyse-Abfragen JIT gezielt wieder einschalten, z. B. pro Rolle, und messen.</p></details>
 <details><summary>Szenario: Die DB-CPU ist bei 90 %, aber keine Abfrage ist langsamer als 50 ms. Was tun Sie?</summary><p>pg_stat_statements nach total_exec_time und calls. Wahrscheinlich eine sehr häufige kleine Abfrage, z. B. N+1. Lösung im ORM oder mit Caching.</p></details>
 <details><summary>Szenario: Alle 5 Minuten gibt es Latenzspitzen bei hoher Schreiblast. Woran denken Sie?</summary><p>An Checkpoints und Full Page Writes. Log und pg_stat_checkpointer prüfen, max_wal_size erhöhen, completion_target 0.9.</p></details>
 <details><summary>Szenario: Nach dem Erhöhen von work_mem stürzt die DB nachts ab. Warum?</summary><p>Viele parallele Batch-Abfragen mit mehreren Hash-Knoten haben den RAM überschritten, der OOM-Killer griff. work_mem global senken und nur pro Rolle oder Session erhöhen.</p></details>
+<h3>Design</h3>
+<details><summary>Wie lösen Sie N+1 in Hibernate?</summary><p>JOIN FETCH oder @EntityGraph für den Use Case, oder default_batch_fetch_size für IN-Abfragen. Danach Statement-Anzahl im Test prüfen.</p></details>
+<details><summary>Wie machen Sie Inserts mit Hibernate schnell?</summary><p>jdbc.batch_size und order_inserts setzen, SEQUENCE statt IDENTITY, pgJDBC reWriteBatchedInserts=true. Für Massenimport COPY.</p></details>
+<details><summary>Warum verhindert IDENTITY das Insert-Batching?</summary><p>Hibernate braucht die ID sofort nach jedem Insert. Bei IDENTITY liefert erst die DB sie, also muss jeder Insert einzeln laufen.</p></details>
+<details><summary>Wann ist ein Partial Index die richtige Wahl?</summary><p>Für seltene, oft gesuchte Werte wie status = 'OPEN' oder deleted_at IS NULL. Er ist klein und kostet weniger Writes als ein voller Index.</p></details>
 
 </body>
 </html>

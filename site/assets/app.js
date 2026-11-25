@@ -253,7 +253,7 @@
       ${ts.length ? `<div class="sec-h"><h2>Alle Themen</h2><span class="cnt">${dn}/${ts.length} geschrieben</span></div><div class="card"><ul class="tlist">${ts.map(x => x.done
         ? `<li><a href="#k-${x.tech}--${x.id}"><span class="pr p${x.tier}">P${x.tier}</span><span class="tt">${esc(x.title)}${PMARK[x.proof] || ""}</span><span class="q">${x.nq || (x.qs || []).length} Fragen</span></a></li>`
         : `<li><a class="off"><span class="pr p${x.tier}">P${x.tier}</span><span class="tt">${esc(x.title)}${PMARK[x.proof] || ""}</span><span class="q">folgt</span></a></li>`).join('')}</ul></div>
-        <p class="legend"><span class="pr p1">P1</span> kommt in fast jedem Interview · <span class="pr p2">P2</span> oft · <span class="pr p3">P3</span> manchmal. <b>kein Projekt</b> = keine Projekterfahrung; <b>prüfen</b> = unklar, du entscheidest.</p>${(D.techSources || {})[id] ? `<p class="sources">Liste basiert auf: ${D.techSources[id].map(esc).join(" · ")}</p>` : ""}` : ''}
+        <p class="legend"><span class="pr p1">P1</span> kommt in fast jedem Interview · <span class="pr p2">P2</span> oft · <span class="pr p3">P3</span> manchmal. <b>kein Projekt</b> = keine Projekterfahrung; <b>prüfen</b> = unklar, du entscheidest.</p>` : ''}
       <div class="sec-h"><h2>Übungskarten</h2><span class="cnt">${cs.length}</span></div>${cs.length ? `<div class="card"><ul class="list">${cs.map(rowCard).join('')}</ul></div>` : '<p class="small">Noch keine Karten.</p>'}`;
   }
   // a deep topic: read everything, then test yourself (tap a question to see the answer)
@@ -270,7 +270,7 @@
     const list = D.topics.filter(y => y.tech === tech && y.done), i = list.indexOf(x);
     if (x.html) {
       app.innerHTML = `<a href="#t-${tech}" class="back">← ${esc(techOf(tech).name)}</a>
-        <header class="topic-head"><div class="crumbs"><span class="pr p${x.tier}">P${x.tier}</span><span>Thema ${i + 1} / ${list.length}</span>${x.nq ? `<span>${x.nq} Fragen</span>` : ''}</div><h1>${esc(x.title)}</h1></header>
+        <header class="topic-head"><div class="crumbs"><span>${esc(techOf(tech).name.split(/ \(| \+ /)[0])}</span></div><h1>${esc(x.title)}</h1></header>
         <article class="topic">${x.html}</article>
         ${visBlock(x)}
         <nav class="pager">${i > 0 ? `<a class="prev" href="#k-${tech}--${list[i - 1].id}"><span>← Zurück</span>${esc(list[i - 1].title)}</a>` : ""}${i < list.length - 1 ? `<a class="next" href="#k-${tech}--${list[i + 1].id}"><span>Weiter →</span>${esc(list[i + 1].title)}</a>` : ""}</nav>`;

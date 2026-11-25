@@ -84,7 +84,8 @@ for (const [t, def] of Object.entries(syllabus)) {
       const src = read(fh);
       const body = (src.match(/<body>([\s\S]*?)<\/body>/) || [])[1] || '';
       entry.title = (src.match(/<title>([^<]+)<\/title>/) || [])[1] || title;
-      entry.html = body.replace(/<h1>[\s\S]*?<\/h1>/, '').trim();
+      // sources live only as a hidden <!-- sources: … --> comment for fact checks; strip all comments so the app never renders them
+      entry.html = body.replace(/<h1>[\s\S]*?<\/h1>/, '').replace(/<!--[\s\S]*?-->/g, '').trim();
       entry.nq = (body.match(/<details>/g) || []).length;
       entry.svg = (body.match(/<svg /g) || []).length;
       // ids inside inline SVG markers must be unique per page (app shows one page at a time, still prefix them)
@@ -132,10 +133,9 @@ if (todo.length) {
 
 // external animations / visual explainers per topic (content/visuals.json): shown as "Zum Anschauen"
 const visuals = fs.existsSync(C('visuals.json')) ? JSON.parse(read(C('visuals.json'))) : {};
-// review phase: only the pilot + rollout batch 1 pages show the box; links only, max 2
-const VIS_REVIEW = new Set(['sysdesign/case-image-upload', 'postgres/acid-transactions', 'postgres/mvcc', 'postgres/vacuum', 'postgres/locking', 'postgres/indexes', 'postgres/planner-explain', 'postgres/join-algorithms', 'postgres/window-functions', 'postgres/ctes', 'java/jit-compiler', 'java/hashmap', 'postgres/isolation-levels', 'kafka/consumer-groups']);
-for (const t of topics) { const k = `${t.tech}/${t.id}`; if (visuals[k] && VIS_REVIEW.has(k)) t.vis = visuals[k].filter(v => /^https:\/\//.test(v.url)).slice(0, 2).map(({ title, url, why, source }) => ({ title, url, why, source })); }
-const data = { built: new Date().toISOString(), tech, rounds, cards, pages, topics, techSources };
+// approved: every topic with entries shows them; links only, max 2
+for (const t of topics) { const k = `${t.tech}/${t.id}`; if (visuals[k]) t.vis = visuals[k].filter(v => /^https:\/\//.test(v.url)).slice(0, 2).map(({ title, url, why, source }) => ({ title, url, why, source })); }
+const data = { built: new Date().toISOString(), tech, rounds, cards, pages, topics }; // sources are never shipped to the app
 const json = JSON.stringify(data);
 fs.writeFileSync(path.join(ROOT, 'site', 'data.json'), json);
 const h = s => crypto.createHash('sha1').update(s).digest('hex').slice(0, 8);
