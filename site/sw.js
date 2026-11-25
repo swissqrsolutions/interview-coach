@@ -1,5 +1,5 @@
 // Offline: the whole app is a handful of files. Pages network-first, everything else cache-first.
-const CACHE = 'ic-v3';
+const CACHE = 'ic-v4';
 const CORE = ['./', 'index.html', 'manifest.webmanifest', 'assets/icon.svg?v=3', 'assets/icon-192.png?v=3', 'assets/latin.woff2'];
 self.addEventListener('install', e => { e.waitUntil(caches.open(CACHE).then(c => c.addAll(CORE)).then(() => self.skipWaiting())); });
 self.addEventListener('activate', e => {

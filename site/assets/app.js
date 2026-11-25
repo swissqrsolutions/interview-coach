@@ -250,11 +250,11 @@
       <p class="meta">${PROOF[t.proof] || ''} ${t.project ? '<span>' + esc(t.project) + '</span>' : ''}</p>
       ${ts.length ? `<div class="progress-line">${bar(dn, ts.length)}<span>${dn}/${ts.length}</span></div>` : ''}
       ${t.proof === 'study' ? `<div class="honest">Noch kein Projekt damit. Im Interview ehrlich sagen: <i>„Produktiv habe ich das noch nicht eingesetzt. Das Prinzip kenne ich. Bei uns war es ähnlich mit …“</i></div>` : ''}
-      ${ts.length ? `<div class="sec-h"><h2>Alle Themen</h2><span class="cnt">${dn}/${ts.length} geschrieben</span></div><ul class="tlist">${ts.map(x => x.done
+      ${ts.length ? `<div class="sec-h"><h2>Alle Themen</h2><span class="cnt">${dn}/${ts.length} geschrieben</span></div><div class="card"><ul class="tlist">${ts.map(x => x.done
         ? `<li><a href="#k-${x.tech}--${x.id}"><span class="pr p${x.tier}">P${x.tier}</span><span class="tt">${esc(x.title)}${PMARK[x.proof] || ""}</span><span class="q">${x.nq || (x.qs || []).length} Fragen</span></a></li>`
-        : `<li><a class="off"><span class="pr p${x.tier}">P${x.tier}</span><span class="tt">${esc(x.title)}${PMARK[x.proof] || ""}</span><span class="q">folgt</span></a></li>`).join('')}</ul>
+        : `<li><a class="off"><span class="pr p${x.tier}">P${x.tier}</span><span class="tt">${esc(x.title)}${PMARK[x.proof] || ""}</span><span class="q">folgt</span></a></li>`).join('')}</ul></div>
         <p class="legend"><span class="pr p1">P1</span> kommt in fast jedem Interview · <span class="pr p2">P2</span> oft · <span class="pr p3">P3</span> manchmal. <b>kein Projekt</b> = keine Projekterfahrung; <b>prüfen</b> = unklar, du entscheidest.</p>${(D.techSources || {})[id] ? `<p class="sources">Liste basiert auf: ${D.techSources[id].map(esc).join(" · ")}</p>` : ""}` : ''}
-      <div class="sec-h"><h2>Übungskarten</h2><span class="cnt">${cs.length}</span></div>${cs.length ? `<ul class="list">${cs.map(rowCard).join('')}</ul>` : '<p class="small">Noch keine Karten.</p>'}`;
+      <div class="sec-h"><h2>Übungskarten</h2><span class="cnt">${cs.length}</span></div>${cs.length ? `<div class="card"><ul class="list">${cs.map(rowCard).join('')}</ul></div>` : '<p class="small">Noch keine Karten.</p>'}`;
   }
   // a deep topic: read everything, then test yourself (tap a question to see the answer)
   // "Zum Anschauen": max 2 outside links that show the mechanism; links only (no iframes, no tracking), at the end of the page
@@ -270,10 +270,13 @@
     const list = D.topics.filter(y => y.tech === tech && y.done), i = list.indexOf(x);
     if (x.html) {
       app.innerHTML = `<a href="#t-${tech}" class="back">← ${esc(techOf(tech).name)}</a>
-        <header class="topic-head"><div class="crumbs"><span class="pr p${x.tier}">P${x.tier}</span><span>Thema ${i + 1} / ${list.length}</span>${x.nq ? `<span>${x.nq} Fragen</span>` : ''}</div><h1><span class="hl">${esc(x.title)}</span></h1></header>
+        <header class="topic-head"><div class="crumbs"><span class="pr p${x.tier}">P${x.tier}</span><span>Thema ${i + 1} / ${list.length}</span>${x.nq ? `<span>${x.nq} Fragen</span>` : ''}</div><h1>${esc(x.title)}</h1></header>
         <article class="topic">${x.html}</article>
         ${visBlock(x)}
         <nav class="pager">${i > 0 ? `<a class="prev" href="#k-${tech}--${list[i - 1].id}"><span>← Zurück</span>${esc(list[i - 1].title)}</a>` : ""}${i < list.length - 1 ? `<a class="next" href="#k-${tech}--${list[i + 1].id}"><span>Weiter →</span>${esc(list[i + 1].title)}</a>` : ""}</nav>`;
+      // tables scroll sideways on phones; step names in the Antwort-Muster are bold
+      $$('.topic table', app).forEach(t => { if (t.parentElement.classList.contains('tscroll')) return; const w = document.createElement('div'); w.className = 'tscroll'; t.before(w); w.append(t); });
+      $$('.topic .muster li', app).forEach(li => { const n = li.firstChild, m = n && n.nodeType === 3 && n.nodeValue.match(/^\s*([^:.<]{2,30}:)/); if (!m) return; const b = document.createElement('b'); b.textContent = m[1]; n.nodeValue = n.nodeValue.slice(m[0].length); li.insertBefore(b, n); });
       return;
     }
     const qa = (arr, cls) => arr.map(q => `<details class="qa ${cls}"><summary>${q.q}</summary><div class="ans">${q.a}</div></details>`).join('');
@@ -355,20 +358,18 @@
     };
     const p1 = all.filter(t => t.tier === 1), started = ids.filter(id => all.some(t => t.tech === id && t.done)).length;
     const used = cats.filter(g => ids.some(id => techOf(id).group === g));
-    app.innerHTML = `<header class="mast"><div class="label"><span>Themen</span><span>${ids.length} Technologien</span></div>
-        <h1 class="cover"><span>Bereit für</span><span>jedes</span><span>Interview.<i class="cursor" aria-hidden="true"></i></span></h1>
-        <div class="score"><b>${done}<small> / ${all.length}</small></b><span>Themen<br>geschrieben</span></div>
-        ${bar(done, all.length)}
-        <p class="lede">Ein Thema ganz lesen, dann mit den Fragen am Ende testen.</p>
-        <button class="install install-home btn block" type="button" ${canInstall() ? '' : 'hidden'}><span aria-hidden="true">↓&nbsp;</span>App installieren</button>
+    app.innerHTML = `<h1>Themen</h1><p class="sub">${ids.length} Technologien · Ein Thema ganz lesen, dann mit den Fragen am Ende testen.</p>
+        <button class="install install-home btn block" type="button" ${canInstall() ? '' : 'hidden'}><span aria-hidden="true">↓</span>App installieren</button>
         <p class="ios-hint" role="status" hidden></p>
+        <section class="card prog"><div class="score"><b>${done}<small> / ${all.length}</small></b><span class="small">Themen geschrieben</span></div>
+        ${bar(done, all.length)}
         <dl class="strip"><div><dt>P1 fertig</dt><dd>${p1.filter(t => t.done).length}<small>/${p1.length}</small></dd></div>
           <div><dt>Begonnen</dt><dd>${started}<small>/${ids.length}</small></dd></div>
-          <div><dt>Gesamt</dt><dd>${pct(done, all.length)}<small>%</small></dd></div></dl></header>` + used.map((g, n) => {
+          <div><dt>Gesamt</dt><dd>${pct(done, all.length)}<small>%</small></dd></div></dl></section>` + used.map((g, n) => {
       const list = ids.filter(id => techOf(id).group === g);
       const tot = all.filter(t => list.includes(t.tech)), d0 = tot.filter(t => t.done).length;
-      return `<section class="cat"><div class="cat-h"><span class="idx">${String(n + 1).padStart(2, '0')}</span><h2>${esc(g)}</h2><span class="cnt">${d0}/${tot.length}</span></div>${bar(d0, tot.length)}<ul class="tech-rows">${list.map(row).join('')}</ul></section>`;
-    }).join('') + `<p class="foot">Zahlen: geschriebene Themen / geplante Themen. P1 = kommt in fast jedem Interview.</p>`;
+      return `<section class="cat"><h2>${esc(g)} <span class="chip">${d0}/${tot.length}</span></h2><div class="card"><ul class="tech-rows">${list.map(row).join('')}</ul></div></section>`;
+    }).join('') + `<p class="foot small">Zahlen: geschriebene Themen / geplante Themen. P1 = kommt in fast jedem Interview.</p>`;
   }
 
   // ---------- router ----------
@@ -389,7 +390,7 @@
     else if (p[0] === 'plan') planView();
     else topicsHome();
     $$('.copy', app).forEach(b => b.textContent = 'Kopieren');
-    const tab = { '': 'today', plan: 'today', c: 'today', q: 'today', job: 'job', lib: 'lib', r: 'lib', t: 'lib', k: 'lib', page: 'lib', evidence: 'lib', progress: 'progress' }[p[0]] || 'today';
+    const tab = { '': 'today', plan: 'today', c: 'today', q: 'today', job: 'job', lib: 'lib', r: 'lib', t: 'today', k: 'today', page: 'lib', evidence: 'lib', progress: 'progress' }[p[0]] || 'today';
     $$('.tabs a').forEach(a => a.classList.toggle('on', a.dataset.tab === tab));
   }
   addEventListener('hashchange', render);
