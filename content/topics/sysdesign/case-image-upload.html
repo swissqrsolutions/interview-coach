@@ -19,12 +19,37 @@
   summary { font-weight: 600; cursor: pointer; }
   details p { margin: 6px 0 2px; }
   .small { color: #6e6e73; font-size: 14px; }
+  h3 { font-size: 17px; margin: 20px 0 6px; }
+  .geruest { border: 2px solid #1d1d1f; border-radius: 6px; padding: 10px 14px; margin: 14px 0; font-size: 15px; line-height: 1.4; }
+  .geruest h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; margin: 0 0 8px; padding: 0; border: 0; }
+  .geruest dl { display: grid; grid-template-columns: 6.6em 1fr; gap: 6px 10px; margin: 0; }
+  .geruest dt { font-weight: 700; font-size: 12px; text-transform: uppercase; letter-spacing: .05em; padding-top: 1px; }
+  .geruest dd { margin: 0; }
+  .muster { border: 1px solid #e5e5ea; border-left: 4px solid #1d1d1f; border-radius: 6px; padding: 10px 14px; margin: 14px 0; }
+  .muster h3 { margin: 0 0 6px; font-size: 13px; text-transform: uppercase; letter-spacing: .06em; }
+  .muster .mq { margin: 0 0 6px; }
 </style>
 </head>
 <body>
 
 <h1>Fall: Bild-Upload mit Erkennung und Suche</h1>
-<p class="small">System-Design-Fall · Tier 1 · Quellen: Microsoft Learn (Defender for Storage: Malware Scanning, Limits und Ergebnis-Kanäle), AWS S3 User Guide (Presigned URLs, Ablaufzeit), PostgreSQL 17 Docs (INSERT … ON CONFLICT, SELECT … FOR UPDATE SKIP LOCKED, Indexes, EXPLAIN), Apache Tika Docs (MIME-Erkennung), Kleppmann DDIA Kap. 3 und 11, Alex Xu „System Design Interview“ Vol. 1, Elastic Docs (Similarity/BM25, Language Analyzers, Decompounder, kNN Search und Query, kNN Retriever, Reciprocal Rank Fusion)</p>
+<p class="small">System-Design-Fall · Tier 1 · Quellen: Microsoft Learn (Defender for Storage: Malware Scanning, Limits und Ergebnis-Kanäle), AWS S3 User Guide (Presigned URLs, Ablaufzeit), PostgreSQL 17 Docs (INSERT … ON CONFLICT, SELECT … FOR UPDATE SKIP LOCKED, Indexes, EXPLAIN), Apache Tika Docs (MIME-Erkennung), Kleppmann DDIA Kap. 3 und 11, Alex Xu „System Design Interview“ Vol. 1, Elastic Docs (Similarity/BM25, Language Analyzers, Decompounder, kNN Search und Query, kNN Retriever, Reciprocal Rank Fusion), Microsoft Learn „Introduction to Defender for Storage Malware Scanning“ (Limits, Scan-Timeout)</p>
+
+<div class="geruest"><h2>Gerüst</h2><dl>
+  <dt>Warum?</dt><dd>Der Nutzer wartet nur auf den Upload, nie auf Scan oder GPU. Fremde Bytes sind gefährlich, bis sie gescannt und neu kodiert sind.</dd>
+  <dt>Wie innen?</dt><dd>Intent → Presigned PUT in <code>quarantine/</code> → Scan-Event → <code>clean/</code> → Queue-Worker → DB-Commit + Outbox → Suchindex.</dd>
+  <dt>Zahlen</dt><dd>1 Mio. Uploads/Tag à 3 MB ≈ 12/s, Spitze 60/s, ca. 1,1 PB/Jahr. Presigned URL max. 7 Tage (SigV4), Defender scannt bis 50 GB pro Blob.</dd>
+  <dt>Vergleich</dt><dd>Direkt-Upload: API klein, Quarantäne Pflicht. Über Service: Prüfung vor dem ersten Byte, trägt aber die Bandbreite. Suche: PostgreSQL vs Suchcluster.</dd>
+  <dt>Produktion</dt><dd>Bilder hängen in <code>uploaded</code> → Alter des ältesten Jobs alarmieren. Index zeigt Gelöschtes → Outbox mit Retry, Status-Check in der API.</dd>
+  <dt>Design</dt><dd>DB = Wahrheit, Index = Projektion. Rechte im Index filtern. Status-Automat pending → uploaded → processing → ready / rejected.</dd>
+</dl></div>
+
+<div class="muster"><h3>Antwort-Muster</h3><p class="mq"><b>Frage:</b> Wie entwerfen Sie einen Bild-Upload mit Erkennung?</p><ol>
+  <li>Mechanismus: Der Client lädt per Presigned URL direkt in eine Quarantäne, und erst nach dem Scan-Event verarbeiten Worker das Bild über eine Queue.</li>
+  <li>Zahl: Bei 1 Mio. Uploads pro Tag sind das ca. 12 Uploads pro Sekunde, in der Spitze ca. 60.</li>
+  <li>Trade-off: Das Bild ist erst nach Sekunden suchbar, dafür hängt die Upload-Latenz nie an der GPU.</li>
+  <li>Produktion: Ich alarmiere auf das Alter des ältesten Jobs pro Stufe und mache jeden Schritt idempotent.</li>
+</ol></div>
 
 <div class="kern">
 <b>Kern (die 1-Minuten-Antwort):</b> Der Client holt sich eine <b>Upload-Intent</b> und lädt das Bild <b>direkt in einen Quarantäne-Bucket</b>. Ein Event startet den <b>Malware-Scan</b>; erst ein sauberes Bild geht über eine <b>Queue</b> an Worker für Thumbnails und <b>Erkennung</b> (Labels, Embeddings). Metadaten liegen in <b>PostgreSQL</b> als Wahrheit, gesucht wird in einem <b>Suchindex</b>, ausgeliefert über ein <b>CDN</b>. Alles ist asynchron, idempotent und hat einen klaren <b>Status pro Bild</b>.
@@ -255,7 +280,7 @@ GET images/_search
   <li><b>Suche:</b> 5 Mio. Suchen pro Tag sind ca. 60 QPS, Spitze ca. 300 QPS. Das schafft ein kleiner Suchcluster leicht. Der Engpass ist eher die Rechte-Filterung.</li>
   <li><b>Direkt-Upload:</b> Eine <b>Presigned URL</b> (S3) oder <b>SAS</b> (Azure) erlaubt einen PUT ohne Zugangsdaten. Bei S3 mit SigV4 maximal 7 Tage gültig; für Uploads nimmt man Minuten.</li>
   <li><b>Grosse Dateien:</b> Über einige hundert MB nutzt man <b>Multipart</b> (S3) oder <b>Block-Upload</b> (Azure). Teile laufen parallel und sind einzeln wiederholbar. Achtung: Ein Scan von Teilstücken ist wertlos; gescannt wird das fertige Objekt.</li>
-  <li><b>Malware-Scan:</b> Defender for Storage scannt beim Upload Blobs bis 50 GB. Ergebnisse kommen als Blob Index Tags, Alerts, Event Grid oder Log Analytics. Index Tags sind nicht manipulationssicher; für Sicherheit Events nutzen.</li>
+  <li><b>Malware-Scan:</b> Defender for Storage scannt beim Upload Blobs bis 50 GB. Ergebnisse kommen als Blob Index Tags, Alerts, Event Grid oder Log Analytics. Index Tags sind nicht manipulationssicher; für Sicherheit Events nutzen. Durchsatz: bis 50 GB pro Minute und Storage Account, darüber stauen sich Scans. Grosse oder verschachtelte Dateien können das Scan-Zeitfenster (30 min bis 3 h) überschreiten: Ergebnis „Scan timed out“.</li>
   <li><b>Dateityp-Spoofing:</b> Die Endung und der Content-Type lügen oft. Der Worker prüft die <b>Magic Bytes</b>, z. B. mit Apache Tika, und <b>re-encodet</b> das Bild. Ein neu kodiertes JPEG enthält keinen versteckten Payload mehr.</li>
   <li><b>Decompression Bomb:</b> Ein 50-KB-PNG kann 50 000 × 50 000 Pixel haben. Darum vor dem Dekodieren Pixel-Limit prüfen und Worker mit Speicherlimit laufen lassen.</li>
   <li><b>Datenschutz:</b> EXIF enthält oft GPS-Koordinaten. Der Worker entfernt sie vor der Auslieferung. Gesichtserkennung ist rechtlich heikel und braucht eine eigene Grundlage.</li>
@@ -327,35 +352,44 @@ GET images/_search
 </ul>
 </div>
 
-<h2>12. Fragen</h2>
-<details><summary>Skizzieren Sie das System in einer Minute.</summary><p>Upload-Intent, direkter Upload in Quarantäne, Malware-Scan per Event, Queue mit Workern für Thumbnails und Erkennung, PostgreSQL als Wahrheit, Suchindex über Outbox, Auslieferung über CDN.</p></details>
-<details><summary>Welche Fragen stellen Sie zuerst?</summary><p>Wie viele Uploads pro Tag, welche Grösse, wie schnell muss ein Bild suchbar sein, wer darf was sehen, welche Erkennung (Labels, Text, ähnliche Bilder), wie lange aufbewahren.</p></details>
-<details><summary>Rechnen Sie Speicher und Durchsatz grob.</summary><p>1 Mio. Uploads à 3 MB sind 3 TB pro Tag, ca. 1,1 PB pro Jahr. Im Schnitt 12 Uploads/s, Spitze ca. 60/s.</p></details>
+<h2>12. Selbsttest</h2>
+<h3>Warum?</h3>
 <details><summary>Warum lädt der Client direkt ins Storage?</summary><p>Die API muss keine Bytes tragen und bleibt klein. Das Storage skaliert die Bandbreite. Die API vergibt nur kurzlebige, auf ein Objekt beschränkte Rechte.</p></details>
-<details><summary>Wann laden Sie trotzdem über einen Service hoch?</summary><p>Wenn das Storage nur privat erreichbar ist oder man vor dem ersten Byte prüfen muss, z. B. JWT und Dateityp. Preis: Der Service trägt die Bandbreite.</p></details>
-<details><summary>Wie verhindern Sie Malware im System?</summary><p>Quarantäne-Bereich, Scan jedes Objekts, Freigabe nur per Scan-Event, Magic-Bytes-Prüfung, Re-Encoding. Ungeprüftes wird nie ausgeliefert.</p></details>
 <details><summary>Warum asynchrone Erkennung?</summary><p>Das Modell ist langsam und teuer. Die Queue puffert Spitzen, Worker skalieren nach Queue-Länge, und Fehler werden einzeln wiederholt.</p></details>
+<details><summary>Wie verhindern Sie Malware im System?</summary><p>Quarantäne-Bereich, Scan jedes Objekts, Freigabe nur per Scan-Event, Magic-Bytes-Prüfung, Re-Encoding. Ungeprüftes wird nie ausgeliefert.</p></details>
+<h3>Wie innen?</h3>
+<details><summary>Skizzieren Sie das System in einer Minute.</summary><p>Upload-Intent, direkter Upload in Quarantäne, Malware-Scan per Event, Queue mit Workern für Thumbnails und Erkennung, PostgreSQL als Wahrheit, Suchindex über Outbox, Auslieferung über CDN.</p></details>
 <details><summary>Wie verhindern Sie, dass zwei Worker dasselbe Bild verarbeiten?</summary><p>Atomarer Claim mit FOR UPDATE SKIP LOCKED oder die Lease einer Queue. Dazu idempotente Verarbeitung: Labels ersetzen, nicht anhängen.</p></details>
 <details><summary>Was passiert, wenn ein Worker mitten in der Arbeit abstürzt?</summary><p>Die Lease oder der Status läuft ab, ein anderer Worker übernimmt. Weil das Ergebnis in einer Transaktion geschrieben wird, gibt es keinen halben Zustand.</p></details>
-<details><summary>Wie machen Sie den Upload idempotent?</summary><p>Idempotency-Key am Intent und ein Unique-Key auf Besitzer und SHA-256. Ein Retry liefert dieselbe Bild-ID.</p></details>
 <details><summary>Wie bauen Sie die Suche?</summary><p>Labels und Text in einen Suchindex mit Besitzer- oder ACL-Feld. Für „ähnliche Bilder“ Embeddings in einem Vektorindex. Gefüllt über Outbox aus der DB.</p></details>
+<details><summary>Was ist ein invertierter Index, und was macht BM25 damit?</summary><p>Eine Tabelle Term → Liste der Dokument-IDs. BM25 bewertet die Treffer: Termhäufigkeit mit Sättigung (k1 = 1.2), Längen-Normalisierung (b = 0.75) und seltene Terme zählen mehr (IDF).</p></details>
+<details><summary>Was geht kaputt, wenn Nutzer „see“ suchen, aber nur „Bergsee“ im Index steht?</summary><p>Ohne Zerlegung gibt es keinen Treffer, denn „bergsee“ ist ein einziger Term. Lösung: ein Decompounder-Filter im Analyzer, z. B. hyphenation_decompounder.</p></details>
+<h3>Zahlen</h3>
+<details><summary>Rechnen Sie Speicher und Durchsatz grob.</summary><p>1 Mio. Uploads à 3 MB sind 3 TB pro Tag, ca. 1,1 PB pro Jahr. Im Schnitt 12 Uploads/s, Spitze ca. 60/s.</p></details>
+<details><summary>Warum brauchen Sie in der Spitze ca. 12 parallele Inferenzen?</summary><p>Angenommen 200 ms GPU-Zeit pro Bild. 60 Bilder/s × 0,2 s = 12 gleichzeitige Inferenzen. Batching senkt die Zahl der GPUs.</p></details>
+<details><summary>Wie lange darf eine Presigned URL gültig sein, und was wählen Sie?</summary><p>Bei S3 mit SigV4 und IAM-User höchstens 7 Tage, mit temporären Credentials nur so lange wie diese. Für einen Upload wähle ich Minuten, z. B. 15.</p></details>
+<h3>Vergleich</h3>
+<details><summary>Wann laden Sie trotzdem über einen Service hoch?</summary><p>Wenn das Storage nur privat erreichbar ist oder man vor dem ersten Byte prüfen muss, z. B. JWT und Dateityp. Preis: Der Service trägt die Bandbreite.</p></details>
 <details><summary>Labels oder Embeddings?</summary><p>Labels sind einfach, erklärbar und filterbar. Embeddings finden ähnliche Bilder und Freitext. Oft beides: Labels für Filter, Vektoren für Ranking.</p></details>
+<details><summary>Warum kombinieren Sie BM25 und Vektorsuche?</summary><p>BM25 findet exakte Wörter und Namen, Vektoren finden Bedeutung und ähnliche Bilder. RRF mischt beide Ranglisten nach Rang, mit 1 / (60 + Rang) pro Liste. Approximatives kNN (HNSW) ist schnell, aber der Recall ist nicht 100 %.</p></details>
+<details><summary>Wann reicht PostgreSQL für die Suche, wann braucht es einen Suchcluster?</summary><p>PostgreSQL reicht für Label-Filter, Rechte-Joins und kleine bis mittlere Mengen, transaktional in einer DB. Ein Suchcluster lohnt sich für Volltext, Facetten und Milliarden Label-Zeilen, kostet aber Konsistenz und Reindex-Aufwand.</p></details>
+<h3>Produktion</h3>
+<details><summary>Wie gehen Sie mit grossen Dateien um?</summary><p>Multipart- oder Block-Upload, Teile parallel und einzeln wiederholbar. Gescannt wird das fertige Objekt, nicht die Teile.</p></details>
+<details><summary>Was geht kaputt, wenn jemand eine Decompression Bomb hochlädt?</summary><p>Eine kleine Datei wird beim Dekodieren riesig, der Worker läuft in OOM. Schutz: Pixel-Limit vor dem Dekodieren, Speicherlimit im Worker, nach 3 Fehlern in die DLQ.</p></details>
+<details><summary>Welche Metriken alarmieren Sie?</summary><p>Alter des ältesten Jobs pro Stufe, DLQ-Grösse, Fehlerrate von Scan und Modell, Zeit vom Upload bis ready.</p></details>
+<details><summary>Wie skaliert die Datenbank?</summary><p>Metadaten sind klein. Label-Zeilen wachsen schnell: Partitionierung nach Zeit oder Auslagerung der Suche in einen Index. Lese-Replikate für Statusabfragen.</p></details>
+<details><summary>Szenario: Nach einem Marketing-Event kommen 10× mehr Uploads. Was passiert?</summary><p>Upload und Storage halten, weil sie direkt laufen. Die Queue wächst, Bilder sind später suchbar. Worker und GPUs skalieren nach Queue-Länge; die Nutzer sehen „in Bearbeitung“.</p></details>
+<details><summary>Szenario: Viele Bilder bleiben im Status uploaded hängen. Wie gehen Sie vor?</summary><p>Alter des ältesten Jobs prüfen, Worker-Logs, DLQ. Typisch: Modell-Timeouts oder OOM. Fix: Retry mit Backoff, Pixel-Limit, mehr Worker; hängende Claims per Timeout zurücksetzen.</p></details>
+<h3>Design</h3>
+<details><summary>Welche Fragen stellen Sie zuerst?</summary><p>Wie viele Uploads pro Tag, welche Grösse, wie schnell muss ein Bild suchbar sein, wer darf was sehen, welche Erkennung (Labels, Text, ähnliche Bilder), wie lange aufbewahren.</p></details>
+<details><summary>Wie machen Sie den Upload idempotent?</summary><p>Idempotency-Key am Intent und ein Unique-Key auf Besitzer und SHA-256. Ein Retry liefert dieselbe Bild-ID.</p></details>
 <details><summary>Wie bleibt der Suchindex konsistent?</summary><p>Gar nicht sofort. Die Outbox garantiert, dass jede Änderung ankommt. Ein Reindex-Job baut ihn aus der DB neu. Die API prüft den Status vor der Auslieferung.</p></details>
 <details><summary>Wie setzen Sie Rechte in der Suche um?</summary><p>Jeder Index-Eintrag trägt Besitzer oder ACL-Gruppen. Die Suche filtert im Index. So stimmen Trefferzahl und Paging.</p></details>
 <details><summary>Warum ist Ihre erste Such-Query langsam?</summary><p>Filter auf Labels, Sortierung nach Datum aus einer anderen Tabelle. Die DB muss alle Bilder lesen. Eine Projektion mit Index (label, created_at) macht daraus einen Index Scan.</p></details>
-<details><summary>Wie gehen Sie mit grossen Dateien um?</summary><p>Multipart- oder Block-Upload, Teile parallel und einzeln wiederholbar. Gescannt wird das fertige Objekt, nicht die Teile.</p></details>
-<details><summary>Was ist eine Decompression Bomb?</summary><p>Eine kleine Datei, die beim Dekodieren riesig wird. Schutz: Pixel-Limit vor dem Dekodieren, Speicherlimit im Worker.</p></details>
 <details><summary>Welche Datenschutz-Punkte nennen Sie?</summary><p>EXIF mit GPS entfernen, Rechte pro Bild, Löschung überall inklusive Index und CDN, Gesichtserkennung nur mit Rechtsgrundlage.</p></details>
 <details><summary>Wie löschen Sie ein Bild vollständig?</summary><p>Ein Lösch-Job mit Status: DB-Zeile, Original, Thumbnails, Index-Eintrag, CDN-Purge. Jeder Schritt idempotent und wiederholbar.</p></details>
 <details><summary>Was passiert bei einem neuen Erkennungsmodell?</summary><p>Labels tragen die Modell-Version. Ein Re-Processing läuft über eine eigene Queue mit niedriger Priorität und Rate Limit.</p></details>
-<details><summary>Welche Metriken alarmieren Sie?</summary><p>Alter des ältesten Jobs pro Stufe, DLQ-Grösse, Fehlerrate von Scan und Modell, Zeit vom Upload bis ready.</p></details>
-<details><summary>Wie skaliert die Datenbank?</summary><p>Metadaten sind klein. Label-Zeilen wachsen schnell: Partitionierung nach Zeit oder Auslagerung der Suche in einen Index. Lese-Replikate für Statusabfragen.</p></details>
-<details><summary>Was ist ein invertierter Index, und was macht BM25 damit?</summary><p>Eine Tabelle Term → Liste der Dokument-IDs. BM25 bewertet die Treffer: Termhäufigkeit mit Sättigung (k1 = 1.2), Längen-Normalisierung (b = 0.75) und seltene Terme zählen mehr (IDF).</p></details>
-<details><summary>Was geht kaputt, wenn Nutzer „see“ suchen, aber nur „Bergsee“ im Index steht?</summary><p>Ohne Zerlegung gibt es keinen Treffer, denn „bergsee“ ist ein einziger Term. Lösung: ein Decompounder-Filter im Analyzer, z. B. hyphenation_decompounder.</p></details>
-<details><summary>Warum kombinieren Sie BM25 und Vektorsuche?</summary><p>BM25 findet exakte Wörter und Namen, Vektoren finden Bedeutung und ähnliche Bilder. RRF mischt beide Ranglisten nach Rang, mit 1 / (60 + Rang) pro Liste. Approximatives kNN (HNSW) ist schnell, aber der Recall ist nicht 100 %.</p></details>
-<details><summary>Szenario: Nach einem Marketing-Event kommen 10× mehr Uploads. Was passiert?</summary><p>Upload und Storage halten, weil sie direkt laufen. Die Queue wächst, Bilder sind später suchbar. Worker und GPUs skalieren nach Queue-Länge; die Nutzer sehen „in Bearbeitung“.</p></details>
 <details><summary>Szenario: Ein Nutzer findet ein Bild eines anderen Nutzers in seiner Suche. Was ist passiert?</summary><p>Wahrscheinlich fehlt der Rechte-Filter im Index oder ein Eintrag hat falsche ACL-Felder. Sofort: Rechte-Prüfung in der API vor der Auslieferung. Dann Index-Mapping korrigieren und neu indexieren.</p></details>
-<details><summary>Szenario: Viele Bilder bleiben im Status uploaded hängen. Wie gehen Sie vor?</summary><p>Alter des ältesten Jobs prüfen, Worker-Logs, DLQ. Typisch: Modell-Timeouts oder OOM. Fix: Retry mit Backoff, Pixel-Limit, mehr Worker; hängende Claims per Timeout zurücksetzen.</p></details>
 
 </body>
 </html>

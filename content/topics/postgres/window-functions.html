@@ -19,12 +19,37 @@
   summary { font-weight: 600; cursor: pointer; }
   details p { margin: 6px 0 2px; }
   .small { color: #6e6e73; font-size: 14px; }
+  h3 { font-size: 17px; margin: 20px 0 6px; }
+  .geruest { border: 2px solid #1d1d1f; border-radius: 6px; padding: 10px 14px; margin: 14px 0; font-size: 15px; line-height: 1.4; }
+  .geruest h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; margin: 0 0 8px; padding: 0; border: 0; }
+  .geruest dl { display: grid; grid-template-columns: 6.6em 1fr; gap: 6px 10px; margin: 0; }
+  .geruest dt { font-weight: 700; font-size: 12px; text-transform: uppercase; letter-spacing: .05em; padding-top: 1px; }
+  .geruest dd { margin: 0; }
+  .muster { border: 1px solid #e5e5ea; border-left: 4px solid #1d1d1f; border-radius: 6px; padding: 10px 14px; margin: 14px 0; }
+  .muster h3 { margin: 0 0 6px; font-size: 13px; text-transform: uppercase; letter-spacing: .06em; }
+  .muster .mq { margin: 0 0 6px; }
 </style>
 </head>
 <body>
 
 <h1>Window Functions</h1>
 <p class="small">PostgreSQL · Tier 1 · Quellen: PostgreSQL 17 Doku (aktuell ist PostgreSQL 19; wichtige Unterschiede in 18/19 laut Release Notes stehen im Text), Kapitel 3.5 „Window Functions“ (Tutorial), Kapitel 4.2.8 „Window Function Calls“ (Frame-Syntax), Kapitel 9.22 „Window Functions“ (Funktionsliste), Kapitel 7.2.5 „Window Function Processing“, <code>SELECT</code> (WINDOW-Klausel), Release Notes 15 (Run Condition)</p>
+
+<div class="geruest"><h2>Gerüst</h2><dl>
+  <dt>Warum?</dt><dd>Über verwandte Zeilen rechnen, ohne sie zu verlieren: Ranking, laufende Summe, Vorwert. Ersetzt Self-Join (oft O(n²)) durch Sort + einen Durchlauf.</dd>
+  <dt>Wie innen?</dt><dd><code>WindowAgg</code> läuft nach WHERE und GROUP BY: Sort nach PARTITION BY + ORDER BY, dann Frame pro Zeile. Darum kein Filter im WHERE.</dd>
+  <dt>Zahlen</dt><dd>Standard-Frame mit ORDER BY: <code>RANGE … CURRENT ROW</code> inkl. Peers. Run Condition seit 15, IGNORE NULLS seit 19. Tuplestore über <code>work_mem</code> (4 MB) → Platte.</dd>
+  <dt>Vergleich</dt><dd><code>row_number</code> 1,2,3 · <code>rank</code> 1,1,3 · <code>dense_rank</code> 1,1,2. ROWS = Zeilen, RANGE = Werte, GROUPS = Peer-Gruppen.</dd>
+  <dt>Produktion</dt><dd>Ohne Tie-Breaker flackert <code>row_number</code> (Paging, Dedup). RANGE-Standard lässt Peers gemeinsam springen. <code>ROWS 6 PRECEDING</code> ≠ 7 Tage.</dd>
+  <dt>Design</dt><dd>Frame explizit schreiben. Top-N: <code>row_number</code>, <code>DISTINCT ON</code> (Top-1) oder <code>LATERAL … LIMIT</code> mit Index. Gleiche Fenster per <code>WINDOW</code> teilen.</dd>
+</dl></div>
+
+<div class="muster"><h3>Antwort-Muster</h3><p class="mq"><b>Frage:</b> Was ist eine Window Function, und wie unterscheidet sie sich von GROUP BY?</p><ol>
+  <li>Mechanismus: Sie rechnet für jede Zeile über ein Fenster verwandter Zeilen, und jede Zeile bleibt erhalten.</li>
+  <li>Zahl: Bei den Werten 70, 70, 40 gibt <code>rank</code> 1, 1, 3 und <code>dense_rank</code> 1, 1, 2.</li>
+  <li>Trade-off: Sie braucht meist einen Sort nach Partition und Ordnung, spart aber einen Self-Join.</li>
+  <li>Produktion: Ich ergänze immer einen eindeutigen Tie-Breaker, sonst ist <code>row_number</code> nicht stabil.</li>
+</ol></div>
 
 <div class="kern">
 <b>Kern:</b> Eine <b>Window Function</b> ist eine Funktion, die für jede Zeile über eine Gruppe verwandter Zeilen rechnet, das <b>Fenster</b>. Anders als <code>GROUP BY</code> bleiben dabei <b>alle Zeilen erhalten</b>. Sie löst Ranglisten, laufende Summen, Vergleiche mit der Vorzeile und Top-N pro Gruppe in einer Abfrage, ohne Self-Join.
@@ -159,11 +184,11 @@ Ceres  | 2026-03-02 | 2026-03-02 | 1</pre>
   <li><b>Laufende Summe</b>: <code>sum(x) OVER (PARTITION BY k ORDER BY t)</code>. Bei doppelten <code>t</code> lieber <code>ROWS</code> oder einen eindeutigen Tie-Breaker, sonst springen Peers gemeinsam.</li>
   <li><b>Top-N pro Gruppe</b>: <code>row_number()</code> in einer Subquery oder CTE, aussen <code>WHERE rn &lt;= 3</code>. Für Top-1: PostgreSQL-eigenes <code>DISTINCT ON (k) ... ORDER BY k, x DESC</code>. Bei wenigen Gruppen und Index: <code>LATERAL (... ORDER BY x DESC LIMIT 3)</code> pro Gruppe.</li>
   <li><b>Run Condition</b> (seit Version 15): Bei <code>WHERE rn &lt;= 3</code> aussen hört <code>WindowAgg</code> pro Partition früh auf. Im Plan: <code>Run Condition: (row_number() OVER (?) &lt;= 3)</code>. Gilt für <code>row_number</code>, <code>rank</code>, <code>dense_rank</code>, <code>count</code>.</li>
-  <li><b>Kein Filter auf Window-Werte im WHERE</b>: <code>WHERE row_number() OVER ... = 1</code> ist ein Fehler. PostgreSQL 17 hat kein <code>QUALIFY</code>. Lösung: Subquery oder CTE.</li>
+  <li><b>Kein Filter auf Window-Werte im WHERE</b>: <code>WHERE row_number() OVER ... = 1</code> ist ein Fehler. PostgreSQL hat auch in Version 19 kein <code>QUALIFY</code>. Lösung: Subquery oder CTE.</li>
   <li><b>WINDOW-Klausel</b>: benannte Fenster, z. B. <code>WINDOW w AS (PARTITION BY day ORDER BY volume DESC)</code>. Weniger Wiederholung, und gleiche Fenster teilen sich einen Sort.</li>
   <li><b>Aggregat + Window kombiniert</b>: <code>sum(sum(volume)) OVER (ORDER BY day)</code> = laufende Summe der Tagessummen. Das innere <code>sum</code> ist das <code>GROUP BY</code>-Aggregat, das äussere das Fenster.</li>
   <li><b>FILTER</b>: Aggregate im Fenster können filtern: <code>count(*) FILTER (WHERE status = 'open') OVER (PARTITION BY k)</code>.</li>
-  <li><b>Kosten</b>: Jedes andere <code>PARTITION BY</code>/<code>ORDER BY</code> kann einen eigenen Sort brauchen. Ein Index auf <code>(partition_key, order_key)</code> kann den Sort sparen. Grosse Partitionen nutzen einen Tuplestore, der über <code>work_mem</code> auf Platte geht.</li>
+  <li><b>Kosten</b>: Jedes andere <code>PARTITION BY</code>/<code>ORDER BY</code> kann einen eigenen Sort brauchen. Ein Index auf <code>(partition_key, order_key)</code> kann den Sort sparen. Grosse Partitionen nutzen einen Tuplestore, der über <code>work_mem</code> (Standard 4 MB) auf Platte geht. Seit 18 zeigt <code>EXPLAIN ANALYZE</code> beim <code>WindowAgg</code>-Knoten Speicher- und Plattenverbrauch.</li>
 </ol>
 
 <h2>5. Vergleich</h2>
@@ -209,6 +234,7 @@ Subquery Scan on s
 <ul>
   <li><code>EXPLAIN</code>: Anzahl <code>WindowAgg</code>- und <code>Sort</code>-Knoten. Jedes neue Fenster kann einen Sort kosten.</li>
   <li><code>Sort Method: external merge Disk</code>: <code>work_mem</code> zu klein.</li>
+  <li>Ab PostgreSQL 18: <code>EXPLAIN ANALYZE</code> zeigt beim <code>WindowAgg</code> Speicher- und Plattenverbrauch. So sieht man, ob der Tuplestore in den Speicher passte.</li>
   <li><code>Run Condition</code>: zeigt, dass PostgreSQL früh abbricht. Fehlt sie, ist der Filter nicht direkt auf der Window-Spalte.</li>
   <li>Testdaten mit Gleichstand anlegen: prüft, ob <code>row_number</code>, <code>rank</code> und Frames das Richtige tun.</li>
 </ul>
@@ -241,34 +267,42 @@ Subquery Scan on s
 </ul>
 </div>
 
-<h2>11. Fragen</h2>
+<h2>11. Selbsttest</h2>
+<h3>Warum?</h3>
 <details><summary>Was ist eine Window Function?</summary><p>Eine Funktion, die für jede Zeile über ein Fenster verwandter Zeilen rechnet. Die Zeilen bleiben erhalten, anders als bei GROUP BY.</p></details>
 <details><summary>Was ist der Unterschied zu GROUP BY?</summary><p>GROUP BY macht aus einer Gruppe eine Zeile. Eine Window Function hängt den Gruppenwert an jede einzelne Zeile.</p></details>
+<details><summary>Warum sind Window Functions oft schneller als ein Self-Join?</summary><p>Für Vorwert oder laufende Summe liest ein Self-Join oder eine korrelierte Subquery oft jede Zeile mehrfach, also O(n²). Das Fenster braucht einen Sort und einen Durchlauf.</p></details>
+<h3>Wie innen?</h3>
 <details><summary>Was macht PARTITION BY?</summary><p>Es teilt die Zeilen in unabhängige Gruppen. Die Funktion startet in jeder Partition neu.</p></details>
 <details><summary>Was macht ORDER BY in OVER?</summary><p>Es legt die Reihenfolge innerhalb der Partition fest. Ranking, LAG/LEAD und laufende Summen hängen davon ab.</p></details>
 <details><summary>Was ist ein Frame?</summary><p>Der Ausschnitt der Partition, über den Aggregate und first/last/nth_value rechnen. Er wandert mit der aktuellen Zeile.</p></details>
+<details><summary>Warum kann ich nicht im WHERE auf row_number filtern?</summary><p>Window Functions werden nach WHERE, GROUP BY und HAVING berechnet. Darum braucht es eine äussere Abfrage.</p></details>
+<details><summary>Was kostet eine Window Function?</summary><p>Meist einen Sort nach Partition und Ordnung, dann einen Durchlauf. Verschiedene Fenster können mehrere Sorts brauchen. Ein passender Index kann den Sort sparen.</p></details>
+<details><summary>Was ist die WINDOW-Klausel?</summary><p>Sie benennt ein Fenster einmal, z. B. WINDOW w AS (...). Mehrere Funktionen nutzen es mit OVER w, und PostgreSQL sortiert nur einmal.</p></details>
+<details><summary>Was bedeutet sum(sum(x)) OVER (ORDER BY day)?</summary><p>Das innere sum ist das GROUP-BY-Aggregat pro Tag. Das äussere ist die laufende Summe über die Tagessummen.</p></details>
+<h3>Zahlen</h3>
 <details><summary>Was ist der Standard-Frame?</summary><p>Mit ORDER BY: RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW, inklusive Peers. Ohne ORDER BY: die ganze Partition.</p></details>
+<details><summary>Warum hört WindowAgg bei rn &lt;= 3 früh auf?</summary><p>Seit PostgreSQL 15 gibt es die Run Condition: Filtert die äussere Abfrage z. B. rn &lt;= 3, hört WindowAgg pro Partition früh auf. Das geht für row_number, rank, dense_rank und count. Im Plan steht „Run Condition“.</p></details>
+<details><summary>Unterstützt PostgreSQL IGNORE NULLS bei LAG?</summary><p>Erst seit PostgreSQL 19, für lead, lag, first_value, last_value und nth_value. In 17 und 18 gilt immer RESPECT NULLS. Umweg dort: Gruppen über count(x) OVER (...) bilden und first_value pro Gruppe nehmen.</p></details>
+<details><summary>Was macht ntile(4)?</summary><p>Es teilt die Partition in 4 möglichst gleich grosse Gruppen und gibt die Gruppennummer zurück, z. B. für Quartile.</p></details>
+<h3>Vergleich</h3>
 <details><summary>ROWS vs RANGE?</summary><p>ROWS zählt physische Zeilen. RANGE arbeitet mit Werten: Zeilen mit gleichem Wert zählen zusammen, und mit Offset kann man Zeitfenster bilden.</p></details>
 <details><summary>Was ist GROUPS?</summary><p>Ein Frame-Modus seit PostgreSQL 11, der Gruppen von Peers zählt statt Zeilen oder Werte.</p></details>
 <details><summary>ROW_NUMBER vs RANK vs DENSE_RANK?</summary><p>row_number: immer eindeutig. rank: Gleichstand gleicher Rang, dann Lücke (1,1,3). dense_rank: Gleichstand gleicher Rang, ohne Lücke (1,1,2).</p></details>
 <details><summary>Was machen LAG und LEAD?</summary><p>Sie holen einen Wert aus einer früheren oder späteren Zeile der Partition. Mit Offset und Default-Wert, z. B. lag(x, 1, 0).</p></details>
-<details><summary>Wie berechnen Sie eine laufende Summe?</summary><p>sum(x) OVER (PARTITION BY k ORDER BY t). Bei doppelten t mit ROWS oder einem Tie-Breaker, sonst springen Peers gemeinsam.</p></details>
-<details><summary>Wie berechnen Sie den Anteil am Total?</summary><p>x * 100.0 / sum(x) OVER () für das Gesamttotal, oder OVER (PARTITION BY k) für den Anteil pro Gruppe.</p></details>
-<details><summary>Wie lösen Sie Top-N pro Gruppe?</summary><p>row_number() OVER (PARTITION BY gruppe ORDER BY wert DESC) in einer Subquery, aussen WHERE rn &lt;= N. Für Top-1 auch DISTINCT ON, bei Index und wenigen Gruppen LATERAL mit LIMIT.</p></details>
-<details><summary>Warum kann ich nicht im WHERE auf row_number filtern?</summary><p>Window Functions werden nach WHERE, GROUP BY und HAVING berechnet. Darum braucht es eine äussere Abfrage.</p></details>
-<details><summary>Was ist Gaps and Islands?</summary><p>Zusammenhängende Folgen finden, z. B. aufeinanderfolgende Tage. Trick: Wert minus row_number ist in einer lückenlosen Folge konstant und dient als Gruppen-Schlüssel.</p></details>
+<details><summary>Warum DISTINCT ON statt row_number für Top-1?</summary><p>DISTINCT ON (k) … ORDER BY k, x DESC ist kürzer und braucht keine Subquery. Es ist aber nur PostgreSQL und kann nur Top-1. row_number ist Standard-SQL und kann Top-N.</p></details>
+<h3>Produktion</h3>
 <details><summary>Warum liefert last_value oft die aktuelle Zeile?</summary><p>Der Standard-Frame endet bei der aktuellen Zeile. Für den echten letzten Wert den Frame bis UNBOUNDED FOLLOWING erweitern.</p></details>
-<details><summary>Wie macht man einen gleitenden 7-Tage-Durchschnitt?</summary><p>avg(x) OVER (ORDER BY day RANGE BETWEEN INTERVAL '6 days' PRECEDING AND CURRENT ROW). ROWS wäre bei fehlenden Tagen falsch.</p></details>
-<details><summary>Was ist die WINDOW-Klausel?</summary><p>Sie benennt ein Fenster einmal, z. B. WINDOW w AS (...). Mehrere Funktionen nutzen es mit OVER w, und PostgreSQL sortiert nur einmal.</p></details>
-<details><summary>Was kostet eine Window Function?</summary><p>Meist einen Sort nach Partition und Ordnung, dann einen Durchlauf. Verschiedene Fenster können mehrere Sorts brauchen. Ein passender Index kann den Sort sparen.</p></details>
-<details><summary>Was ist die Run Condition?</summary><p>Seit PostgreSQL 15 hört WindowAgg früh auf, wenn aussen z. B. rn &lt;= 3 filtert. Im Plan steht „Run Condition“.</p></details>
-<details><summary>Was bedeutet sum(sum(x)) OVER (ORDER BY day)?</summary><p>Das innere sum ist das GROUP-BY-Aggregat pro Tag. Das äussere ist die laufende Summe über die Tagessummen.</p></details>
-<details><summary>Was macht ntile(4)?</summary><p>Es teilt die Partition in 4 möglichst gleich grosse Gruppen und gibt die Gruppennummer zurück, z. B. für Quartile.</p></details>
-<details><summary>Unterstützt PostgreSQL IGNORE NULLS bei LAG?</summary><p>Erst seit PostgreSQL 19, für lead, lag, first_value, last_value und nth_value. In 17 und 18 gilt immer RESPECT NULLS. Umweg dort: Gruppen über count(x) OVER (...) bilden und first_value pro Gruppe nehmen.</p></details>
 <details><summary>Wie löschen Sie Duplikate mit Window Functions?</summary><p>row_number() OVER (PARTITION BY business_key ORDER BY updated_at DESC, id DESC) berechnen und alle Zeilen mit rn &gt; 1 löschen.</p></details>
 <details><summary>Szenario: Ein Paging-Endpoint mit row_number zeigt manchmal Datensätze doppelt oder gar nicht. Warum?</summary><p>Das ORDER BY im Fenster ist nicht eindeutig, z. B. gleiche Zeitstempel. Jeder Lauf nummeriert anders. Lösung: eindeutigen Tie-Breaker wie id ergänzen, besser Keyset-Pagination.</p></details>
 <details><summary>Szenario: Die „kumulierte Summe“ im Dashboard springt bei manchen Tagen doppelt. Woran liegt es?</summary><p>Wahrscheinlich mehrere Zeilen pro Tag und der Standard-Frame RANGE. Peers bekommen dieselbe Summe. Lösung: erst pro Tag gruppieren, dann sum(sum(x)) OVER (ORDER BY day), oder ROWS mit Tie-Breaker.</p></details>
 <details><summary>Szenario: Ein Report mit fünf verschiedenen Fenstern ist langsam. Was tun Sie?</summary><p>EXPLAIN prüfen: Jedes Fenster sortiert neu, vielleicht auf Platte. Fenster mit gleicher Partition und Ordnung zusammenlegen, früher filtern, Index auf (partition, order) und work_mem für die Session erhöhen.</p></details>
+<h3>Design</h3>
+<details><summary>Wie berechnen Sie eine laufende Summe?</summary><p>sum(x) OVER (PARTITION BY k ORDER BY t). Bei doppelten t mit ROWS oder einem Tie-Breaker, sonst springen Peers gemeinsam.</p></details>
+<details><summary>Wie berechnen Sie den Anteil am Total?</summary><p>x * 100.0 / sum(x) OVER () für das Gesamttotal, oder OVER (PARTITION BY k) für den Anteil pro Gruppe.</p></details>
+<details><summary>Wie lösen Sie Top-N pro Gruppe?</summary><p>row_number() OVER (PARTITION BY gruppe ORDER BY wert DESC) in einer Subquery, aussen WHERE rn &lt;= N. Für Top-1 auch DISTINCT ON, bei Index und wenigen Gruppen LATERAL mit LIMIT.</p></details>
+<details><summary>Was ist Gaps and Islands?</summary><p>Zusammenhängende Folgen finden, z. B. aufeinanderfolgende Tage. Trick: Wert minus row_number ist in einer lückenlosen Folge konstant und dient als Gruppen-Schlüssel.</p></details>
+<details><summary>Was geht kaputt, wenn Sie einen 7-Tage-Schnitt mit ROWS 6 PRECEDING bauen?</summary><p>Bei fehlenden Tagen umfasst das Fenster 7 Zeilen, aber mehr als 7 Tage. Richtig: avg(x) OVER (ORDER BY day RANGE BETWEEN INTERVAL '6 days' PRECEDING AND CURRENT ROW).</p></details>
 
 </body>
 </html>

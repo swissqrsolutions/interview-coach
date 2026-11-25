@@ -19,12 +19,37 @@
   summary { font-weight: 600; cursor: pointer; }
   details p { margin: 6px 0 2px; }
   .small { color: #6e6e73; font-size: 14px; }
+  h3 { font-size: 17px; margin: 20px 0 6px; }
+  .geruest { border: 2px solid #1d1d1f; border-radius: 6px; padding: 10px 14px; margin: 14px 0; font-size: 15px; line-height: 1.4; }
+  .geruest h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; margin: 0 0 8px; padding: 0; border: 0; }
+  .geruest dl { display: grid; grid-template-columns: 6.6em 1fr; gap: 6px 10px; margin: 0; }
+  .geruest dt { font-weight: 700; font-size: 12px; text-transform: uppercase; letter-spacing: .05em; padding-top: 1px; }
+  .geruest dd { margin: 0; }
+  .muster { border: 1px solid #e5e5ea; border-left: 4px solid #1d1d1f; border-radius: 6px; padding: 10px 14px; margin: 14px 0; }
+  .muster h3 { margin: 0 0 6px; font-size: 13px; text-transform: uppercase; letter-spacing: .06em; }
+  .muster .mq { margin: 0 0 6px; }
 </style>
 </head>
 <body>
 
 <h1>Index-Typen: B-Tree, Hash, GIN, GiST, BRIN, partial, covering</h1>
 <p class="small">PostgreSQL · Tier 1 · Quellen: PostgreSQL 17 Doku (aktuell ist PostgreSQL 19; wichtige Unterschiede in 18/19 laut Release Notes stehen im Text), Kapitel 11 „Indexes“ (11.1–11.11), Kapitel 64 „Built-in Index Access Methods“ (B-Tree, GiST, SP-GiST, GIN, BRIN, Hash), <code>CREATE INDEX</code>, Kapitel 27.2 „Cumulative Statistics“ (<code>pg_stat_user_indexes</code>), Kapitel 73.4 „Visibility Map“; Markus Winand, „Use The Index, Luke“ (Anatomy, WHERE clause, Partial Results)</p>
+
+<div class="geruest"><h2>Gerüst</h2><dl>
+  <dt>Warum?</dt><dd>Ohne Index liest PostgreSQL die ganze Tabelle (Seq Scan). Ein B-Tree findet die Zeile in 3–4 Page-Zugriffen. Preis: jeder Write pflegt jeden Index.</dd>
+  <dt>Wie innen?</dt><dd>B-Tree: sortierte, verkettete Leaf Pages mit Schlüssel + TID. Keine MVCC-Info im Index → Heap-Zugriff oder Visibility Map (Index-Only Scan).</dd>
+  <dt>Zahlen</dt><dd>8-kB-Pages. GIN Pending List 4 MB. BRIN 128 Pages pro Range. Skip Scan erst ab 18. <code>NULLS NOT DISTINCT</code> ab 15.</dd>
+  <dt>Vergleich</dt><dd>B-Tree: =, Bereich, Sortierung, Unique. GIN: „enthält“ (JSONB, Volltext). GiST: Geo, Ranges. BRIN: winzig, nur bei Korrelation.</dd>
+  <dt>Produktion</dt><dd><code>CREATE INDEX</code> blockiert Writes → <code>CONCURRENTLY</code>. Abbruch → INVALID Index. Zu viele Indizes → mehr WAL, keine HOT-Updates.</dd>
+  <dt>Design</dt><dd>Indizes folgen den teuersten Abfragen. Composite: Gleichheit vorne, Bereich hinten. Partial Index für Queues und Soft Delete. FK-Spalten indizieren.</dd>
+</dl></div>
+
+<div class="muster"><h3>Antwort-Muster</h3><p class="mq"><b>Frage:</b> Wie funktioniert ein B-Tree-Index, und wann nutzen Sie ihn?</p><ol>
+  <li>Mechanismus: Ein B-Tree speichert die Schlüssel sortiert, jeweils mit der Adresse der Zeile (TID). PostgreSQL steigt von der Root Page bis zur passenden Leaf Page ab.</li>
+  <li>Zahl: Der Baum ist meist nur 3–4 Ebenen tief, auch bei Millionen Zeilen.</li>
+  <li>Trade-off: Lesen wird schnell, aber jeder INSERT und jedes UPDATE auf indizierte Spalten muss den Index pflegen.</li>
+  <li>Produktion: Ich lege Indizes für die teuersten Abfragen an und rolle sie mit <code>CREATE INDEX CONCURRENTLY</code> aus.</li>
+</ol></div>
 
 <div class="kern">
 <b>Kern:</b> Ein <b>Index</b> ist eine eigene Datenstruktur neben der Tabelle, die Zeilen über einen Schlüssel schnell findet. Er macht Lesen schnell, aber jedes <code>INSERT</code>/<code>UPDATE</code> langsamer. Der Standard ist <b>B-Tree</b>. Für JSONB, Arrays und Volltext nimmt man <b>GIN</b>, für Geo und Bereiche <b>GiST</b>, für riesige Log-Tabellen <b>BRIN</b>.
@@ -145,7 +170,7 @@ Index Scan using orders_open on orders  (cost=0.29..1690.12 rows=1720 width=8)
   <li><b>B-Tree</b>: Ein balancierter Baum (Lehman-Yao-Variante) für Gleichheit und Bereiche. Operatoren: <code>&lt; &lt;= = &gt;= &gt;</code>, <code>BETWEEN</code>, <code>IN</code>, <code>IS NULL</code>, <code>LIKE 'abc%'</code>. Er liefert Zeilen sortiert, also hilft er auch bei <code>ORDER BY</code> und <code>MIN/MAX</code>. Beispiel: jeder <code>PRIMARY KEY</code> und <code>UNIQUE</code> nutzt einen B-Tree.</li>
   <li><b>Deduplication</b> (seit PostgreSQL 13): Gleiche Schlüssel speichert der B-Tree einmal mit einer Liste von TIDs. Indizes auf Spalten mit vielen Duplikaten werden dadurch deutlich kleiner.</li>
   <li><b>Composite Index</b> (mehrspaltig): Die Reihenfolge der Spalten zählt. Er ist sortiert nach Spalte 1, dann Spalte 2. Regel aus „Use The Index, Luke“: <b>Gleichheit zuerst, Bereich zuletzt</b>. Beispiel: <code>(tenant_id, created_at)</code> für <code>WHERE tenant_id = ? AND created_at &gt; ?</code>.</li>
-  <li><b>Leftmost Prefix</b>: Ein Index <code>(a, b, c)</code> hilft effizient bei <code>a</code>, <code>a,b</code> und <code>a,b,c</code>. Bei nur <code>b</code> muss PostgreSQL 17 den ganzen Index lesen, was selten lohnt. Ab Version 18 gibt es <b>Skip Scan</b> für wenige verschiedene Werte in <code>a</code>.</li>
+  <li><b>Leftmost Prefix</b>: Ein Index <code>(a, b, c)</code> hilft effizient bei <code>a</code>, <code>a,b</code> und <code>a,b,c</code>. Bei nur <code>b</code> muss PostgreSQL 17 den ganzen Index lesen, was selten lohnt. Ab Version 18 gibt es <b>Skip Scan</b> für wenige verschiedene Werte in <code>a</code>. Dann zeigt <code>EXPLAIN ANALYZE</code> pro Index-Knoten die Zahl der Index-Abstiege (neu in 18).</li>
   <li><b>ASC/DESC und NULLS FIRST/LAST</b>: Ein B-Tree kann vorwärts und rückwärts gelesen werden. Gemischte Richtung wie <code>ORDER BY a ASC, b DESC</code> braucht einen Index <code>(a ASC, b DESC)</code>.</li>
   <li><b>Partial Index</b>: Ein Index mit <code>WHERE</code>-Bedingung. Er indiziert nur einen Teil der Zeilen. Beispiel: <code>WHERE status = 'open'</code> oder <code>WHERE deleted_at IS NULL</code>. Klein, billig zu pflegen. Der Planner nutzt ihn nur, wenn das <code>WHERE</code> der Abfrage die Bedingung beweisbar enthält. Mit Prepared Statements und Parameter <code>$1</code> klappt das oft nicht.</li>
   <li><b>Partial Unique Index</b>: <code>CREATE UNIQUE INDEX ON users (email) WHERE deleted_at IS NULL</code> erzwingt Eindeutigkeit nur für aktive Zeilen. Typisch bei Soft Delete.</li>
@@ -156,7 +181,7 @@ Index Scan using orders_open on orders  (cost=0.29..1690.12 rows=1720 width=8)
   <li><b>Hash Index</b>: Speichert nur einen 32-Bit-Hash. Er kann nur <code>=</code>. Kein <code>UNIQUE</code>, keine mehrspaltigen Indizes, kein Sortieren. Seit Version 10 WAL-geloggt und crash-sicher. Vorteil nur bei sehr langen Schlüsseln (kleiner Index). Meist ist B-Tree die bessere Wahl.</li>
   <li><b>GIN</b> (Generalized Inverted Index): Ein invertierter Index. Er speichert jeden <b>Teilwert</b> (Array-Element, JSON-Key, Wort) mit einer Liste der Zeilen. Für <code>jsonb @&gt;</code>, <code>?</code>, Arrays <code>@&gt; &amp;&amp;</code>, Volltext <code>tsvector @@</code>, Trigramme (<code>pg_trgm</code>) für <code>LIKE '%abc%'</code>.</li>
   <li><b>GIN für JSONB</b>: Die Standard-Opclass <code>jsonb_ops</code> kann <code>@&gt;</code>, <code>?</code>, <code>?|</code>, <code>?&amp;</code>, <code>@?</code>, <code>@@</code>. <code>jsonb_path_ops</code> kann nur <code>@&gt;</code>, <code>@?</code>, <code>@@</code>, ist aber kleiner und schneller. Für einen einzelnen Key reicht oft ein B-Tree auf <code>(data-&gt;&gt;'status')</code>.</li>
-  <li><b>GIN Write-Kosten</b>: Eine neue Zeile erzeugt viele Index-Einträge. Darum puffert GIN sie in einer <b>Pending List</b> (<code>fastupdate</code>, Grösse <code>gin_pending_list_limit</code>, Standard 4 MB). VACUUM oder eine volle Liste schreibt sie in den Baum. Lesen muss die Liste immer mit durchsuchen.</li>
+  <li><b>GIN Write-Kosten</b>: Eine neue Zeile erzeugt viele Index-Einträge. Darum puffert GIN sie in einer <b>Pending List</b> (<code>fastupdate</code>, Grösse <code>gin_pending_list_limit</code>, Standard 4 MB). Der Wert lässt sich pro Index als Storage-Parameter setzen. VACUUM oder eine volle Liste schreibt sie in den Baum. Lesen muss die Liste immer mit durchsuchen. Seit Version 18 kann <code>CREATE INDEX</code> einen GIN-Index parallel bauen.</li>
   <li><b>GiST</b> (Generalized Search Tree): Ein balancierter Baum über „überlappt/enthält“-Beziehungen, z. B. Bounding Boxes. Für PostGIS-Geometrien, Range-Typen (<code>tstzrange &amp;&amp;</code>), Volltext, Nächste-Nachbarn-Suche mit <code>ORDER BY geom &lt;-&gt; point</code>. Grundlage für <b>Exclusion Constraints</b> wie „keine überlappenden Buchungen“.</li>
   <li><b>SP-GiST</b> (space-partitioned GiST): Teilt den Raum in nicht überlappende Teile: Quadtree, k-d-Tree, Radix Tree. Gut für Punkte, IP-Adressen (<code>inet</code>), Präfix-Suche auf Text. Bei ungleich verteilten Daten oft schneller als GiST.</li>
   <li><b>BRIN</b> (Block Range Index): Speichert pro <b>Block Range</b> (Standard 128 Pages, <code>pages_per_range</code>) nur Minimum und Maximum. Winzig: Kilobytes statt Gigabytes. Funktioniert nur, wenn der Wert mit der physischen Reihenfolge korreliert. Typisch: <code>created_at</code> in einer Append-only-Log-Tabelle. Das Ergebnis ist immer ein Bitmap Scan mit Recheck.</li>
@@ -246,37 +271,46 @@ SELECT indexrelid::regclass FROM pg_index WHERE NOT indisvalid;</pre>
 </ul>
 </div>
 
-<h2>11. Fragen</h2>
+<h2>11. Selbsttest</h2>
+<h3>Warum?</h3>
 <details><summary>Was ist ein Index in PostgreSQL?</summary><p>Eine eigene Datenstruktur neben der Tabelle. Sie bildet Schlüssel auf TIDs (Zeilen-Adressen im Heap) ab. Sie beschleunigt Lesen und verlangsamt Schreiben.</p></details>
+<details><summary>Was kostet ein Index beim Schreiben?</summary><p>Zusätzliche Page-Writes, WAL, Speicher und Cache. Bei Updates auf indizierten Spalten fällt HOT weg, dann bekommen alle Indizes neue Einträge.</p></details>
+<details><summary>Warum enthält ein PostgreSQL-Index keine Sichtbarkeitsinfo?</summary><p>MVCC-Infos (xmin, xmax) stehen nur im Heap-Tupel. Sonst müsste jedes Update alle Indizes ändern. Darum braucht es den Heap oder die Visibility Map.</p></details>
+<details><summary>Warum nimmt der Planner bei vielen Treffern keinen Index Scan?</summary><p>Jeder Treffer wäre ein zufälliger Heap-Zugriff. Bei vielen Treffern ist ein Seq Scan oder ein Bitmap Scan billiger, weil er die Pages der Reihe nach liest.</p></details>
+<h3>Wie innen?</h3>
 <details><summary>Wie ist ein B-Tree aufgebaut?</summary><p>Root, Inner und Leaf Pages zu je 8 kB. Die Leaf Pages enthalten sortierte Schlüssel mit TIDs und sind doppelt verkettet. Der Baum ist balanciert und meist nur 3–4 Ebenen tief.</p></details>
+<details><summary>Wann ist ein Index-Only Scan möglich?</summary><p>Wenn alle benötigten Spalten im Index stehen und die Heap-Pages in der Visibility Map all-visible sind. Sonst gibt es Heap Fetches.</p></details>
+<details><summary>Was ist die Visibility Map?</summary><p>Zwei Bits pro Heap-Page: all-visible und all-frozen. VACUUM setzt sie, jede Änderung löscht sie. Sie ermöglicht Index-Only Scans und schnelleres VACUUM.</p></details>
+<details><summary>Index Scan vs Bitmap Scan?</summary><p>Ein Index Scan holt jede Zeile sofort, gut bei wenigen Treffern und für Sortierung. Ein Bitmap Scan sammelt erst alle TIDs und liest den Heap in Page-Reihenfolge, gut bei mittleren Mengen und für AND/OR mehrerer Indizes.</p></details>
+<details><summary>Was macht INCLUDE?</summary><p>Es legt Zusatzspalten nur in die Leaf Pages. Sie zählen nicht zum Suchschlüssel und nicht zur Eindeutigkeit. Ziel ist ein Index-Only Scan.</p></details>
+<details><summary>Warum ist GIN beim Schreiben teuer, und was hilft?</summary><p>Eine Zeile erzeugt viele Einträge. Die Pending List (fastupdate) puffert sie. Dafür muss jedes Lesen die Liste mit durchsuchen.</p></details>
+<details><summary>Was ist ein HOT-Update?</summary><p>Heap-Only Tuple: Die neue Zeilenversion liegt auf derselben Page, und keine indizierte Spalte ändert sich. Dann braucht kein Index einen neuen Eintrag.</p></details>
+<h3>Zahlen</h3>
+<details><summary>Warum ist ein BRIN-Index so klein, und wann lohnt er sich?</summary><p>Er speichert nur min/max pro Block Range (Standard 128 Pages). Er lohnt sich bei riesigen Tabellen, deren Werte mit der physischen Reihenfolge korrelieren, z. B. Einfügezeit.</p></details>
+<details><summary>Wie viele NULL erlaubt ein Unique Index?</summary><p>Standardmässig beliebig viele, weil NULL als verschieden gilt. Mit NULLS NOT DISTINCT (seit Version 15) nur eines.</p></details>
+<details><summary>Wie gross ist die GIN Pending List standardmässig?</summary><p>4 MB (<code>gin_pending_list_limit</code>). Der Wert lässt sich pro Index als Storage-Parameter ändern. Ist die Liste voll oder läuft VACUUM, wandern die Einträge in den Baum.</p></details>
+<details><summary>Seit wann gibt es Skip Scan, und wie sehen Sie ihn im Plan?</summary><p>Seit PostgreSQL 18. Ein Index (a, b) hilft dann auch bei WHERE b = ?, wenn a wenige Werte hat. EXPLAIN ANALYZE zeigt seit 18 pro Index-Knoten, wie viele Index-Abstiege nötig waren.</p></details>
+<h3>Vergleich</h3>
 <details><summary>Welche Operatoren kann ein B-Tree?</summary><p>Gleichheit, Bereiche, IN, IS NULL und LIKE mit festem Präfix. Er liefert auch sortierte Ergebnisse für ORDER BY.</p></details>
+<details><summary>Wann nimmt man GIN?</summary><p>Für Werte mit vielen Teilen: JSONB, Arrays, Volltext, Trigramme. GIN speichert jeden Teilwert mit einer Liste der Zeilen.</p></details>
+<details><summary>jsonb_ops vs jsonb_path_ops?</summary><p>jsonb_ops ist Standard und kann auch Key-Existenz (?, ?|, ?&amp;). jsonb_path_ops kann nur @&gt;, @? und @@, ist aber kleiner und schneller.</p></details>
+<details><summary>Wofür ist GiST gut?</summary><p>Für Geometrie (PostGIS), Ranges, Nächste-Nachbarn-Suche mit &lt;-&gt; und Exclusion Constraints. GiST arbeitet mit überlappenden Bounding Boxes und braucht einen Recheck.</p></details>
+<details><summary>GiST vs SP-GiST?</summary><p>GiST erlaubt überlappende Bereiche, SP-GiST teilt den Raum ohne Überlappung (Quadtree, Radix Tree). SP-GiST passt gut zu Punkten, IPs und Präfixen.</p></details>
+<details><summary>Warum nimmt man fast nie einen Hash Index?</summary><p>Er kann nur Gleichheit: kein Unique, kein Sortieren, keine mehreren Spalten. Ein B-Tree kann das alles. Hash lohnt sich höchstens bei sehr langen Werten und reiner Gleichheit.</p></details>
+<details><summary>Hat PostgreSQL einen Clustered Index?</summary><p>Nein. Die Tabelle ist ein Heap. CLUSTER sortiert einmalig nach einem Index, die Ordnung geht bei neuen Writes wieder verloren.</p></details>
+<h3>Produktion</h3>
+<details><summary>Was macht CREATE INDEX CONCURRENTLY anders?</summary><p>Es blockiert keine Writes. Dafür scannt es die Tabelle zweimal, wartet auf alte Transaktionen und läuft nicht in einer Transaktion. Bei Fehler bleibt ein INVALID Index.</p></details>
+<details><summary>Wie finden Sie ungenutzte Indizes?</summary><p>pg_stat_user_indexes mit idx_scan = 0, ohne Unique-Indizes. Auf allen Replicas prüfen und den Zeitraum seit dem Statistik-Reset beachten.</p></details>
+<details><summary>Warum wird mein Index nicht genutzt?</summary><p>Funktion oder Cast auf der Spalte, falscher Datentyp, LIKE mit führendem %, zu viele Treffer oder veraltete Statistiken. EXPLAIN zeigt es.</p></details>
+<details><summary>Szenario: Eine Migration mit CREATE INDEX legt die Produktion lahm. Was ist passiert, was tun Sie?</summary><p>Normales CREATE INDEX blockiert alle Writes bis zum Ende. Abbrechen, mit CREATE INDEX CONCURRENTLY und lock_timeout neu ausrollen. Danach indisvalid prüfen.</p></details>
+<details><summary>Szenario: Inserts auf einer Event-Tabelle werden immer langsamer. Woran denken Sie?</summary><p>An zu viele Indizes, besonders GIN, oder an Bloat. pg_stat_user_indexes und Grössen prüfen, ungenutzte Indizes löschen. Für created_at eventuell BRIN statt B-Tree.</p></details>
+<details><summary>Szenario: Eine Abfrage zeigt Index Only Scan, ist aber langsam. Warum?</summary><p>Wahrscheinlich viele Heap Fetches, weil die Visibility Map veraltet ist. EXPLAIN (ANALYZE, BUFFERS) prüfen. Lösung: VACUUM, Autovacuum für die Tabelle aggressiver einstellen, lange Transaktionen beenden.</p></details>
+<h3>Design</h3>
 <details><summary>Warum zählt die Reihenfolge in einem Composite Index?</summary><p>Der Index ist nach Spalte 1, dann Spalte 2 sortiert. Nur ein Präfix von links ist effizient nutzbar. Gleichheitsspalten gehören nach vorne, Bereichsspalten nach hinten.</p></details>
 <details><summary>Was ist der Leftmost Prefix?</summary><p>Ein Index (a, b, c) hilft bei Bedingungen auf a, a+b und a+b+c. Ohne a muss der ganze Index gelesen werden. Ab PostgreSQL 18 hilft Skip Scan teilweise.</p></details>
 <details><summary>Was ist ein Partial Index und wann nutzt man ihn?</summary><p>Ein Index mit WHERE-Bedingung, der nur einen Teil der Zeilen enthält. Gut für offene Aufträge, Queues oder Soft Delete. Die Abfrage muss die Bedingung enthalten.</p></details>
 <details><summary>Was ist ein Expression Index?</summary><p>Ein Index auf einem Ausdruck wie lower(email). Die Abfrage muss genau denselben Ausdruck nutzen. Die Funktion muss IMMUTABLE sein.</p></details>
-<details><summary>Was macht INCLUDE?</summary><p>Es legt Zusatzspalten nur in die Leaf Pages. Sie zählen nicht zum Suchschlüssel und nicht zur Eindeutigkeit. Ziel ist ein Index-Only Scan.</p></details>
-<details><summary>Wann ist ein Index-Only Scan möglich?</summary><p>Wenn alle benötigten Spalten im Index stehen und die Heap-Pages in der Visibility Map all-visible sind. Sonst gibt es Heap Fetches.</p></details>
-<details><summary>Was ist die Visibility Map?</summary><p>Zwei Bits pro Heap-Page: all-visible und all-frozen. VACUUM setzt sie, jede Änderung löscht sie. Sie ermöglicht Index-Only Scans und schnelleres VACUUM.</p></details>
-<details><summary>Warum enthält ein PostgreSQL-Index keine Sichtbarkeitsinfo?</summary><p>MVCC-Infos (xmin, xmax) stehen nur im Heap-Tupel. Sonst müsste jedes Update alle Indizes ändern. Darum braucht es den Heap oder die Visibility Map.</p></details>
-<details><summary>Index Scan vs Bitmap Scan?</summary><p>Ein Index Scan holt jede Zeile sofort, gut bei wenigen Treffern und für Sortierung. Ein Bitmap Scan sammelt erst alle TIDs und liest den Heap in Page-Reihenfolge, gut bei mittleren Mengen und für AND/OR mehrerer Indizes.</p></details>
-<details><summary>Wann nimmt man GIN?</summary><p>Für Werte mit vielen Teilen: JSONB, Arrays, Volltext, Trigramme. GIN speichert jeden Teilwert mit einer Liste der Zeilen.</p></details>
-<details><summary>jsonb_ops vs jsonb_path_ops?</summary><p>jsonb_ops ist Standard und kann auch Key-Existenz (?, ?|, ?&amp;). jsonb_path_ops kann nur @&gt;, @? und @@, ist aber kleiner und schneller.</p></details>
-<details><summary>Warum ist GIN beim Schreiben teuer, und was hilft?</summary><p>Eine Zeile erzeugt viele Einträge. Die Pending List (fastupdate) puffert sie. Dafür muss jedes Lesen die Liste mit durchsuchen.</p></details>
-<details><summary>Wofür ist GiST gut?</summary><p>Für Geometrie (PostGIS), Ranges, Nächste-Nachbarn-Suche mit &lt;-&gt; und Exclusion Constraints. GiST arbeitet mit überlappenden Bounding Boxes und braucht einen Recheck.</p></details>
-<details><summary>GiST vs SP-GiST?</summary><p>GiST erlaubt überlappende Bereiche, SP-GiST teilt den Raum ohne Überlappung (Quadtree, Radix Tree). SP-GiST passt gut zu Punkten, IPs und Präfixen.</p></details>
-<details><summary>Was ist BRIN und wann lohnt er sich?</summary><p>Er speichert nur min/max pro Block Range (Standard 128 Pages). Er lohnt sich bei riesigen Tabellen, deren Werte mit der physischen Reihenfolge korrelieren, z. B. Einfügezeit.</p></details>
-<details><summary>Wann ist ein Hash Index sinnvoll?</summary><p>Fast nie. Nur bei sehr langen Werten und reiner Gleichheit. Er kann kein Unique, kein Sortieren und keine mehreren Spalten.</p></details>
-<details><summary>Was kostet ein Index beim Schreiben?</summary><p>Zusätzliche Page-Writes, WAL, Speicher und Cache. Bei Updates auf indizierten Spalten fällt HOT weg, dann bekommen alle Indizes neue Einträge.</p></details>
-<details><summary>Was ist ein HOT-Update?</summary><p>Heap-Only Tuple: Die neue Zeilenversion liegt auf derselben Page, und keine indizierte Spalte ändert sich. Dann braucht kein Index einen neuen Eintrag.</p></details>
-<details><summary>Was macht CREATE INDEX CONCURRENTLY anders?</summary><p>Es blockiert keine Writes. Dafür scannt es die Tabelle zweimal, wartet auf alte Transaktionen und läuft nicht in einer Transaktion. Bei Fehler bleibt ein INVALID Index.</p></details>
-<details><summary>Wie finden Sie ungenutzte Indizes?</summary><p>pg_stat_user_indexes mit idx_scan = 0, ohne Unique-Indizes. Auf allen Replicas prüfen und den Zeitraum seit dem Statistik-Reset beachten.</p></details>
-<details><summary>Warum wird mein Index nicht genutzt?</summary><p>Funktion oder Cast auf der Spalte, falscher Datentyp, LIKE mit führendem %, zu viele Treffer oder veraltete Statistiken. EXPLAIN zeigt es.</p></details>
 <details><summary>Braucht eine Foreign-Key-Spalte einen Index?</summary><p>Meist ja. PostgreSQL legt ihn nicht automatisch an. Ohne Index scannt jedes DELETE oder UPDATE auf der Eltern-Tabelle die Kind-Tabelle.</p></details>
-<details><summary>Hat PostgreSQL einen Clustered Index?</summary><p>Nein. Die Tabelle ist ein Heap. CLUSTER sortiert einmalig nach einem Index, die Ordnung geht bei neuen Writes wieder verloren.</p></details>
-<details><summary>Wie viele NULL erlaubt ein Unique Index?</summary><p>Standardmässig beliebig viele, weil NULL als verschieden gilt. Mit NULLS NOT DISTINCT (seit Version 15) nur eines.</p></details>
-<details><summary>Szenario: Eine Migration mit CREATE INDEX legt die Produktion lahm. Was ist passiert, was tun Sie?</summary><p>Normales CREATE INDEX blockiert alle Writes bis zum Ende. Abbrechen, mit CREATE INDEX CONCURRENTLY und lock_timeout neu ausrollen. Danach indisvalid prüfen.</p></details>
-<details><summary>Szenario: Inserts auf einer Event-Tabelle werden immer langsamer. Woran denken Sie?</summary><p>An zu viele Indizes, besonders GIN, oder an Bloat. pg_stat_user_indexes und Grössen prüfen, ungenutzte Indizes löschen. Für created_at eventuell BRIN statt B-Tree.</p></details>
-<details><summary>Szenario: Eine Abfrage zeigt Index Only Scan, ist aber langsam. Warum?</summary><p>Wahrscheinlich viele Heap Fetches, weil die Visibility Map veraltet ist. EXPLAIN (ANALYZE, BUFFERS) prüfen. Lösung: VACUUM, Autovacuum für die Tabelle aggressiver einstellen, lange Transaktionen beenden.</p></details>
 
 </body>
 </html>

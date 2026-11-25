@@ -19,12 +19,37 @@
   summary { font-weight: 600; cursor: pointer; }
   details p { margin: 6px 0 2px; }
   .small { color: #6e6e73; font-size: 14px; }
+  h3 { font-size: 17px; margin: 20px 0 6px; }
+  .geruest { border: 2px solid #1d1d1f; border-radius: 6px; padding: 10px 14px; margin: 14px 0; font-size: 15px; line-height: 1.4; }
+  .geruest h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; margin: 0 0 8px; padding: 0; border: 0; }
+  .geruest dl { display: grid; grid-template-columns: 6.6em 1fr; gap: 6px 10px; margin: 0; }
+  .geruest dt { font-weight: 700; font-size: 12px; text-transform: uppercase; letter-spacing: .05em; padding-top: 1px; }
+  .geruest dd { margin: 0; }
+  .muster { border: 1px solid #e5e5ea; border-left: 4px solid #1d1d1f; border-radius: 6px; padding: 10px 14px; margin: 14px 0; }
+  .muster h3 { margin: 0 0 6px; font-size: 13px; text-transform: uppercase; letter-spacing: .06em; }
+  .muster .mq { margin: 0 0 6px; }
 </style>
 </head>
 <body>
 
 <h1>MVCC: wie PostgreSQL Versionen speichert</h1>
-<p class="small">PostgreSQL · Tier 1 · Quellen: PostgreSQL 17 Doku (aktuell ist PostgreSQL 19; wichtige Unterschiede in 18/19 laut Release Notes stehen im Text): „Concurrency Control“ (Introduction, Transaction Isolation), „Database Page Layout“, „Heap-Only Tuples (HOT)“, „Visibility Map“, „Routine Vacuuming“ (Preventing Transaction ID Wraparound Failures), „System Columns“, „System Information Functions“ (<code>pg_current_snapshot</code>, <code>pg_current_xact_id</code>), Modul <code>pageinspect</code></p>
+<p class="small">PostgreSQL · Tier 1 · Quellen: PostgreSQL 17 Doku (aktuell ist PostgreSQL 19; wichtige Unterschiede in 18/19 laut Release Notes stehen im Text): „Concurrency Control“ (Introduction, Transaction Isolation), „Database Page Layout“, „Heap-Only Tuples (HOT)“, „Visibility Map“, „Routine Vacuuming“ (Preventing Transaction ID Wraparound Failures), „System Columns“, „System Information Functions“ (<code>pg_current_snapshot</code>, <code>pg_current_xact_id</code>), Modul <code>pageinspect</code>, PostgreSQL 18 und 19 Release Notes, PostgreSQL 19 Doku „Routine Vacuuming“</p>
+
+<div class="geruest"><h2>Gerüst</h2><dl>
+  <dt>Warum?</dt><dd>Leser sollen nie auf Schreiber warten. Der Preis: alte Versionen bleiben liegen, VACUUM räumt sie weg.</dd>
+  <dt>Wie innen?</dt><dd>UPDATE = neue Version mit <code>xmin</code>, alte bekommt <code>xmax</code>. Snapshot + pg_xact entscheiden die Sichtbarkeit. HOT spart Index-Einträge.</dd>
+  <dt>Zahlen</dt><dd>32-Bit-xid, ca. 2 Mrd. Abstand bis Wraparound. Pflicht-Autovacuum ab 200 Mio. Warnung ab 100 Mio. Rest (seit 19), Stopp bei 3 Mio.</dd>
+  <dt>Vergleich</dt><dd>PostgreSQL: Versionen im Heap, Bloat. Oracle/InnoDB: Undo-Log, „snapshot too old“. SQL Server: Version Store in tempdb.</dd>
+  <dt>Produktion</dt><dd>Indiziertes <code>updated_at</code> → kein HOT, viel WAL. Alter Snapshot oder Slot → Bloat und Wraparound-Gefahr.</dd>
+  <dt>Design</dt><dd>Update-heisse Tabellen: wenige Indexe, <code>fillfactor</code> unter 100, append-only wo möglich. <code>age(datfrozenxid)</code> mit Alarm.</dd>
+</dl></div>
+
+<div class="muster"><h3>Antwort-Muster</h3><p class="mq"><b>Frage:</b> Was ist MVCC, und wie funktioniert es in PostgreSQL?</p><ol>
+  <li>Mechanismus: Ein UPDATE schreibt eine neue Zeilenversion, die alte bekommt <code>xmax</code> und bleibt im Heap.</li>
+  <li>Zahl: Jede Version trägt 32-Bit-xids, und der Snapshot entscheidet, welche Version sichtbar ist.</li>
+  <li>Trade-off: Leser warten nie auf Schreiber, aber tote Versionen erzeugen Bloat und brauchen VACUUM.</li>
+  <li>Produktion: Ich überwache die HOT-Quote und den ältesten Snapshot, damit VACUUM aufräumen kann.</li>
+</ol></div>
 
 <div class="kern">
 <b>Kern:</b> <b>MVCC</b> (Multi-Version Concurrency Control) heisst: Jede Änderung erzeugt eine <b>neue Zeilenversion</b>, die alte bleibt stehen. Jede Transaktion liest mit einem <b>Snapshot</b> und sieht genau die Versionen, die zu ihm passen. So <b>blockieren Leser keine Schreiber und Schreiber keine Leser</b>.
@@ -129,12 +154,12 @@ SELECT pg_current_snapshot();</pre>
   <li><b>Snapshot-Inhalt:</b> <b>xmin</b> = älteste noch laufende xid. <b>xmax</b> = erste noch nicht vergebene xid. <b>xip_list</b> = laufende xids dazwischen. Alles ab xmax oder in der Liste ist unsichtbar.</li>
   <li><b>Wann der Snapshot entsteht:</b> In <b>Read Committed</b> bei jedem Befehl neu. In <b>Repeatable Read</b> und <b>Serializable</b> einmal beim ersten Befehl der Transaktion, nicht bei <code>BEGIN</code>.</li>
   <li><b>Eigene Änderungen:</b> Die Transaktion sieht ihre eigenen Änderungen. Innerhalb der Transaktion unterscheidet <b>cmin/cmax</b> (Command ID) die Befehle.</li>
-  <li><b>Hint Bits:</b> Der erste Leser schlägt den Status in pg_xact nach. Danach setzt er Bits im Tuple-Header, z. B. „xmin committed“. Darum kann ein <code>SELECT</code> Seiten schmutzig machen und WAL erzeugen (bei Checksums).</li>
+  <li><b>Hint Bits:</b> Der erste Leser schlägt den Status in pg_xact nach. Danach setzt er Bits im Tuple-Header, z. B. „xmin committed“. Darum kann ein <code>SELECT</code> Seiten schmutzig machen und WAL erzeugen (bei Checksums). Seit PostgreSQL 18 schaltet <code>initdb</code> Checksums standardmässig ein.</li>
   <li><b>DELETE:</b> setzt nur <code>xmax</code>. Die Zeile bleibt physisch liegen, bis VACUUM sie entfernt.</li>
   <li><b>xmax als Lock:</b> <code>SELECT … FOR UPDATE</code> schreibt auch <code>xmax</code>, aber mit einem Lock-Flag. Teilen sich mehrere Transaktionen einen Lock, steht in xmax eine <b>MultiXact-ID</b>.</li>
   <li><b>HOT-Bedingungen:</b> Keine Spalte eines Index ändert sich. Und die neue Version passt auf <b>dieselbe Seite</b>. Ein tieferer <code>fillfactor</code> (z. B. 90) lässt dafür Platz.</li>
   <li><b>Write Amplification:</b> Ohne HOT erzeugt ein UPDATE einen Eintrag in jedem Index, auch bei nicht geänderten Spalten. Viele Indexe machen Updates teuer.</li>
-  <li><b>Visibility Map und Index-Only Scan:</b> Ist eine Seite all-visible, braucht ein Index-Only Scan den Heap nicht. Sonst muss er doch in den Heap (<code>Heap Fetches</code> in EXPLAIN).</li>
+  <li><b>Visibility Map und Index-Only Scan:</b> Ist eine Seite all-visible, braucht ein Index-Only Scan den Heap nicht. Sonst muss er doch in den Heap (<code>Heap Fetches</code> in EXPLAIN). Seit PostgreSQL 19 können auch normale Table Scans Seiten als all-visible markieren, vorher nur VACUUM und <code>COPY … FREEZE</code>.</li>
   <li><b>32-Bit-xid:</b> Eine xid hat 32 Bit, also ca. 4 Mrd. Werte. Verglichen wird im Kreis: ca. 2 Mrd. gelten als Vergangenheit, 2 Mrd. als Zukunft.</li>
   <li><b>Wraparound:</b> Ist eine Zeile über 2 Mrd. Transaktionen alt, würde sie plötzlich „in der Zukunft“ liegen und verschwinden. Das verhindert <b>Freezing</b>: VACUUM markiert alte Versionen als „für alle sichtbar“.</li>
   <li><b>Schutz vor Wraparound:</b> Ab <code>autovacuum_freeze_max_age</code> (200 Mio.) startet ein Pflicht-Autovacuum, auch bei <code>autovacuum = off</code>. Bleiben weniger als 40 Mio. xids, warnt PostgreSQL (seit 19: schon ab 100 Mio.). Bei 3 Mio. vergibt es keine neuen xids mehr.</li>
@@ -211,29 +236,39 @@ ORDER BY age(backend_xmin) DESC;</pre>
 </ul>
 </div>
 
-<h2>11. Fragen</h2>
+<h2>11. Selbsttest</h2>
+<h3>Warum?</h3>
 <details><summary>Was ist MVCC?</summary><p>Jede Änderung erzeugt eine neue Zeilenversion. Jede Transaktion sieht über ihren Snapshot die passende Version. Leser und Schreiber blockieren sich nicht.</p></details>
+<details><summary>Warum ist UPDATE in PostgreSQL ein DELETE plus INSERT?</summary><p>Die alte Version bekommt xmax, eine neue Version wird geschrieben. So können ältere Snapshots weiter die alte Version lesen.</p></details>
+<details><summary>Was ist ein dead tuple?</summary><p>Eine Version, die kein Snapshot mehr sehen kann. Sie belegt Platz, bis VACUUM oder Pruning sie freigibt.</p></details>
+<h3>Wie innen?</h3>
 <details><summary>Was sind xmin und xmax?</summary><p>xmin ist die xid, die die Version erzeugt hat. xmax ist die xid, die sie gelöscht, ersetzt oder gesperrt hat. 0 in xmax heisst: lebt.</p></details>
 <details><summary>Was ist die ctid?</summary><p>Die physische Adresse einer Version: Seite und Line Pointer. Sie ändert sich bei jedem UPDATE. Nie als stabile ID nutzen.</p></details>
-<details><summary>Warum ist UPDATE in PostgreSQL ein DELETE plus INSERT?</summary><p>Die alte Version bekommt xmax, eine neue Version wird geschrieben. So können ältere Snapshots weiter die alte Version lesen.</p></details>
 <details><summary>Was steht in einem Snapshot?</summary><p>xmin (älteste laufende xid), xmax (erste noch nicht vergebene xid) und die Liste der laufenden xids dazwischen.</p></details>
 <details><summary>Wann ist eine Version sichtbar?</summary><p>Wenn xmin committed und vor dem Snapshot ist. Und wenn xmax leer, abgebrochen oder für den Snapshot noch nicht committed ist.</p></details>
 <details><summary>Wann wird der Snapshot genommen?</summary><p>Read Committed: bei jedem Befehl. Repeatable Read und Serializable: beim ersten Befehl der Transaktion.</p></details>
 <details><summary>Was ist ein HOT Update?</summary><p>Ein Update ohne Änderung an indizierten Spalten, mit Platz auf derselben Seite. Die Indexe bekommen keinen neuen Eintrag. Tote Versionen räumt Pruning ohne VACUUM.</p></details>
-<details><summary>Wie fördert man HOT Updates?</summary><p>Keine oft geänderten Spalten indizieren. fillfactor unter 100 setzen, damit Platz auf der Seite bleibt. Die Quote in n_tup_hot_upd prüfen.</p></details>
 <details><summary>Was sind Hint Bits?</summary><p>Bits im Tuple-Header, die den Commit-Status von xmin und xmax zwischenspeichern. Spätere Leser müssen pg_xact nicht mehr fragen.</p></details>
-<details><summary>Was ist ein dead tuple?</summary><p>Eine Version, die kein Snapshot mehr sehen kann. Sie belegt Platz, bis VACUUM oder Pruning sie freigibt.</p></details>
 <details><summary>Was ist die Visibility Map?</summary><p>Zwei Bits pro Seite: all-visible und all-frozen. VACUUM überspringt solche Seiten, und Index-Only Scans brauchen den Heap nicht.</p></details>
-<details><summary>Was ist Transaction ID Wraparound?</summary><p>xids haben 32 Bit und werden im Kreis verglichen. Ohne Freezing würde eine über 2 Mrd. Transaktionen alte Zeile plötzlich als Zukunft gelten und verschwinden.</p></details>
-<details><summary>Was ist Freezing?</summary><p>VACUUM markiert alte Versionen als für alle sichtbar. Ihr xmin zählt dann nicht mehr im Vergleich. So ist Wraparound harmlos.</p></details>
-<details><summary>Was passiert kurz vor Wraparound?</summary><p>Ab 40 Mio. verbleibenden xids kommen Warnungen, seit PostgreSQL 19 schon ab 100 Mio. Bei 3 Mio. vergibt PostgreSQL keine neuen xids mehr. Schreibende Befehle scheitern, bis VACUUM gelaufen ist.</p></details>
-<details><summary>Was ist eine MultiXact?</summary><p>Eine ID für eine Gruppe von Transaktionen, die gemeinsam einen Row Lock halten, z. B. mehrere FOR SHARE. Sie steht in xmax und muss auch gefroren werden.</p></details>
-<details><summary>Wie unterscheidet sich MVCC in PostgreSQL von Oracle?</summary><p>PostgreSQL hält alte Versionen im Heap und braucht VACUUM. Oracle ändert an Ort und Stelle und rekonstruiert alte Versionen aus dem Undo.</p></details>
 <details><summary>Warum braucht ein Index-Only Scan manchmal den Heap?</summary><p>Der Index kennt die Sichtbarkeit nicht. Ist die Seite nicht all-visible, muss der Scan den Heap prüfen. Das zeigt Heap Fetches.</p></details>
-<details><summary>Kann ein SELECT WAL erzeugen?</summary><p>Ja. Er kann Hint Bits setzen und HOT-Ketten prunen. Mit Data Checksums erzeugt das WAL-Records.</p></details>
-<details><summary>Was ist hot_standby_feedback?</summary><p>Die Replica meldet dem Primary ihren ältesten Snapshot. Der Primary räumt diese Versionen nicht weg. Weniger abgebrochene Queries, aber mehr Bloat am Primary.</p></details>
-<details><summary>Szenario: Eine Tabelle mit 1 Mio. Zeilen ist 10 GB gross. Was prüfen Sie?</summary><p>n_dead_tup und HOT-Quote in pg_stat_user_tables, älteste Snapshots in pg_stat_activity, Replication Slots. Dann Blocker entfernen und Autovacuum anpassen. Platz zurück nur mit Rewrite, z. B. pg_repack.</p></details>
+<details><summary>Was ist Freezing?</summary><p>VACUUM markiert alte Versionen als für alle sichtbar. Ihr xmin zählt dann nicht mehr im Vergleich. So ist Wraparound harmlos.</p></details>
+<details><summary>Was ist eine MultiXact?</summary><p>Eine ID für eine Gruppe von Transaktionen, die gemeinsam einen Row Lock halten, z. B. mehrere FOR SHARE. Sie steht in xmax und muss auch gefroren werden.</p></details>
+<h3>Zahlen</h3>
+<details><summary>Was ist Transaction ID Wraparound?</summary><p>xids haben 32 Bit und werden im Kreis verglichen. Ohne Freezing würde eine über 2 Mrd. Transaktionen alte Zeile plötzlich als Zukunft gelten und verschwinden.</p></details>
+<details><summary>Ab welchem Alter startet ein Pflicht-Autovacuum gegen Wraparound?</summary><p>Ab autovacuum_freeze_max_age, Standard 200 Mio. Transaktionen. Es läuft auch mit autovacuum = off.</p></details>
+<details><summary>Was geht kaputt, wenn der Wraparound nahe ist?</summary><p>Ab 100 Mio. verbleibenden xids kommen Warnungen (vor PostgreSQL 19: ab 40 Mio.). Bei 3 Mio. vergibt PostgreSQL keine neuen xids mehr. Schreibende Befehle scheitern, bis VACUUM gelaufen ist.</p></details>
+<h3>Vergleich</h3>
+<details><summary>Wie unterscheidet sich MVCC in PostgreSQL von Oracle?</summary><p>PostgreSQL hält alte Versionen im Heap und braucht VACUUM. Oracle ändert an Ort und Stelle und rekonstruiert alte Versionen aus dem Undo.</p></details>
+<details><summary>Warum hat Oracle kaum Bloat, aber das Problem „snapshot too old“?</summary><p>Alte Versionen liegen im Undo, nicht in der Tabelle. Ist das Undo überschrieben, kann ein langer Leser seine Version nicht mehr bauen und scheitert.</p></details>
+<details><summary>Was unterscheidet MVCC von Locking mit 2PL?</summary><p>Mit MVCC warten Leser nie auf Schreiber. Mit 2PL nehmen Leser Shared Locks und warten. Schreiber gegen Schreiber warten in beiden Fällen.</p></details>
+<h3>Produktion</h3>
+<details><summary>Kann ein SELECT WAL erzeugen?</summary><p>Ja. Er kann Hint Bits setzen und HOT-Ketten prunen. Mit Data Checksums erzeugt das WAL-Records; seit PostgreSQL 18 sind Checksums bei initdb Standard.</p></details>
+<details><summary>Was geht kaputt, wenn eine lange Query auf einer Replica läuft?</summary><p>Der Primary räumt Versionen weg, die sie noch braucht, und die Query wird abgebrochen. hot_standby_feedback verhindert das, kostet aber Bloat am Primary.</p></details>
+<details><summary>Szenario: Eine Tabelle mit 1 Mio. Zeilen ist 10 GB gross. Was prüfen Sie?</summary><p>n_dead_tup und HOT-Quote in pg_stat_user_tables, älteste Snapshots in pg_stat_activity, Replication Slots. Dann Blocker entfernen und Autovacuum anpassen. Platz zurück nur mit Rewrite, z. B. pg_repack oder seit 19 REPACK (CONCURRENTLY).</p></details>
 <details><summary>Szenario: Das Log warnt „database must be vacuumed within 30000000 transactions“. Was tun Sie?</summary><p>Sofort Blocker suchen: alte Transaktionen, verwaiste Replication Slots, prepared Transactions. Sie beenden. Dann VACUUM auf die ältesten Tabellen, nicht VACUUM FULL.</p></details>
+<h3>Design</h3>
+<details><summary>Wie fördert man HOT Updates?</summary><p>Keine oft geänderten Spalten indizieren. fillfactor unter 100 setzen, damit Platz auf der Seite bleibt. Die Quote in n_tup_hot_upd prüfen.</p></details>
+<details><summary>Warum ist eine append-only Tabelle MVCC-freundlich?</summary><p>Neue Zeilen anhängen erzeugt keine toten Versionen. VACUUM muss nur noch freezen und die Visibility Map setzen.</p></details>
 <details><summary>Szenario: Updates auf eine Tabelle sind langsam und erzeugen viel WAL. Warum?</summary><p>Wahrscheinlich keine HOT Updates: Jede Änderung schreibt in alle Indexe. Indexe auf oft geänderten Spalten prüfen und fillfactor senken.</p></details>
 
 </body>

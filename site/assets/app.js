@@ -257,6 +257,13 @@
       <div class="sec-h"><h2>Übungskarten</h2><span class="cnt">${cs.length}</span></div>${cs.length ? `<ul class="list">${cs.map(rowCard).join('')}</ul>` : '<p class="small">Noch keine Karten.</p>'}`;
   }
   // a deep topic: read everything, then test yourself (tap a question to see the answer)
+  // "Zum Anschauen": max 2 outside links that show the mechanism; links only (no iframes, no tracking), at the end of the page
+  function visBlock(x) {
+    const v = (x.vis || []).slice(0, 2); if (!v.length) return '';
+    return `<section class="vis"><h2>Zum Anschauen</h2>${v.map(e => `<div class="vis-item">
+      <b>${esc(e.title)}</b><p class="small">${esc(e.why || '')} <span class="vis-src">${esc(e.source || '')}</span></p>
+      <a class="btn ghost" href="${esc(e.url)}" target="_blank" rel="noopener noreferrer">Öffnen ↗</a></div>`).join('')}</section>`;
+  }
   function topicView(key) {
     const [tech, id] = key.split('--'), x = (D.topics || []).find(y => y.tech === tech && y.id === id);
     if (!x || !x.done) return techView(tech);
@@ -265,6 +272,7 @@
       app.innerHTML = `<a href="#t-${tech}" class="back">← ${esc(techOf(tech).name)}</a>
         <header class="topic-head"><div class="crumbs"><span class="pr p${x.tier}">P${x.tier}</span><span>Thema ${i + 1} / ${list.length}</span>${x.nq ? `<span>${x.nq} Fragen</span>` : ''}</div><h1><span class="hl">${esc(x.title)}</span></h1></header>
         <article class="topic">${x.html}</article>
+        ${visBlock(x)}
         <nav class="pager">${i > 0 ? `<a class="prev" href="#k-${tech}--${list[i - 1].id}"><span>← Zurück</span>${esc(list[i - 1].title)}</a>` : ""}${i < list.length - 1 ? `<a class="next" href="#k-${tech}--${list[i + 1].id}"><span>Weiter →</span>${esc(list[i + 1].title)}</a>` : ""}</nav>`;
       return;
     }

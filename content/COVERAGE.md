@@ -20,7 +20,7 @@ Frage pro Winkel: Hat der Seiten-Text (nicht nur das Gerüst) mindestens 2 konkr
 |---|---|---|
 | Warum? | 3 (Interpreter langsam, 3700 vs 120 ms, Profil-basierte Optimierung) | nichts |
 | Wie innen? | 8+ (Tiered 0–4, C1/C2, Profil, Deopt, OSR, Code Cache, Inlining, Escape Analysis) | nichts |
-| Zahlen | 6 (200, 5000, 35/325 Bytes, 240 MB, 8000 Bytes, Messwerte) | Diagnose: echte Flag-Werte aus `-XX:+PrintFlagsFinal` (OpenJDK 17.0.3): Tier3/Tier4 Invocation- und BackEdge-Schwellen, MaxInlineSize, FreqInlineSize, ReservedCodeCacheSize, DontCompileHugeMethods; `HugeMethodLimit` 8000 als develop-Flag (Quellcode); `Tier3LoadFeedback = 5` (Schwellen verdoppeln sich bei voller C1-Queue) |
+| Zahlen | 6 (200, 5000, 35/325 Bytes, 240 MB, 8000 Bytes, Messwerte) | Diagnose: echte Flag-Werte aus `-XX:+PrintFlagsFinal` (OpenJDK 17.0.3): Tier3/Tier4 Invocation- und BackEdge-Schwellen, MaxInlineSize, FreqInlineSize, ReservedCodeCacheSize, DontCompileHugeMethods; `HugeMethodLimit` 8000 als develop-Flag (Quellcode); `Tier3LoadFeedback = 5` (Schwellen wachsen mit der Queue-Länge: bei 5 wartenden Methoden pro C1-Thread doppelt, bei 10 dreifach) |
 | Vergleich | 5 (Interpreter, JIT, Native Image, AOT Cache, CDS) | nichts |
 | Produktion | 6 (Warm-up, CPU-Limits, Code Cache voll, Serverless, Benchmarks, riesige Methoden) | nichts |
 | Design | 4 (Megamorph, lesbarer Code, JIT vs Native Image, erst messen) | nichts |
@@ -56,3 +56,129 @@ Frage pro Winkel: Hat der Seiten-Text (nicht nur das Gerüst) mindestens 2 konkr
 - consumer-groups.html: Aussage „Share Groups produktionsreif seit Kafka 4.2" nicht im Pilot neu geprüft.
 - case-image-upload.html (Suche): Elastic-Doku geprüft für k1 = 1.2, b = 0.75, `cosine` als Standard, HNSW, `num_candidates` (pro Shard, max. 10 000), Filter während kNN, RRF `rank_constant` 60, `german`-Analyzer ohne Decompounder, Empfehlung `hyphenation_decompounder`. OpenSearch-Doku nicht separat geprüft (gleiche BM25-Standards angenommen, da Lucene). Die Query ist nicht ausgeführt (kein Cluster, Docker aus).
 - case-image-upload.html: Gerüst, Muster und Selbsttest-Gruppen wurden für diese Seite bewusst noch nicht gebaut (Pilot: nur Aufgabe 5).
+
+## postgres/indexes.html
+
+| Winkel | vorher (Anzahl Fakten) | was ergänzt wurde |
+|---|---|---|
+| Warum? | 4 (Seq Scan vermeiden, 3–4 Ebenen, Write-Kosten, keine Sichtbarkeit im Index) | nichts |
+| Wie innen? | 10+ (Heap/TID, Root/Inner/Leaf, Leaf-Kette, VM, Index-Only, Bitmap, GIN Pending List, BRIN min/max) | nichts |
+| Zahlen | 8+ (8 kB, 4 MB, 128 Pages, 32-Bit-Hash, seit 10/11/12/13/14/15/16, Skip Scan 18) | Details: Skip Scan – EXPLAIN ANALYZE zeigt seit 18 die Zahl der Index-Abstiege; GIN: `gin_pending_list_limit` pro Index setzbar, paralleler GIN-Build seit 18 (Release Notes 18, Doku 19) |
+| Vergleich | 10 (B-Tree, Hash, GIN, GiST, SP-GiST, BRIN, Partial, Expression, Covering, Clustered Index) | nichts |
+| Produktion | 8 | nichts |
+| Design | 7 (Senior-Punkte) | nichts |
+
+## postgres/planner-explain.html
+
+| Winkel | vorher | was ergänzt wurde |
+|---|---|---|
+| Warum? | 3 (billigster Plan, Unabhängigkeits-Annahme, Fehler pflanzt sich nach oben fort) | nichts |
+| Wie innen? | 8+ (Parser/Rewriter/Planner/Executor, pg_statistic, Kostenmodell, Bottom-up, loops, Custom/Generic Plan) | Details: Regel für Generic Plan genau (Kosten vs Schnitt der 5 Custom Plans, laut `PREPARE`-Doku) |
+| Zahlen | 10+ (Kosten-Konstanten, 300 × 100, 0.1 + 50, 4 GB, 100 000, 8/12, 5) | Details: `random_page_cost` 1.1 als Praxiswert markiert (nicht in der Doku); EXPLAIN-Option `IO` (19); pg_stat_statements zählt Generic/Custom Plans (19); Memoize-Schätzungen in EXPLAIN (19); JIT-Hinweis „12 bis 18 an“ |
+| Vergleich | 7 | nichts |
+| Produktion | 7 | nichts |
+| Design | 6 | nichts |
+
+## postgres/join-algorithms.html
+
+| Winkel | vorher | was ergänzt wurde |
+|---|---|---|
+| Warum? | 3 (Kern: drei Fälle, Senior: kein Algorithmus schlecht, NL Risiko-Join) | nichts |
+| Wie innen? | 10+ (Build/Probe, Batches, zwei Zeiger, mark/restore, Materialize, Memoize, Semi/Anti) | Details: Merge Join mit Incremental Sort (18); Memoize für Anti Joins + Schätzungen in EXPLAIN (19) |
+| Zahlen | 6 (4 MB × 2.0 = 8 MB, 8, 12, Batches, seit 11/14/15) | Details: Doku-Beispiel „4 Worker → bis 5-facher Speicher“ |
+| Vergleich | 6 (Tabelle, FULL JOIN, Spark, MySQL 8.0.18) | nichts |
+| Produktion | 6 | nichts |
+| Design | 6 | Details + Falle: `NOT IN` wird seit 19 ein Anti Join, wenn keine NULLs möglich sind (Release Notes 19) |
+
+## postgres/window-functions.html
+
+| Winkel | vorher | was ergänzt wurde |
+|---|---|---|
+| Warum? | 3 (Zeilen bleiben, Self-Join O(n²) vs ein Durchlauf, ersetzt App-Code) | nichts |
+| Wie innen? | 6 (Reihenfolge der Klauseln, WindowAgg, Sort, Frame, Tuplestore) | nichts |
+| Zahlen | 3 (seit 11 RANGE-Offset/GROUPS/EXCLUDE, Run Condition 15, IGNORE NULLS 19) | Details: Tuplestore über `work_mem` (Standard 4 MB); EXPLAIN zeigt seit 18 Speicher/Platte beim WindowAgg; Diagnose-Punkt dazu |
+| Vergleich | 9 | nichts |
+| Produktion | 6 | nichts |
+| Design | 6 | nichts |
+
+## postgres/ctes.html
+
+| Winkel | vorher | was ergänzt wurde |
+|---|---|---|
+| Warum? | 3 (Lesbarkeit, Rekursion, atomare DML in einer Anweisung) | nichts |
+| Wie innen? | 8+ (Inlining-Regeln, CTE Scan, Working/Intermediate Table, Snapshot, RETURNING) | nichts |
+| Zahlen | 5 (seit 12/14/17/18, 100 000 Zeilen im echten Test) | Produktion: `work_mem` Standard 4 MB beim CTE-Puffer |
+| Vergleich | 7 | nichts |
+| Produktion | 6 | nichts |
+| Design | 6 | nichts |
+
+### Rollout postgres (indexes, planner-explain, join-algorithms, window-functions, ctes): nicht verifiziert
+
+- planner-explain: `random_page_cost` ≈ 1.1 auf SSD steht nicht in der Doku (19 geprüft); als Praxiswert markiert.
+- planner-explain: „JIT standardmässig an in 12 bis 18“: 11 (aus) und 19 (aus) geprüft, der Wechsel in 12 nicht separat geprüft.
+- join-algorithms: Release Notes 19 sagen nur „when NULLs are not present“; dass der Planner das über NOT-NULL-Spalten beweist, ist meine Deutung.
+- indexes: Deduplication „seit 13“, Hash-Index WAL „seit 10“, REINDEX CONCURRENTLY „seit 12“ in diesem Durchgang nicht neu geprüft (unverändert).
+- Alle Beispiele: Docker (pg17) lief nicht; „Erwartetes Ergebnis“ bleibt, ctes.html behält die frühere echte Ausgabe (PostgreSQL 17.12).
+
+## sysdesign/case-image-upload.html
+
+| Winkel | vorher (Anzahl Fakten) | was ergänzt wurde |
+|---|---|---|
+| Warum? | 4 (Upload/Verarbeitung trennen, Malware-Risiko, Bandbreite, GPU-Latenz) | nichts |
+| Wie innen? | 10+ (Intent, Quarantäne, Scan-Event, Claim, Outbox, invertierter Index, BM25, HNSW, RRF) | nichts |
+| Zahlen | 10+ (12/60 Uploads/s, 1,1 PB, 12 Inferenzen, 7 Tage, 50 GB, k1/b, RRF 60) | Details: Defender-Durchsatz 50 GB/min pro Storage Account, Scan-Zeitfenster 30 min bis 3 h → „Scan timed out“ (Microsoft Learn geprüft) |
+| Vergleich | 5 (Direkt vs Service vs synchron, PostgreSQL vs Suchcluster, Labels vs Embeddings) | nichts |
+| Produktion | 6 | nichts |
+| Design | 6 (Senior-Punkte) | nichts |
+
+## postgres/acid-transactions.html
+
+| Winkel | vorher (Anzahl Fakten) | was ergänzt wurde |
+|---|---|---|
+| Warum? | 3 (halbe Überweisung, Constraint-Verletzung, Crash) | nichts |
+| Wie innen? | 10+ (WAL, fsync, pg_xact, virtuelle xid, Savepoint/Sub-xid, Checkpoint, full_page_writes) | nichts |
+| Zahlen | 5 (3 × wal_writer_delay, 64 Sub-xids, 25P02, max_prepared_transactions 0) | Details: „ca. 600 ms“ als ausgerechnetes Verlustfenster (19-Doku geprüft) |
+| Vergleich | 7 | nichts |
+| Produktion | 6 | Diagnose: `log_lock_waits` seit 19 standardmässig an |
+| Design | 6 (Senior-Punkte) | nichts |
+
+## postgres/mvcc.html
+
+| Winkel | vorher (Anzahl Fakten) | was ergänzt wurde |
+|---|---|---|
+| Warum? | 3 (Leser/Schreiber blockieren nicht, Rollback billig, Preis Bloat) | nichts |
+| Wie innen? | 10+ (xmin/xmax, ctid, Snapshot, HOT, Hint Bits, VM, MultiXact) | Details: seit 19 setzen auch normale Table Scans all-visible in der VM (Release Notes 19) |
+| Zahlen | 5 (32 Bit, 2 Mrd., 200 Mio., 100/40 Mio., 3 Mio.) | Details: Checksums seit 18 Standard bei initdb → SELECT erzeugt WAL beim Setzen von Hint Bits im Normalfall (Release Notes 18) |
+| Vergleich | 6 | nichts |
+| Produktion | 6 | nichts |
+| Design | 6 (Senior-Punkte) | nichts |
+
+## postgres/vacuum.html
+
+| Winkel | vorher (Anzahl Fakten) | was ergänzt wurde |
+|---|---|---|
+| Warum? | 4 (tote Versionen, VM, Freezing, Statistik) | nichts |
+| Wie innen? | 8+ (Phasen, TIDs, Index-Runden, FSM/VM, Truncate, Cutoff) | Details: Eager Freezing seit 18 (`vacuum_max_eager_freeze_failure_rate` 0.03); parallele Index-Bearbeitung und Score-Reihenfolge im Autovacuum seit 19 (`pg_stat_autovacuum_scores`) |
+| Zahlen | 10+ | Details: `autovacuum_vacuum_max_threshold` 100 Mio. (seit 18); Insert-Schwelle × Anteil nicht gefrorener Seiten (19-Doku); `autovacuum_max_workers` ohne Neustart bis `autovacuum_worker_slots` (seit 18); `vacuum_truncate` global seit 18 |
+| Vergleich | 8 | Vergleich: `REPACK` / `REPACK (CONCURRENTLY)` seit 19 (Lock-Ablauf und Bedingungen aus der 19-Doku) |
+| Produktion | 7 | REPACK als Lösung ergänzt; Hinweis, dass der 100-Mio.-Deckel bei 500 Mio. Zeilen nicht hilft |
+| Design | 6 (Senior-Punkte) | nichts |
+
+## postgres/locking.html
+
+| Winkel | vorher (Anzahl Fakten) | was ergänzt wurde |
+|---|---|---|
+| Warum? | 1 (Kern: Zugriffe ordnen) | Details: „Warum Locks trotz MVCC?“ (Schreiber gegen Schreiber, Lost Update, DDL während Query, ACCESS SHARE) |
+| Wie innen? | 8+ (Lock Table, Row Lock im Tuple, transactionid, Lock Queue, Deadlock Detector) | Lock-Table-Grösse genauer: × (Verbindungen + prepared Transactions), zählt Objekte, Durchschnittswert (19-Doku) |
+| Zahlen | 6 (8/4 Stufen, 1 s, 64/128, 40P01, 55P03) | nichts |
+| Vergleich | 6 | nichts |
+| Produktion | 7 | Diagnose: `log_lock_waits` seit 19 Standard an; `log_lock_failures` (seit 18); View `pg_stat_lock` (seit 19) |
+| Design | 6 (Senior-Punkte) | nichts |
+
+## Rollout-Writer (image-upload + 4 Postgres-Seiten): nicht verifiziert
+
+- vacuum.html: „Insert-Schwelle × Anteil nicht gefrorener Seiten“ steht in der 19-Doku; seit welcher Version genau (vermutlich 18) habe ich nicht gefunden, darum ohne „seit“.
+- vacuum.html: Insert-Schwelle „seit 13“, `REINDEX CONCURRENTLY` „seit 12“, Speicher-Änderung „PostgreSQL 17“, `log_autovacuum_min_duration` „seit 15: 10 min“ nicht neu geprüft (unverändert, nur 10 min als aktueller Standard bestätigt).
+- locking.html: Flyway-Standard `flyway.postgresql.transactional.lock = true` und SQL-Server-Escalation „ca. 5000“ nicht geprüft (unverändert).
+- case-image-upload.html: Gerüst, Muster und Selbsttest-Gruppen sind jetzt gebaut (vorher offen, siehe oben).
+- Alle Beispiele: Docker (pg17) lief nicht; „Erwartetes Ergebnis“ bzw. die frühere echte Ausgabe bleiben.

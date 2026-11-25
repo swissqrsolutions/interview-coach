@@ -130,6 +130,11 @@ if (todo.length) {
   pages.push({ id: 'fill-in', title: 'To fill in (only you know)', html: html(md) });
 }
 
+// external animations / visual explainers per topic (content/visuals.json): shown as "Zum Anschauen"
+const visuals = fs.existsSync(C('visuals.json')) ? JSON.parse(read(C('visuals.json'))) : {};
+// review phase: only the pilot + rollout batch 1 pages show the box; links only, max 2
+const VIS_REVIEW = new Set(['sysdesign/case-image-upload', 'postgres/acid-transactions', 'postgres/mvcc', 'postgres/vacuum', 'postgres/locking', 'postgres/indexes', 'postgres/planner-explain', 'postgres/join-algorithms', 'postgres/window-functions', 'postgres/ctes', 'java/jit-compiler', 'java/hashmap', 'postgres/isolation-levels', 'kafka/consumer-groups']);
+for (const t of topics) { const k = `${t.tech}/${t.id}`; if (visuals[k] && VIS_REVIEW.has(k)) t.vis = visuals[k].filter(v => /^https:\/\//.test(v.url)).slice(0, 2).map(({ title, url, why, source }) => ({ title, url, why, source })); }
 const data = { built: new Date().toISOString(), tech, rounds, cards, pages, topics, techSources };
 const json = JSON.stringify(data);
 fs.writeFileSync(path.join(ROOT, 'site', 'data.json'), json);
