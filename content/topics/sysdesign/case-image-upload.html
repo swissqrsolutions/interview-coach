@@ -24,7 +24,7 @@
 <body>
 
 <h1>Fall: Bild-Upload mit Erkennung und Suche</h1>
-<p class="small">System-Design-Fall · Tier 1 · Quellen: Microsoft Learn (Defender for Storage: Malware Scanning, Limits und Ergebnis-Kanäle), AWS S3 User Guide (Presigned URLs, Ablaufzeit), PostgreSQL 17 Docs (INSERT … ON CONFLICT, SELECT … FOR UPDATE SKIP LOCKED, Indexes, EXPLAIN), Apache Tika Docs (MIME-Erkennung), Kleppmann DDIA Kap. 3 und 11, Alex Xu „System Design Interview“ Vol. 1</p>
+<p class="small">System-Design-Fall · Tier 1 · Quellen: Microsoft Learn (Defender for Storage: Malware Scanning, Limits und Ergebnis-Kanäle), AWS S3 User Guide (Presigned URLs, Ablaufzeit), PostgreSQL 17 Docs (INSERT … ON CONFLICT, SELECT … FOR UPDATE SKIP LOCKED, Indexes, EXPLAIN), Apache Tika Docs (MIME-Erkennung), Kleppmann DDIA Kap. 3 und 11, Alex Xu „System Design Interview“ Vol. 1, Elastic Docs (Similarity/BM25, Language Analyzers, Decompounder, kNN Search und Query, kNN Retriever, Reciprocal Rank Fusion)</p>
 
 <div class="kern">
 <b>Kern (die 1-Minuten-Antwort):</b> Der Client holt sich eine <b>Upload-Intent</b> und lädt das Bild <b>direkt in einen Quarantäne-Bucket</b>. Ein Event startet den <b>Malware-Scan</b>; erst ein sauberes Bild geht über eine <b>Queue</b> an Worker für Thumbnails und <b>Erkennung</b> (Labels, Embeddings). Metadaten liegen in <b>PostgreSQL</b> als Wahrheit, gesucht wird in einem <b>Suchindex</b>, ausgeliefert über ein <b>CDN</b>. Alles ist asynchron, idempotent und hat einen klaren <b>Status pro Bild</b>.
@@ -192,7 +192,60 @@ CREATE INDEX image_search_idx ON image_search (label, created_at DESC);
   <li><b>Projektion für die Suche:</b> Eine denormalisierte Tabelle mit Index <code>(label, created_at DESC)</code> liest nur 118 Zeilen: 0,17 ms. Das ist genau die Idee hinter einem separaten Suchindex.</li>
 </ol>
 
-<h2>4. Details, die Interviewer fragen</h2>
+<h2>4. So funktioniert die Suche</h2>
+<p>Ein <b>Suchindex</b> ist eine Datenstruktur, die Treffer findet, ohne alle Dokumente zu lesen. Hier: Labels und Titel als Text, dazu ein Embedding pro Bild. Beispiele beziehen sich auf Elasticsearch und OpenSearch.</p>
+<ol>
+  <li><b>Invertierter Index:</b> eine Tabelle Term → <b>Posting List</b>, also die Liste der Dokument-IDs mit diesem Term. Beispiel: <code>berg → [7, 42, 99]</code>. Eine Suche liest nur die Listen der Suchwörter und schneidet sie.</li>
+  <li><b>Analyzer:</b> macht aus Text Terme, beim Indexieren und beim Suchen gleich. Schritte: <b>Tokenizer</b> (Text in Wörter teilen), <b>Lowercase</b>, <b>Stemming</b> (Wortstamm, „Berge“ → „berg“). Der eingebaute <code>german</code>-Analyzer macht genau das, plus Stoppwörter.</li>
+  <li><b>Deutsche Komposita:</b> „Bergsee“ ist ein Wort. Der <code>german</code>-Analyzer zerlegt es nicht, „see“ findet es also nicht. Ein <b>Decompounder</b>-Filter fügt Teilwörter wie „berg“ und „see“ hinzu. Elastic empfiehlt <code>hyphenation_decompounder</code> statt des langsameren <code>dictionary_decompounder</code>.</li>
+  <li><b>BM25:</b> die Standard-Bewertung in Elasticsearch und OpenSearch. Sie hat drei Teile:
+    <ul>
+      <li><b>TF</b> (Term Frequency) mit <b>Sättigung:</b> Das zehnte „berg“ im Text zählt kaum mehr als das dritte. Parameter <code>k1</code>, Standard <code>1.2</code>.</li>
+      <li><b>Längen-Normalisierung:</b> Ein Treffer in einem kurzen Feld zählt mehr als in einem langen. Parameter <code>b</code>, Standard <code>0.75</code>.</li>
+      <li><b>IDF</b> (Inverse Document Frequency): Seltene Terme zählen mehr. „matterhorn“ wiegt mehr als „foto“.</li>
+    </ul></li>
+  <li><b>Vektorsuche:</b> Ein Modell macht aus Bild oder Text ein <b>Embedding</b>, also einen Vektor aus Zahlen. Ähnliche Inhalte liegen nah beieinander. Gemessen wird oft mit <b>Cosine Similarity</b>, dem Winkel zwischen zwei Vektoren. In Elasticsearch ist <code>cosine</code> der Standard für <code>dense_vector</code>.</li>
+  <li><b>Exakt vs. approximativ (kNN):</b> Exakte Suche vergleicht mit jedem Vektor. Sie ist genau, aber langsam bei Millionen Bildern. Approximative Suche nutzt einen <b>HNSW</b>-Graphen (Hierarchical Navigable Small World). Sie ist schnell, findet aber nicht immer die echten Top-k. Den Anteil echter Treffer nennt man <b>Recall</b>.</li>
+  <li><b>k und num_candidates:</b> <code>k</code> ist die Zahl der nächsten Nachbarn, die zurückkommen. <code>num_candidates</code> ist die Zahl der geprüften Kandidaten pro Shard, höchstens 10 000. Mehr Kandidaten verbessern meist den Recall, kosten aber mehr Vergleiche.</li>
+  <li><b>Filter in der Vektorsuche:</b> Ein Filter wie <code>owner_id</code> wirkt <b>während</b> der approximativen kNN-Suche. So kommen trotzdem k passende Treffer zurück.</li>
+  <li><b>Hybride Suche:</b> BM25 findet exakte Wörter, Vektoren finden Bedeutung. <b>Reciprocal Rank Fusion (RRF)</b> mischt beide Ranglisten. Jedes Dokument bekommt pro Liste <code>1 / (k + Rang)</code>, Standard <code>k = 60</code>. RRF braucht keine vergleichbaren Scores, nur Ränge.</li>
+</ol>
+<p><b>Die Query, laut gesagt:</b> „Anna sucht ‚Sonnenuntergang am Bergsee‘. Ich schicke zwei Suchen: BM25 über Titel und Labels, und kNN mit dem Text-Embedding. Beide filtern im Index auf Annas <code>owner_id</code>. RRF mischt die zwei Ranglisten zu 20 Treffern.“</p>
+<pre>PUT images
+{ "mappings": { "properties": {
+    "owner_id":  { "type": "long" },
+    "title":     { "type": "text", "analyzer": "german" },
+    "labels":    { "type": "text", "analyzer": "german" },
+    "embedding": { "type": "dense_vector", "dims": 512, "similarity": "cosine" } } } }
+
+GET images/_search
+{
+  "size": 20,
+  "retriever": { "rrf": {
+    "retrievers": [
+      { "standard": { "query": { "bool": {
+          "must":   { "multi_match": { "query": "Sonnenuntergang am Bergsee",
+                                       "fields": ["title", "labels"] } },
+          "filter": { "term": { "owner_id": 42 } } } } } },
+      { "knn": {
+          "field": "embedding",
+          "query_vector": [0.12, -0.03, 0.88],
+          "k": 20,
+          "num_candidates": 100,
+          "filter": { "term": { "owner_id": 42 } } } }
+    ],
+    "rank_window_size": 100,
+    "rank_constant": 60 } }
+}</pre>
+<p class="small">Erwartetes Ergebnis (laut Doku, nicht ausgeführt): 20 Treffer, nur Bilder von <code>owner_id</code> 42. Der Vektor ist gekürzt; echt hat er <code>dims</code> Zahlen. Ein Bild auf Rang 1 in beiden Listen bekommt 1/61 + 1/61 ≈ 0,033. Ein Bild auf Rang 1 nur in einer Liste bekommt 1/61 ≈ 0,016.</p>
+<ol>
+  <li><b>Mapping:</b> Der <code>german</code>-Analyzer stemmt Titel und Labels. Für „Bergsee“ → „see“ braucht es zusätzlich einen Decompounder.</li>
+  <li><b>BM25-Teil:</b> <code>multi_match</code> sucht in zwei Feldern. Der Filter ändert den Score nicht, er schränkt nur ein.</li>
+  <li><b>kNN-Teil:</b> HNSW findet die 20 nächsten Vektoren aus 100 Kandidaten pro Shard. Der Filter gilt schon während der Suche.</li>
+  <li><b>RRF:</b> Ein Bild, das in beiden Listen weit oben steht, gewinnt. So ergänzen sich Wort-Treffer und Bedeutungs-Treffer.</li>
+</ol>
+
+<h2>5. Details, die Interviewer fragen</h2>
 <ol>
   <li><b>Anforderungen zuerst:</b> Funktional: hochladen, Status sehen, nach Labels und Text suchen, löschen. Nicht-funktional: Upload-Antwort unter 1 s, „suchbar“ nach Sekunden bis Minuten, keine Malware ausliefern, Bilder nur für Berechtigte.</li>
   <li><b>Schätzung (Annahmen):</b> 1 Mio. Uploads pro Tag, 3 MB im Schnitt. Das sind ca. <b>12 Uploads/s</b>, Spitze ×5 ca. <b>60/s</b>. Eingehend ca. 3 TB pro Tag, ca. 35 MB/s im Schnitt, Spitze ca. 1,4 Gbit/s.</li>
@@ -214,7 +267,7 @@ CREATE INDEX image_search_idx ON image_search (label, created_at DESC);
   <li><b>Fehler im Ablauf:</b> Worker-Absturz → Lease läuft ab, Bild geht zurück in die Queue. Modell-Timeout → Retry mit Backoff, nach N Versuchen <b>DLQ</b>. Scan-Timeout → Status <code>scan_timeout</code>, manuell prüfen, nie automatisch freigeben.</li>
 </ol>
 
-<h2>5. Vergleich: drei Design-Varianten</h2>
+<h2>6. Vergleich: drei Design-Varianten</h2>
 <ul>
   <li><b>A. Direkt-Upload mit Presigned URL:</b> API bleibt klein, Storage trägt die Last, Client kann fortsetzen. Aber: Bytes kommen ungeprüft an. Darum Quarantäne und Scan zwingend.</li>
   <li><b>B. Upload über einen Service:</b> Der Service prüft JWT, Grösse und Typ <b>vor</b> dem ersten gespeicherten Byte. Gut bei Storage nur mit Private Endpoints. Aber: Der Service trägt die ganze Bandbreite und muss mitskalieren.</li>
@@ -227,17 +280,17 @@ CREATE INDEX image_search_idx ON image_search (label, created_at DESC);
   <tr><td>Grenze</td><td>Milliarden Label-Zeilen</td><td>Konsistenz, Reindex-Aufwand</td></tr>
 </table>
 
-<h2>6. In der Produktion</h2>
+<h2>7. In der Produktion</h2>
 <ol>
   <li><b>Bilder hängen in <code>pending</code>:</b> Der Client hat nie hochgeladen oder das Event ging verloren. Fix: Aufräum-Job löscht Intents nach 24 h; ein Reconciler vergleicht Storage und DB.</li>
-  <li><b>Scan-Ergebnisse kommen nicht an:</b> Bei Defender wird die Event-Grid-Zustellung an Topics ohne Public Network Access nicht unterstützt. Fix: bewusst geplante Ausnahme für Event Grid, Rest bleibt privat.</li>
+  <li><b>Scan-Ergebnisse kommen nicht an:</b> Bei Defender wird die Event-Grid-Zustellung an Topics ohne Public Network Access nicht unterstützt. Fix: Netzwerk-Design früh mit der Doku abgleichen, damit die Scan-Ergebnisse zugestellt werden.</li>
   <li><b>GPU-Kosten explodieren:</b> Ein Re-Processing aller Bilder läuft mit voller Priorität. Fix: eigene Queue mit niedriger Priorität und Rate Limit.</li>
   <li><b>Suchtreffer zeigen gelöschte Bilder:</b> Index-Update fehlgeschlagen. Fix: Outbox mit Retry, API prüft Status in der DB vor der Auslieferung.</li>
   <li><b>Worker OOM-killed:</b> Riesige oder bösartige Bilder. Fix: Pixel-Limit vor dem Dekodieren, Memory-Limit, Bild nach 3 Fehlern in die DLQ.</li>
   <li><b>CDN liefert altes Bild nach Löschung:</b> Fix: versionierte URLs plus Purge beim Löschen, kurze Gültigkeit der signierten URLs.</li>
 </ol>
 
-<h2>7. Diagnose: Werkzeuge und Queries</h2>
+<h2>8. Diagnose: Werkzeuge und Queries</h2>
 <ul>
   <li><b>Status-Verteilung:</b> <code>SELECT status, count(*) FROM images GROUP BY 1;</code> Wächst <code>uploaded</code>, fehlen Worker.</li>
   <li><b>Alter des ältesten Jobs:</b> <code>SELECT now() - min(created_at) FROM images WHERE status = 'uploaded';</code> Das ist die wichtigste Alarm-Metrik.</li>
@@ -247,7 +300,7 @@ CREATE INDEX image_search_idx ON image_search (label, created_at DESC);
   <li><b>Tracing:</b> eine Trace-ID vom Intent bis zum Index-Update, z. B. mit OpenTelemetry. So sieht man, wo ein Bild hängt.</li>
 </ul>
 
-<h2>8. Senior-Punkte</h2>
+<h2>9. Senior-Punkte</h2>
 <div class="senior">
 <ol>
   <li><b>Upload-Pfad und Verarbeitungs-Pfad trennen.</b> Der Nutzer wartet nur auf den Upload, nie auf Scan oder Modell.</li>
@@ -259,10 +312,10 @@ CREATE INDEX image_search_idx ON image_search (label, created_at DESC);
 </ol>
 </div>
 
-<h2>9. Aus dem Projekt</h2>
-<p>„Bei DigiSanté habe ich einen ähnlichen Upload gebaut: Die Upload-Function prüft das JWT (RS256 gegen den Key-Vault-Schlüssel) und mit Apache Tika die Magic Bytes, antwortet direkt nach dem Blob-Write, und eine separate Event-Hub-Function gibt die Datei nach dem Defender-Scan frei oder löscht sie, alles im privaten Netz. Erkennung und Suche habe ich dort nicht gebaut.“ <span class="small">(Prüfen und durch dein echtes Beispiel ersetzen.)</span></p>
+<h2>10. Aus dem Projekt</h2>
+<p>„Bei DigiSanté habe ich eine ereignisgesteuerte Upload-Pipeline mit Malware-Scan und Quarantäne in Azure gebaut. Der Upload antwortet direkt nach dem Speichern. Erst nach dem Scan wird die Datei freigegeben oder gelöscht. Erkennung und Suche habe ich dort nicht gebaut.“ <span class="small">(Prüfen und durch dein echtes Beispiel ersetzen.)</span></p>
 
-<h2>10. Fallen</h2>
+<h2>11. Fallen</h2>
 <div class="trap">
 <ul>
   <li>„Die API nimmt die Datei an und ruft das Modell auf.“ → <b>Falsch</b> bei Last. Upload und Verarbeitung entkoppeln, sonst bestimmt die GPU die Upload-Latenz.</li>
@@ -274,7 +327,7 @@ CREATE INDEX image_search_idx ON image_search (label, created_at DESC);
 </ul>
 </div>
 
-<h2>11. Fragen</h2>
+<h2>12. Fragen</h2>
 <details><summary>Skizzieren Sie das System in einer Minute.</summary><p>Upload-Intent, direkter Upload in Quarantäne, Malware-Scan per Event, Queue mit Workern für Thumbnails und Erkennung, PostgreSQL als Wahrheit, Suchindex über Outbox, Auslieferung über CDN.</p></details>
 <details><summary>Welche Fragen stellen Sie zuerst?</summary><p>Wie viele Uploads pro Tag, welche Grösse, wie schnell muss ein Bild suchbar sein, wer darf was sehen, welche Erkennung (Labels, Text, ähnliche Bilder), wie lange aufbewahren.</p></details>
 <details><summary>Rechnen Sie Speicher und Durchsatz grob.</summary><p>1 Mio. Uploads à 3 MB sind 3 TB pro Tag, ca. 1,1 PB pro Jahr. Im Schnitt 12 Uploads/s, Spitze ca. 60/s.</p></details>
@@ -297,6 +350,9 @@ CREATE INDEX image_search_idx ON image_search (label, created_at DESC);
 <details><summary>Was passiert bei einem neuen Erkennungsmodell?</summary><p>Labels tragen die Modell-Version. Ein Re-Processing läuft über eine eigene Queue mit niedriger Priorität und Rate Limit.</p></details>
 <details><summary>Welche Metriken alarmieren Sie?</summary><p>Alter des ältesten Jobs pro Stufe, DLQ-Grösse, Fehlerrate von Scan und Modell, Zeit vom Upload bis ready.</p></details>
 <details><summary>Wie skaliert die Datenbank?</summary><p>Metadaten sind klein. Label-Zeilen wachsen schnell: Partitionierung nach Zeit oder Auslagerung der Suche in einen Index. Lese-Replikate für Statusabfragen.</p></details>
+<details><summary>Was ist ein invertierter Index, und was macht BM25 damit?</summary><p>Eine Tabelle Term → Liste der Dokument-IDs. BM25 bewertet die Treffer: Termhäufigkeit mit Sättigung (k1 = 1.2), Längen-Normalisierung (b = 0.75) und seltene Terme zählen mehr (IDF).</p></details>
+<details><summary>Was geht kaputt, wenn Nutzer „see“ suchen, aber nur „Bergsee“ im Index steht?</summary><p>Ohne Zerlegung gibt es keinen Treffer, denn „bergsee“ ist ein einziger Term. Lösung: ein Decompounder-Filter im Analyzer, z. B. hyphenation_decompounder.</p></details>
+<details><summary>Warum kombinieren Sie BM25 und Vektorsuche?</summary><p>BM25 findet exakte Wörter und Namen, Vektoren finden Bedeutung und ähnliche Bilder. RRF mischt beide Ranglisten nach Rang, mit 1 / (60 + Rang) pro Liste. Approximatives kNN (HNSW) ist schnell, aber der Recall ist nicht 100 %.</p></details>
 <details><summary>Szenario: Nach einem Marketing-Event kommen 10× mehr Uploads. Was passiert?</summary><p>Upload und Storage halten, weil sie direkt laufen. Die Queue wächst, Bilder sind später suchbar. Worker und GPUs skalieren nach Queue-Länge; die Nutzer sehen „in Bearbeitung“.</p></details>
 <details><summary>Szenario: Ein Nutzer findet ein Bild eines anderen Nutzers in seiner Suche. Was ist passiert?</summary><p>Wahrscheinlich fehlt der Rechte-Filter im Index oder ein Eintrag hat falsche ACL-Felder. Sofort: Rechte-Prüfung in der API vor der Auslieferung. Dann Index-Mapping korrigieren und neu indexieren.</p></details>
 <details><summary>Szenario: Viele Bilder bleiben im Status uploaded hängen. Wie gehen Sie vor?</summary><p>Alter des ältesten Jobs prüfen, Worker-Logs, DLQ. Typisch: Modell-Timeouts oder OOM. Fix: Retry mit Backoff, Pixel-Limit, mehr Worker; hängende Claims per Timeout zurücksetzen.</p></details>

@@ -1,0 +1,246 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Operators und CRDs</title>
+<style>
+  body { font: 17px/1.55 -apple-system, system-ui, sans-serif; max-width: 760px; margin: 0 auto; padding: 16px; color: #1d1d1f; }
+  h1 { font-size: 28px; margin: 8px 0 4px; }
+  h2 { font-size: 21px; margin: 32px 0 8px; padding-top: 12px; border-top: 2px solid #e5e5ea; }
+  .kern { background: #eef6ff; border-left: 4px solid #0a66c2; padding: 10px 14px; border-radius: 6px; }
+  .senior { background: #f0faf0; border-left: 4px solid #2e7d32; padding: 10px 14px; border-radius: 6px; }
+  .trap { background: #fff4f2; border-left: 4px solid #c62828; padding: 10px 14px; border-radius: 6px; }
+  code { background: #f2f2f7; padding: 1px 5px; border-radius: 4px; font-size: 15px; }
+  pre { background: #1e1e1e; color: #e6e6e6; padding: 12px; border-radius: 8px; overflow-x: auto; font-size: 13.5px; line-height: 1.45; }
+  svg { width: 100%; height: auto; display: block; margin: 10px 0; }
+  ol li, ul li { margin: 4px 0; }
+  details { border: 1px solid #e5e5ea; border-radius: 8px; padding: 8px 12px; margin: 6px 0; }
+  summary { font-weight: 600; cursor: pointer; }
+  details p { margin: 6px 0 2px; }
+  .small { color: #6e6e73; font-size: 14px; }
+</style>
+</head>
+<body>
+
+<h1>Operators und CRDs</h1>
+<p class="small">Kubernetes · Tier 2 · Quellen: kubernetes.io Docs „Custom Resources“, „Extend the Kubernetes API with CustomResourceDefinitions“, „Operator pattern“, „Finalizers“, „Controllers“, Feature-Gate-Referenz (CRDValidationRatcheting, CustomResourceFieldSelectors) (Stand Kubernetes 1.37); Operator SDK Docs (Operator Capabilities)</p>
+
+<div class="kern">
+<b>Kern:</b> Eine <b>CustomResourceDefinition (CRD)</b> erweitert die Kubernetes-API um einen eigenen Objekttyp, z. B. <code>ReportJob</code>. Ein <b>Operator</b> ist ein Controller, der solche Objekte beobachtet und den echten Zustand ständig an den gewünschten anpasst. Zusammen verpacken sie <b>Betriebswissen</b> (installieren, upgraden, sichern) als Code.
+</div>
+
+<h2>1. Wo sitzen CRD und Operator?</h2>
+<svg viewBox="0 0 720 300" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="a" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="10" y="20" width="300" height="200" rx="12" fill="#f7f7fa" stroke="#999" stroke-dasharray="5 4"/><text x="160" y="42" text-anchor="middle" font-weight="700">kube-apiserver + etcd</text>
+  <rect x="30" y="56" width="260" height="44" rx="8" fill="#fff" stroke="#555"/><text x="160" y="76" text-anchor="middle" font-size="13">CRD reportjobs.demo.example.com</text><text x="160" y="92" text-anchor="middle" font-size="11">Schema, Versionen, Subresources</text>
+  <rect x="30" y="112" width="260" height="44" rx="8" fill="#dbe9fb" stroke="#0a66c2"/><text x="160" y="132" text-anchor="middle" font-size="13">ReportJob stats-2026-11-23</text><text x="160" y="148" text-anchor="middle" font-size="11">spec (Wunsch) · status (Ist)</text>
+  <rect x="30" y="168" width="260" height="40" rx="8" fill="#eee" stroke="#777"/><text x="160" y="193" text-anchor="middle" font-size="13">Pods, Jobs, Secrets, Services</text>
+  <rect x="400" y="60" width="310" height="140" rx="12" fill="#0a66c2"/><text x="555" y="86" text-anchor="middle" fill="#fff" font-weight="700">Operator (Deployment)</text>
+  <text x="555" y="110" text-anchor="middle" fill="#fff" font-size="12">Informer: watch + Cache</text>
+  <text x="555" y="130" text-anchor="middle" fill="#fff" font-size="12">Workqueue: Schlüssel ns/name</text>
+  <text x="555" y="150" text-anchor="middle" fill="#fff" font-size="12">Reconcile(): Ist → Soll</text>
+  <text x="555" y="170" text-anchor="middle" fill="#fff" font-size="12">Leader Election, RBAC</text>
+  <line x1="398" y1="110" x2="292" y2="130" stroke="#555" stroke-width="2" marker-end="url(#a)"/><text x="345" y="112" text-anchor="middle" font-size="11">watch</text>
+  <line x1="398" y1="160" x2="292" y2="188" stroke="#555" stroke-width="2" marker-end="url(#a)"/><text x="345" y="190" text-anchor="middle" font-size="11">create/update</text>
+  <rect x="400" y="230" width="310" height="50" rx="10" fill="#e8f5e9" stroke="#2e7d32"/><text x="555" y="252" text-anchor="middle" font-size="13">Externe Systeme</text><text x="555" y="270" text-anchor="middle" font-size="11">Key Vault, Cloud-API, Datenbank</text>
+  <line x1="555" y1="200" x2="555" y2="228" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+</svg>
+<ol>
+  <li><b>CRD:</b> registriert einen neuen Typ beim API-Server: Gruppe, Namen, Scope, Versionen und ein OpenAPI-Schema. Beispiel: <code>reportjobs.demo.example.com</code>.</li>
+  <li><b>Custom Resource (CR):</b> ein Objekt dieses Typs. Es liegt wie jedes Objekt in etcd und hat <code>spec</code> (Wunsch) und <code>status</code> (Ist).</li>
+  <li><b>Operator:</b> ein normaler Pod, meist ein Deployment mit Leader Election. Ohne ihn ist eine CR nur gespeicherte Daten.</li>
+  <li><b>Informer:</b> beobachtet die API per <b>watch</b> und hält einen lokalen Cache. Änderungen landen als Schlüssel <code>namespace/name</code> in einer <b>Workqueue</b>.</li>
+  <li><b>Reconcile:</b> liest den Wunsch, vergleicht mit dem Ist und erzeugt oder ändert Pods, Jobs, Secrets oder externe Ressourcen.</li>
+  <li><b>RBAC:</b> Der Operator braucht Rechte auf seine CRs und auf alles, was er erzeugt.</li>
+</ol>
+
+<h2>2. Die Reise einer Custom Resource (die Geschichte zum Merken)</h2>
+<svg viewBox="0 0 720 300" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="b" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker><marker id="r" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#c62828"/></marker></defs>
+  <rect x="10" y="20" width="160" height="70" rx="10" fill="#eee" stroke="#777"/><text x="90" y="46" text-anchor="middle" font-weight="700">1. apply</text><text x="90" y="66" text-anchor="middle" font-size="12">ReportJob YAML</text>
+  <line x1="170" y1="55" x2="198" y2="55" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="200" y="20" width="160" height="70" rx="10" fill="#fff4f2" stroke="#c62828"/><text x="280" y="46" text-anchor="middle" font-weight="700">2. Validierung</text><text x="280" y="66" text-anchor="middle" font-size="12">Schema + CEL + Default</text>
+  <line x1="360" y1="55" x2="388" y2="55" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="390" y="20" width="150" height="70" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="465" y="46" text-anchor="middle" font-weight="700">3. etcd</text><text x="465" y="66" text-anchor="middle" font-size="12">generation = 1</text>
+  <line x1="540" y1="55" x2="568" y2="55" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="570" y="20" width="140" height="70" rx="10" fill="#0a66c2"/><text x="640" y="46" text-anchor="middle" fill="#fff" font-weight="700">4. Reconcile</text><text x="640" y="66" text-anchor="middle" fill="#fff" font-size="12">Job erzeugen</text>
+  <line x1="640" y1="90" x2="640" y2="138" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="440" y="140" width="270" height="64" rx="10" fill="#e8f5e9" stroke="#2e7d32"/><text x="575" y="166" text-anchor="middle" font-weight="700">5. /status schreiben</text><text x="575" y="186" text-anchor="middle" font-size="12">phase, observedGeneration = 1</text>
+  <line x1="440" y1="172" x2="362" y2="172" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="100" y="140" width="260" height="64" rx="10" fill="#fff" stroke="#555"/><text x="230" y="166" text-anchor="middle" font-weight="700">6. delete → Finalizer</text><text x="230" y="186" text-anchor="middle" font-size="12">aufräumen, dann Finalizer weg</text>
+  <path d="M280,90 C280,120 40,110 40,250" fill="none" stroke="#c62828" stroke-width="2" stroke-dasharray="6 4" marker-end="url(#r)"/>
+  <text x="60" y="275" fill="#c62828" font-size="12" font-weight="700">ungültig → abgelehnt, nichts in etcd</text>
+</svg>
+<ol>
+  <li><b>apply:</b> Argo CD legt die CR <code>stats-2026-11-23</code> an: „Statistik für den 23.11. berechnen“.</li>
+  <li><b>Validierung:</b> Der API-Server prüft das OpenAPI-Schema und die <b>CEL-Regeln</b> der CRD. Er setzt Defaults, z. B. <code>maxRetries: 3</code>. Unbekannte Felder schneidet er ab (<b>Pruning</b>).</li>
+  <li><b>Speichern:</b> Die CR liegt in etcd. <code>metadata.generation</code> ist 1. Der Operator bekommt ein Watch-Event.</li>
+  <li><b>Reconcile:</b> Der Operator sieht: Es gibt noch keinen Job für diesen Tag. Er erzeugt einen Job mit einer <b>ownerReference</b> auf die CR.</li>
+  <li><b>Status:</b> Er schreibt über die <code>/status</code>-Subresource <code>phase: Completed</code> und <code>observedGeneration: 1</code>. Ändert jemand die <code>spec</code>, steigt <code>generation</code>. So sieht man, ob der Operator die neue Version schon verarbeitet hat.</li>
+  <li><b>Löschen:</b> Die CR hat einen <b>Finalizer</b>. Kubernetes setzt nur <code>deletionTimestamp</code>. Der Operator räumt extern auf (z. B. Daten im Lakehouse) und entfernt dann den Finalizer. Erst jetzt ist die CR weg. Der Job geht per Garbage Collection mit.</li>
+</ol>
+
+<h2>3. Beispiel: eine CRD im echten Cluster</h2>
+<pre># Auszug crd.yaml: Gruppe demo.example.com, Kind ReportJob, Kurzname rj
+versions:
+- name: v1
+  served: true
+  storage: true
+  subresources: {status: {}}
+  additionalPrinterColumns: [Day .spec.day, Retries .spec.maxRetries, Phase .status.phase]
+  schema.openAPIV3Schema.properties.spec:
+    required: [day]
+    day:        {type: string, format: date}
+    maxRetries: {type: integer, minimum: 0, maximum: 5, default: 3}
+    mode:       {type: string, enum: [replace, append]}
+    x-kubernetes-validations:
+    - rule: "!has(self.mode) || self.mode == 'replace' || self.maxRetries == 0"
+      message: "mode=append ist nur ohne Retries erlaubt (sonst Doppelzählung)."</pre>
+<pre>$ kubectl apply -f crd.yaml &amp;&amp; kubectl wait --for condition=established crd/reportjobs.demo.example.com
+customresourcedefinition.apiextensions.k8s.io/reportjobs.demo.example.com created
+customresourcedefinition.apiextensions.k8s.io/reportjobs.demo.example.com condition met
+
+$ kubectl -n demo-operators-crds apply -f cr.yaml          # nur spec.day gesetzt
+reportjob.demo.example.com/stats-2026-11-23 created
+$ kubectl -n demo-operators-crds apply -f bad.yaml         # maxRetries: 9, mode: append
+The ReportJob "bad" is invalid:
+* spec.maxRetries: Invalid value: 9: spec.maxRetries in body should be less than or equal to 5
+* spec: Invalid value: mode=append ist nur ohne Retries erlaubt (sonst Doppelzählung).
+
+$ kubectl -n demo-operators-crds get rj stats-2026-11-23 -o jsonpath='{.spec}{" generation="}{.metadata.generation}'
+{"day":"2026-11-23","maxRetries":3} generation=1
+
+# so schreibt ein Operator den Status:
+$ kubectl -n demo-operators-crds patch rj/stats-2026-11-23 --subresource=status --type=merge \
+    -p '{"status":{"phase":"Completed","observedGeneration":1}}'
+generation=1                                   # Status ändert generation nicht
+$ kubectl -n demo-operators-crds patch rj/stats-2026-11-23 --type=merge -p '{"spec":{"maxRetries":1}}'
+generation=2 observedGeneration=1              # Spec geändert, Operator noch nicht nachgezogen
+$ kubectl -n demo-operators-crds get rj
+NAME               DAY          RETRIES   PHASE
+stats-2026-11-23   2026-11-23   1         Completed
+
+# Finalizer
+$ kubectl -n demo-operators-crds patch rj/stats-2026-11-23 --type=merge -p '{"metadata":{"finalizers":["demo.example.com/cleanup-iceberg"]}}'
+$ kubectl -n demo-operators-crds delete rj/stats-2026-11-23 --wait=false
+reportjob.demo.example.com "stats-2026-11-23" deleted from demo-operators-crds namespace
+$ kubectl ... get rj/stats-2026-11-23 -o jsonpath='...'
+deletionTimestamp=2026-11-24T15:28:47Z finalizers=["demo.example.com/cleanup-iceberg"]
+$ kubectl ... patch rj/stats-2026-11-23 --type=json -p '[{"op":"remove","path":"/metadata/finalizers"}]'
+$ kubectl -n demo-operators-crds get rj
+No resources found in demo-operators-crds namespace.</pre>
+<p class="small">Echte Ausgabe, k3s v1.36 (v1.36.4+k3s1). Es lief kein Operator; Status und Finalizer wurden von Hand gesetzt, wie es ein Operator tun würde. Einige Befehle gekürzt. CRD und Namespace wurden danach gelöscht.</p>
+<ol>
+  <li>Der API-Server prüft das Schema <b>und</b> die CEL-Regel. Beide Fehler kommen in einer Antwort. Ohne Operator ist die Regel schon wirksam.</li>
+  <li><code>maxRetries: 3</code> stand nicht im YAML. Der API-Server hat den <b>Default</b> aus dem Schema gesetzt.</li>
+  <li>Ein Patch auf <code>/status</code> ändert <code>generation</code> nicht. Ein Patch auf <code>spec</code> erhöht sie auf 2.</li>
+  <li><code>generation=2</code> und <code>observedGeneration=1</code> heisst: Der Operator hat die neue Spec noch nicht verarbeitet. Das ist das Standard-Signal für „im Gange“.</li>
+  <li>Mit Finalizer bleibt das Objekt nach <code>delete</code> stehen, nur mit <code>deletionTimestamp</code>. Erst nach Entfernen des Finalizers ist es weg.</li>
+  <li><code>additionalPrinterColumns</code> machen <code>kubectl get rj</code> lesbar.</li>
+</ol>
+
+<h2>4. Details, die Interviewer fragen</h2>
+<ol>
+  <li><b>Strukturelles Schema:</b> In <code>apiextensions.k8s.io/v1</code> Pflicht. Jedes Feld hat einen Typ. Unbekannte Felder werden beim Speichern entfernt (<b>Pruning</b>), ausser mit <code>x-kubernetes-preserve-unknown-fields</code>.</li>
+  <li><b>CEL-Validierung</b> (stabil seit 1.29): <code>x-kubernetes-validations</code> mit <code>rule</code>, <code>message</code> oder <code>messageExpression</code>, <code>reason</code>, <code>fieldPath</code>. <b>Transition Rules</b> nutzen <code>oldSelf</code>, z. B. „Feld darf nicht mehr geändert werden“.</li>
+  <li><b>Validation Ratcheting</b> (stabil seit 1.33): Alte ungültige Werte dürfen bleiben, solange man sie nicht ändert. Wichtig beim Verschärfen eines Schemas.</li>
+  <li><b>Defaulting:</b> über <code>default</code> im Schema. Gilt beim Schreiben und beim Lesen aus etcd.</li>
+  <li><b>Status-Subresource:</b> trennt <code>spec</code> und <code>status</code>. Nutzer ändern spec, der Operator ändert status. <code>generation</code> steigt nur bei spec-Änderungen.</li>
+  <li><b>Scale-Subresource:</b> macht <code>kubectl scale</code> und den HPA für die CR nutzbar.</li>
+  <li><b>Versionen:</b> mehrere Versionen <code>served</code>, aber genau eine <code>storage: true</code>. Zwischen Versionen konvertiert der API-Server: Strategie <code>None</code> (nur apiVersion ändern) oder <code>Webhook</code>.</li>
+  <li><b>Field Selectors für CRs</b> (stabil seit 1.32): mit <code>selectableFields</code> kann man nach Feldern filtern, z. B. <code>--field-selector spec.day=2026-11-23</code>.</li>
+  <li><b>Controller-Pattern:</b> <b>level-triggered</b>: Reconcile schaut auf den ganzen Zustand, nicht auf ein einzelnes Event. Darum muss es <b>idempotent</b> sein und darf beliebig oft laufen.</li>
+  <li><b>ownerReferences:</b> Erzeugte Objekte zeigen auf die CR. Wird die CR gelöscht, räumt die <b>Garbage Collection</b> sie auf. Owner und Kind müssen im selben Namespace sein (oder Owner cluster-weit).</li>
+  <li><b>Finalizer:</b> Liste von Schlüsseln in <code>metadata.finalizers</code>. Solange einer drin ist, wird das Objekt nicht gelöscht. Neue Finalizer kann man nach dem Löschbefehl nicht mehr hinzufügen.</li>
+  <li><b>Conditions:</b> Standardform für Status, z. B. <code>Ready=True</code> mit <code>reason</code> und <code>message</code>. Werkzeuge wie <code>kubectl wait --for=condition=Ready</code> verstehen sie.</li>
+  <li><b>Operator Capability Levels</b> (Operator SDK): 1 Basic Install, 2 Seamless Upgrades, 3 Full Lifecycle, 4 Deep Insights, 5 Auto Pilot.</li>
+  <li><b>Werkzeuge:</b> <b>controller-runtime</b> (Go-Bibliothek), <b>kubebuilder</b> und <b>Operator SDK</b> (Gerüst, Codegenerierung). Java: Java Operator SDK.</li>
+</ol>
+
+<h2>5. Vergleich</h2>
+<ul>
+  <li><b>CRD:</b> eigener Typ ohne eigenen Server. Speicherung, RBAC, Watch und kubectl gibt es gratis.</li>
+  <li><b>Aggregated API Server:</b> eigener API-Server hinter dem Haupt-API-Server. Volle Kontrolle, z. B. eigene Speicherung. Viel mehr Aufwand. Beispiel: metrics-server.</li>
+  <li><b>Operator:</b> CRD plus Controller mit Betriebswissen. Für zustandsbehaftete Systeme (Datenbanken, Kafka mit Strimzi, PostgreSQL mit CloudNativePG).</li>
+  <li><b>Helm-Chart:</b> installiert einmal und upgradet auf Befehl. Reagiert nicht auf Zustandsänderungen im Betrieb.</li>
+  <li><b>ConfigMap plus Skript:</b> einfache Konfiguration ohne Schema und ohne Validierung.</li>
+  <li><b>Admission Policy:</b> prüft Objekte beim Schreiben. Ein Operator handelt danach.</li>
+</ul>
+
+<h2>6. In der Produktion</h2>
+<ol>
+  <li><b>CRD gelöscht, alle Daten weg:</b> Beim Löschen einer CRD löscht Kubernetes alle CRs dieses Typs. Bei Argo CD-Applications oder Datenbank-Operatoren ein Desaster. Lösung: CRDs mit Schutz (z. B. Prune deaktiviert, eigenes Repo), Backups mit Velero.</li>
+  <li><b>Namespace hängt in Terminating:</b> Eine CR hat einen Finalizer, aber der Operator läuft nicht mehr. Lösung: Operator wieder starten. Finalizer nur von Hand entfernen, wenn man weiss, was dann extern übrig bleibt.</li>
+  <li><b>Helm aktualisiert CRDs nicht:</b> CRDs im <code>crds/</code>-Ordner werden nur beim Install angelegt, nicht beim Upgrade. Lösung: CRDs separat versionieren und anwenden, oder Chart mit CRD-Templates.</li>
+  <li><b>Grosse CRDs scheitern beim Apply:</b> Die Annotation für Client-Side-Apply wird zu gross. Lösung: Server-Side Apply (in Argo CD <code>ServerSideApply=true</code>).</li>
+  <li><b>Operator-Upgrade bricht alte CRs:</b> Neue Pflichtfelder oder geänderte Versionen. Lösung: Defaults, Ratcheting, Conversion, Storage-Version-Migration testen.</li>
+  <li><b>API-Server wird langsam:</b> Ein Operator macht List-Aufrufe statt Watch und Cache, oder es gibt hunderttausende CRs. Lösung: Informer nutzen, alte CRs aufräumen.</li>
+  <li><b>Operator mit zu viel RBAC:</b> Viele Charts geben cluster-weite Rechte. Lösung: Rechte prüfen, auf Namespaces begrenzen, wo es geht.</li>
+</ol>
+
+<h2>7. Diagnose: Werkzeuge und Befehle</h2>
+<ul>
+  <li><code>kubectl get crds</code> und <code>kubectl explain reportjob.spec --recursive</code>: Schema einer CRD.</li>
+  <li><code>kubectl api-resources --api-group=demo.example.com</code>: welche Typen eine Gruppe hat.</li>
+  <li><code>kubectl get rj X -o yaml</code>: <code>generation</code>, <code>status.observedGeneration</code>, <code>conditions</code>, <code>finalizers</code>.</li>
+  <li><code>kubectl get crd X -o jsonpath='{.status.storedVersions}'</code>: welche Versionen in etcd liegen.</li>
+  <li><code>kubectl logs deploy/&lt;operator&gt;</code> und Leader-Lease: <code>kubectl get lease -n &lt;ns&gt;</code>.</li>
+  <li><code>kubectl auth can-i --as=system:serviceaccount:ns:sa list reportjobs</code>: RBAC des Operators.</li>
+  <li><code>kubectl get ns X -o yaml</code>: bei Terminating zeigen die Conditions, welche Ressourcen und Finalizer blockieren.</li>
+</ul>
+
+<h2>8. Senior-Punkte</h2>
+<div class="senior">
+<ol>
+  <li><b>Erst fragen: braucht es einen Operator?</b> Ein Helm-Chart oder ein CronJob reicht oft. Ein Operator ist ein eigenes Produkt mit Wartung.</li>
+  <li><b>Fertige Operatoren für schwere Systeme:</b> Datenbanken, Kafka, Zertifikate, Secrets. Eigener Code nur für echte Fachlogik.</li>
+  <li><b>Die CRD ist eine öffentliche API.</b> Versionieren, Defaults setzen, Validierung in CEL, nie Felder umdeuten.</li>
+  <li><b>Reconcile idempotent bauen.</b> Beliebig oft, in beliebiger Reihenfolge, nach Neustart. Status ehrlich mit observedGeneration und Conditions.</li>
+  <li><b>Finalizer sparsam:</b> nur für echte externe Aufräumarbeit. Jeder Finalizer kann Löschungen blockieren.</li>
+  <li><b>Operatoren gehören zum Plattform-Betrieb:</b> Upgrades, RBAC-Review, Monitoring, Backup der CRs.</li>
+</ol>
+</div>
+
+<h2>9. Aus dem Projekt</h2>
+<p>„Bei MATCH nutzen wir mehrere Operatoren mit eigenen CRDs: Argo CD für GitOps, den External Secrets Operator für Secrets aus Vault und Azure Key Vault, Karpenter für Nodes und Kyverno für Policies. Einen eigenen Operator habe ich laut Profil nicht geschrieben.“ <span class="small">(Prüfen und durch dein echtes Beispiel ersetzen.)</span></p>
+
+<h2>10. Fallen</h2>
+<div class="trap">
+<ul>
+  <li>„Eine CRD macht schon etwas.“ → <b>Falsch.</b> Sie speichert nur Daten. Handeln tut der Controller.</li>
+  <li>„Ein Operator reagiert auf Events, also muss jedes Event ankommen.“ → <b>Falsch.</b> Er ist level-triggered und gleicht den ganzen Zustand ab.</li>
+  <li>„Eine CRD löschen ist harmlos.“ → <b>Falsch.</b> Alle CRs dieses Typs werden mitgelöscht.</li>
+  <li>„Ein hängendes Objekt löse ich immer, indem ich den Finalizer entferne.“ → <b>Falsch.</b> Dann bleibt externer Müll zurück. Erst den Operator reparieren.</li>
+  <li>„Mehrere Versionen heisst mehrere Kopien in etcd.“ → <b>Falsch.</b> Genau eine Storage-Version. Der Rest wird konvertiert.</li>
+  <li>„Status ändern erhöht generation.“ → <b>Falsch.</b> Nur spec-Änderungen erhöhen sie.</li>
+</ul>
+</div>
+
+<h2>11. Fragen</h2>
+<details><summary>Was ist eine CRD?</summary><p>Eine Definition, die einen neuen Objekttyp in der Kubernetes-API registriert, mit Schema, Versionen und Scope.</p></details>
+<details><summary>Was ist ein Operator?</summary><p>Ein Controller, der Custom Resources beobachtet und Betriebswissen ausführt: installieren, upgraden, heilen, sichern.</p></details>
+<details><summary>Was ist ein Reconcile Loop?</summary><p>Eine Funktion, die den gewünschten Zustand aus der CR mit dem echten vergleicht und Unterschiede behebt. Sie läuft bei jeder Änderung und periodisch.</p></details>
+<details><summary>Was heisst level-triggered?</summary><p>Der Controller schaut auf den aktuellen Gesamtzustand, nicht auf einzelne Events. Verpasste Events sind kein Problem.</p></details>
+<details><summary>Was ist ein strukturelles Schema?</summary><p>Ein OpenAPI-Schema, in dem jedes Feld einen Typ hat. Pflicht in v1. Es erlaubt Pruning, Defaults und Validierung.</p></details>
+<details><summary>Wie validiert man komplexe Regeln in einer CRD?</summary><p>Mit CEL in <code>x-kubernetes-validations</code>. Stabil seit 1.29, ohne Webhook.</p></details>
+<details><summary>Was sind Transition Rules?</summary><p>CEL-Regeln mit <code>oldSelf</code>, die den alten mit dem neuen Wert vergleichen, z. B. „unveränderlich“.</p></details>
+<details><summary>Was macht die Status-Subresource?</summary><p>Eigener Endpunkt <code>/status</code>. Spec und Status werden getrennt geschrieben, und generation steigt nur bei spec-Änderungen.</p></details>
+<details><summary>Was ist observedGeneration?</summary><p>Die generation, die der Operator zuletzt verarbeitet hat. Ist sie kleiner als generation, ist er noch nicht fertig.</p></details>
+<details><summary>Was ist ein Finalizer?</summary><p>Ein Schlüssel in <code>metadata.finalizers</code>, der das Löschen blockiert, bis ein Controller aufgeräumt und ihn entfernt hat.</p></details>
+<details><summary>Was sind ownerReferences?</summary><p>Verweise von erzeugten Objekten auf ihren Besitzer. Wird der Besitzer gelöscht, räumt die Garbage Collection sie auf.</p></details>
+<details><summary>Wie versioniert man eine CRD?</summary><p>Mehrere Versionen served, genau eine storage. Konvertierung None oder per Webhook, danach gespeicherte Objekte migrieren.</p></details>
+<details><summary>Was ist Validation Ratcheting?</summary><p>Verschärfte Regeln gelten nur für geänderte Felder. Alte, nun ungültige Werte dürfen bleiben. Stabil seit 1.33.</p></details>
+<details><summary>CRD oder Aggregated API Server?</summary><p>CRD fast immer: einfach, alles inklusive. Aggregated API nur für eigene Speicherung oder spezielle Semantik.</p></details>
+<details><summary>Welche Capability Levels gibt es?</summary><p>Basic Install, Seamless Upgrades, Full Lifecycle, Deep Insights, Auto Pilot.</p></details>
+<details><summary>Womit baut man Operatoren?</summary><p>controller-runtime mit kubebuilder oder Operator SDK in Go, Java Operator SDK in Java.</p></details>
+<details><summary>Welche Operatoren kennen Sie aus der Praxis?</summary><p>Argo CD, External Secrets Operator, Karpenter, Kyverno. Bekannte weitere: Strimzi für Kafka, CloudNativePG für PostgreSQL, cert-manager.</p></details>
+<details><summary>Warum braucht ein Operator Leader Election?</summary><p>Bei mehreren Replikas darf nur eine reconcilen, sonst kämpfen sie gegeneinander. Die Wahl läuft über ein Lease-Objekt.</p></details>
+<details><summary>Warum aktualisiert Helm CRDs nicht?</summary><p>CRDs im <code>crds/</code>-Ordner installiert Helm nur einmal. Upgrades und Löschen macht es bewusst nicht, um Datenverlust zu vermeiden.</p></details>
+<details><summary>Szenario: Ein Namespace hängt seit Stunden in Terminating. Was tun Sie?</summary><p>Conditions des Namespace lesen. Meist hat eine CR einen Finalizer, und ihr Operator läuft nicht. Operator reparieren, erst im Notfall den Finalizer bewusst entfernen.</p></details>
+<details><summary>Szenario: Nach einem Operator-Upgrade werden bestehende CRs abgelehnt. Warum?</summary><p>Das neue Schema hat Pflichtfelder oder strengere Regeln. Lösung: Defaults setzen, Ratcheting nutzen, Konvertierung prüfen, Upgrade vorher in Staging testen.</p></details>
+<details><summary>Szenario: Das Team will einen eigenen Operator für einen nächtlichen Report. Was sagen Sie?</summary><p>Wahrscheinlich zu viel. Ein CronJob mit idempotentem Job reicht. Ein Operator lohnt sich erst bei echtem Lebenszyklus mit Zustand und Heilung.</p></details>
+
+</body>
+</html>

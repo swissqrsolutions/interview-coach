@@ -19,12 +19,37 @@
   summary { font-weight: 600; cursor: pointer; }
   details p { margin: 6px 0 2px; }
   .small { color: #6e6e73; font-size: 14px; }
+  h3 { font-size: 17px; margin: 20px 0 6px; }
+  .geruest { border: 2px solid #1d1d1f; border-radius: 6px; padding: 10px 14px; margin: 14px 0; font-size: 15px; line-height: 1.4; }
+  .geruest h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; margin: 0 0 8px; padding: 0; border: 0; }
+  .geruest dl { display: grid; grid-template-columns: 6.6em 1fr; gap: 6px 10px; margin: 0; }
+  .geruest dt { font-weight: 700; font-size: 12px; text-transform: uppercase; letter-spacing: .05em; padding-top: 1px; }
+  .geruest dd { margin: 0; }
+  .muster { border: 1px solid #e5e5ea; border-left: 4px solid #1d1d1f; border-radius: 6px; padding: 10px 14px; margin: 14px 0; }
+  .muster h3 { margin: 0 0 6px; font-size: 13px; text-transform: uppercase; letter-spacing: .06em; }
+  .muster .mq { margin: 0 0 6px; }
 </style>
 </head>
 <body>
 
 <h1>Consumer Groups und Rebalancing</h1>
-<p class="small">Kafka · Tier 1 · Quellen: Apache Kafka 4.x Documentation (Consumer Configs, Consumer Rebalance Protocol, Upgrade Notes 4.0/4.2), KIP-345, KIP-429, KIP-848, KIP-932, Confluent Developer Docs, Spring for Apache Kafka Reference</p>
+<p class="small">Kafka · Tier 1 · Quellen: Apache Kafka 4.x Documentation (Consumer Configs, Consumer Rebalance Protocol, Upgrade Notes 4.0/4.2), KIP-345, KIP-429, KIP-848, KIP-932, Confluent Developer Docs, Spring for Apache Kafka Reference, Kafka 4.4 Consumer und Broker Configs (Standardwerte)</p>
+
+<div class="geruest"><h2>Gerüst</h2><dl>
+  <dt>Warum?</dt><dd>Partitionen auf mehrere Consumer verteilen: parallel lesen, Reihenfolge pro Partition bleibt. Fällt einer aus, übernimmt ein anderer.</dd>
+  <dt>Wie innen?</dt><dd>Group Coordinator (Broker) prüft Heartbeats. Classic: JoinGroup/SyncGroup, Leader rechnet. KIP-848: Broker rechnet, Member gleichen einzeln ab.</dd>
+  <dt>Zahlen</dt><dd><code>session.timeout.ms</code> 45 s, Heartbeat 3 s, <code>max.poll.interval.ms</code> 5 min, <code>max.poll.records</code> 500. Aktive Consumer ≤ Partitionen.</dd>
+  <dt>Vergleich</dt><dd>Eager: alle stoppen. Cooperative: nur wandernde Partitionen, 2 Runden. KIP-848: keine Barriere. Share Groups: mehrere pro Partition.</dd>
+  <dt>Produktion</dt><dd>Batch dauert länger als 5 min → Rauswurf, Rebalance-Sturm. Commit fehlt beim Rebalance → Duplikate.</dd>
+  <dt>Design</dt><dd>Partitionsanzahl = maximale Parallelität, beim Topic-Design festlegen. Idempotent verarbeiten; Static Membership für Rolling Deploys.</dd>
+</dl></div>
+
+<div class="muster"><h3>Antwort-Muster</h3><p class="mq"><b>Frage:</b> Was ist eine Consumer Group, und was passiert bei einem Rebalance?</p><ol>
+  <li>Mechanismus: Consumer mit gleicher <code>group.id</code> teilen sich die Partitionen, jede hat genau einen Besitzer.</li>
+  <li>Zahl: Ohne Heartbeat in 45 s oder ohne <code>poll()</code> in 5 min fliegt ein Consumer raus.</li>
+  <li>Trade-off: Der Rebalance verteilt neu, kostet aber eine Pause und bringt mögliche Duplikate.</li>
+  <li>Produktion: Darum verarbeite ich idempotent und nutze Cooperative Rebalancing oder das neue Protokoll.</li>
+</ol></div>
 
 <div class="kern">
 <b>Kern:</b> Eine <b>Consumer Group</b> ist eine Menge von Consumern mit derselben <code>group.id</code>, die sich die Partitionen eines Topics teilen. Jede Partition gehört zu genau einem Consumer der Gruppe. Ein <b>Rebalance</b> verteilt die Partitionen neu, wenn Consumer kommen, gehen oder hängen.
@@ -120,13 +145,16 @@ spring.kafka.listener.concurrency: 2   # 2 Consumer-Threads pro Pod</pre>
 
 <h2>4. Details, die Interviewer fragen</h2>
 <ol>
+  <li><b>Warum genau ein Besitzer pro Partition:</b> Kafka garantiert Reihenfolge nur innerhalb einer Partition. Liest nur ein Consumer sie, bleibt die Reihenfolge erhalten. Und pro Gruppe und Partition reicht ein einziger committeter Offset.</li>
+  <li><b>Warum Partitionen später schwer zu ändern sind:</b> Mehr Partitionen verschieben neue Records eines Keys in eine andere Partition. Alte Records bleiben, wo sie sind. Wer auf Reihenfolge pro Key baut, bekommt dann Probleme.</li>
   <li><b>Range Assignor:</b> teilt pro Topic die Partitionen in zusammenhängende Bereiche. Bei vielen Topics bekommen die ersten Consumer mehr. Gut für Co-Partitioning (gleiche Partitionsnummer, gleicher Consumer).</li>
   <li><b>RoundRobin Assignor:</b> verteilt alle Partitionen reihum. Gleichmässig, aber nicht stabil über Rebalances.</li>
   <li><b>Sticky Assignor:</b> gleichmässig und behält möglichst die alte Zuweisung. Er ist aber noch eager.</li>
   <li><b>CooperativeSticky Assignor:</b> sticky plus cooperative. Nur wandernde Partitionen werden abgegeben.</li>
   <li><b>Standard im Client:</b> <code>partition.assignment.strategy</code> = <code>[RangeAssignor, CooperativeStickyAssignor]</code>. Genutzt wird Range. Der Wechsel auf Cooperative braucht zwei Rolling Restarts.</li>
   <li><b>Neues Protokoll (KIP-848):</b> Client-Assignoren gibt es dort nicht. Man wählt mit <code>group.remote.assignor</code> zwischen <code>uniform</code> (Standard) und <code>range</code>. Der Standard im Client bleibt <code>group.protocol=classic</code>.</li>
-  <li><b>Timeouts im neuen Protokoll:</b> <code>session.timeout.ms</code> und <code>heartbeat.interval.ms</code> im Client gelten dort nicht. Der Broker steuert sie über <code>group.consumer.session.timeout.ms</code> und <code>group.consumer.heartbeat.interval.ms</code>.</li>
+  <li><b>Timeouts im neuen Protokoll:</b> <code>session.timeout.ms</code> und <code>heartbeat.interval.ms</code> im Client gelten dort nicht. Der Broker steuert sie über <code>group.consumer.session.timeout.ms</code> (Standard 45 s) und <code>group.consumer.heartbeat.interval.ms</code> (Standard 5 s). Die Broker-Assignoren sind standardmässig <code>uniform,range</code>.</li>
+  <li><b>heartbeat.interval.ms (classic):</b> Standard 3 s. Die Doku empfiehlt höchstens ein Drittel von <code>session.timeout.ms</code>. So darf ein Heartbeat ausfallen, ohne dass der Consumer rausfliegt.</li>
   <li><b>session.timeout.ms (classic):</b> Ohne Heartbeat in 45 s (Standard) wirft der Coordinator den Consumer raus. Der Heartbeat-Thread läuft im Hintergrund, unabhängig von <code>poll()</code>.</li>
   <li><b>max.poll.interval.ms:</b> die maximale Zeit zwischen zwei <code>poll()</code>-Aufrufen (Standard 5 min). Wird sie überschritten, verlässt der Consumer die Gruppe selbst. Das erkennt einen hängenden Verarbeitungs-Thread.</li>
   <li><b>max.poll.records:</b> wie viele Records ein <code>poll()</code> höchstens liefert (Standard 500). Weniger Records pro Poll senken das Risiko, <code>max.poll.interval.ms</code> zu reissen.</li>
@@ -193,29 +221,40 @@ spring.kafka.listener.concurrency: 2   # 2 Consumer-Threads pro Pod</pre>
 </ul>
 </div>
 
-<h2>11. Fragen</h2>
+<h2>11. Selbsttest</h2>
+<h3>Warum?</h3>
 <details><summary>Was ist eine Consumer Group?</summary><p>Consumer mit gleicher <code>group.id</code>, die sich die Partitionen teilen. Jede Partition hat genau einen Besitzer in der Gruppe.</p></details>
-<details><summary>Was passiert mit mehr Consumern als Partitionen?</summary><p>Die überzähligen Consumer bekommen nichts. Sie dienen höchstens als Reserve.</p></details>
 <details><summary>Was ist ein Rebalance?</summary><p>Die Neuverteilung der Partitionen in einer Gruppe, wenn sich Mitglieder oder Partitionen ändern.</p></details>
+<details><summary>Was passiert mit mehr Consumern als Partitionen?</summary><p>Die überzähligen Consumer bekommen nichts. Sie dienen höchstens als Reserve.</p></details>
+<details><summary>Warum gehört jede Partition nur einem Consumer der Gruppe?</summary><p>Kafka garantiert Reihenfolge nur innerhalb einer Partition. Ein einziger Leser hält diese Reihenfolge. Und pro Gruppe und Partition reicht ein committeter Offset.</p></details>
+<h3>Wie innen?</h3>
 <details><summary>Was löst einen Rebalance aus?</summary><p>Ein Consumer kommt oder geht, ein Heartbeat fehlt, <code>max.poll.interval.ms</code> wird überschritten, oder Partitionen bzw. passende Topics ändern sich.</p></details>
 <details><summary>Was ist der Group Coordinator?</summary><p>Ein Broker, der eine Gruppe verwaltet: Mitglieder, Heartbeats, Zuweisung und Offsets.</p></details>
-<details><summary>Eager vs Cooperative Rebalancing?</summary><p>Eager: alle geben alles ab, Stillstand. Cooperative: nur wandernde Partitionen werden abgegeben, in zwei Runden.</p></details>
 <details><summary>Was ist neu an KIP-848?</summary><p>Der Broker rechnet die Zuweisung. Members gleichen einzeln per Heartbeat ab. Keine globale Barriere mehr. GA seit Kafka 4.0.</p></details>
-<details><summary>Wie aktiviert man das neue Protokoll?</summary><p>Broker 4.0+, im Client <code>group.protocol=consumer</code>. Assignor über <code>group.remote.assignor</code>: uniform oder range.</p></details>
-<details><summary>Welche Client-Einstellungen gelten im neuen Protokoll nicht?</summary><p><code>session.timeout.ms</code>, <code>heartbeat.interval.ms</code> und eigene Client-Assignoren. Der Broker steuert das.</p></details>
-<details><summary>Was ist der Unterschied zwischen session.timeout.ms und max.poll.interval.ms?</summary><p>Session: Lebt der Prozess (Heartbeat)? Poll-Intervall: Kommt der Verarbeitungs-Thread voran?</p></details>
-<details><summary>Was ist Static Membership?</summary><p>Eine feste <code>group.instance.id</code> pro Consumer. Ein kurzer Neustart löst keinen Rebalance aus.</p></details>
-<details><summary>Welche Assignoren gibt es im classic-Protokoll?</summary><p>Range, RoundRobin, Sticky und CooperativeSticky. Standard ist Range, mit CooperativeSticky als zweiter Option.</p></details>
-<details><summary>Wie wechselt man von Range auf CooperativeSticky?</summary><p>Erster Rolling Restart: beide Assignoren, CooperativeSticky zuerst. Zweiter Rolling Restart: nur CooperativeSticky.</p></details>
 <details><summary>Wozu dient der ConsumerRebalanceListener?</summary><p>In <code>onPartitionsRevoked</code> Offsets committen oder State sichern. In <code>onPartitionsAssigned</code> State laden oder seeken.</p></details>
 <details><summary>Ist der KafkaConsumer thread-sicher?</summary><p>Nein. Ein Consumer pro Thread. Nur <code>wakeup()</code> darf ein anderer Thread aufrufen.</p></details>
+<details><summary>Warum kommt eine CommitFailedException?</summary><p>Ein Commit nach dem Verlust der Partitionen, meist wegen zu langer Verarbeitung. Der Commit gehört zu einer alten Generation.</p></details>
+<h3>Zahlen</h3>
+<details><summary>Was ist der Unterschied zwischen session.timeout.ms und max.poll.interval.ms?</summary><p>Session: Lebt der Prozess (Heartbeat)? Poll-Intervall: Kommt der Verarbeitungs-Thread voran?</p></details>
 <details><summary>Was ist Consumer Lag?</summary><p>Log-End-Offset minus committeter Offset, pro Partition. Er zeigt, wie weit die Gruppe hinterher ist.</p></details>
-<details><summary>Was ist eine CommitFailedException?</summary><p>Ein Commit nach dem Verlust der Partitionen, meist wegen zu langer Verarbeitung. Der Commit gehört zu einer alten Generation.</p></details>
+<details><summary>Welche Standardwerte haben die wichtigsten Consumer-Timeouts?</summary><p><code>session.timeout.ms</code> 45 s, <code>heartbeat.interval.ms</code> 3 s, <code>max.poll.interval.ms</code> 5 min, <code>max.poll.records</code> 500. Im neuen Protokoll steuert der Broker Session (45 s) und Heartbeat (5 s).</p></details>
+<details><summary>Was geht kaputt, wenn 500 Records je 1 s Verarbeitung brauchen?</summary><p>Ein Poll braucht dann 500 s, mehr als die 300 s von <code>max.poll.interval.ms</code>. Der Consumer verlässt die Gruppe, es gibt einen Rebalance und Duplikate. Lösung: <code>max.poll.records</code> senken oder schneller verarbeiten.</p></details>
+<h3>Vergleich</h3>
+<details><summary>Eager vs Cooperative Rebalancing?</summary><p>Eager: alle geben alles ab, Stillstand. Cooperative: nur wandernde Partitionen werden abgegeben, in zwei Runden.</p></details>
+<details><summary>Welche Assignoren gibt es im classic-Protokoll?</summary><p>Range, RoundRobin, Sticky und CooperativeSticky. Standard ist Range, mit CooperativeSticky als zweiter Option.</p></details>
 <details><summary>Was sind Share Groups?</summary><p>Queue-artige Gruppen (KIP-932): mehrere Consumer pro Partition, Ack pro Record, keine Reihenfolge. Produktionsreif seit Kafka 4.2.</p></details>
-<details><summary>Wie skaliert man Consumer in Kubernetes?</summary><p>Mehr Pods bis zur Partitionsanzahl, z. B. mit KEDA nach Lag. Jede Änderung löst einen Rebalance aus.</p></details>
+<details><summary>Warum ist das neue Protokoll (KIP-848) bei grossen Gruppen besser?</summary><p>Es gibt keine globale Barriere mehr. Der Broker rechnet die Zuweisung, und jeder Member gleicht einzeln ab. Ein langsamer Consumer hält die anderen nicht mehr auf.</p></details>
+<h3>Produktion</h3>
 <details><summary>Szenario: Nach jedem Deployment gibt es Minuten mit hohem Lag und Duplikaten. Was tun Sie?</summary><p>Jeder Pod-Neustart löst Rebalances aus. Lösung: neues Protokoll oder Cooperative, Static Membership, Commit in <code>onPartitionsRevoked</code>, sauberes Shutdown mit <code>close()</code>.</p></details>
 <details><summary>Szenario: Consumer werden ständig aus der Gruppe geworfen, im Log steht „poll timeout has expired“. Warum?</summary><p>Die Verarbeitung eines Polls dauert länger als <code>max.poll.interval.ms</code>. Lösung: <code>max.poll.records</code> senken, langsame Aufrufe (DB, HTTP) beschleunigen, Timeout bewusst erhöhen.</p></details>
 <details><summary>Szenario: Sie haben 6 Partitionen und skalieren von 6 auf 12 Pods. Der Lag sinkt nicht. Warum?</summary><p>6 Pods sind untätig. Mehr Durchsatz geht nur über mehr Partitionen oder parallele Verarbeitung im Consumer.</p></details>
+<h3>Design</h3>
+<details><summary>Wie aktiviert man das neue Protokoll?</summary><p>Broker 4.0+, im Client <code>group.protocol=consumer</code>. Assignor über <code>group.remote.assignor</code>: uniform oder range.</p></details>
+<details><summary>Welche Client-Einstellungen gelten im neuen Protokoll nicht?</summary><p><code>session.timeout.ms</code>, <code>heartbeat.interval.ms</code> und eigene Client-Assignoren. Der Broker steuert das.</p></details>
+<details><summary>Was ist Static Membership?</summary><p>Eine feste <code>group.instance.id</code> pro Consumer. Ein kurzer Neustart löst keinen Rebalance aus.</p></details>
+<details><summary>Wie wechselt man von Range auf CooperativeSticky?</summary><p>Erster Rolling Restart: beide Assignoren, CooperativeSticky zuerst. Zweiter Rolling Restart: nur CooperativeSticky.</p></details>
+<details><summary>Wie skaliert man Consumer in Kubernetes?</summary><p>Mehr Pods bis zur Partitionsanzahl, z. B. mit KEDA nach Lag. Jede Änderung löst einen Rebalance aus.</p></details>
+<details><summary>Warum plant man die Partitionsanzahl schon beim Topic-Design?</summary><p>Sie begrenzt die Zahl der aktiven Consumer. Mehr Partitionen später schicken neue Records eines Keys in eine andere Partition. Die Reihenfolge pro Key kann dann brechen.</p></details>
 
 </body>
 </html>

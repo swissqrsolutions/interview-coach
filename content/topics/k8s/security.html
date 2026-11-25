@@ -1,0 +1,232 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pod Security und Admission</title>
+<style>
+  body { font: 17px/1.55 -apple-system, system-ui, sans-serif; max-width: 760px; margin: 0 auto; padding: 16px; color: #1d1d1f; }
+  h1 { font-size: 28px; margin: 8px 0 4px; }
+  h2 { font-size: 21px; margin: 32px 0 8px; padding-top: 12px; border-top: 2px solid #e5e5ea; }
+  .kern { background: #eef6ff; border-left: 4px solid #0a66c2; padding: 10px 14px; border-radius: 6px; }
+  .senior { background: #f0faf0; border-left: 4px solid #2e7d32; padding: 10px 14px; border-radius: 6px; }
+  .trap { background: #fff4f2; border-left: 4px solid #c62828; padding: 10px 14px; border-radius: 6px; }
+  code { background: #f2f2f7; padding: 1px 5px; border-radius: 4px; font-size: 15px; }
+  pre { background: #1e1e1e; color: #e6e6e6; padding: 12px; border-radius: 8px; overflow-x: auto; font-size: 13.5px; line-height: 1.45; }
+  svg { width: 100%; height: auto; display: block; margin: 10px 0; }
+  ol li, ul li { margin: 4px 0; }
+  details { border: 1px solid #e5e5ea; border-radius: 8px; padding: 8px 12px; margin: 6px 0; }
+  summary { font-weight: 600; cursor: pointer; }
+  details p { margin: 6px 0 2px; }
+  .small { color: #6e6e73; font-size: 14px; }
+</style>
+</head>
+<body>
+
+<h1>Pod Security und Admission Controller (Kyverno)</h1>
+<p class="small">Kubernetes · Tier 2 · Quellen: kubernetes.io Docs „Pod Security Standards“, „Pod Security Admission“, „Admission Control in Kubernetes“, „Dynamic Admission Control“, „Validating Admission Policy“, „Mutating Admission Policy“, Feature-Gate-Referenz (Stand Kubernetes 1.37); kyverno.io Docs (Policy Types, Migrating to CEL Policies), Kyverno Release v1.20.0</p>
+
+<div class="kern">
+<b>Kern:</b> Ein <b>Admission Controller</b> ist ein Prüfschritt im API-Server, der eine Anfrage nach der Anmeldung und RBAC <b>ändern</b> (mutating) oder <b>ablehnen</b> (validating) kann, bevor sie in etcd landet. <b>Pod Security Admission</b> ist der eingebaute Controller, der Pods gegen drei Stufen prüft: <b>privileged</b>, <b>baseline</b>, <b>restricted</b>. <b>Kyverno</b> ist eine Policy-Engine für eigene Regeln, z. B. „nur Images aus unserer Registry“.
+</div>
+
+<h2>1. Wo sitzt Admission?</h2>
+<svg viewBox="0 0 720 280" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="a" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="10" y="100" width="100" height="60" rx="8" fill="#fff" stroke="#555"/><text x="60" y="126" text-anchor="middle">kubectl</text><text x="60" y="144" text-anchor="middle" font-size="12">Argo CD</text>
+  <rect x="140" y="20" width="440" height="240" rx="12" fill="#f7f7fa" stroke="#999" stroke-dasharray="5 4"/><text x="360" y="42" text-anchor="middle" font-weight="700">kube-apiserver</text>
+  <rect x="155" y="60" width="120" height="50" rx="8" fill="#fff" stroke="#555"/><text x="215" y="82" text-anchor="middle" font-size="13">AuthN</text><text x="215" y="99" text-anchor="middle" font-size="11">wer?</text>
+  <rect x="295" y="60" width="120" height="50" rx="8" fill="#fff" stroke="#555"/><text x="355" y="82" text-anchor="middle" font-size="13">AuthZ (RBAC)</text><text x="355" y="99" text-anchor="middle" font-size="11">darf er?</text>
+  <rect x="435" y="60" width="130" height="50" rx="8" fill="#dbe9fb" stroke="#0a66c2"/><text x="500" y="82" text-anchor="middle" font-size="13">Mutating</text><text x="500" y="99" text-anchor="middle" font-size="11">ändern</text>
+  <rect x="435" y="140" width="130" height="50" rx="8" fill="#eee" stroke="#777"/><text x="500" y="162" text-anchor="middle" font-size="13">Schema-Prüfung</text><text x="500" y="179" text-anchor="middle" font-size="11">OpenAPI</text>
+  <rect x="245" y="140" width="170" height="50" rx="8" fill="#fff4f2" stroke="#c62828"/><text x="330" y="162" text-anchor="middle" font-size="13">Validating</text><text x="330" y="179" text-anchor="middle" font-size="11">PSA · VAP · Webhooks</text>
+  <rect x="155" y="210" width="120" height="40" rx="8" fill="#e8f5e9" stroke="#2e7d32"/><text x="215" y="235" text-anchor="middle">etcd</text>
+  <rect x="600" y="140" width="110" height="80" rx="10" fill="#0a66c2"/><text x="655" y="168" text-anchor="middle" fill="#fff" font-weight="700">Kyverno</text><text x="655" y="188" text-anchor="middle" fill="#fff" font-size="12">Webhook-Pods</text><text x="655" y="204" text-anchor="middle" fill="#fff" font-size="12">im Cluster</text>
+  <line x1="110" y1="125" x2="153" y2="90" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <line x1="275" y1="85" x2="293" y2="85" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <line x1="415" y1="85" x2="433" y2="85" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <line x1="500" y1="110" x2="500" y2="138" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <line x1="435" y1="165" x2="417" y2="165" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <line x1="245" y1="175" x2="225" y2="208" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <line x1="565" y1="85" x2="620" y2="138" stroke="#0a66c2" stroke-width="1.5" stroke-dasharray="4 3"/>
+  <line x1="415" y1="155" x2="598" y2="175" stroke="#0a66c2" stroke-width="1.5" stroke-dasharray="4 3"/>
+</svg>
+<ol>
+  <li><b>Authentifizierung:</b> Wer schickt die Anfrage? Beispiel: der ServiceAccount von Argo CD.</li>
+  <li><b>Autorisierung (RBAC):</b> Darf er Pods in diesem Namespace anlegen? RBAC prüft nur Verben und Ressourcen, nicht den Inhalt.</li>
+  <li><b>Mutating Admission:</b> ändert das Objekt, z. B. Default-Labels oder Sidecar einfügen. Läuft immer zuerst.</li>
+  <li><b>Schema-Prüfung:</b> Ist das Objekt nach dem Ändern noch gültig?</li>
+  <li><b>Validating Admission:</b> prüft den Inhalt und lehnt ab. Hier sitzen <b>Pod Security Admission</b>, <b>ValidatingAdmissionPolicy</b> und Webhooks wie Kyverno.</li>
+  <li><b>Kyverno:</b> läuft als Pods im Cluster. Der API-Server ruft es per Webhook auf, für mutating und validating.</li>
+</ol>
+
+<h2>2. Die Reise eines unsicheren Pods (die Geschichte zum Merken)</h2>
+<svg viewBox="0 0 720 300" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="b" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker><marker id="r" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#c62828"/></marker></defs>
+  <rect x="10" y="20" width="170" height="70" rx="10" fill="#eee" stroke="#777"/><text x="95" y="46" text-anchor="middle" font-weight="700">1. Deployment</text><text x="95" y="66" text-anchor="middle" font-size="12">ohne securityContext</text>
+  <line x1="180" y1="55" x2="208" y2="55" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="210" y="20" width="160" height="70" rx="10" fill="#fff4e0" stroke="#b26a00"/><text x="290" y="46" text-anchor="middle" font-weight="700">2. PSA: warn</text><text x="290" y="66" text-anchor="middle" font-size="12">Deployment erlaubt</text>
+  <line x1="370" y1="55" x2="398" y2="55" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="400" y="20" width="150" height="70" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="475" y="46" text-anchor="middle" font-weight="700">3. ReplicaSet</text><text x="475" y="66" text-anchor="middle" font-size="12">will Pod anlegen</text>
+  <line x1="550" y1="55" x2="578" y2="55" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="580" y="20" width="130" height="70" rx="10" fill="#fff4f2" stroke="#c62828"/><text x="645" y="46" text-anchor="middle" font-weight="700">4. PSA: enforce</text><text x="645" y="66" text-anchor="middle" font-size="12">Pod abgelehnt</text>
+  <line x1="645" y1="90" x2="645" y2="138" stroke="#c62828" stroke-width="2" marker-end="url(#r)"/>
+  <rect x="440" y="140" width="270" height="70" rx="10" fill="#fff" stroke="#c62828"/><text x="575" y="166" text-anchor="middle" font-weight="700">5. Event FailedCreate</text><text x="575" y="186" text-anchor="middle" font-size="12">Deployment 0/1, keiner merkt es?</text>
+  <line x1="440" y1="175" x2="352" y2="175" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="90" y="140" width="260" height="70" rx="10" fill="#e8f5e9" stroke="#2e7d32"/><text x="220" y="166" text-anchor="middle" font-weight="700">6. securityContext ergänzen</text><text x="220" y="186" text-anchor="middle" font-size="12">nonRoot, drop ALL, seccomp</text>
+  <text x="360" y="255" text-anchor="middle" font-size="13">enforce gilt nur für Pods. warn und audit gelten auch für Deployments, Jobs usw.</text>
+</svg>
+<ol>
+  <li><b>Deployment:</b> Ein Team deployt <code>web</code> ohne <code>securityContext</code> in einen Namespace mit <code>enforce=restricted</code>.</li>
+  <li><b>Warnung:</b> PSA prüft das Pod-Template im Deployment nur mit <b>warn</b> und <b>audit</b>. <code>kubectl</code> zeigt eine Warnung, das Deployment wird trotzdem angelegt.</li>
+  <li><b>ReplicaSet:</b> Der Controller will den Pod anlegen. Jetzt prüft PSA den echten Pod mit <b>enforce</b>.</li>
+  <li><b>Abgelehnt:</b> Der Pod verletzt <code>restricted</code>. Der API-Server lehnt ihn ab.</li>
+  <li><b>Stille Störung:</b> Der Fehler steht nur als Event <code>FailedCreate</code> am ReplicaSet. Das Deployment zeigt <code>0/1</code>.</li>
+  <li><b>Lösung:</b> Das Team setzt <code>runAsNonRoot</code>, <code>allowPrivilegeEscalation: false</code>, <code>capabilities.drop: [ALL]</code> und <code>seccompProfile: RuntimeDefault</code>.</li>
+</ol>
+
+<h2>3. Beispiel: Pod Security und eine CEL-Policy im echten Cluster</h2>
+<pre>$ kubectl create ns demo-security
+$ kubectl label ns demo-security pod-security.kubernetes.io/enforce=restricted pod-security.kubernetes.io/warn=restricted
+
+--- 1) privilegierter Pod
+$ kubectl -n demo-security run priv --image=busybox:1.36 --privileged -- sleep 3600
+Error from server (Forbidden): pods "priv" is forbidden: violates PodSecurity "restricted:latest":
+  privileged (container "priv" must not set securityContext.privileged=true),
+  allowPrivilegeEscalation != false (container "priv" must set securityContext.allowPrivilegeEscalation=false),
+  unrestricted capabilities (container "priv" must set securityContext.capabilities.drop=["ALL"]),
+  runAsNonRoot != true (pod or container "priv" must set securityContext.runAsNonRoot=true),
+  seccompProfile (pod or container "priv" must set securityContext.seccompProfile.type to "RuntimeDefault" or "Localhost")
+
+--- 3) gehärteter Pod (runAsNonRoot, runAsUser 1000, seccomp RuntimeDefault, drop ALL, no escalation)
+$ kubectl -n demo-security apply -f ok.yaml
+pod/hardened created
+
+--- 4) Deployment ohne securityContext
+$ kubectl -n demo-security create deployment web --image=busybox:1.36 -- sleep 3600
+Warning: would violate PodSecurity "restricted:latest": allowPrivilegeEscalation != false (...), ...
+deployment.apps/web created
+$ kubectl -n demo-security get deploy web
+NAME   READY   UP-TO-DATE   AVAILABLE   AGE
+web    0/1     0            0           7s
+$ kubectl -n demo-security events --types=Warning
+Warning   FailedCreate   ReplicaSet/web-5d84849455   Error creating: pods "web-5d84849455-gh59x" is forbidden: violates PodSecurity "restricted:latest": ...
+
+--- 5) ValidatingAdmissionPolicy (CEL): Label team ist Pflicht
+validations:
+- expression: "has(object.metadata.labels) &amp;&amp; 'team' in object.metadata.labels"
+  message: "Jedes Deployment braucht das Label team."
+$ kubectl -n demo-security create deployment api --image=busybox:1.36 -- sleep 3600
+Warning: would violate PodSecurity "restricted:latest": ...
+error: failed to create deployment: deployments.apps "api" is forbidden: ValidatingAdmissionPolicy
+  'demo-security-require-team' with binding 'demo-security-require-team' denied request: Jedes Deployment braucht das Label team.</pre>
+<p class="small">Echte Ausgabe, k3s v1.36 (v1.36.4+k3s1). Lange Zeilen umbrochen und gekürzt. Namespace, Policy und Binding wurden danach gelöscht. Kyverno ist in diesem Cluster nicht installiert.</p>
+<ol>
+  <li>PSA nennt <b>jede</b> verletzte Regel mit dem Feld, das fehlt. Das ist die Checkliste für <code>restricted</code>.</li>
+  <li><code>restricted:latest</code> heisst: Stufe restricted in der Version des Clusters. Mit <code>enforce-version</code> kann man eine Version festnageln.</li>
+  <li>Der gehärtete Pod kommt durch. Vier Felder genügen für ein normales Image.</li>
+  <li>Das Deployment wird nur gewarnt, die Pods werden abgelehnt. Der Fehler steht als Event am ReplicaSet.</li>
+  <li>Die <b>ValidatingAdmissionPolicy</b> läuft im API-Server, ohne Webhook-Pod. Die Bindung begrenzt sie hier per <code>namespaceSelector</code> auf einen Namespace.</li>
+</ol>
+
+<h2>4. Details, die Interviewer fragen</h2>
+<ol>
+  <li><b>Pod Security Standards:</b> <b>privileged</b> (keine Grenzen), <b>baseline</b> (verhindert bekannte Ausbrüche: kein <code>privileged</code>, keine Host-Namespaces, kein hostPath, keine gefährlichen Capabilities), <b>restricted</b> (Härtung: nonRoot, drop ALL, seccomp, keine Privilege Escalation, nur bestimmte Volume-Typen).</li>
+  <li><b>PSA-Modi:</b> <code>enforce</code> (ablehnen), <code>audit</code> (Eintrag im Audit-Log), <code>warn</code> (Warnung an den Client). Pro Namespace kombinierbar, z. B. enforce baseline und warn restricted.</li>
+  <li><b>Labels:</b> <code>pod-security.kubernetes.io/&lt;MODE&gt;: &lt;LEVEL&gt;</code> und optional <code>&lt;MODE&gt;-version</code>. Stabil seit 1.25, Nachfolger der entfernten PodSecurityPolicy.</li>
+  <li><b>Exemptions:</b> Ausnahmen nach Benutzer, RuntimeClass oder Namespace, nur in der Admission-Konfiguration. Controller-ServiceAccounts nicht ausnehmen, sonst ist jeder Deployment-Ersteller ausgenommen.</li>
+  <li><b>Reihenfolge:</b> Erst alle mutating, dann alle validating. Ein Webhook darf nach einer Mutation erneut laufen (<code>reinvocationPolicy: IfNeeded</code>, Standard <code>Never</code>).</li>
+  <li><b>Webhook-Einstellungen:</b> <code>failurePolicy</code> Standard <code>Fail</code> (fail-closed). <code>timeoutSeconds</code> Standard 10, erlaubt 1–30. <code>sideEffects</code> für Dry-Run. Bis zu 64 <code>matchConditions</code> in CEL, um Aufrufe zu sparen.</li>
+  <li><b>ValidatingAdmissionPolicy</b> (stabil seit 1.30): Regeln in <b>CEL</b> direkt im API-Server. <code>validationActions</code>: <code>Deny</code>, <code>Warn</code>, <code>Audit</code>. Parameter über <code>paramKind</code>. Kein Webhook, also keine Latenz und kein Ausfallrisiko.</li>
+  <li><b>MutatingAdmissionPolicy</b> (stabil seit 1.36): Mutation in CEL, als ApplyConfiguration oder JSONPatch. Ersetzt einfache Mutating Webhooks.</li>
+  <li><b>Kyverno:</b> Policy-Engine als Webhook. Kann validieren, mutieren, Ressourcen erzeugen, löschen und Image-Signaturen prüfen. Ergebnisse auch als <b>PolicyReports</b> für bestehende Ressourcen.</li>
+  <li><b>Kyverno im Umbruch:</b> Neue CEL-basierte Typen in <code>policies.kyverno.io/v1</code>: <code>ValidatingPolicy</code>, <code>MutatingPolicy</code>, <code>GeneratingPolicy</code>, <code>DeletingPolicy</code>, <code>ImageValidatingPolicy</code>. Laut Migrationsleitfaden ist <code>ClusterPolicy</code> seit v1.19 deprecated und soll in v1.20 entfernt werden. v1.20.0 ist seit 12.11.2026 aktuell.</li>
+  <li><b>Pod-Controller-Regeln:</b> Kyverno erzeugt aus einer Pod-Regel automatisch Regeln für Deployments, Jobs usw. So kommt der Fehler schon beim Deployment, nicht erst beim Pod.</li>
+  <li><b>securityContext-Basis:</b> <code>runAsNonRoot</code>, <code>runAsUser</code>, <code>allowPrivilegeEscalation: false</code>, <code>capabilities.drop: [ALL]</code>, <code>readOnlyRootFilesystem</code>, <code>seccompProfile: RuntimeDefault</code>.</li>
+</ol>
+
+<h2>5. Vergleich</h2>
+<ul>
+  <li><b>Pod Security Admission:</b> eingebaut, drei feste Stufen, nur Pods, keine eigenen Regeln. Gute Basis für jeden Namespace.</li>
+  <li><b>ValidatingAdmissionPolicy (CEL):</b> eingebaut, eigene Regeln, schnell, kein Webhook. Keine externen Daten, kein Image-Verify.</li>
+  <li><b>Kyverno:</b> YAML/CEL-Policies, Mutation, Generierung, Image-Signaturen, Reports. Läuft als Webhook, also Betrieb und Ausfallrisiko.</li>
+  <li><b>OPA Gatekeeper:</b> Policies in Rego. Mächtig, aber eigene Sprache.</li>
+  <li><b>RBAC:</b> wer darf <b>welche</b> Aktion. Admission: was darf <b>im Objekt</b> stehen.</li>
+  <li><b>NetworkPolicy:</b> wer darf mit wem reden. Pod Security: was darf der Container auf dem Node.</li>
+</ul>
+
+<h2>6. In der Produktion</h2>
+<ol>
+  <li><b>Cluster blockiert: niemand kann Pods anlegen:</b> Ein Webhook mit <code>failurePolicy: Fail</code> ist down, z. B. Kyverno-Pods. Lösung: Kyverno hochverfügbar, <code>kube-system</code> und Kyverno selbst aus den Webhook-Regeln ausnehmen, Notfall-Runbook.</li>
+  <li><b>Deployment grün, aber 0 Pods:</b> Pods werden von PSA oder einer Policy abgelehnt. Lösung: Events am ReplicaSet lesen, Policies schon für Pod-Controller prüfen.</li>
+  <li><b>Einführung bricht alte Workloads:</b> Direkt <code>enforce=restricted</code>. Lösung: erst <code>warn</code> und <code>audit</code>, PolicyReports auswerten, dann Namespace für Namespace auf enforce.</li>
+  <li><b>Langsame Deployments:</b> Viele Webhooks mit hohem Timeout. Lösung: <code>matchConditions</code>, CEL-Policies im API-Server, Timeouts kurz.</li>
+  <li><b>Kyverno-Upgrade auf 1.20:</b> Alte <code>ClusterPolicy</code>-Objekte verlieren ihre Wirkung. Lösung: vorher auf die CEL-Typen migrieren und in Staging testen.</li>
+  <li><b>Images aus fremden Registries:</b> Ohne Regel kann jeder Docker-Hub-Images starten. Lösung: Policy „nur unsere Registry“, besser zusätzlich Signaturprüfung.</li>
+</ol>
+
+<h2>7. Diagnose: Werkzeuge und Befehle</h2>
+<ul>
+  <li><code>kubectl label --dry-run=server --overwrite ns X pod-security.kubernetes.io/enforce=restricted</code>: zeigt, welche laufenden Pods die Stufe verletzen würden.</li>
+  <li><code>kubectl get validatingwebhookconfigurations,mutatingwebhookconfigurations</code>: welche Webhooks im Spiel sind.</li>
+  <li><code>kubectl get validatingadmissionpolicies,validatingadmissionpolicybindings</code>.</li>
+  <li><code>kubectl events --types=Warning</code>: <code>FailedCreate</code> mit dem Ablehnungsgrund.</li>
+  <li><code>kubectl get policyreports -A</code>: Kyverno-Ergebnisse für bestehende Ressourcen.</li>
+  <li><code>kyverno apply</code> und <code>kyverno test</code> (CLI): Policies in der CI gegen Manifeste testen.</li>
+  <li>API-Server-Metriken: <code>pod_security_evaluations_total</code>, Webhook-Latenz (<code>apiserver_admission_webhook_admission_duration_seconds</code>).</li>
+</ul>
+
+<h2>8. Senior-Punkte</h2>
+<div class="senior">
+<ol>
+  <li><b>Schichten statt einem Werkzeug:</b> PSA als Basis, CEL-Policies für einfache Regeln, Kyverno für Mutation, Generierung und Images.</li>
+  <li><b>Einführen in Stufen:</b> audit → warn → enforce. Mit Reports messen, wie viele Workloads betroffen sind.</li>
+  <li><b>Webhooks sind Teil der Control Plane.</b> Fallen sie aus, steht der Cluster. Hochverfügbarkeit, Ausnahmen und Monitoring sind Pflicht.</li>
+  <li><b>Policies gehören ins Git</b> und durch die CI, wie Code. Bei GitOps greifen sie, sobald Argo CD synchronisiert; ein abgelehnter Sync zeigt den Policy-Grund.</li>
+  <li><b>Fehler früh zeigen:</b> Regeln auf Deployment-Ebene, nicht nur auf Pods. Sonst sieht das Team nur „0/1“.</li>
+  <li><b>Kyverno-Migration jetzt planen:</b> Die neuen CEL-Typen sind die Zukunft. Alte ClusterPolicies sind technische Schuld.</li>
+</ol>
+</div>
+
+<h2>9. Aus dem Projekt</h2>
+<p>„Bei MATCH erzwingen wir mit Kyverno: nur Images aus unserer Azure Container Registry, keine privilegierten Pods, Pflicht-Labels und Resource Limits. Dazu regeln Cilium-Policies, welche Pods MSSQL, MinIO und Vault erreichen.“ <span class="small">(Prüfen und durch dein echtes Beispiel ersetzen. Welche Kyverno-Version und welche Policy-Typen ihr nutzt, steht nicht im Profil.)</span></p>
+
+<h2>10. Fallen</h2>
+<div class="trap">
+<ul>
+  <li>„RBAC verhindert privilegierte Pods.“ → <b>Falsch.</b> RBAC prüft nur, ob man Pods anlegen darf, nicht deren Inhalt.</li>
+  <li>„PSA lehnt ein falsches Deployment ab.“ → <b>Falsch.</b> Nur Warnung. Abgelehnt werden die Pods.</li>
+  <li>„PodSecurityPolicy ist der Standard.“ → <b>Falsch.</b> PSP ist entfernt. Nachfolger ist Pod Security Admission.</li>
+  <li>„Validating Webhooks laufen vor Mutating.“ → <b>Falsch.</b> Erst mutating, dann validating.</li>
+  <li>„failurePolicy Ignore ist sicherer.“ → <b>Falsch.</b> Dann wird bei Ausfall alles durchgelassen. Sicher ist <code>Fail</code>, aber mit Hochverfügbarkeit.</li>
+  <li>„Für jede Regel braucht man Kyverno.“ → <b>Falsch.</b> Einfache Regeln gehen mit ValidatingAdmissionPolicy im API-Server.</li>
+</ul>
+</div>
+
+<h2>11. Fragen</h2>
+<details><summary>Was ist ein Admission Controller?</summary><p>Ein Schritt im API-Server nach AuthN und AuthZ. Er kann Objekte ändern (mutating) oder ablehnen (validating), bevor sie gespeichert werden.</p></details>
+<details><summary>In welcher Reihenfolge laufen Admission-Schritte?</summary><p>Mutating, dann Schema-Prüfung, dann Validating. Erst danach schreibt der API-Server nach etcd.</p></details>
+<details><summary>Was sind die Pod Security Standards?</summary><p>Drei Stufen: privileged (offen), baseline (gegen bekannte Ausbrüche), restricted (gehärtet nach Best Practices).</p></details>
+<details><summary>Wie aktiviert man Pod Security Admission?</summary><p>Mit Namespace-Labels <code>pod-security.kubernetes.io/&lt;mode&gt;: &lt;level&gt;</code>. Modi: enforce, audit, warn.</p></details>
+<details><summary>Was verlangt restricted mindestens?</summary><p>runAsNonRoot, allowPrivilegeEscalation false, capabilities drop ALL, seccompProfile RuntimeDefault oder Localhost, plus alles aus baseline.</p></details>
+<details><summary>Gilt enforce auch für Deployments?</summary><p>Nein. enforce gilt für Pods. audit und warn prüfen auch Pod-Templates in Workloads.</p></details>
+<details><summary>Was ersetzt PodSecurityPolicy?</summary><p>Pod Security Admission, stabil seit 1.25. Für eigene Regeln zusätzlich CEL-Policies oder Kyverno.</p></details>
+<details><summary>Was ist ein Admission Webhook?</summary><p>Ein externer HTTPS-Dienst, den der API-Server bei passenden Anfragen aufruft. Mutating oder validating.</p></details>
+<details><summary>Was bedeutet failurePolicy?</summary><p>Was passiert, wenn der Webhook nicht antwortet. Fail (Standard) lehnt ab, Ignore lässt durch.</p></details>
+<details><summary>Welches Timeout haben Webhooks?</summary><p>Standard 10 Sekunden, erlaubt 1 bis 30.</p></details>
+<details><summary>Was ist eine ValidatingAdmissionPolicy?</summary><p>Eine Regel in CEL, die der API-Server selbst prüft, ohne Webhook. Stabil seit 1.30, mit Binding und Aktionen Deny, Warn, Audit.</p></details>
+<details><summary>Was ist eine MutatingAdmissionPolicy?</summary><p>Mutation in CEL im API-Server, als ApplyConfiguration oder JSONPatch. Stabil seit 1.36.</p></details>
+<details><summary>Was kann Kyverno, was VAP nicht kann?</summary><p>Ressourcen erzeugen und löschen, Image-Signaturen prüfen, Reports über bestehende Ressourcen, externe Daten einbeziehen.</p></details>
+<details><summary>Was ändert sich bei Kyverno gerade?</summary><p>Neue CEL-basierte Policy-Typen wie ValidatingPolicy und ImageValidatingPolicy. ClusterPolicy ist laut Migrationsleitfaden seit 1.19 deprecated und soll in 1.20 entfernt werden.</p></details>
+<details><summary>Was sind PolicyReports?</summary><p>Ressourcen, in denen Kyverno Ergebnisse für bestehende Objekte festhält. Gut für die audit-Phase.</p></details>
+<details><summary>Kyverno oder OPA Gatekeeper?</summary><p>Kyverno: Policies in YAML und CEL, nah an Kubernetes. Gatekeeper: Rego, mächtig, eigene Sprache.</p></details>
+<details><summary>Wie führen Sie restricted ohne Ausfall ein?</summary><p>Erst warn und audit, Dry-Run mit <code>kubectl label --dry-run=server</code>, Workloads anpassen, dann enforce pro Namespace.</p></details>
+<details><summary>RBAC vs Admission?</summary><p>RBAC: darf ich Pods anlegen? Admission: darf dieser Pod so aussehen?</p></details>
+<details><summary>Was ist readOnlyRootFilesystem?</summary><p>Das Root-Dateisystem des Containers ist schreibgeschützt. Ein Angreifer kann keine Werkzeuge ablegen. Schreibbare Pfade kommen als emptyDir.</p></details>
+<details><summary>Warum sollten Webhooks kube-system ausnehmen?</summary><p>Sonst kann ein kaputter Webhook verhindern, dass Systemkomponenten oder er selbst wieder starten.</p></details>
+<details><summary>Szenario: Nach einem Kyverno-Ausfall kann niemand mehr deployen. Was tun Sie?</summary><p>Kurzfristig: Kyverno-Pods reparieren oder den Webhook gezielt entschärfen. Langfristig: Replikas über Nodes, PDB, Ausnahmen für kube-system, Alarm auf Webhook-Fehler.</p></details>
+<details><summary>Szenario: Ein Deployment zeigt seit einer Stunde 0/3, kubectl apply war erfolgreich. Was prüfen Sie?</summary><p>Events am ReplicaSet: FailedCreate mit Grund von PSA oder einer Policy. Dann securityContext oder Labels ergänzen.</p></details>
+<details><summary>Szenario: Ein Audit verlangt, dass nur signierte Images aus der eigenen Registry laufen. Wie setzen Sie das um?</summary><p>Policy auf erlaubte Registry plus Signaturprüfung, z. B. Kyverno ImageValidatingPolicy mit Cosign. Zuerst im Audit-Modus, dann erzwingen.</p></details>
+
+</body>
+</html>

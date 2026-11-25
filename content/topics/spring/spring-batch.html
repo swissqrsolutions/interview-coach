@@ -1,0 +1,234 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Spring Batch</title>
+<style>
+  body { font: 17px/1.55 -apple-system, system-ui, sans-serif; max-width: 760px; margin: 0 auto; padding: 16px; color: #1d1d1f; }
+  h1 { font-size: 28px; margin: 8px 0 4px; }
+  h2 { font-size: 21px; margin: 32px 0 8px; padding-top: 12px; border-top: 2px solid #e5e5ea; }
+  .kern { background: #eef6ff; border-left: 4px solid #0a66c2; padding: 10px 14px; border-radius: 6px; }
+  .senior { background: #f0faf0; border-left: 4px solid #2e7d32; padding: 10px 14px; border-radius: 6px; }
+  .trap { background: #fff4f2; border-left: 4px solid #c62828; padding: 10px 14px; border-radius: 6px; }
+  code { background: #f2f2f7; padding: 1px 5px; border-radius: 4px; font-size: 15px; }
+  pre { background: #1e1e1e; color: #e6e6e6; padding: 12px; border-radius: 8px; overflow-x: auto; font-size: 13.5px; line-height: 1.45; }
+  svg { width: 100%; height: auto; display: block; margin: 10px 0; }
+  ol li, ul li { margin: 4px 0; }
+  details { border: 1px solid #e5e5ea; border-radius: 8px; padding: 8px 12px; margin: 6px 0; }
+  summary { font-weight: 600; cursor: pointer; }
+  details p { margin: 6px 0 2px; }
+  .small { color: #6e6e73; font-size: 14px; }
+</style>
+</head>
+<body>
+
+<h1>Spring Batch: Job, Step, Chunk</h1>
+<p class="small">Spring · Tier 3 · Quellen: Spring Batch 6.1 Reference (Domain Language, Chunk-oriented Processing, What's new in 6.0 und 6.1), Spring Boot 4.2 Reference („Spring Batch“, How-to „Batch Applications“), Spring Boot 4.2 Dependency Versions (Spring Batch 6.1.0)</p>
+
+<div class="kern">
+<b>Kern:</b> <b>Spring Batch</b> ist ein Framework für grosse, wiederholbare Verarbeitung ohne Benutzer, z. B. „importiere jede Nacht 2 Mio. Zeilen“. Es löst das Problem, dass ein Absturz nach Stunden sonst alles kaputt oder halb macht. Es liest, verarbeitet und schreibt in <b>Chunks</b> mit einem Commit pro Chunk, merkt sich den Fortschritt im <b>JobRepository</b> und kann nach einem Fehler dort <b>weitermachen</b>.
+</div>
+
+<h2>1. Wo sitzt Spring Batch?</h2>
+<svg viewBox="0 0 720 300" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="a" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="10" y="20" width="160" height="56" rx="8" fill="#fff" stroke="#555"/><text x="90" y="44" text-anchor="middle" font-weight="700">JobOperator</text><text x="90" y="62" text-anchor="middle" font-size="12">start · stop · restart</text>
+  <line x1="170" y1="48" x2="218" y2="48" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="220" y="10" width="490" height="170" rx="12" fill="#f7f7fa" stroke="#999" stroke-dasharray="5 4"/><text x="465" y="30" text-anchor="middle" font-weight="700">Job "importOrders"</text>
+  <rect x="235" y="45" width="140" height="50" rx="8" fill="#dbe9fb" stroke="#0a66c2"/><text x="305" y="66" text-anchor="middle" font-weight="700">Step 1</text><text x="305" y="84" text-anchor="middle" font-size="12">Tasklet: Datei holen</text>
+  <line x1="375" y1="70" x2="403" y2="70" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="405" y="45" width="290" height="120" rx="8" fill="#0a66c2"/><text x="550" y="66" text-anchor="middle" fill="#fff" font-weight="700">Step 2: Chunk-Step (chunk = 100)</text>
+  <rect x="418" y="80" width="80" height="40" rx="6" fill="#fff"/><text x="458" y="105" text-anchor="middle" font-size="12">Reader</text>
+  <rect x="510" y="80" width="80" height="40" rx="6" fill="#fff"/><text x="550" y="105" text-anchor="middle" font-size="12">Processor</text>
+  <rect x="602" y="80" width="80" height="40" rx="6" fill="#fff"/><text x="642" y="105" text-anchor="middle" font-size="12">Writer</text>
+  <text x="550" y="148" text-anchor="middle" fill="#fff" font-size="12">1 Transaktion pro Chunk</text>
+  <rect x="220" y="220" width="490" height="66" rx="8" fill="#e8f5e9" stroke="#2e7d32"/><text x="465" y="243" text-anchor="middle" font-weight="700">JobRepository (Metadaten)</text><text x="465" y="263" text-anchor="middle" font-size="12">JobInstance · JobExecution · StepExecution · ExecutionContext</text><text x="465" y="278" text-anchor="middle" font-size="11">In-Memory, JDBC oder MongoDB</text>
+  <line x1="465" y1="180" x2="465" y2="218" stroke="#2e7d32" stroke-width="2" marker-end="url(#a)"/>
+  <line x1="90" y1="76" x2="220" y2="240" stroke="#2e7d32" stroke-width="1.5" stroke-dasharray="4 3" marker-end="url(#a)"/>
+</svg>
+<ol>
+  <li><b>JobOperator:</b> Er startet, stoppt und startet Jobs neu. In Batch 6 erweitert er den alten <code>JobLauncher</code>.</li>
+  <li><b>Job:</b> Ein Ablauf aus Steps. Beispiel: <code>importOrders</code>.</li>
+  <li><b>Tasklet-Step:</b> Ein Step mit einer einzigen Aufgabe, z. B. eine Datei herunterladen oder eine Tabelle leeren.</li>
+  <li><b>Chunk-Step:</b> <b>ItemReader</b> liest ein Element, <b>ItemProcessor</b> wandelt es um oder filtert es, <b>ItemWriter</b> schreibt eine ganze Liste. Ein Chunk ist eine Transaktion.</li>
+  <li><b>JobRepository:</b> Speichert jeden Lauf, Status und Fortschritt. Mit JDBC in Tabellen wie <code>BATCH_JOB_EXECUTION</code> und <code>BATCH_STEP_EXECUTION</code>.</li>
+</ol>
+
+<h2>2. Die Reise eines Chunks (und eines Neustarts)</h2>
+<svg viewBox="0 0 720 300" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="b" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker><marker id="r" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#c62828"/></marker></defs>
+  <rect x="10" y="20" width="150" height="60" rx="10" fill="#eee" stroke="#777"/><text x="85" y="45" text-anchor="middle" font-weight="700">1. TX beginnt</text><text x="85" y="65" text-anchor="middle" font-size="12">neuer Chunk</text>
+  <line x1="160" y1="50" x2="198" y2="50" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="200" y="20" width="160" height="60" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="280" y="45" text-anchor="middle" font-weight="700">2. read × 100</text><text x="280" y="65" text-anchor="middle" font-size="12">einzeln</text>
+  <line x1="360" y1="50" x2="398" y2="50" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="400" y="20" width="160" height="60" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="480" y="45" text-anchor="middle" font-weight="700">3. process</text><text x="480" y="65" text-anchor="middle" font-size="12">null = filtern</text>
+  <line x1="560" y1="50" x2="598" y2="50" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="600" y="20" width="110" height="60" rx="10" fill="#fff" stroke="#555"/><text x="655" y="45" text-anchor="middle" font-weight="700">4. write</text><text x="655" y="65" text-anchor="middle" font-size="12">als Liste</text>
+  <line x1="655" y1="80" x2="655" y2="128" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="430" y="130" width="280" height="60" rx="10" fill="#0a66c2"/><text x="570" y="155" text-anchor="middle" fill="#fff" font-weight="700">5. Context + Commit</text><text x="570" y="175" text-anchor="middle" fill="#fff" font-size="12">read.count=300 · Status COMMITTED</text>
+  <line x1="430" y1="160" x2="372" y2="160" stroke="#c62828" stroke-width="2" stroke-dasharray="5 4" marker-end="url(#r)"/>
+  <rect x="140" y="130" width="230" height="60" rx="10" fill="#fff4f2" stroke="#c62828"/><text x="255" y="155" text-anchor="middle" font-weight="700">6. Absturz in Chunk 4</text><text x="255" y="175" text-anchor="middle" font-size="12">Rollback nur Chunk 4</text>
+  <line x1="255" y1="190" x2="255" y2="228" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="140" y="230" width="570" height="56" rx="10" fill="#e8f5e9" stroke="#2e7d32"/><text x="425" y="254" text-anchor="middle" font-weight="700">7. Restart mit gleichen Parametern → gleiche JobInstance</text><text x="425" y="273" text-anchor="middle" font-size="12">Reader springt zu Item 301 · fertige Steps werden übersprungen</text>
+</svg>
+<ol>
+  <li><b>Transaktion:</b> Für jeden Chunk öffnet der Step eine neue Transaktion.</li>
+  <li><b>Lesen:</b> Der Reader liefert ein Element pro <code>read()</code>. <code>null</code> heisst: Daten zu Ende.</li>
+  <li><b>Verarbeiten:</b> Der Processor wandelt jedes Element um. Gibt er <code>null</code> zurück, wird das Element <b>gefiltert</b> und nicht geschrieben.</li>
+  <li><b>Schreiben:</b> Der Writer bekommt alle Elemente des Chunks auf einmal, z. B. für einen JDBC-Batch-Insert.</li>
+  <li><b>Commit:</b> Der Step speichert den Fortschritt im <b>ExecutionContext</b> (z. B. Zeilennummer) und committet. Daten und Fortschritt sind in derselben Transaktion.</li>
+  <li><b>Absturz:</b> Ein Fehler in Chunk 4 rollt nur Chunk 4 zurück. Chunks 1–3 sind gespeichert. Der Job hat Status <code>FAILED</code>.</li>
+  <li><b>Restart:</b> Ein Start mit <b>denselben identifizierenden Parametern</b> trifft dieselbe <b>JobInstance</b>. Der Reader liest den gespeicherten Context und macht bei Element 301 weiter.</li>
+</ol>
+
+<h2>3. Beispiel: Job-Konfiguration und Chunk-Commit mit Restart</h2>
+<pre>@Bean
+Job importOrders(JobRepository repo, Step download, Step importStep) {
+  return new JobBuilder("importOrders", repo).start(download).next(importStep).build();
+}
+
+@Bean
+Step importStep(JobRepository repo, PlatformTransactionManager tx,
+                FlatFileItemReader&lt;OrderLine&gt; reader, JdbcBatchItemWriter&lt;Order&gt; writer) {
+  return new StepBuilder("importStep", repo)
+      .&lt;OrderLine, Order&gt;chunk(100).transactionManager(tx)
+      .reader(reader)
+      .processor(line -&gt; line.isTest() ? null : Order.from(line))   // null = filtern
+      .writer(writer)
+      .faultTolerant().skip(FlatFileParseException.class).skipLimit(10)
+      .build();
+}
+
+@Bean @StepScope
+FlatFileItemReader&lt;OrderLine&gt; reader(@Value("#{jobParameters['file']}") Resource file) { ... }
+
+// Start: java -jar app.jar file=orders-2026-11-24.csv   (ohne "--"!)</pre>
+<p>Das Prinzip „Commit pro Chunk, Position im Context, Restart ab Position“, nachgebaut als Prozedur in PostgreSQL. Chunk = 3, Fehler beim Schreiben von Item 8:</p>
+<pre>create table step_context(step text primary key, read_count int);  -- wie BATCH_STEP_EXECUTION_CONTEXT
+-- Schleife: lesen ab read_count, schreiben, read_count erhöhen, COMMIT
+
+call run_step(3, 8);
+NOTICE:  Chunk committed: Items 1 bis 3
+NOTICE:  Chunk committed: Items 4 bis 6
+ERROR:  Fehler im Writer bei Item 8
+ rows_in_target | saved_position
+----------------+----------------
+              6 |              6
+
+call run_step(3, 999);        -- Restart
+NOTICE:  Chunk committed: Items 7 bis 9
+NOTICE:  Chunk committed: Items 10 bis 10
+ rows_in_target | saved_position
+----------------+----------------
+             10 |             10</pre>
+<p class="small">Echte Ausgabe, PostgreSQL 17.12 (Schema <code>demo_spring_batch</code>, danach gelöscht). Das ist eine SQL-Nachbildung des Prinzips, kein Spring-Batch-Lauf. Spring Batch ist hier nicht installiert.</p>
+<ol>
+  <li>Nach dem Fehler sind genau 6 Zeilen gespeichert. Chunk 3 (Items 7–9) wurde komplett zurückgerollt, auch Item 7.</li>
+  <li>Die Position (6) wurde im selben Commit wie die Daten gespeichert. Darum stimmt sie immer zu den Daten.</li>
+  <li>Der Restart macht bei Item 7 weiter. Keine Duplikate, keine Lücken.</li>
+  <li>In Spring Batch macht das der Reader über <code>ItemStream.update()</code> und <code>open()</code>. Ein eigener Reader ohne <code>ItemStream</code> fängt beim Restart von vorne an.</li>
+  <li><code>@StepScope</code> erzeugt den Reader erst beim Step-Start. Erst dann kennt er den Job-Parameter <code>file</code> (<b>Late Binding</b>).</li>
+</ol>
+
+<h2>4. Details, die Interviewer fragen</h2>
+<ol>
+  <li><b>JobInstance vs JobExecution:</b> Eine <b>JobInstance</b> ist ein logischer Lauf: Job-Name plus identifizierende Parameter (z. B. Datum). Eine <b>JobExecution</b> ist ein Versuch. Eine Instance kann mehrere Executions haben (Fehler, Restart).</li>
+  <li><b>Identifizierende Parameter:</b> Nur sie bestimmen die Instance. Ist eine Instance <code>COMPLETED</code>, gibt der gleiche Start einen Fehler (<code>JobInstanceAlreadyCompleteException</code>). Ein <code>RunIdIncrementer</code> erzeugt jedes Mal neue Parameter.</li>
+  <li><b>ExecutionContext:</b> Eine Map pro Step und pro Job, die beim Commit gespeichert wird. Dort liegt der Fortschritt für den Restart. Nur kleine Werte, keine Daten.</li>
+  <li><b>Chunk vs Tasklet:</b> Chunk für viele gleichartige Elemente. Tasklet für eine einzelne Aufgabe (Datei kopieren, SQL ausführen).</li>
+  <li><b>Chunk-Grösse:</b> Grosse Chunks: weniger Commits, schneller, aber längere Transaktionen und mehr Arbeit bei Rollback. Typisch 100–1000, immer messen.</li>
+  <li><b>Skip:</b> Mit <code>faultTolerant().skip(...)</code> überspringt der Step fehlerhafte Elemente bis zu einem Limit. Bei einem Fehler im Writer rollt er den Chunk zurück und schreibt die Elemente einzeln neu, um das schlechte zu finden.</li>
+  <li><b>Retry:</b> Vorübergehende Fehler (z. B. Deadlock) wiederholt der Step. In Batch 6 basiert Retry auf der Retry-API von Spring Framework 7, nicht mehr auf Spring Retry.</li>
+  <li><b>Listener:</b> <code>JobExecutionListener</code>, <code>StepExecutionListener</code>, <code>ChunkListener</code>, <code>SkipListener</code>. Gut für Logs, Metriken und Benachrichtigungen.</li>
+  <li><b>Skalierung:</b> <b>Multi-threaded Step</b> (mehrere Threads in einem Step), <b>Partitionierung</b> (Daten in Bereiche teilen, je ein Worker-Step), <b>Remote Chunking</b> (Verarbeitung auf andere Maschinen), parallele Steps im Flow.</li>
+  <li><b>Batch 6 Neuerungen:</b> Neuer <code>ChunkOrientedStep</code> mit Producer-Consumer-Modell für Parallelität. <code>JobOperator</code> erweitert <code>JobLauncher</code>, <code>JobRepository</code> erweitert <code>JobExplorer</code>. <code>JobOperator.recover</code> repariert hängengebliebene Läufe.</li>
+  <li><b>Standard-Repository:</b> <code>DefaultBatchConfiguration</code> nutzt seit Batch 6 ein <code>ResourcelessJobRepository</code> ohne Datenbank. Ohne persistentes Repository gibt es keinen Restart.</li>
+  <li><b>Spring Boot:</b> Boot konfiguriert In-Memory-, JDBC- oder MongoDB-Repository. Gibt es genau einen <code>Job</code>, startet Boot ihn beim Start; bei mehreren braucht es <code>spring.batch.job.name</code>. <code>@EnableBatchProcessing</code> schaltet Boots Auto-Configuration ab.</li>
+  <li><b>Job-Parameter von der Kommandozeile:</b> <code>file=x.csv</code> ohne <code>--</code>. Mit <code>--</code> liest Boot sie als Properties, und der Job sieht sie nicht.</li>
+  <li><b>Thread-Sicherheit:</b> Viele Reader (z. B. <code>FlatFileItemReader</code>) sind zustandsbehaftet und nicht thread-sicher. Im Multi-threaded Step braucht man einen synchronisierten Reader und verliert dabei oft die Restart-Fähigkeit.</li>
+  <li><b>Stop und Shutdown:</b> <code>JobOperator.stop</code> setzt ein Stop-Signal. Batch 6 kann jeden Step stoppbar machen (<code>StoppableStep</code>) und hinterlässt bei Graceful Shutdown einen neu startbaren Zustand.</li>
+</ol>
+
+<h2>5. Vergleich</h2>
+<ul>
+  <li><b>Spring Batch:</b> Java, transaktional, Restart, Skip/Retry, Metadaten. Gut für Dateien und DB-zu-DB mit Millionen Zeilen.</li>
+  <li><b>Apache Spark:</b> verteilt über viele Maschinen, für Milliarden Zeilen und Analysen. Kein Chunk-Commit, sondern Neuberechnung ganzer Partitionen.</li>
+  <li><b>@Scheduled mit Schleife:</b> einfach, aber ohne Restart, Fortschritt und Fehlerprotokoll.</li>
+  <li><b>Reines SQL</b> (<code>INSERT … SELECT</code>): am schnellsten, wenn alles in derselben DB liegt. Kein Element-Fehlerhandling.</li>
+  <li><b>Streaming (Kafka):</b> laufend statt in Blöcken, niedrige Latenz, mehr Infrastruktur.</li>
+  <li><b>Workflow-Tools</b> (Airflow, Kubernetes CronJob): planen und verketten Jobs. Spring Batch ist der Inhalt eines Jobs, nicht der Planer.</li>
+</ul>
+
+<h2>6. In der Produktion</h2>
+<ol>
+  <li><b>Restart verarbeitet doppelt:</b> Der Writer ist nicht idempotent, oder der Reader speichert keinen Zustand. Lösung: <code>ItemStream</code>-fähige Reader, Upsert oder eindeutige Schlüssel im Ziel.</li>
+  <li><b>„Job already complete“:</b> Der nächtliche Start nutzt immer dieselben Parameter. Lösung: Datum als identifizierender Parameter oder Incrementer.</li>
+  <li><b>Hängender Status STARTED:</b> Der Pod wurde hart beendet. Der Job gilt als laufend, ein Neustart wird abgelehnt. Lösung: <code>JobOperator.recover</code> (Batch 6) statt Metadaten von Hand ändern.</li>
+  <li><b>Langsamer Reader mit Paging:</b> <code>OFFSET</code> wird bei hohen Seiten langsam. Lösung: Cursor-Reader oder Paging mit Sortier-Schlüssel (Keyset).</li>
+  <li><b>Speicher voll:</b> Riesige Chunks oder ein Processor, der Daten sammelt. Lösung: kleinere Chunks, keine Listen über Chunks hinweg.</li>
+  <li><b>Metadaten-Tabellen wachsen:</b> Jahre an Executions und Contexts. Lösung: alte Einträge regelmässig archivieren oder löschen.</li>
+</ol>
+
+<h2>7. Diagnose</h2>
+<ul>
+  <li><b>Metadaten-Tabellen:</b> <code>select status, exit_code, start_time, end_time from batch_job_execution order by job_execution_id desc;</code></li>
+  <li><code>batch_step_execution</code>: <code>read_count</code>, <code>write_count</code>, <code>filter_count</code>, <code>commit_count</code>, <code>rollback_count</code>, <code>*_skip_count</code> pro Step.</li>
+  <li><b>Micrometer:</b> Batch meldet Metriken wie <code>spring.batch.job</code>, <code>spring.batch.step</code>, <code>spring.batch.item.read</code>, <code>spring.batch.chunk.write</code>.</li>
+  <li><b>JFR</b> (seit Batch 6): Events für Job, Step, Lesen, Schreiben und Transaktionsgrenzen.</li>
+  <li><b>Tests:</b> <code>@SpringBatchTest</code> stellt Test-Utilities bereit, die einen ganzen Job oder einen einzelnen Step starten.</li>
+  <li><b>Exit-Code:</b> Boot kann den Job-Status als Exit-Code zurückgeben. Wichtig für Kubernetes Jobs und Scheduler.</li>
+</ul>
+
+<h2>8. Senior-Punkte</h2>
+<div class="senior">
+<ol>
+  <li><b>Restart ist das Hauptargument.</b> Ohne persistentes JobRepository und ItemStream-Reader verliert man den Grund, Spring Batch zu nutzen.</li>
+  <li><b>Writer idempotent bauen:</b> Upsert oder „Ergebnis ersetzen“. Dann ist auch ein unsauberer Neustart harmlos.</li>
+  <li><b>Daten nahe an der Datenbank verarbeiten,</b> wenn möglich. Ein <code>INSERT … SELECT</code> schlägt jeden Java-Chunk.</li>
+  <li><b>Skalierung in Stufen:</b> erst Chunk-Grösse und Writer-Batching, dann Partitionierung, erst zuletzt Remote-Verfahren.</li>
+  <li><b>Ein Job pro Container</b> (Kubernetes Job oder CronJob) ist einfacher zu betreiben als ein dauerhaft laufender Batch-Server.</li>
+  <li><b>Tool-Wahl nach Datenmenge:</b> Millionen Zeilen: Spring Batch. Hunderte Millionen mit Analysen: Spark.</li>
+</ol>
+</div>
+
+<h2>9. Aus dem Projekt</h2>
+<p>„Spring Batch habe ich nicht in Produktion eingesetzt. Die gleichen Probleme habe ich bei MATCH mit PySpark gelöst: idempotente, crash-sichere ETL-Pipelines, atomarer Claim gegen doppelte Läufe, Recovery hängengebliebener Jobs und Neuberechnung eines ganzen Tages statt Aufaddieren.“ <span class="small">(Prüfen und durch dein echtes Beispiel ersetzen.)</span></p>
+
+<h2>10. Fallen</h2>
+<div class="trap">
+<ul>
+  <li>„Ein Restart fängt immer von vorne an.“ → <b>Falsch.</b> Mit persistentem Repository und ItemStream-Reader macht er beim letzten Commit weiter.</li>
+  <li>„Jeder Start ist eine neue JobInstance.“ → <b>Falsch.</b> Gleiche identifizierende Parameter heisst gleiche Instance.</li>
+  <li>„Ein Fehler in Item 250 rollt den ganzen Job zurück.“ → <b>Falsch.</b> Nur den aktuellen Chunk.</li>
+  <li>„Der Processor kann Elemente nur umwandeln.“ → <b>Falsch.</b> <code>null</code> filtert das Element.</li>
+  <li>„Multi-threaded Steps sind einfach schneller.“ → <b>Nicht ohne Preis.</b> Reader müssen thread-sicher sein, die Reihenfolge geht verloren, Restart wird schwierig.</li>
+  <li>„Batch 6 braucht immer eine Datenbank.“ → <b>Falsch.</b> Standard ist ein Resourceless-Repository, aber dann ohne Restart.</li>
+</ul>
+</div>
+
+<h2>11. Fragen</h2>
+<details><summary>Was ist Spring Batch?</summary><p>Ein Framework für grosse, wiederholbare Verarbeitung ohne Benutzer. Es bietet Chunks mit Transaktionen, Restart, Skip, Retry und Metadaten über jeden Lauf.</p></details>
+<details><summary>Was ist ein Job, ein Step, ein Chunk?</summary><p>Ein Job ist ein Ablauf aus Steps. Ein Step ist eine Phase. Ein Chunk ist eine Gruppe von Elementen, die gemeinsam in einer Transaktion geschrieben wird.</p></details>
+<details><summary>JobInstance vs JobExecution?</summary><p>Die Instance ist der logische Lauf (Name plus identifizierende Parameter). Die Execution ist ein einzelner Versuch dieser Instance.</p></details>
+<details><summary>Was passiert, wenn man einen erfolgreichen Job mit gleichen Parametern startet?</summary><p>Er wird abgelehnt, weil die Instance schon COMPLETED ist. Lösung: neue identifizierende Parameter oder ein Incrementer.</p></details>
+<details><summary>Wie funktioniert ein Restart?</summary><p>Gleiche Parameter treffen dieselbe Instance. Fertige Steps werden übersprungen; der Reader liest seine Position aus dem ExecutionContext und macht dort weiter.</p></details>
+<details><summary>Was ist der ExecutionContext?</summary><p>Eine kleine Map pro Step und Job, die beim Commit im JobRepository gespeichert wird. Sie hält den Fortschritt für den Restart.</p></details>
+<details><summary>Was macht ein ItemProcessor, der null zurückgibt?</summary><p>Er filtert das Element. Es wird nicht geschrieben und zählt als <code>filter_count</code>.</p></details>
+<details><summary>Chunk oder Tasklet?</summary><p>Chunk für viele gleichartige Elemente mit Lesen-Verarbeiten-Schreiben. Tasklet für eine einzelne Aufgabe wie Datei kopieren.</p></details>
+<details><summary>Wie wählen Sie die Chunk-Grösse?</summary><p>Messen. Grössere Chunks sparen Commits, aber verlängern Transaktionen und Rollbacks. Typisch 100 bis 1000.</p></details>
+<details><summary>Wie funktioniert Skip?</summary><p>Mit <code>faultTolerant().skip(...)</code> werden fehlerhafte Elemente bis zu einem Limit übersprungen. Bei Writer-Fehlern schreibt der Step den Chunk einzeln neu, um das schlechte Element zu finden.</p></details>
+<details><summary>Was ist @StepScope?</summary><p>Die Bean wird pro Step-Ausführung erzeugt. So kann sie Job-Parameter erst zur Laufzeit lesen (Late Binding).</p></details>
+<details><summary>Wie skalieren Sie einen Batch-Job?</summary><p>Erst Chunk-Grösse und Batch-Writes optimieren. Dann Multi-threaded Step oder Partitionierung. Remote Chunking oder Remote Partitioning nur bei echtem Bedarf.</p></details>
+<details><summary>Was ist Partitionierung?</summary><p>Ein Manager-Step teilt die Daten in Bereiche, z. B. ID-Bereiche. Jeder Bereich läuft als eigener Worker-Step, lokal parallel oder auf anderen Maschinen.</p></details>
+<details><summary>Welche Tabellen legt das JDBC-JobRepository an?</summary><p>Unter anderem BATCH_JOB_INSTANCE, BATCH_JOB_EXECUTION, BATCH_JOB_EXECUTION_PARAMS, BATCH_STEP_EXECUTION und die beiden Context-Tabellen.</p></details>
+<details><summary>Was ist neu in Spring Batch 6?</summary><p>Neuer ChunkOrientedStep mit neuem Parallelitätsmodell, Resourceless-Repository als Standard, JobOperator statt separatem JobLauncher, recover-Methode, Retry über Spring Framework 7, JFR-Events.</p></details>
+<details><summary>Wie startet Spring Boot einen Batch-Job?</summary><p>Gibt es genau einen Job, startet Boot ihn beim Start. Bei mehreren wählt <code>spring.batch.job.name</code>. <code>spring.batch.job.enabled=false</code> schaltet das ab.</p></details>
+<details><summary>Warum keine Job-Parameter mit „--“?</summary><p>Boot liest <code>--x=y</code> als Property. Der Job sieht nur Argumente ohne <code>--</code>.</p></details>
+<details><summary>Spring Batch oder Spark?</summary><p>Spring Batch für transaktionale Verarbeitung mit Restart bis in die Millionen. Spark für verteilte Verarbeitung und Analysen sehr grosser Datenmengen.</p></details>
+<details><summary>Szenario: Der nächtliche Import ist nach 3 Stunden bei 80 % abgestürzt. Was tun Sie?</summary><p>Ursache im Log und in <code>batch_step_execution</code> finden, beheben, dann mit gleichen Parametern neu starten. Der Job macht beim letzten Commit weiter, nicht bei null.</p></details>
+<details><summary>Szenario: Nach einem Restart sind manche Bestellungen doppelt. Warum?</summary><p>Der Reader speichert keine Position (kein ItemStream) oder der Writer ist nicht idempotent. Lösung: zustandsfähiger Reader, Upsert oder eindeutiger Schlüssel.</p></details>
+<details><summary>Szenario: Ein Job lässt sich nicht starten: „A job execution for this job is already running“, aber nichts läuft. Was ist los?</summary><p>Der Pod wurde hart beendet, die Execution steht noch auf STARTED. Mit <code>JobOperator.recover</code> den Zustand bereinigen, danach neu starten; Graceful Shutdown einrichten.</p></details>
+
+</body>
+</html>

@@ -1,0 +1,227 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Service Discovery und Load Balancing</title>
+<style>
+  body { font: 17px/1.55 -apple-system, system-ui, sans-serif; max-width: 760px; margin: 0 auto; padding: 16px; color: #1d1d1f; }
+  h1 { font-size: 28px; margin: 8px 0 4px; }
+  h2 { font-size: 21px; margin: 32px 0 8px; padding-top: 12px; border-top: 2px solid #e5e5ea; }
+  .kern { background: #eef6ff; border-left: 4px solid #0a66c2; padding: 10px 14px; border-radius: 6px; }
+  .senior { background: #f0faf0; border-left: 4px solid #2e7d32; padding: 10px 14px; border-radius: 6px; }
+  .trap { background: #fff4f2; border-left: 4px solid #c62828; padding: 10px 14px; border-radius: 6px; }
+  code { background: #f2f2f7; padding: 1px 5px; border-radius: 4px; font-size: 15px; }
+  pre { background: #1e1e1e; color: #e6e6e6; padding: 12px; border-radius: 8px; overflow-x: auto; font-size: 13.5px; line-height: 1.45; }
+  svg { width: 100%; height: auto; display: block; margin: 10px 0; }
+  ol li, ul li { margin: 4px 0; }
+  details { border: 1px solid #e5e5ea; border-radius: 8px; padding: 8px 12px; margin: 6px 0; }
+  summary { font-weight: 600; cursor: pointer; }
+  details p { margin: 6px 0 2px; }
+  .small { color: #6e6e73; font-size: 14px; }
+</style>
+</head>
+<body>
+
+<h1>Service Discovery und Load Balancing</h1>
+<p class="small">Microservices · Tier 2 · Quellen: microservices.io (Service Registry, Client-side Discovery, Server-side Discovery, Self Registration, 3rd Party Registration), Spring Cloud Netflix 5.1 Reference (Eureka), Spring Cloud Commons 5.1 Reference (Spring Cloud LoadBalancer), kubernetes.io (Service, EndpointSlices, DNS for Services and Pods), Oracle Java SE Core Libraries (Networking Properties: Address Cache), HashiCorp Consul Doku (Services, Health Checks)</p>
+
+<div class="kern">
+<b>Kern:</b> <b>Service Discovery</b> ist der Mechanismus, mit dem ein Service die aktuellen Adressen eines anderen Services findet. Er löst das Problem, dass Instanzen ständig starten, sterben und neue IPs bekommen. <b>Load Balancing</b> verteilt die Aufrufe dann auf die gesunden Instanzen.
+</div>
+
+<h2>1. Wo sitzt Service Discovery?</h2>
+<svg viewBox="0 0 720 300" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="a" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="260" y="10" width="200" height="60" rx="10" fill="#0a66c2"/><text x="360" y="36" text-anchor="middle" fill="#fff" font-weight="700">Service Registry</text><text x="360" y="56" text-anchor="middle" fill="#fff" font-size="12">Name → Liste gesunder IPs</text>
+  <rect x="520" y="110" width="190" height="150" rx="10" fill="#f7f7fa" stroke="#999" stroke-dasharray="5 4"/><text x="615" y="130" text-anchor="middle" font-weight="700">payment (3 Instanzen)</text>
+  <rect x="540" y="142" width="150" height="30" rx="6" fill="#fff" stroke="#555"/><text x="615" y="162" text-anchor="middle" font-size="13">10.42.0.81</text>
+  <rect x="540" y="180" width="150" height="30" rx="6" fill="#fff" stroke="#555"/><text x="615" y="200" text-anchor="middle" font-size="13">10.42.0.82</text>
+  <rect x="540" y="218" width="150" height="30" rx="6" fill="#fff" stroke="#555"/><text x="615" y="238" text-anchor="middle" font-size="13">10.42.0.83</text>
+  <line x1="580" y1="110" x2="440" y2="72" stroke="#2e7d32" stroke-width="2" marker-end="url(#a)"/><text x="560" y="84" font-size="12" fill="#2e7d32">registrieren + Health</text>
+  <rect x="10" y="150" width="170" height="60" rx="10" fill="#fff" stroke="#555"/><text x="95" y="176" text-anchor="middle" font-weight="700">order-service</text><text x="95" y="196" text-anchor="middle" font-size="12">Client</text>
+  <line x1="150" y1="150" x2="280" y2="72" stroke="#555" stroke-width="2" marker-end="url(#a)"/><text x="160" y="104" font-size="12">1. „wo ist payment?“</text>
+  <rect x="250" y="150" width="190" height="60" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="345" y="176" text-anchor="middle" font-weight="700">Load Balancer</text><text x="345" y="196" text-anchor="middle" font-size="12">im Client oder davor</text>
+  <line x1="180" y1="180" x2="248" y2="180" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <line x1="440" y1="180" x2="538" y2="196" stroke="#555" stroke-width="2" marker-end="url(#a)"/><text x="470" y="176" font-size="12">2. Aufruf</text>
+  <text x="360" y="285" text-anchor="middle" font-size="13">Registry = Wahrheit über Instanzen · LB = Wahl einer Instanz</text>
+</svg>
+<ol>
+  <li><b>Service Registry:</b> eine Datenbank mit Service-Namen und Instanz-Adressen. Beispiel: Eureka, Consul, oder in Kubernetes die API mit <b>EndpointSlices</b>.</li>
+  <li><b>Registrierung:</b> Jede Instanz kommt in die Registry. Das macht die Instanz selbst oder die Plattform.</li>
+  <li><b>Health Check:</b> Die Registry entfernt Instanzen, die nicht gesund sind. Beispiel: Readiness Probe, Heartbeat, HTTP-Check.</li>
+  <li><b>Lookup:</b> Der Client fragt nach einem Namen und bekommt Adressen. Beispiel: DNS-Name <code>payment</code>.</li>
+  <li><b>Load Balancer:</b> Er wählt eine Instanz pro Aufruf oder pro Verbindung. Beispiel: Round Robin.</li>
+</ol>
+
+<h2>2. Die Reise eines Aufrufs (die Geschichte zum Merken)</h2>
+<svg viewBox="0 0 720 280" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="b" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker><marker id="r" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#c62828"/></marker></defs>
+  <rect x="10" y="30" width="150" height="66" rx="10" fill="#e8f5e9" stroke="#2e7d32"/><text x="85" y="56" text-anchor="middle" font-weight="700">1. Pod startet</text><text x="85" y="76" text-anchor="middle" font-size="12">Readiness grün</text>
+  <line x1="160" y1="63" x2="198" y2="63" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="200" y="30" width="150" height="66" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="275" y="56" text-anchor="middle" font-weight="700">2. Registry</text><text x="275" y="76" text-anchor="middle" font-size="12">IP eingetragen</text>
+  <line x1="350" y1="63" x2="388" y2="63" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="390" y="30" width="150" height="66" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="465" y="56" text-anchor="middle" font-weight="700">3. Lookup</text><text x="465" y="76" text-anchor="middle" font-size="12">DNS / Registry-API</text>
+  <line x1="540" y1="63" x2="578" y2="63" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="580" y="30" width="130" height="66" rx="10" fill="#0a66c2"/><text x="645" y="56" text-anchor="middle" fill="#fff" font-weight="700">4. LB wählt</text><text x="645" y="76" text-anchor="middle" fill="#fff" font-size="12">eine Instanz</text>
+  <line x1="645" y1="96" x2="645" y2="150" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="520" y="152" width="190" height="66" rx="10" fill="#fff" stroke="#555"/><text x="615" y="178" text-anchor="middle" font-weight="700">5. Aufruf</text><text x="615" y="198" text-anchor="middle" font-size="12">mit Timeout + Retry</text>
+  <line x1="520" y1="185" x2="362" y2="185" stroke="#c62828" stroke-width="2" stroke-dasharray="6 4" marker-end="url(#r)"/>
+  <rect x="200" y="152" width="160" height="66" rx="10" fill="#fff4f2" stroke="#c62828"/><text x="280" y="178" text-anchor="middle" font-weight="700" fill="#c62828">6. Pod stirbt</text><text x="280" y="198" text-anchor="middle" font-size="12">Health rot → raus</text>
+  <text x="360" y="255" text-anchor="middle" font-size="13" fill="#c62828">Zwischen „stirbt“ und „alle Caches wissen es“ liegt immer ein Fenster</text>
+</svg>
+<ol>
+  <li><b>Der Pod startet.</b> Erst wenn die <b>Readiness Probe</b> (Prüfung „bereit für Traffic“) grün ist, zählt er.</li>
+  <li><b>Die Registry trägt ihn ein.</b> In Kubernetes schreibt der EndpointSlice-Controller seine IP in die <b>EndpointSlice</b> des Services.</li>
+  <li><b>Der Client macht einen Lookup.</b> Er fragt DNS oder die Registry-API nach <code>payment</code>. Er cached das Ergebnis eine Weile.</li>
+  <li><b>Der Load Balancer wählt.</b> Entweder im Client (<b>client-side</b>) oder in einem Proxy davor (<b>server-side</b>).</li>
+  <li><b>Der Aufruf läuft.</b> Ein Timeout begrenzt die Wartezeit. Ein Retry darf auf eine andere Instanz gehen.</li>
+  <li><b>Der Pod stirbt.</b> Die Registry entfernt ihn. Clients mit altem Cache rufen ihn trotzdem noch kurz auf. Dieses Fenster muss man mit Retry und Graceful Shutdown abfangen.</li>
+</ol>
+
+<h2>3. Beispiel: ClusterIP und Headless Service in k3s</h2>
+<pre>$ kubectl create ns demo-service-discovery
+$ kubectl create deployment web --image=nginx:1.27-alpine --replicas=3 -n demo-service-discovery
+$ kubectl expose deployment web --port=80 -n demo-service-discovery
+$ kubectl expose deployment web --name=web-headless --port=80 --cluster-ip=None -n demo-service-discovery
+$ kubectl get svc,endpointslices -n demo-service-discovery
+$ kubectl run dns --image=busybox:1.36 -n demo-service-discovery --restart=Never --rm -i -- \
+    sh -c 'nslookup web; nslookup web-headless'</pre>
+<pre>NAME                   TYPE        CLUSTER-IP     EXTERNAL-IP   PORT(S)   AGE
+service/web            ClusterIP   10.43.77.232   &lt;none&gt;        80/TCP    4s
+service/web-headless   ClusterIP   None           &lt;none&gt;        80/TCP    4s
+
+NAME                                                ADDRESSTYPE   PORTS   ENDPOINTS                          AGE
+endpointslice.discovery.k8s.io/web-headless-dhfqb   IPv4          80      10.42.0.82,10.42.0.83,10.42.0.81   4s
+endpointslice.discovery.k8s.io/web-ltrdt            IPv4          80      10.42.0.82,10.42.0.83,10.42.0.81   4s
+
+Name:	web.demo-service-discovery.svc.cluster.local
+Address: 10.43.77.232
+
+Name:	web-headless.demo-service-discovery.svc.cluster.local
+Address: 10.42.0.83
+Name:	web-headless.demo-service-discovery.svc.cluster.local
+Address: 10.42.0.82
+Name:	web-headless.demo-service-discovery.svc.cluster.local
+Address: 10.42.0.81
+
+$ kubectl scale deploy/web --replicas=1 -n demo-service-discovery
+NAME                 ADDRESSTYPE   PORTS   ENDPOINTS    AGE
+web-headless-dhfqb   IPv4          80      10.42.0.82   76s
+web-ltrdt            IPv4          80      10.42.0.82   76s
+
+Name:	web-headless.demo-service-discovery.svc.cluster.local
+Address: 10.42.0.82
+$ kubectl delete ns demo-service-discovery</pre>
+<p class="small">Echte Ausgabe, k3s v1.36.4 (lokal), kubectl, busybox 1.36. NXDOMAIN-Zeilen der Search-Domains gekürzt.</p>
+<ol>
+  <li>Beide Services haben dieselbe <b>EndpointSlice</b>-Liste mit drei Pod-IPs. Das ist die Registry.</li>
+  <li><code>web</code> liefert <b>eine virtuelle IP</b> (ClusterIP). kube-proxy verteilt dahinter. Das ist <b>server-side Discovery</b>.</li>
+  <li><code>web-headless</code> (<code>clusterIP: None</code>) liefert <b>alle Pod-IPs</b> per DNS. Der Client wählt selbst. Das ist <b>client-side Discovery</b>.</li>
+  <li>Nach dem Scale auf 1 zeigen EndpointSlices und DNS sofort nur noch eine IP. Ein Client mit altem DNS-Cache weiss das aber noch nicht.</li>
+</ol>
+
+<h2>4. Details, die Interviewer fragen</h2>
+<ol>
+  <li><b>Client-side Discovery:</b> Der Client fragt die Registry und wählt die Instanz selbst. Beispiel: Eureka plus <b>Spring Cloud LoadBalancer</b>. Vorteil: kein Extra-Hop. Nachteil: Logik in jeder Sprache nötig.</li>
+  <li><b>Server-side Discovery:</b> Der Client ruft einen festen Namen, ein Proxy wählt die Instanz. Beispiel: Kubernetes ClusterIP, Azure Load Balancer. Vorteil: Client bleibt dumm.</li>
+  <li><b>Self Registration:</b> Die Instanz meldet sich selbst an und schickt Heartbeats. Beispiel: Eureka-Client, Standard-Heartbeat 30 Sekunden.</li>
+  <li><b>Third-Party Registration:</b> Die Plattform registriert die Instanz. Beispiel: Kubernetes trägt Pods anhand des Label-Selectors ein. Der Service-Code weiss nichts davon.</li>
+  <li><b>Eureka-Sichtbarkeit:</b> Eine neue Instanz ist erst sichtbar, wenn Instanz, Server und Client denselben Cache-Stand haben. Laut Spring-Doku kann das 3 Heartbeats dauern.</li>
+  <li><b>Eureka-Health:</b> Standardmässig zählt nur der Heartbeat. Mit <code>eureka.client.healthcheck.enabled=true</code> meldet der Client den echten Actuator-Health-Status.</li>
+  <li><b>Spring Cloud LoadBalancer:</b> Standard ist <code>RoundRobinLoadBalancer</code>. Alternativen: Random, <code>weighted</code>, <code>zone-preference</code>, <code>health-check</code>, <code>same-instance-preference</code>, <code>request-based-sticky-session</code>.</li>
+  <li><b>LoadBalancer-Cache:</b> Spring Cloud LoadBalancer cached die Instanzliste standardmässig 35 Sekunden (<code>spring.cloud.loadbalancer.cache.ttl</code>).</li>
+  <li><b>DNS als Discovery:</b> DNS ist einfach und überall verfügbar. Aber Clients cachen. Die JVM cached erfolgreiche Lookups standardmässig 30 Sekunden (<code>networkaddress.cache.ttl</code>), fehlgeschlagene 10 Sekunden.</li>
+  <li><b>Headless Service:</b> <code>clusterIP: None</code> gibt per DNS alle Pod-IPs zurück. Gut für gRPC-Clients mit eigenem Balancing und für StatefulSets.</li>
+  <li><b>L4 vs L7 Balancing:</b> <b>L4</b> verteilt Verbindungen (TCP). <b>L7</b> verteilt Requests (HTTP). Lange Verbindungen wie HTTP/2 und gRPC brauchen L7, sonst landet alles auf einer Instanz.</li>
+  <li><b>Service Mesh:</b> Ein <b>Sidecar</b> oder Node-Proxy übernimmt Discovery, L7-Balancing, mTLS und Retries. Beispiel: Istio, Linkerd. Der Code bleibt frei davon.</li>
+  <li><b>Algorithmen:</b> Round Robin (reihum), Least Requests (wenigste offene Requests), Random, Weighted, Consistent Hashing (gleicher Schlüssel → gleiche Instanz).</li>
+</ol>
+
+<h2>5. Vergleich</h2>
+<ul>
+  <li><b>Kubernetes Service (ClusterIP + DNS):</b> server-side, Third-Party-Registration, Readiness als Health. Standard auf AKS. Nur L4.</li>
+  <li><b>Headless Service:</b> client-side über DNS. Client braucht eigenes Balancing und kurze DNS-Caches.</li>
+  <li><b>Eureka (Spring Cloud Netflix):</b> client-side, Self Registration, AP-System (verfügbar vor konsistent). Sinnvoll ausserhalb von Kubernetes, z. B. auf VMs.</li>
+  <li><b>Consul:</b> Registry mit Health Checks, DNS- und HTTP-Interface, Key-Value-Store. Funktioniert über mehrere Plattformen und Rechenzentren.</li>
+  <li><b>Service Mesh (Istio, Linkerd):</b> L7-Balancing, mTLS, Retries im Proxy. Preis: Betriebsaufwand und etwas Latenz.</li>
+  <li><b>Cloud Load Balancer (Azure LB, Application Gateway):</b> server-side für Traffic von aussen. Nicht für jeden internen Aufruf.</li>
+</ul>
+
+<h2>6. In der Produktion</h2>
+<ol>
+  <li><b>Fehler beim Rolling Update:</b> Ein Pod bekommt noch Traffic, obwohl er schon herunterfährt. Lösung: Graceful Shutdown, ein kurzer <code>preStop</code>-Sleep, Retry auf idempotente Aufrufe.</li>
+  <li><b>gRPC-Last ungleich:</b> Eine HTTP/2-Verbindung bleibt auf einem Pod. Lösung: Headless Service mit Client-Balancing (<code>round_robin</code>) oder ein L7-Mesh.</li>
+  <li><b>Alte IPs im Cache:</b> Ein Client mit „cache forever“ (<code>networkaddress.cache.ttl=-1</code>) ruft tote IPs. Lösung: TTL kurz halten, keine eigenen DNS-Caches ohne Ablauf.</li>
+  <li><b>Neue Pods bekommen keinen Traffic:</b> Lange Verbindungen und Connection Pools bleiben auf alten Pods. Lösung: maximale Verbindungsdauer setzen, L7-Balancing.</li>
+  <li><b>Registry ist ausgefallen:</b> Clients mit Cache laufen weiter, aber neue Instanzen sind unsichtbar. Lösung: Registry hochverfügbar, Clients mit lokalem Cache.</li>
+  <li><b>Eureka-Self-Preservation:</b> Bei vielen fehlenden Heartbeats löscht Eureka keine Instanzen mehr. Tote Instanzen bleiben dann sichtbar. Lösung: Client-Retry auf andere Instanzen.</li>
+  <li><b>Readiness prüft die Datenbank:</b> Fällt die DB kurz aus, gehen alle Pods aus der Registry. Lösung: Readiness nur für die eigene Bereitschaft, nicht für alle Abhängigkeiten.</li>
+</ol>
+
+<h2>7. Diagnose: Werkzeuge und Befehle</h2>
+<ul>
+  <li><code>kubectl get endpointslices -l kubernetes.io/service-name=&lt;svc&gt;</code>: welche IPs gerade registriert sind und ob sie <code>ready</code> sind.</li>
+  <li><code>kubectl describe svc &lt;svc&gt;</code>: Selector prüfen. Leere Endpoints heissen meist: falsche Labels oder Readiness rot.</li>
+  <li><code>nslookup &lt;svc&gt;</code> aus einem Debug-Pod (busybox): ClusterIP oder Pod-IPs?</li>
+  <li>Eureka-Dashboard und <code>GET /eureka/apps</code>: registrierte Instanzen und Status.</li>
+  <li>Consul: <code>consul catalog services</code>, <code>/v1/health/service/&lt;name&gt;?passing</code>.</li>
+  <li>Metriken pro Instanz (Requests pro Pod in Prometheus/Grafana): zeigt ungleiche Verteilung.</li>
+  <li>Logs von Client-Fehlern: <code>connection refused</code> auf eine IP, die es nicht mehr gibt, heisst veralteter Cache.</li>
+</ul>
+
+<h2>8. Senior-Punkte</h2>
+<div class="senior">
+<ol>
+  <li><b>In Kubernetes ist Discovery schon gelöst.</b> Eureka oder Consul dort nur, wenn Services ausserhalb des Clusters dazukommen.</li>
+  <li><b>Discovery ist immer etwas veraltet.</b> Darum gehören Timeout, Retry und Idempotenz zur Discovery dazu.</li>
+  <li><b>Client-side vs server-side ist eine Abwägung:</b> weniger Hops und mehr Kontrolle gegen Logik in jedem Client und jeder Sprache.</li>
+  <li><b>Lange Verbindungen sind das eigentliche Balancing-Problem.</b> L4 verteilt Verbindungen, nicht Requests.</li>
+  <li><b>Health-Checks sind Teil der Discovery.</b> Eine falsche Readiness Probe nimmt gesunde Pods heraus oder lässt kranke drin.</li>
+  <li><b>Ein Service Mesh lohnt sich</b> bei vielen Services, mTLS-Pflicht und gRPC. Für wenige Services ist es zu viel Betrieb.</li>
+</ol>
+</div>
+
+<h2>9. Aus dem Projekt</h2>
+<p>„Bei MATCH auf AKS finden sich WebUI, API, Worker und Dremio über Kubernetes-Services und DNS. Eine eigene Registry wie Eureka brauchten wir nicht.“ <span class="small">(Prüfen und durch dein echtes Beispiel ersetzen.)</span></p>
+
+<h2>10. Fallen</h2>
+<div class="trap">
+<ul>
+  <li>„In Kubernetes braucht man Eureka.“ → <b>Falsch.</b> Services, EndpointSlices und DNS sind schon eine Registry.</li>
+  <li>„Ein Kubernetes-Service verteilt jeden Request.“ → <b>Falsch.</b> Er verteilt Verbindungen (L4). Bei HTTP/2 und gRPC bleibt alles auf einer Verbindung.</li>
+  <li>„DNS ist sofort aktuell.“ → <b>Falsch.</b> Clients cachen, die JVM standardmässig 30 Sekunden.</li>
+  <li>„Wenn die Registry ausfällt, ist alles kaputt.“ → Nicht sofort. Clients nutzen ihren Cache, aber neue Instanzen bleiben unsichtbar.</li>
+  <li>„Eureka meldet nur gesunde Instanzen.“ → <b>Falsch.</b> Ohne Health-Check-Integration zählt nur der Heartbeat.</li>
+</ul>
+</div>
+
+<h2>11. Fragen</h2>
+<details><summary>Was ist Service Discovery?</summary><p>Der Mechanismus, mit dem ein Service die aktuellen Adressen eines anderen Services findet. Er braucht eine Registry und einen Lookup.</p></details>
+<details><summary>Warum braucht man Service Discovery?</summary><p>Instanzen skalieren, starten neu und bekommen neue IPs. Feste Adressen in der Konfiguration funktionieren nicht.</p></details>
+<details><summary>Was ist eine Service Registry?</summary><p>Eine Datenbank mit Service-Namen und gesunden Instanz-Adressen. Beispiele: Eureka, Consul, Kubernetes EndpointSlices.</p></details>
+<details><summary>Client-side vs server-side Discovery?</summary><p>Client-side: Der Client fragt die Registry und wählt selbst. Server-side: Der Client ruft einen Proxy, der Proxy wählt.</p></details>
+<details><summary>Self Registration vs Third-Party Registration?</summary><p>Self: Die Instanz meldet sich selbst an und schickt Heartbeats, z. B. Eureka. Third-Party: Die Plattform registriert sie, z. B. Kubernetes über Labels.</p></details>
+<details><summary>Wie funktioniert Discovery in Kubernetes?</summary><p>Ein Service wählt Pods per Label-Selector. Der Controller schreibt bereite Pod-IPs in EndpointSlices. CoreDNS liefert den Namen, kube-proxy verteilt.</p></details>
+<details><summary>Was ist ein Headless Service?</summary><p>Ein Service mit <code>clusterIP: None</code>. DNS gibt alle Pod-IPs zurück, der Client balanciert selbst.</p></details>
+<details><summary>Welche Rolle spielt die Readiness Probe?</summary><p>Nur bereite Pods kommen als ready in die EndpointSlice. Sie steuert also, wer Traffic bekommt.</p></details>
+<details><summary>Wie funktioniert Eureka?</summary><p>Instanzen registrieren sich und senden Heartbeats, standardmässig alle 30 Sekunden. Clients holen die Registry und cachen sie lokal.</p></details>
+<details><summary>Warum sieht ein Client eine neue Eureka-Instanz erst spät?</summary><p>Instanz, Server und Client haben eigene Caches. Laut Doku kann es bis zu 3 Heartbeats dauern.</p></details>
+<details><summary>Was ist Eureka Self-Preservation?</summary><p>Fehlen plötzlich viele Heartbeats, nimmt Eureka ein Netzwerkproblem an. Er löscht dann keine Instanzen mehr, um nicht alles zu verlieren.</p></details>
+<details><summary>Was macht Spring Cloud LoadBalancer?</summary><p>Client-side Balancing für <code>@LoadBalanced</code> RestClient/WebClient. Standard ist Round Robin, die Instanzliste wird 35 Sekunden gecacht.</p></details>
+<details><summary>Welche Balancing-Algorithmen kennen Sie?</summary><p>Round Robin, Random, Least Requests, Weighted und Consistent Hashing. Least Requests passt bei ungleich langen Requests.</p></details>
+<details><summary>Warum ist DNS-Caching ein Problem?</summary><p>Der Client ruft noch alte IPs, obwohl die Instanz weg ist. Die JVM cached 30 Sekunden, mit <code>-1</code> sogar für immer.</p></details>
+<details><summary>Wie setzt man den DNS-Cache der JVM?</summary><p>Mit der Security-Property <code>networkaddress.cache.ttl</code> in <code>java.security</code> oder per <code>Security.setProperty</code>. Kein normales <code>-D</code>-Property.</p></details>
+<details><summary>Warum ist gRPC hinter einem ClusterIP-Service ungleich verteilt?</summary><p>gRPC nutzt eine lange HTTP/2-Verbindung. kube-proxy verteilt nur Verbindungen, also landen alle Requests auf einem Pod.</p></details>
+<details><summary>L4 vs L7 Load Balancing?</summary><p>L4 verteilt TCP-Verbindungen und sieht keine Requests. L7 versteht HTTP und kann jeden Request einzeln verteilen und nach Pfad routen.</p></details>
+<details><summary>Was bringt ein Service Mesh für Discovery?</summary><p>Der Proxy kennt alle Endpoints, balanciert auf L7, macht Retries und mTLS. Die App bleibt frei von dieser Logik.</p></details>
+<details><summary>Brauchen Sie Eureka auf AKS?</summary><p>Meist nicht. Kubernetes-Services decken Discovery und Basis-Balancing ab. Eureka nur für Services ausserhalb des Clusters.</p></details>
+<details><summary>Wann wählen Sie Consul?</summary><p>Wenn Services auf VMs, mehreren Clustern oder Rechenzentren laufen. Consul bietet Health Checks, DNS und HTTP-API über Plattformgrenzen.</p></details>
+<details><summary>Was ist Consistent Hashing beim Balancing?</summary><p>Gleicher Schlüssel geht immer auf dieselbe Instanz. Gut für lokale Caches. Fällt eine Instanz weg, wandern nur ihre Schlüssel.</p></details>
+<details><summary>Wie verhindern Sie Fehler beim Herunterfahren eines Pods?</summary><p>Graceful Shutdown, kurzer <code>preStop</code>-Sleep, damit die Endpoint-Entfernung ankommt. Dazu Retry auf idempotente Aufrufe.</p></details>
+<details><summary>Szenario: Nach jedem Deployment gibt es für einige Sekunden 502 und „connection refused“. Was tun Sie?</summary><p>Pods bekommen noch Traffic, während sie stoppen. Lösung: <code>preStop</code>-Sleep, Graceful Shutdown, Readiness korrekt, Retry für idempotente Aufrufe.</p></details>
+<details><summary>Szenario: Ein gRPC-Service hat 6 Pods, einer ist bei 90 % CPU, die anderen bei 5 %. Was tun Sie?</summary><p>Verbindungs-Balancing auf L4 ist die Ursache. Lösung: Headless Service mit gRPC-<code>round_robin</code> oder ein L7-Mesh, dazu maximale Verbindungsdauer.</p></details>
+<details><summary>Szenario: Ein Java-Client ruft nach einem Failover noch Minuten lang die alte IP. Warum?</summary><p>Der DNS-Cache ist zu lang oder auf „forever“. Prüfen: <code>networkaddress.cache.ttl</code> und eigene Client-Caches. Kurze TTL setzen.</p></details>
+
+</body>
+</html>

@@ -1,0 +1,205 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Strangler Fig Migration</title>
+<style>
+  body { font: 17px/1.55 -apple-system, system-ui, sans-serif; max-width: 760px; margin: 0 auto; padding: 16px; color: #1d1d1f; }
+  h1 { font-size: 28px; margin: 8px 0 4px; }
+  h2 { font-size: 21px; margin: 32px 0 8px; padding-top: 12px; border-top: 2px solid #e5e5ea; }
+  .kern { background: #eef6ff; border-left: 4px solid #0a66c2; padding: 10px 14px; border-radius: 6px; }
+  .senior { background: #f0faf0; border-left: 4px solid #2e7d32; padding: 10px 14px; border-radius: 6px; }
+  .trap { background: #fff4f2; border-left: 4px solid #c62828; padding: 10px 14px; border-radius: 6px; }
+  code { background: #f2f2f7; padding: 1px 5px; border-radius: 4px; font-size: 15px; }
+  pre { background: #1e1e1e; color: #e6e6e6; padding: 12px; border-radius: 8px; overflow-x: auto; font-size: 13.5px; line-height: 1.45; }
+  svg { width: 100%; height: auto; display: block; margin: 10px 0; }
+  ol li, ul li { margin: 4px 0; }
+  details { border: 1px solid #e5e5ea; border-radius: 8px; padding: 8px 12px; margin: 6px 0; }
+  summary { font-weight: 600; cursor: pointer; }
+  details p { margin: 6px 0 2px; }
+  .small { color: #6e6e73; font-size: 14px; }
+</style>
+</head>
+<body>
+
+<h1>Migration vom Monolithen: Strangler Fig</h1>
+<p class="small">Microservices · Tier 2 · Quellen: Azure Architecture Center (Strangler Fig pattern, Stand 2026; Anti-corruption Layer pattern), Martin Fowler (StranglerFigApplication, BranchByAbstraction, ParallelChange), microservices.io (Strangler application, Anti-corruption layer), Sam Newman „Monolith to Microservices“</p>
+
+<div class="kern">
+<b>Kern:</b> <b>Strangler Fig</b> ist ein Migrationsmuster, das ein Altsystem Stück für Stück durch neue Services ersetzt. Eine <b>Fassade</b> (Proxy) vor dem Altsystem leitet jede Funktion entweder zum alten oder zum neuen Teil. Es löst das Risiko eines <b>Big-Bang-Rewrites</b>: Jeder Schritt ist klein, messbar und umkehrbar.
+</div>
+
+<h2>1. Wo sitzt die Strangler-Fassade?</h2>
+<svg viewBox="0 0 720 300" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="a" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="10" y="120" width="110" height="56" rx="10" fill="#fff" stroke="#555"/><text x="65" y="153" text-anchor="middle" font-weight="700">Clients</text>
+  <line x1="120" y1="148" x2="178" y2="148" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="180" y="110" width="150" height="76" rx="10" fill="#0a66c2"/><text x="255" y="140" text-anchor="middle" fill="#fff" font-weight="700">Fassade</text><text x="255" y="160" text-anchor="middle" fill="#fff" font-size="12">Routing-Tabelle</text>
+  <line x1="330" y1="130" x2="418" y2="70" stroke="#555" stroke-width="2" marker-end="url(#a)"/><text x="350" y="88" font-size="12">/invoices</text>
+  <line x1="330" y1="166" x2="418" y2="226" stroke="#2e7d32" stroke-width="2" marker-end="url(#a)"/><text x="350" y="222" font-size="12" fill="#2e7d32">/reports</text>
+  <rect x="420" y="30" width="170" height="76" rx="10" fill="#eee" stroke="#777"/><text x="505" y="60" text-anchor="middle" font-weight="700">Monolith</text><text x="505" y="80" text-anchor="middle" font-size="12">schrumpft</text>
+  <rect x="420" y="190" width="170" height="76" rx="10" fill="#e8f5e9" stroke="#2e7d32"/><text x="505" y="220" text-anchor="middle" font-weight="700">Neuer Service</text><text x="505" y="240" text-anchor="middle" font-size="12">wächst</text>
+  <rect x="610" y="120" width="100" height="56" rx="10" fill="#fff" stroke="#555"/><text x="660" y="145" text-anchor="middle" font-size="13" font-weight="700">ACL</text><text x="660" y="163" text-anchor="middle" font-size="11">übersetzt</text>
+  <line x1="590" y1="80" x2="640" y2="118" stroke="#999" stroke-width="1.5" marker-end="url(#a)"/>
+  <line x1="640" y1="176" x2="590" y2="214" stroke="#999" stroke-width="1.5" marker-end="url(#a)"/>
+</svg>
+<ol>
+  <li><b>Fassade:</b> ein Proxy vor dem Altsystem mit einer Routing-Tabelle. Beispiel: API Gateway, Ingress, Azure API Management, Feature Switch in der UI.</li>
+  <li><b>Monolith:</b> beantwortet alles, was noch nicht migriert ist. Er wird nur kleiner, nicht umgebaut.</li>
+  <li><b>Neuer Service:</b> übernimmt eine fachliche Funktion nach der anderen. Beispiel: zuerst Reports.</li>
+  <li><b>Anti-Corruption Layer (ACL):</b> ein Adapter, der Modelle zwischen alt und neu übersetzt. Beispiel: Zahl „1.234,50“ wird zu <code>1234.5</code>.</li>
+  <li><b>Datenweg:</b> Daten folgen der Funktion, oft per ETL plus <b>CDC</b> (Change Data Capture, Änderungen aus dem DB-Log lesen).</li>
+</ol>
+
+<h2>2. Die Reise einer Funktion (die Geschichte zum Merken)</h2>
+<svg viewBox="0 0 720 250" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="b" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker><marker id="r" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#c62828"/></marker></defs>
+  <rect x="10" y="30" width="125" height="70" rx="10" fill="#eee" stroke="#777"/><text x="72" y="58" text-anchor="middle" font-weight="700">1. Fassade</text><text x="72" y="78" text-anchor="middle" font-size="12">alles → alt</text>
+  <line x1="135" y1="65" x2="153" y2="65" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="155" y="30" width="125" height="70" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="217" y="58" text-anchor="middle" font-weight="700">2. Bauen</text><text x="217" y="78" text-anchor="middle" font-size="12">eine Funktion</text>
+  <line x1="280" y1="65" x2="298" y2="65" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="300" y="30" width="125" height="70" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="362" y="58" text-anchor="middle" font-weight="700">3. Shadow</text><text x="362" y="78" text-anchor="middle" font-size="12">beide, vergleichen</text>
+  <line x1="425" y1="65" x2="443" y2="65" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="445" y="30" width="125" height="70" rx="10" fill="#0a66c2"/><text x="507" y="58" text-anchor="middle" fill="#fff" font-weight="700">4. Umschalten</text><text x="507" y="78" text-anchor="middle" fill="#fff" font-size="12">Route → neu</text>
+  <line x1="570" y1="65" x2="588" y2="65" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="590" y="30" width="120" height="70" rx="10" fill="#e8f5e9" stroke="#2e7d32"/><text x="650" y="58" text-anchor="middle" font-weight="700">5. Löschen</text><text x="650" y="78" text-anchor="middle" font-size="12">alten Code</text>
+  <path d="M507,100 C507,170 362,170 362,102" fill="none" stroke="#c62828" stroke-width="2" stroke-dasharray="6 4" marker-end="url(#r)"/>
+  <text x="435" y="190" text-anchor="middle" fill="#c62828" font-size="12">Fehler → Route zurück (Rollback ohne Deployment)</text>
+  <path d="M650,100 C650,230 72,230 72,102" fill="none" stroke="#555" stroke-width="1.5" stroke-dasharray="3 4" marker-end="url(#b)"/>
+  <text x="360" y="240" text-anchor="middle" font-size="12">nächste Funktion</text>
+</svg>
+<ol>
+  <li><b>Fassade einziehen.</b> Alle Clients gehen über die Fassade. Am Anfang leitet sie alles zum Monolithen. Nutzer merken nichts.</li>
+  <li><b>Eine Funktion bauen.</b> Das Team wählt einen klaren fachlichen Schnitt, z. B. Reports. Gute Kandidaten: wenig Abhängigkeiten, hoher Nutzen, oft geändert.</li>
+  <li><b>Shadow-Betrieb.</b> Die Fassade ruft beide Seiten. Nutzer bekommen die alte Antwort. Ein Vergleich prüft die neue Antwort (<b>Parity</b>).</li>
+  <li><b>Umschalten.</b> Bei 100 % Übereinstimmung ändert die Fassade die Route. Bei Problemen geht die Route zurück, ohne neues Deployment.</li>
+  <li><b>Alten Code löschen.</b> Erst nach einer Beobachtungszeit. Dann folgt die nächste Funktion. Am Ende verschwindet der Monolith und oft auch die Fassade.</li>
+</ol>
+
+<h2>3. Beispiel: Fassade mit Shadow-Vergleich und Umschalten</h2>
+<pre>ROUTES = {"/reports/": "shadow", "/invoices/": "legacy"}   # Routing-Tabelle
+
+class Legacy:  GET /reports/... → {"src":"legacy","total":"1.234,50"}   # deutsches Zahlenformat
+class NewSvc:  GET /reports/... → {"src":"new","total":1234.5}
+
+def legacy_to_number(s):          # Anti-Corruption Layer
+    return float(s.replace(".", "").replace(",", "."))
+
+class Facade:
+    mode = Route für den Pfad, sonst "legacy"
+    "legacy" → alte Antwort · "new" → neue Antwort
+    "shadow" → beide aufrufen, vergleichen, loggen, ALTE Antwort zurückgeben
+
+for phase in [("1 shadow", {"/reports/": "shadow"}), ("2 cutover", {"/reports/": "new"})]:
+    GET /reports/2026-11-23 und /invoices/42 über die Fassade (Port 8000)</pre>
+<pre>phase 1 shadow {'/reports/': 'shadow'}
+  shadow compare /reports/2026-11-23: legacy='1.234,50' new=1234.5 parity=True
+  GET /reports/2026-11-23 -&gt; {'src': 'legacy', 'total': '1.234,50'}
+  GET /invoices/42 -&gt; {'src': 'legacy', 'path': '/invoices/42'}
+phase 2 cutover {'/reports/': 'new'}
+  GET /reports/2026-11-23 -&gt; {'src': 'new', 'total': 1234.5}
+  GET /invoices/42 -&gt; {'src': 'legacy', 'path': '/invoices/42'}</pre>
+<p class="small">Echte Ausgabe, Python 3.12.10 (<code>http.server</code> + <code>urllib</code>, drei lokale Server auf 8000–8002). Code gekürzt.</p>
+<ol>
+  <li>In Phase 1 bekommt der Nutzer weiter die alte Antwort. Die neue läuft nur im Schatten mit.</li>
+  <li>Ein direkter Vergleich <code>"1.234,50" == 1234.5</code> wäre falsch. Erst der <b>ACL</b> macht beide Seiten vergleichbar.</li>
+  <li>In Phase 2 ändert sich nur ein Eintrag in der Routing-Tabelle. <code>/invoices</code> bleibt beim Monolithen.</li>
+  <li>Der Rückweg ist dieselbe Zeile: <code>"new"</code> wieder auf <code>"legacy"</code>.</li>
+</ol>
+
+<h2>4. Details, die Interviewer fragen</h2>
+<ol>
+  <li><b>Fassade als Übergangsarchitektur:</b> Sie ist absichtlich temporär. Sie darf kein Single Point of Failure und kein Engpass werden.</li>
+  <li><b>Was zuerst migrieren?</b> Eine Funktion mit klarem <b>Bounded Context</b>, wenig eingehenden Abhängigkeiten und spürbarem Nutzen. Nicht den Kern mit den meisten Abhängigkeiten.</li>
+  <li><b>Branch by Abstraction:</b> Für Code tief im Monolithen. Man zieht eine Abstraktion (Interface) ein, baut die neue Implementierung dahinter und schaltet um. Gut, wenn man nicht per HTTP abfangen kann.</li>
+  <li><b>Parallel Run:</b> Alt und neu laufen gleichzeitig mit denselben Eingaben. Ergebnisse werden verglichen, nur alt zählt. Teuer, aber sehr sicher für Berechnungen.</li>
+  <li><b>Daten migrieren:</b> Erst liest der neue Service die alte DB. Dann eigene DB mit ETL plus CDC-Sync. Dann ist die neue DB die Wahrheit, die alten Tabellen werden entfernt.</li>
+  <li><b>Rollback-Fenster:</b> Zurück geht leicht, solange die alten Tabellen und der Sync existieren. Nach dem Löschen ist Rollback teuer.</li>
+  <li><b>Abhängigkeiten in beide Richtungen:</b> Der neue Teil ruft noch alte Funktionen. Der alte Teil ruft vielleicht migrierte Funktionen. Ein ACL schützt das neue Modell vor alten Begriffen.</li>
+  <li><b>Unveränderbarer Monolith:</b> Ohne Zugang zum Code bleibt die Datenbank als Einstieg, z. B. Trigger oder CDC.</li>
+  <li><b>Wann nicht?</b> Wenn Requests nicht abgefangen werden können, das System klein ist, oder das Altsystem sehr schnell weg muss.</li>
+  <li><b>Fassaden-Typen:</b> HTTP-Proxy oder Gateway (nach Pfad), Feature Switch in der UI (nach Nutzer oder Mandant), Message-Router (nach Event-Typ).</li>
+</ol>
+
+<h2>5. Vergleich</h2>
+<ul>
+  <li><b>Big-Bang-Rewrite:</b> alles neu, ein Stichtag. Lange kein Nutzen, hohes Risiko, Altsystem bekommt in der Zeit trotzdem Änderungen.</li>
+  <li><b>Strangler Fig:</b> Funktion für Funktion hinter einer Fassade. Früher Nutzen, Rollback pro Schritt. Preis: zwei Systeme parallel betreiben.</li>
+  <li><b>Branch by Abstraction:</b> wie Strangler, aber im Code statt vor dem System.</li>
+  <li><b>Parallel Run:</b> Ergänzung zum Strangler für kritische Berechnungen. Beweist Gleichheit mit echten Daten.</li>
+  <li><b>Modulith zuerst:</b> erst Module im Monolithen sauber trennen, dann herauslösen. Senkt das Risiko des Schnitts.</li>
+  <li><b>Lift and Shift:</b> Monolith unverändert in die Cloud. Schnell, aber kein Architekturgewinn.</li>
+</ul>
+
+<h2>6. In der Produktion</h2>
+<ol>
+  <li><b>Migration bleibt bei 80 % stehen:</b> Zwei Systeme laufen für Jahre. Lösung: Abschaltdatum pro Funktion, Budget für das Löschen planen.</li>
+  <li><b>Ergebnisse weichen ab:</b> Kleine Unterschiede bei Zahlen, Datum, Zeitzone, <code>null</code> vs leerer String. Lösung: automatischer Parity-Vergleich vor dem Umschalten.</li>
+  <li><b>Fassade wird Engpass:</b> Jeder Request geht durch sie. Lösung: hochverfügbar betreiben, Latenz messen, keine Fachlogik dort.</li>
+  <li><b>Daten in zwei Systemen laufen auseinander:</b> Beide schreiben dieselben Daten. Lösung: pro Datum genau einen Besitzer, der andere liest nur oder bekommt CDC.</li>
+  <li><b>Verteilter Monolith:</b> Der neue Service ruft für jede Anfrage synchron den alten auf. Lösung: Schnitt nach Fachlichkeit, Daten lokal halten.</li>
+  <li><b>Fehlerhaftes Verhalten wird mitmigriert:</b> Das Altsystem rechnet fachlich falsch. Lösung: zuerst Verhalten 1:1 migrieren, Korrektur danach als eigene, sichtbare Entscheidung.</li>
+</ol>
+
+<h2>7. Diagnose: Werkzeuge und Metriken</h2>
+<ul>
+  <li><b>Routing-Anteil:</b> Anteil Requests pro Ziel (alt/neu) in der Fassade. Zeigt den Fortschritt.</li>
+  <li><b>Parity-Rate:</b> Anteil identischer Ergebnisse im Shadow- oder Parallel-Run, pro Funktion.</li>
+  <li><b>Fehler und Latenz pro Ziel:</b> z. B. in Grafana. Neu darf nicht langsamer oder fehlerhafter sein als alt.</li>
+  <li><b>Distributed Tracing:</b> Zeigt, ob der neue Service noch synchron den Monolithen ruft.</li>
+  <li><b>CDC-Lag:</b> Verzögerung zwischen alter und neuer Datenbank vor dem Umschalten.</li>
+  <li><b>Tote Pfade:</b> Access-Logs des Monolithen. Kein Traffic mehr auf einem Pfad heisst: Code kann weg.</li>
+</ul>
+
+<h2>8. Senior-Punkte</h2>
+<div class="senior">
+<ol>
+  <li><b>Die Reihenfolge ist die wichtigste Entscheidung.</b> Früher fachlicher Nutzen schafft Vertrauen und Budget für den Rest.</li>
+  <li><b>Ohne messbare Parity kein Umschalten.</b> Ein maschinell prüfbarer Vergleich ersetzt Diskussionen.</li>
+  <li><b>Verhalten zuerst migrieren, Semantik später korrigieren.</b> Sonst weiss niemand, ob ein Unterschied Bug oder Absicht ist.</li>
+  <li><b>Rollback ohne Deployment</b> (Route, Feature Switch) macht jeden Schritt billig umkehrbar.</li>
+  <li><b>Löschen gehört zum Plan.</b> Eine Migration ist erst fertig, wenn der alte Code weg ist.</li>
+  <li><b>Die Daten sind der schwerste Teil,</b> nicht der Code. Pro Datum braucht es einen klaren Besitzer.</li>
+</ol>
+</div>
+
+<h2>9. Aus dem Projekt</h2>
+<p>„Bei ElCom MATCH ging das neue Lakehouse parallel zum .NET/SQL-Server-System live, hinter einem Feature Switch. Umgeschaltet wurde erst nach 100 % Parity, geprüft mit einem eigenen Job <code>validate_parity.py</code>.“ <span class="small">(Prüfen und durch dein echtes Beispiel ersetzen.)</span></p>
+
+<h2>10. Fallen</h2>
+<div class="trap">
+<ul>
+  <li>„Strangler Fig heisst, wir bauen alles neu.“ → <b>Falsch.</b> Man ersetzt Funktion für Funktion, das Altsystem läuft weiter.</li>
+  <li>„Die Fassade bleibt für immer.“ → Meist <b>falsch.</b> Sie ist Übergangsarchitektur und fällt am Ende weg, ausser als Adapter für alte Clients.</li>
+  <li>„Wir migrieren den Code, die Daten bleiben in der alten DB.“ → Nur als Zwischenschritt. Sonst entsteht ein verteilter Monolith.</li>
+  <li>„Wir korrigieren alte Fehler gleich mit.“ → <b>Riskant.</b> Dann ist Parity nicht mehr prüfbar.</li>
+  <li>„Zuerst den grössten, wichtigsten Teil.“ → <b>Falsch.</b> Zuerst einen klar geschnittenen Teil mit wenig Abhängigkeiten.</li>
+</ul>
+</div>
+
+<h2>11. Fragen</h2>
+<details><summary>Was ist das Strangler-Fig-Muster?</summary><p>Ein Altsystem wird Funktion für Funktion ersetzt. Eine Fassade leitet jede Funktion zum alten oder neuen Teil, bis der alte leer ist.</p></details>
+<details><summary>Welches Problem löst es?</summary><p>Das Risiko eines Big-Bang-Rewrites. Jeder Schritt ist klein, liefert früh Nutzen und ist umkehrbar.</p></details>
+<details><summary>Welche Phasen hat eine Strangler-Migration?</summary><p>Fassade einziehen, Funktion bauen, im Schatten vergleichen, umschalten, alten Code löschen. Dann die nächste Funktion.</p></details>
+<details><summary>Was kann als Fassade dienen?</summary><p>Ein API Gateway, ein Ingress, Azure API Management, ein Feature Switch in der UI oder ein Message-Router.</p></details>
+<details><summary>Welche Funktion migrieren Sie zuerst?</summary><p>Eine mit klarem fachlichen Schnitt, wenig Abhängigkeiten und sichtbarem Nutzen. Nicht den Kern mit den meisten Verbindungen.</p></details>
+<details><summary>Was ist ein Anti-Corruption Layer?</summary><p>Ein Adapter, der Modelle und Begriffe zwischen alt und neu übersetzt. Er schützt das neue Modell vor alten Konventionen.</p></details>
+<details><summary>Was ist Branch by Abstraction?</summary><p>Eine Abstraktion im Code einziehen, neue Implementierung dahinter bauen, dann umschalten. Für Teile, die man nicht per Proxy abfangen kann.</p></details>
+<details><summary>Was ist ein Parallel Run?</summary><p>Alt und neu verarbeiten dieselben Eingaben. Ergebnisse werden verglichen, aber nur alt ist massgebend. Gut für Berechnungen.</p></details>
+<details><summary>Was ist Shadow Traffic?</summary><p>Die Fassade schickt Requests zusätzlich an den neuen Teil. Dessen Antwort wird nur verglichen, nicht an den Nutzer gegeben.</p></details>
+<details><summary>Wie migrieren Sie die Daten?</summary><p>Zuerst nutzt der neue Service die alte DB. Dann eigene DB mit Initial-Load und CDC-Sync. Nach Validierung ist die neue DB die Wahrheit.</p></details>
+<details><summary>Wie lange ist ein Rollback möglich?</summary><p>Solange alte Tabellen, Sync und alter Code existieren. Nach dem Löschen wird Rollback teuer.</p></details>
+<details><summary>Wann passt Strangler Fig nicht?</summary><p>Wenn Requests nicht abfangbar sind, das System klein ist oder das Altsystem sehr schnell weg muss.</p></details>
+<details><summary>Was ist ein verteilter Monolith?</summary><p>Services, die nur zusammen deployt oder betrieben werden können, z. B. durch viele synchrone Aufrufe oder eine geteilte DB.</p></details>
+<details><summary>Wie messen Sie den Fortschritt?</summary><p>Anteil Requests pro Ziel in der Fassade, Anzahl migrierter Funktionen und gelöschter Code. Nicht die Zeilen neuen Codes.</p></details>
+<details><summary>Was tun mit fachlich falschem Verhalten im Altsystem?</summary><p>Erst 1:1 migrieren und Parity beweisen. Die Korrektur danach als eigene, sichtbare Änderung mit dem Fachbereich.</p></details>
+<details><summary>Wie verhindern Sie, dass die Fassade zum Engpass wird?</summary><p>Hochverfügbar betreiben, keine Fachlogik dort, Latenz überwachen. Am Ende entfernen.</p></details>
+<details><summary>Strangler Fig und Modulith, wie passen sie zusammen?</summary><p>Ein Modulith trennt Module im Monolithen sauber. Danach kann man ein Modul mit Strangler Fig herauslösen.</p></details>
+<details><summary>Warum scheitern viele Migrationen bei 80 %?</summary><p>Die schwierigen Reste haben wenig Nutzen, das Budget ist weg. Lösung: Abschaltdaten und Löschen fest einplanen.</p></details>
+<details><summary>Szenario: Die neue Berechnung liefert in 3 % der Fälle andere Zahlen. Was tun Sie?</summary><p>Nicht umschalten. Abweichungen gruppieren und Ursachen suchen: Zahlenformat, Zeitzone, null vs leer. Jede Ursache fixen und den Parity-Job erneut laufen lassen.</p></details>
+<details><summary>Szenario: Das Management will einen kompletten Neubau mit Stichtag in 18 Monaten. Wie argumentieren Sie?</summary><p>Big Bang heisst 18 Monate ohne Nutzen und ein riskanter Stichtag. Strangler Fig liefert in Wochen die erste Funktion, mit Rollback pro Schritt.</p></details>
+<details><summary>Szenario: Der Monolith-Code ist nicht änderbar, nur die Datenbank ist zugänglich. Wie migrieren Sie?</summary><p>Fassade vor den Clients, Datenänderungen per CDC aus der DB lesen. Der neue Service baut seinen Zustand daraus und übernimmt Funktionen über die Fassade.</p></details>
+
+</body>
+</html>

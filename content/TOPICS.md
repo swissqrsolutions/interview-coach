@@ -2,7 +2,7 @@
 
 Generated from content/syllabus.json. Priority 1 = asked in almost every interview. Mark: **Projekt** = shown in CV/Gmail · **— kein Projekt** = no project experience · **? prüfen** = unclear, you decide.
 
-413 topics · P1 243 · P2 132 · P3 38 · written 293
+413 topics · P1 243 · P2 132 · P3 38 · written 309
 
 ## Java 21 (core + advanced) (40)
 Sources: Java SE 21/25 docs (docs.oracle.com) · JVM Specification · OpenJDK source + JEPs (openjdk.org) · Oracle Java SE 21 Developer exam 1Z0-830 topics
@@ -77,7 +77,7 @@ Sources: Spring Framework reference · Spring Boot 3 reference · Spring Securit
 | 2 | Spring Cloud | — kein Projekt | ✓ |
 | 2 | Scheduling, Async, Events | ? prüfen | ✓ |
 | 2 | Spring Cache | ? prüfen | ✓ |
-| 3 | Spring Batch: Job, Step, Chunk | — kein Projekt |  |
+| 3 | Spring Batch | — kein Projekt | ✓ |
 
 ## REST, JSON, OpenAPI (11)
 Sources: RFC 9110 HTTP Semantics · RFC 9457 Problem Details · OpenAPI 3.1 specification
@@ -113,9 +113,9 @@ Sources: microservices.io patterns (Chris Richardson) · Azure Architecture Cent
 | 1 | Distributed Tracing und Korrelation | Projekt | ✓ |
 | 1 | Event-Driven Architecture: Events, Commands, Event-Design | Projekt | ✓ |
 | 1 | Deployment: Rolling, Blue-Green, Canary, Feature Flags | Projekt | ✓ |
-| 2 | Service Discovery und Load Balancing | ? prüfen |  |
-| 2 | CQRS und Event Sourcing | — kein Projekt |  |
-| 2 | Migration vom Monolithen: Strangler Fig | ? prüfen |  |
+| 2 | Service Discovery und Load Balancing | ? prüfen | ✓ |
+| 2 | CQRS und Event Sourcing | — kein Projekt | ✓ |
+| 2 | Strangler Fig Migration | ? prüfen | ✓ |
 | 2 | Testen von Microservices: Contract Tests | ? prüfen |  |
 | 2 | 12-Factor App | ? prüfen |  |
 
@@ -204,8 +204,8 @@ Sources: Jakarta Faces 4 specification · PrimeFaces documentation
 
 | P | Topic | Project | Written |
 |---|---|---|---|
-| 2 | JSF-Lebenszyklus: die 6 Phasen | Projekt |  |
-| 2 | Managed Beans, CDI, Scopes | Projekt |  |
+| 2 | JSF-Lebenszyklus | Projekt | ✓ |
+| 2 | Beans, CDI, Scopes | Projekt | ✓ |
 | 2 | Ajax und Partial Rendering | Projekt |  |
 | 2 | PrimeFaces-Komponenten und Lazy DataTable | Projekt |  |
 | 2 | Migration RichFaces zu PrimeFaces / Jakarta Faces | Projekt |  |
@@ -218,8 +218,8 @@ Sources: docs.python.org · pandas and pytest docs
 | P | Topic | Project | Written |
 |---|---|---|---|
 | 1 | Iteratoren und Generatoren | ? prüfen | ✓ |
-| 2 | Listen, Dicts, Sets, Tuples: intern und Komplexität | Projekt |  |
-| 2 | Decorators und Context Manager | ? prüfen |  |
+| 2 | Listen, Dicts, Sets, Tuples | Projekt | ✓ |
+| 2 | Decorators und Context Manager | ? prüfen | ✓ |
 | 2 | GIL, Threads, Multiprocessing, asyncio | ? prüfen |  |
 | 2 | pandas-Grundlagen | ? prüfen |  |
 | 2 | pytest | Projekt |  |
@@ -271,8 +271,8 @@ Sources: Hibernate ORM 6 user guide · Jakarta Persistence 3 spec · Vlad Mihalc
 | 1 | N+1-Problem | ? prüfen | ✓ |
 | 1 | Optimistic und Pessimistic Locking | ? prüfen | ✓ |
 | 1 | Flyway und Liquibase | Projekt | ✓ |
-| 2 | Second-Level Cache | — kein Projekt |  |
-| 2 | Beziehungen, Cascade, Inheritance Mapping | Projekt |  |
+| 2 | Second-Level Cache | — kein Projekt | ✓ |
+| 2 | Beziehungen und Vererbung | Projekt | ✓ |
 
 ## SQL Server (1)
 Sources: Microsoft Learn: SQL Server T-SQL
@@ -296,9 +296,9 @@ Sources: Apache Spark 3.5/4 documentation · Databricks Spark developer exam top
 | 1 | Data Skew und Salting | ? prüfen | ✓ |
 | 1 | Adaptive Query Execution | ? prüfen | ✓ |
 | 1 | Spark-Speicher und OutOfMemory | ? prüfen | ✓ |
-| 2 | Catalyst Optimizer und Tungsten | ? prüfen |  |
-| 2 | cache und persist | ? prüfen |  |
-| 2 | UDFs vs eingebaute Funktionen, Pandas UDFs | ? prüfen |  |
+| 2 | Catalyst und Tungsten | ? prüfen | ✓ |
+| 2 | cache und persist | ? prüfen | ✓ |
+| 2 | UDFs und Pandas UDFs | ? prüfen | ✓ |
 | 2 | Structured Streaming | — kein Projekt |  |
 | 2 | Spark auf Kubernetes | Projekt |  |
 | 2 | Spark-Tuning: wichtigste Konfigurationen | ? prüfen |  |
@@ -431,9 +431,9 @@ Sources: kubernetes.io documentation · CKA and CKAD curricula (CNCF)
 | 1 | Troubleshooting: CrashLoopBackOff, Pending, ImagePullBackOff | Projekt | ✓ |
 | 1 | Docker: Image, Layer, Multi-Stage, Container vs VM | Projekt | ✓ |
 | 2 | DaemonSet, Job, CronJob | Projekt | ✓ |
-| 2 | Scheduling: Affinity, Taints, Tolerations | ? prüfen |  |
-| 2 | Pod Security, Admission Controller (Kyverno) | Projekt |  |
-| 2 | Operators und CRDs | ? prüfen |  |
+| 2 | Scheduling | ? prüfen | ✓ |
+| 2 | Pod Security und Admission | Projekt | ✓ |
+| 2 | Operators und CRDs | ? prüfen | ✓ |
 
 ## OpenShift (1)
 Sources: Red Hat OpenShift documentation

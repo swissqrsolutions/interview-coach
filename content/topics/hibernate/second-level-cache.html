@@ -1,0 +1,229 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Second-Level Cache</title>
+<style>
+  body { font: 17px/1.55 -apple-system, system-ui, sans-serif; max-width: 760px; margin: 0 auto; padding: 16px; color: #1d1d1f; }
+  h1 { font-size: 28px; margin: 8px 0 4px; }
+  h2 { font-size: 21px; margin: 32px 0 8px; padding-top: 12px; border-top: 2px solid #e5e5ea; }
+  .kern { background: #eef6ff; border-left: 4px solid #0a66c2; padding: 10px 14px; border-radius: 6px; }
+  .senior { background: #f0faf0; border-left: 4px solid #2e7d32; padding: 10px 14px; border-radius: 6px; }
+  .trap { background: #fff4f2; border-left: 4px solid #c62828; padding: 10px 14px; border-radius: 6px; }
+  code { background: #f2f2f7; padding: 1px 5px; border-radius: 4px; font-size: 15px; }
+  pre { background: #1e1e1e; color: #e6e6e6; padding: 12px; border-radius: 8px; overflow-x: auto; font-size: 13.5px; line-height: 1.45; }
+  svg { width: 100%; height: auto; display: block; margin: 10px 0; }
+  ol li, ul li { margin: 4px 0; }
+  details { border: 1px solid #e5e5ea; border-radius: 8px; padding: 8px 12px; margin: 6px 0; }
+  summary { font-weight: 600; cursor: pointer; }
+  details p { margin: 6px 0 2px; }
+  .small { color: #6e6e73; font-size: 14px; }
+</style>
+</head>
+<body>
+
+<h1>Second-Level Cache</h1>
+<p class="small">Hibernate · Tier 2 · Quellen: Hibernate ORM 7.4 Javadoc <code>CacheSettings</code>, <code>CacheConcurrencyStrategy</code>, <code>CacheLayout</code>/<code>QueryCacheLayout</code>, Hibernate ORM User Guide 7.4 (Kap. 14 Caching), Hibernate ORM 6.5 Migration Guide (Query Cache Layout), Jakarta Persistence 3.2 (<code>SharedCacheMode</code>, <code>@Cacheable</code>), Hibernate ORM Releases (7.4 stabil, in Spring Boot 4.2)</p>
+
+<div class="kern">
+<b>Kern:</b> Der <b>Second-Level Cache</b> ist ein optionaler Cache für Entity-Daten, den alle Sessions einer <b>SessionFactory</b> teilen. Er löst das Problem, dass jede neue Transaktion dieselben, selten geänderten Daten (Länder, Produkte, Konfiguration) wieder aus der Datenbank lädt. Er speichert keine Objekte, sondern deren <b>zerlegten Zustand</b>, und ist standardmässig <b>aus</b>.
+</div>
+
+<h2>1. Wo sitzt der Second-Level Cache?</h2>
+<svg viewBox="0 0 720 300" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="a" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="10" y="20" width="200" height="60" rx="8" fill="#fff" stroke="#555"/><text x="110" y="44" text-anchor="middle" font-weight="700">Session A (Request 1)</text><text x="110" y="64" text-anchor="middle" font-size="12">First-Level Cache</text>
+  <rect x="10" y="110" width="200" height="60" rx="8" fill="#fff" stroke="#555"/><text x="110" y="134" text-anchor="middle" font-weight="700">Session B (Request 2)</text><text x="110" y="154" text-anchor="middle" font-size="12">First-Level Cache</text>
+  <line x1="210" y1="50" x2="268" y2="85" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <line x1="210" y1="140" x2="268" y2="105" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="270" y="20" width="270" height="170" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="405" y="42" text-anchor="middle" font-weight="700">Second-Level Cache (pro SessionFactory)</text>
+  <rect x="285" y="55" width="115" height="40" rx="6" fill="#fff" stroke="#0a66c2"/><text x="342" y="80" text-anchor="middle" font-size="12">Entity-Region</text>
+  <rect x="410" y="55" width="115" height="40" rx="6" fill="#fff" stroke="#0a66c2"/><text x="467" y="80" text-anchor="middle" font-size="12">Collection-Region</text>
+  <rect x="285" y="105" width="115" height="40" rx="6" fill="#fff" stroke="#0a66c2"/><text x="342" y="130" text-anchor="middle" font-size="12">Query-Region</text>
+  <rect x="410" y="105" width="115" height="40" rx="6" fill="#fff" stroke="#0a66c2"/><text x="467" y="124" text-anchor="middle" font-size="12">Update-</text><text x="467" y="138" text-anchor="middle" font-size="12">Timestamps</text>
+  <text x="405" y="172" text-anchor="middle" font-size="12">RegionFactory: JCache (Ehcache, Caffeine) · Infinispan</text>
+  <line x1="540" y1="105" x2="598" y2="105" stroke="#555" stroke-width="2" marker-end="url(#a)"/><text x="569" y="97" text-anchor="middle" font-size="11">Miss</text>
+  <rect x="600" y="75" width="110" height="60" rx="8" fill="#e8f5e9" stroke="#2e7d32"/><text x="655" y="110" text-anchor="middle" font-weight="700">Datenbank</text>
+  <rect x="270" y="225" width="440" height="60" rx="8" fill="#fff4f2" stroke="#c62828"/><text x="490" y="248" text-anchor="middle" font-weight="700">Ausserhalb von Hibernate</text><text x="490" y="268" text-anchor="middle" font-size="12">anderer Service, SQL-Skript, Trigger: Cache weiss nichts davon</text>
+  <line x1="655" y1="135" x2="600" y2="223" stroke="#c62828" stroke-width="1.5" stroke-dasharray="4 3"/>
+</svg>
+<ol>
+  <li><b>First-Level Cache:</b> Der Persistence Context jeder Session. Immer an, lebt nur eine Transaktion lang.</li>
+  <li><b>Second-Level Cache:</b> Gehört zur SessionFactory, lebt so lange wie die Anwendung. Alle Sessions teilen ihn.</li>
+  <li><b>Regionen:</b> Eine <b>Region</b> ist ein benannter Cache-Bereich. Es gibt Regionen für Entities, Collections, Query-Ergebnisse und <b>Update-Timestamps</b> (letzte Änderung pro Tabelle).</li>
+  <li><b>RegionFactory:</b> Verbindet Hibernate mit einem Cache-Anbieter. Beispiel: <code>hibernate.cache.region.factory_class=jcache</code> mit Ehcache 3 oder Caffeine.</li>
+  <li><b>Grenze:</b> Der Cache sieht nur Änderungen über diese SessionFactory. Schreibt ein anderer Service in die Tabelle, bleibt der Cache veraltet.</li>
+</ol>
+
+<h2>2. Die Reise eines find()</h2>
+<svg viewBox="0 0 720 300" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="b" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="10" y="20" width="150" height="60" rx="10" fill="#eee" stroke="#777"/><text x="85" y="45" text-anchor="middle" font-weight="700">1. find(42)</text><text x="85" y="65" text-anchor="middle" font-size="12">Session B</text>
+  <line x1="160" y1="50" x2="198" y2="50" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="200" y="20" width="160" height="60" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="280" y="45" text-anchor="middle" font-weight="700">2. First-Level?</text><text x="280" y="65" text-anchor="middle" font-size="12">nein</text>
+  <line x1="360" y1="50" x2="398" y2="50" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="400" y="20" width="160" height="60" rx="10" fill="#0a66c2"/><text x="480" y="45" text-anchor="middle" fill="#fff" font-weight="700">3. Second-Level?</text><text x="480" y="65" text-anchor="middle" fill="#fff" font-size="12">Schlüssel: Typ + ID</text>
+  <line x1="560" y1="50" x2="598" y2="50" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="600" y="20" width="110" height="60" rx="10" fill="#e8f5e9" stroke="#2e7d32"/><text x="655" y="45" text-anchor="middle" font-weight="700">4. Hit</text><text x="655" y="65" text-anchor="middle" font-size="12">kein SQL</text>
+  <line x1="655" y1="80" x2="655" y2="128" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="440" y="130" width="270" height="60" rx="10" fill="#fff" stroke="#555"/><text x="575" y="155" text-anchor="middle" font-weight="700">5. Zustand zusammensetzen</text><text x="575" y="175" text-anchor="middle" font-size="12">neues Objekt in Session B</text>
+  <line x1="480" y1="80" x2="300" y2="128" stroke="#555" stroke-width="2" marker-end="url(#b)"/><text x="375" y="98" font-size="12">Miss</text>
+  <rect x="140" y="130" width="250" height="60" rx="10" fill="#fff" stroke="#555"/><text x="265" y="155" text-anchor="middle" font-weight="700">6. SELECT, dann put</text><text x="265" y="175" text-anchor="middle" font-size="12">Zustand in den Cache</text>
+  <rect x="140" y="220" width="570" height="66" rx="10" fill="#fff8e1" stroke="#b26a00"/><text x="425" y="244" text-anchor="middle" font-weight="700">7. Update von Produkt 42 (READ_WRITE)</text><text x="425" y="264" text-anchor="middle" font-size="12">Eintrag weich sperren (Soft Lock) → Commit → neuer Wert in den Cache</text><text x="425" y="280" text-anchor="middle" font-size="12">Query-Cache-Einträge für die Tabelle werden über die Timestamps ungültig</text>
+</svg>
+<ol>
+  <li><b>find:</b> Session B ruft <code>em.find(Product.class, 42L)</code>.</li>
+  <li><b>First-Level:</b> Hibernate schaut zuerst im Persistence Context. Leer, denn die Session ist neu.</li>
+  <li><b>Second-Level:</b> Ist <code>Product</code> cachebar, sucht Hibernate in der Entity-Region mit dem Schlüssel Typ + ID.</li>
+  <li><b>Hit:</b> Kein SQL. Die Session baut aus dem gespeicherten Zustand (<b>disassembled state</b>: Spaltenwerte, IDs von Beziehungen) ein neues Objekt.</li>
+  <li><b>Neues Objekt:</b> Jede Session bekommt ihre eigene Instanz. Darum gibt es keine Thread-Probleme zwischen Sessions.</li>
+  <li><b>Miss:</b> Hibernate führt das SELECT aus und legt den Zustand danach in den Cache (<b>put</b>).</li>
+  <li><b>Update:</b> Mit <code>READ_WRITE</code> sperrt Hibernate den Eintrag beim Flush weich. Andere Sessions lesen solange aus der DB. Nach dem Commit kommt der neue Zustand in den Cache.</li>
+</ol>
+
+<h2>3. Beispiel: Konfiguration, Mapping, Statistik</h2>
+<pre># Spring Boot 4.2 + hibernate-jcache + Ehcache 3
+spring.jpa.properties.hibernate.cache.region.factory_class: jcache
+spring.jpa.properties.hibernate.cache.use_query_cache: true
+spring.jpa.properties.hibernate.generate_statistics: true
+spring.jpa.properties.jakarta.persistence.sharedCache.mode: ENABLE_SELECTIVE   # Standard
+
+@Entity @Cacheable
+@Cache(usage = CacheConcurrencyStrategy.READ_WRITE)
+class Product {
+  @Id Long id;
+  String name;
+  @ManyToOne(fetch = LAZY) Category category;
+  @OneToMany(mappedBy = "product")
+  @Cache(usage = CacheConcurrencyStrategy.READ_WRITE)        // Collection-Cache: nur IDs
+  Set&lt;Price&gt; prices;
+}
+
+@Entity @Immutable @Cacheable
+@Cache(usage = CacheConcurrencyStrategy.READ_ONLY)
+class Country { @Id String code; String name; }
+
+// zwei Transaktionen nacheinander
+tx1: em.find(Product.class, 42L);
+tx2: em.find(Product.class, 42L);
+tx2: em.createQuery("from Country", Country.class).setHint("org.hibernate.cacheable", true).getResultList();</pre>
+<pre>tx1:
+  select p1_0.id,p1_0.category_id,p1_0.name from product p1_0 where p1_0.id=?
+  Session Metrics { ... 1 L2C puts; 0 L2C hits; 1 L2C misses ... }
+tx2:
+  (kein SQL für Product)
+  select c1_0.code,c1_0.name from country c1_0          -- erster Query-Cache-Lauf
+  Session Metrics { ... 1 L2C hits; ... }
+tx3 (gleiche Query):
+  (kein SQL)</pre>
+<p class="small">Erwartetes Ergebnis (laut Doku, nicht ausgeführt). Hibernate ORM 7.4 mit <code>hibernate.generate_statistics=true</code>; das Statistik-Log ist gekürzt, Aliasse können abweichen.</p>
+<ol>
+  <li>Ohne <code>@Cacheable</code> wird nichts gecacht. <code>ENABLE_SELECTIVE</code> ist der Standard: Nur markierte Entities landen im Cache.</li>
+  <li>Der zweite <code>find</code> braucht kein SQL. Das ist der ganze Nutzen.</li>
+  <li><code>READ_ONLY</code> passt zu <code>Country</code>: ändert sich nie, also keine Sperren nötig. Ein Update würde eine Exception werfen.</li>
+  <li>Der Collection-Cache speichert nur die IDs der Preise. Ist <code>Price</code> selbst nicht gecacht, lädt Hibernate jeden Preis einzeln: N+1 aus dem Cache heraus.</li>
+  <li>Der Query Cache braucht zwei Dinge: <code>use_query_cache=true</code> und den Hint <code>org.hibernate.cacheable</code> an der Query.</li>
+</ol>
+
+<h2>4. Details, die Interviewer fragen</h2>
+<ol>
+  <li><b>Standardmässig aus:</b> Ohne <code>RegionFactory</code> nutzt Hibernate <code>NoCachingRegionFactory</code>. <code>use_second_level_cache</code> ist nur <code>true</code>, wenn ein Anbieter gesetzt ist.</li>
+  <li><b>SharedCacheMode:</b> <code>ENABLE_SELECTIVE</code> (Standard, nur <code>@Cacheable</code>), <code>DISABLE_SELECTIVE</code> (alle ausser ausgeschlossene), <code>ALL</code>, <code>NONE</code>. Die Hibernate-Doku rät von <code>ALL</code> ab.</li>
+  <li><b>READ_ONLY:</b> Für Daten, die sich nie ändern. Schnellste Strategie. Einfügen und Löschen gehen, Ändern nicht.</li>
+  <li><b>NONSTRICT_READ_WRITE:</b> Keine Sperren. Der Eintrag wird nach dem Commit ungültig. Kurz kann jemand alte Daten lesen. Für selten geänderte Daten.</li>
+  <li><b>READ_WRITE:</b> Mit <b>Soft Locks</b> während der Änderung. Kein Lesen alter Daten nach dem Commit. Der übliche Standard für änderbare Daten.</li>
+  <li><b>TRANSACTIONAL:</b> Der Cache nimmt an der Transaktion teil (JTA). Braucht einen passenden Anbieter, z. B. Infinispan.</li>
+  <li><b>Was gespeichert wird:</b> Kein Objekt, sondern ein Array von Werten (<b>dehydrated state</b>). Beziehungen werden als IDs gespeichert. Darum ist der Cache sicher für mehrere Threads.</li>
+  <li><b>Collection-Cache:</b> Speichert nur die IDs der Elemente. Die Element-Entities müssen selbst cachebar sein, sonst N+1.</li>
+  <li><b>Query Cache:</b> Speichert Ergebnisse pro Query-Text und Parametern. Die <b>Update-Timestamps</b>-Region merkt sich, wann eine Tabelle zuletzt geändert wurde. Jede Änderung an der Tabelle macht alle Query-Einträge darauf ungültig.</li>
+  <li><b>Query Cache Layout:</b> Seit 6.5 steuerbar. <code>SHALLOW</code> speichert nur IDs, <code>FULL</code> den ganzen Zustand, <code>AUTO</code> wählt nach Cachebarkeit der Entity.</li>
+  <li><b>Bulk-Updates:</b> Ein HQL-<code>update</code> oder <code>delete</code> leert die betroffenen Entity-Regionen. Natives SQL ohne Angabe der Tabellen kann den <b>ganzen</b> Cache leeren. Mit <code>addSynchronizedEntityClass</code> begrenzt man das.</li>
+  <li><b>CacheMode pro Session:</b> <code>NORMAL</code> (lesen und schreiben), <code>GET</code> (nur lesen), <code>PUT</code> (nur schreiben), <code>REFRESH</code> (schreiben, nicht lesen), <code>IGNORE</code>. JPA-Gegenstück: <code>CacheRetrieveMode</code> und <code>CacheStoreMode</code>, Standard <code>USE</code>.</li>
+  <li><b>Natural-ID-Cache:</b> <code>@NaturalIdCache</code> cacht die Zuordnung natürlicher Schlüssel (z. B. ISBN) zur ID. <code>bySimpleNaturalId(...).load(...)</code> nutzt ihn.</li>
+  <li><b>Manuell leeren:</b> <code>entityManagerFactory.getCache().evict(Product.class, 42L)</code> oder <code>evictAll()</code>. Nötig nach Änderungen ausserhalb von Hibernate.</li>
+  <li><b>Vererbung:</b> In einer Hierarchie gehört die Cache-Region zur Wurzel-Entity. <code>@Cache</code> gehört an die Wurzel.</li>
+</ol>
+
+<h2>5. Vergleich</h2>
+<ul>
+  <li><b>First-Level Cache:</b> pro Session, immer an, garantiert eine Instanz pro ID. Kein Thema für Konfiguration.</li>
+  <li><b>Second-Level Cache:</b> pro SessionFactory, optional, Entity-Zustand nach ID. Weiss von Änderungen über Hibernate.</li>
+  <li><b>Query Cache:</b> Ergebnisse ganzer Queries. Wird bei jeder Änderung der Tabelle ungültig. Nur für sehr stabile Tabellen sinnvoll.</li>
+  <li><b>Spring Cache (<code>@Cacheable</code>):</b> cacht Methoden-Ergebnisse, z. B. fertige DTOs. Volle Kontrolle, aber eigene Invalidierung.</li>
+  <li><b>Lokal vs verteilt:</b> Ehcache/Caffeine lokal pro Pod; jeder Pod hat eigene Kopien und erfährt nichts von Änderungen anderer Pods. Infinispan geclustert: Invalidierung im Cluster, mehr Betrieb.</li>
+</ul>
+
+<h2>6. In der Produktion</h2>
+<ol>
+  <li><b>Veraltete Daten zwischen Pods:</b> Pod A ändert Produkt 42. Der lokale Cache in Pod B hat noch den alten Wert. Lösung: geclusterter Cache, kurze TTL oder nur echte Stammdaten cachen.</li>
+  <li><b>Fremde Schreiber:</b> Ein Batch-Job schreibt per SQL in die Tabelle. Der Cache weiss nichts. Lösung: nach dem Job evict, oder die Tabelle nicht cachen.</li>
+  <li><b>Query Cache bremst:</b> Auf einer oft geänderten Tabelle wird jeder Eintrag sofort ungültig. Dazu kommt der Aufwand für Timestamps. Lösung: Query Cache nur für fast statische Tabellen.</li>
+  <li><b>N+1 aus dem Cache:</b> Collection gecacht, Elemente nicht. Lösung: Element-Entity auch cachen oder Collection-Cache weglassen.</li>
+  <li><b>Speicher voll:</b> Regionen ohne Grösse. Lösung: Grenze und Ablaufzeit pro Region in der Ehcache- oder Caffeine-Konfiguration.</li>
+  <li><b>Cache versteckt schlechte Queries:</b> Nach einem Neustart ist der Cache kalt, und die App ist minutenlang langsam. Lösung: Queries trotzdem optimieren, Warm-up beim Start.</li>
+</ol>
+
+<h2>7. Diagnose</h2>
+<ul>
+  <li><code>hibernate.generate_statistics=true</code>: <code>Statistics.getSecondLevelCacheHitCount()</code>, <code>…MissCount()</code>, <code>…PutCount()</code>, auch pro Region.</li>
+  <li><b>Micrometer:</b> Mit <code>hibernate-micrometer</code> und Statistik exportiert Boot Hibernate-Metriken, darunter Cache-Hits und -Misses.</li>
+  <li><code>logging.level.org.hibernate.cache=DEBUG</code>: zeigt Zugriffe und Invalidierungen pro Region.</li>
+  <li><code>org.hibernate.SQL=DEBUG</code>: Kommt beim zweiten <code>find</code> noch ein SELECT? Dann wirkt der Cache nicht.</li>
+  <li><b>Ehcache/JCache:</b> JMX-Statistiken der Caches (Grösse, Evictions) über JConsole oder Actuator.</li>
+  <li><b>DB-Seite:</b> <code>pg_stat_statements</code> zeigt, ob die Anzahl gleicher SELECTs nach dem Einschalten sinkt.</li>
+</ul>
+
+<h2>8. Senior-Punkte</h2>
+<div class="senior">
+<ol>
+  <li><b>Erst Queries und Fetching optimieren,</b> dann cachen. Der Cache ist eine Optimierung, keine Reparatur.</li>
+  <li><b>Gute Kandidaten:</b> viel gelesen, selten geändert, klein, nur über diese App geschrieben. Beispiel: Länder, Kategorien, Konfiguration.</li>
+  <li><b>Schlechte Kandidaten:</b> oft geänderte Daten, Tabellen mit fremden Schreibern, sehr grosse Tabellen.</li>
+  <li><b>Mehrere Pods ändern die Rechnung.</b> Lokaler Cache plus Änderungen heisst veraltete Daten. Entweder geclustert, oder nur READ_ONLY-Daten.</li>
+  <li><b>Query Cache ist selten ein Gewinn.</b> Standard: aus. Nur mit Messung einschalten.</li>
+  <li><b>Hit-Rate messen.</b> Ohne Zahlen weiss niemand, ob der Cache hilft oder nur Speicher kostet.</li>
+</ol>
+</div>
+
+<h2>9. Aus dem Projekt</h2>
+<p>„Bei NABODAT habe ich mit Hibernate auf PostgreSQL/PostGIS gearbeitet. Einen Second-Level Cache dort kann ich nicht belegen; für Performance haben wir lazy ladende Data Tables genutzt, die nur die sichtbare Seite holen.“ <span class="small">(Prüfen und durch dein echtes Beispiel ersetzen. Ehrlich sagen, dass der Second-Level Cache Lernstoff ist.)</span></p>
+
+<h2>10. Fallen</h2>
+<div class="trap">
+<ul>
+  <li>„Hibernate cacht Entities automatisch über Requests.“ → <b>Falsch.</b> Nur der First-Level Cache ist an, und der lebt eine Session.</li>
+  <li>„Der Cache speichert die Entity-Objekte.“ → <b>Falsch.</b> Er speichert den zerlegten Zustand. Jede Session baut ein eigenes Objekt.</li>
+  <li>„Der Collection-Cache speichert die Elemente.“ → <b>Falsch.</b> Nur deren IDs.</li>
+  <li>„@Cacheable an der Entity reicht für Query-Ergebnisse.“ → <b>Falsch.</b> Der Query Cache braucht eigene Einstellung und einen Hint pro Query.</li>
+  <li>„Der Cache sieht jede Änderung in der DB.“ → <b>Falsch.</b> Nur Änderungen über dieselbe SessionFactory.</li>
+  <li>„NONSTRICT_READ_WRITE ist so sicher wie READ_WRITE.“ → <b>Falsch.</b> Es gibt ein kurzes Fenster mit alten Daten.</li>
+</ul>
+</div>
+
+<h2>11. Fragen</h2>
+<details><summary>Was ist der Second-Level Cache?</summary><p>Ein optionaler Cache pro SessionFactory, den alle Sessions teilen. Er speichert Entity-Zustand nach ID und spart SELECTs über Transaktionen hinweg.</p></details>
+<details><summary>First-Level vs Second-Level Cache?</summary><p>First-Level ist der Persistence Context, pro Session und immer an. Second-Level ist global, optional und braucht einen Anbieter.</p></details>
+<details><summary>Wie aktivieren Sie den Second-Level Cache?</summary><p>RegionFactory setzen (z. B. <code>jcache</code> mit Ehcache), Anbieter auf den Classpath, Entities mit <code>@Cacheable</code> und <code>@Cache</code> markieren.</p></details>
+<details><summary>Was bedeutet ENABLE_SELECTIVE?</summary><p>Nur Entities mit <code>@Cacheable</code> werden gecacht. Das ist der Standard und die Empfehlung.</p></details>
+<details><summary>Welche Cache-Strategien gibt es?</summary><p>READ_ONLY, NONSTRICT_READ_WRITE, READ_WRITE und TRANSACTIONAL. Sie unterscheiden sich in Sperren und Konsistenz.</p></details>
+<details><summary>Wann READ_ONLY?</summary><p>Für Daten, die sich nie ändern, z. B. Länder. Schnell und ohne Sperren; ein Update wirft eine Exception.</p></details>
+<details><summary>READ_WRITE vs NONSTRICT_READ_WRITE?</summary><p>READ_WRITE sperrt Einträge weich und verhindert alte Daten nach dem Commit. NONSTRICT invalidiert erst nach dem Commit; kurz sind alte Daten möglich.</p></details>
+<details><summary>Was speichert der Cache genau?</summary><p>Den zerlegten Zustand: Spaltenwerte und IDs von Beziehungen. Kein Java-Objekt.</p></details>
+<details><summary>Was speichert der Collection-Cache?</summary><p>Die IDs der Elemente. Die Elemente selbst kommen aus ihrer Entity-Region oder aus der DB.</p></details>
+<details><summary>Wie funktioniert der Query Cache?</summary><p>Er speichert Ergebnisse pro Query und Parametern. Die Update-Timestamps-Region macht sie ungültig, sobald eine beteiligte Tabelle geändert wird.</p></details>
+<details><summary>Warum ist der Query Cache oft nutzlos?</summary><p>Jede Änderung an der Tabelle macht alle Einträge darauf ungültig. Bei oft geänderten Tabellen gibt es fast nur Misses.</p></details>
+<details><summary>Was passiert bei einem HQL-Bulk-Update mit dem Cache?</summary><p>Hibernate leert die betroffenen Regionen. Bei nativem SQL ohne Tabellen-Angabe kann der ganze Cache geleert werden.</p></details>
+<details><summary>Wie leeren Sie den Cache von Hand?</summary><p>Mit <code>emf.getCache().evict(Klasse, id)</code>, <code>evict(Klasse)</code> oder <code>evictAll()</code>.</p></details>
+<details><summary>Was ist das Problem mit mehreren Pods?</summary><p>Ein lokaler Cache pro Pod erfährt nichts von Änderungen anderer Pods. Lösung: geclusterter Cache oder nur unveränderliche Daten cachen.</p></details>
+<details><summary>Welche Anbieter gibt es?</summary><p>Über JCache: Ehcache 3, Caffeine und andere. Dazu Infinispan direkt, auch geclustert.</p></details>
+<details><summary>Was ist der Natural-ID-Cache?</summary><p>Er cacht die Zuordnung eines natürlichen Schlüssels zur ID. So braucht ein Laden per ISBN kein SELECT.</p></details>
+<details><summary>Was ist CacheMode.REFRESH?</summary><p>Die Session liest nicht aus dem Cache, schreibt aber geladene Daten hinein. Gut, um den Cache gezielt zu aktualisieren.</p></details>
+<details><summary>Wie messen Sie, ob der Cache hilft?</summary><p>Mit Hibernate-Statistik: Hits, Misses, Puts pro Region. Dazu weniger gleiche SELECTs in <code>pg_stat_statements</code>.</p></details>
+<details><summary>Löst der Second-Level Cache N+1?</summary><p>Nein, er verdeckt es nur, solange der Cache warm ist. Nach einem Neustart kommen die vielen Queries zurück.</p></details>
+<details><summary>Szenario: Nach einer Preisänderung zeigen manche Pods noch stundenlang den alten Preis. Was ist los?</summary><p>Lokaler Second-Level Cache pro Pod: nur der ändernde Pod hat den neuen Wert. Lösung: geclusterter Cache, TTL oder Preise nicht cachen.</p></details>
+<details><summary>Szenario: Ein nächtlicher SQL-Import ändert Stammdaten, die App zeigt aber alte Werte. Was tun Sie?</summary><p>Der Import umgeht Hibernate, der Cache bleibt alt. Nach dem Import die Regionen per evict leeren oder die Tabelle nicht cachen.</p></details>
+<details><summary>Szenario: Nach dem Einschalten des Query Cache ist die App langsamer. Warum?</summary><p>Die Tabellen ändern sich oft, also werden Einträge sofort ungültig. Dazu kommen Puts und Timestamp-Prüfungen. Query Cache wieder aus, nur für statische Tabellen nutzen.</p></details>
+
+</body>
+</html>
