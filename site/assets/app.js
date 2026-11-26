@@ -264,14 +264,14 @@
       <b>${esc(e.title)}</b><p class="small">${esc(e.why || '')} <span class="vis-src">${esc(e.source || '')}</span></p>
       <a class="btn ghost" href="${esc(e.url)}" target="_blank" rel="noopener noreferrer">Öffnen ↗</a></div>`).join('')}</section>`;
   }
-  const FILMS = new Set(['java/hashmap']); // topics with a teaching film: media/<tech>-<id>-film.json + .mp3 (player: film.js)
+  const FILMS = { 'java/hashmap': 'java-hashmap-1' }; // topics with a teaching film: media/<film id>-film.json + .mp3 (player: film2.js, v2 flat-block films)
   function topicView(key) {
     const [tech, id] = key.split('--'), x = (D.topics || []).find(y => y.tech === tech && y.id === id);
     if (!x || !x.done) return techView(tech);
     const list = D.topics.filter(y => y.tech === tech && y.done), i = list.indexOf(x);
     if (x.html) {
       app.innerHTML = `<a href="#t-${tech}" class="back">← ${esc(techOf(tech).name)}</a>
-        <header class="topic-head"><div class="crumbs"><span>${esc(techOf(tech).name.split(/ \(| \+ /)[0])}</span></div><h1>${esc(x.title)}</h1></header>${FILMS.has(tech + '/' + id) ? `<div data-film="${tech}-${id}"></div>` : ''}
+        <header class="topic-head"><div class="crumbs"><span>${esc(techOf(tech).name.split(/ \(| \+ /)[0])}</span></div><h1>${esc(x.title)}</h1></header>${FILMS[tech + '/' + id] ? `<div data-film2="${FILMS[tech + '/' + id]}"></div>` : ''}
         <article class="topic">${x.html}</article>
         ${visBlock(x)}
         <nav class="pager">${i > 0 ? `<a class="prev" href="#k-${tech}--${list[i - 1].id}"><span>← Zurück</span>${esc(list[i - 1].title)}</a>` : ""}${i < list.length - 1 ? `<a class="next" href="#k-${tech}--${list[i + 1].id}"><span>Weiter →</span>${esc(list[i + 1].title)}</a>` : ""}</nav>`;
