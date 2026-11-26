@@ -19,6 +19,14 @@
   summary { font-weight: 600; cursor: pointer; }
   details p { margin: 6px 0 2px; }
   .small { color: #6e6e73; font-size: 14px; }
+  h3 { font-size: 17px; margin: 20px 0 6px; }
+  .geruest { border: 2px solid #1d1d1f; border-radius: 6px; padding: 10px 14px; margin: 14px 0; font-size: 15px; line-height: 1.4; }
+  .geruest h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; margin: 0 0 8px; padding: 0; border: 0; }
+  .geruest dl { display: grid; grid-template-columns: 6.6em 1fr; gap: 6px 10px; margin: 0; }
+  .geruest dt { font-weight: 700; font-size: 12px; text-transform: uppercase; letter-spacing: .05em; padding-top: 1px; }
+  .geruest dd { margin: 0; }
+  .muster { border: 1px solid #e5e5ea; border-left: 4px solid #1d1d1f; border-radius: 6px; padding: 10px 14px; margin: 14px 0; }
+  .muster .mq { margin: 0 0 6px; }
 </style>
 </head>
 <body>
@@ -30,7 +38,39 @@
 <b>Kern:</b> <b>Propagation</b> ist die Regel, was eine <code>@Transactional</code>-Methode tut, wenn schon eine Transaktion läuft. <b>Isolation</b> ist die Regel, wie viel eine Transaktion von parallelen Transaktionen sieht. Spring setzt Propagation selbst um, Isolation gibt es nur an die <b>Datenbank</b> weiter.
 </div>
 
-<h2>1. Wo sitzt Propagation und Isolation?</h2>
+<div class="muster"><h3>Antwort-Muster</h3><p class="mq"><b>Frage:</b> Was ist der Unterschied zwischen REQUIRED und REQUIRES_NEW?</p><ol>
+  <li>Mechanismus: REQUIRED macht bei einer laufenden Transaktion mit. REQUIRES_NEW pausiert sie und startet eine neue auf einer zweiten Connection.</li>
+  <li>Zahl: Es gibt 7 Propagation-Arten, REQUIRED ist der Standard. REQUIRES_NEW braucht pro Thread 2 Connections.</li>
+  <li>Trade-off: REQUIRES_NEW committet unabhängig und bleibt bei einem Fehler aussen. Dafür kann es den Connection Pool blockieren.</li>
+  <li>Produktion: Bei REQUIRED rollt ein innerer Fehler die ganze Transaktion zurück. Der äussere Commit wirft dann <code>UnexpectedRollbackException</code>.</li>
+</ol></div>
+
+<h2>1. Die Reise eines verschachtelten Aufrufs</h2>
+<svg viewBox="0 0 720 330" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="b" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker><marker id="r" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#c62828"/></marker></defs>
+  <rect x="10" y="20" width="200" height="60" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="110" y="44" text-anchor="middle" font-weight="700">placeOrder()</text><text x="110" y="64" text-anchor="middle" font-size="12">REQUIRED → Tx A neu</text>
+  <line x1="210" y1="50" x2="268" y2="50" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="270" y="20" width="200" height="60" rx="10" fill="#fff" stroke="#555"/><text x="370" y="44" text-anchor="middle" font-weight="700">reserveStock()</text><text x="370" y="64" text-anchor="middle" font-size="12">REQUIRED → macht in A mit</text>
+  <line x1="370" y1="80" x2="370" y2="128" stroke="#c62828" stroke-width="2" marker-end="url(#r)"/>
+  <rect x="270" y="130" width="200" height="60" rx="10" fill="#fff4f2" stroke="#c62828"/><text x="370" y="154" text-anchor="middle" font-weight="700" fill="#c62828">RuntimeException</text><text x="370" y="174" text-anchor="middle" font-size="12">A wird rollback-only</text>
+  <rect x="490" y="20" width="220" height="60" rx="10" fill="#fff" stroke="#555"/><text x="600" y="44" text-anchor="middle" font-weight="700">writeAudit()</text><text x="600" y="64" text-anchor="middle" font-size="12">REQUIRES_NEW → A pausiert, B</text>
+  <line x1="600" y1="80" x2="600" y2="128" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="490" y="130" width="220" height="60" rx="10" fill="#e8f5e9" stroke="#2e7d32"/><text x="600" y="154" text-anchor="middle" font-weight="700">B: Commit</text><text x="600" y="174" text-anchor="middle" font-size="12">eigene Connection</text>
+  <rect x="10" y="230" width="460" height="80" rx="10" fill="#0a66c2" stroke="#0a66c2"/><text x="240" y="258" text-anchor="middle" fill="#fff" font-weight="700">placeOrder() fängt die Exception und will committen</text><text x="240" y="280" text-anchor="middle" fill="#fff" font-size="13">A ist rollback-only → Rollback</text><text x="240" y="298" text-anchor="middle" fill="#fff" font-size="13">→ UnexpectedRollbackException</text>
+  <line x1="110" y1="80" x2="110" y2="228" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+</svg>
+<ol>
+  <li><b>Start:</b> <code>placeOrder()</code> hat <code>REQUIRED</code>. Es läuft keine Transaktion. Der Manager startet die <b>physische Transaktion A</b>.</li>
+  <li><b>Mitmachen:</b> <code>reserveStock()</code> hat auch <code>REQUIRED</code>. Es gibt schon A. Die Methode bekommt nur einen <b>logischen Scope</b> in A.</li>
+  <li><b>Fehler innen:</b> <code>reserveStock()</code> wirft eine <code>RuntimeException</code>. Der Interceptor kann A nicht allein zurückrollen. Er setzt A auf <b>rollback-only</b>.</li>
+  <li><b>Fangen aussen:</b> <code>placeOrder()</code> fängt die Exception und macht weiter. Die Markierung bleibt aber.</li>
+  <li><b>Pausieren:</b> <code>writeAudit()</code> hat <code>REQUIRES_NEW</code>. Der Manager <b>suspendiert</b> A und öffnet Transaktion B auf einer zweiten Connection.</li>
+  <li><b>Unabhängiger Commit:</b> B committet sofort. Danach setzt der Manager A fort.</li>
+  <li><b>Ende:</b> <code>placeOrder()</code> endet normal, der Interceptor ruft Commit. A ist rollback-only. Der Manager rollt zurück und wirft <b>UnexpectedRollbackException</b>.</li>
+  <li><b>Ergebnis:</b> Die Bestellung fehlt, der Audit-Eintrag aus B bleibt.</li>
+</ol>
+
+<h2>2. Aufbau</h2>
 <svg viewBox="0 0 720 320" font-family="-apple-system, system-ui, sans-serif" font-size="14">
   <defs><marker id="a" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
   <rect x="10" y="20" width="150" height="50" rx="8" fill="#fff" stroke="#555"/><text x="85" y="42" text-anchor="middle">Aufrufer</text><text x="85" y="60" text-anchor="middle" font-size="12">Controller</text>
@@ -56,32 +96,102 @@
   <li><b>Datenbank:</b> Sie entscheidet, was eine Isolationsstufe wirklich bedeutet. Spring prüft das nicht.</li>
 </ol>
 
-<h2>2. Die Reise eines verschachtelten Aufrufs (die Geschichte zum Merken)</h2>
-<svg viewBox="0 0 720 330" font-family="-apple-system, system-ui, sans-serif" font-size="14">
-  <defs><marker id="b" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker><marker id="r" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#c62828"/></marker></defs>
-  <rect x="10" y="20" width="200" height="60" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="110" y="44" text-anchor="middle" font-weight="700">placeOrder()</text><text x="110" y="64" text-anchor="middle" font-size="12">REQUIRED → Tx A neu</text>
-  <line x1="210" y1="50" x2="268" y2="50" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
-  <rect x="270" y="20" width="200" height="60" rx="10" fill="#fff" stroke="#555"/><text x="370" y="44" text-anchor="middle" font-weight="700">reserveStock()</text><text x="370" y="64" text-anchor="middle" font-size="12">REQUIRED → macht in A mit</text>
-  <line x1="370" y1="80" x2="370" y2="128" stroke="#c62828" stroke-width="2" marker-end="url(#r)"/>
-  <rect x="270" y="130" width="200" height="60" rx="10" fill="#fff4f2" stroke="#c62828"/><text x="370" y="154" text-anchor="middle" font-weight="700" fill="#c62828">RuntimeException</text><text x="370" y="174" text-anchor="middle" font-size="12">A wird rollback-only</text>
-  <rect x="490" y="20" width="220" height="60" rx="10" fill="#fff" stroke="#555"/><text x="600" y="44" text-anchor="middle" font-weight="700">writeAudit()</text><text x="600" y="64" text-anchor="middle" font-size="12">REQUIRES_NEW → A pausiert, B</text>
-  <line x1="600" y1="80" x2="600" y2="128" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
-  <rect x="490" y="130" width="220" height="60" rx="10" fill="#e8f5e9" stroke="#2e7d32"/><text x="600" y="154" text-anchor="middle" font-weight="700">B: Commit</text><text x="600" y="174" text-anchor="middle" font-size="12">eigene Connection</text>
-  <rect x="10" y="230" width="460" height="80" rx="10" fill="#0a66c2" stroke="#0a66c2"/><text x="240" y="258" text-anchor="middle" fill="#fff" font-weight="700">placeOrder() fängt die Exception und will committen</text><text x="240" y="280" text-anchor="middle" fill="#fff" font-size="13">A ist rollback-only → Rollback</text><text x="240" y="298" text-anchor="middle" fill="#fff" font-size="13">→ UnexpectedRollbackException</text>
-  <line x1="110" y1="80" x2="110" y2="228" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
-</svg>
+<h2>3. Details, die Interviewer fragen</h2>
+<p><b>Die 7 Propagation-Arten:</b></p>
 <ol>
-  <li><b>Start:</b> <code>placeOrder()</code> hat <code>REQUIRED</code>. Es läuft keine Transaktion. Der Manager startet die <b>physische Transaktion A</b>.</li>
-  <li><b>Mitmachen:</b> <code>reserveStock()</code> hat auch <code>REQUIRED</code>. Es gibt schon A. Die Methode bekommt nur einen <b>logischen Scope</b> in A.</li>
-  <li><b>Fehler innen:</b> <code>reserveStock()</code> wirft eine <code>RuntimeException</code>. Der Interceptor kann A nicht allein zurückrollen. Er setzt A auf <b>rollback-only</b>.</li>
-  <li><b>Fangen aussen:</b> <code>placeOrder()</code> fängt die Exception und macht weiter. Die Markierung bleibt aber.</li>
-  <li><b>Pausieren:</b> <code>writeAudit()</code> hat <code>REQUIRES_NEW</code>. Der Manager <b>suspendiert</b> A und öffnet Transaktion B auf einer zweiten Connection.</li>
-  <li><b>Unabhängiger Commit:</b> B committet sofort. Danach setzt der Manager A fort.</li>
-  <li><b>Ende:</b> <code>placeOrder()</code> endet normal, der Interceptor ruft Commit. A ist rollback-only. Der Manager rollt zurück und wirft <b>UnexpectedRollbackException</b>.</li>
-  <li><b>Ergebnis:</b> Die Bestellung fehlt, der Audit-Eintrag aus B bleibt.</li>
+  <li><b>REQUIRED</b> (Standard): Die Methode macht mit, sonst startet sie neu. Ein Beispiel ist eine normale Service-Methode.</li>
+  <li><b>REQUIRES_NEW:</b> Sie startet immer eine neue physische Transaktion. Die laufende wird pausiert. Ein Beispiel ist ein Audit-Log, das auch bei Fehler bleiben soll.</li>
+  <li><b>NESTED:</b> Im laufenden Fall setzt sie einen <b>Savepoint</b> in derselben physischen Transaktion. Ohne laufende Transaktion verhält sie sich wie REQUIRED. Ein Beispiel ist ein Teilschritt, der scheitern darf.</li>
+  <li><b>MANDATORY:</b> Es muss eine Transaktion laufen. Sonst kommt <code>IllegalTransactionStateException</code>. Ein Beispiel ist eine Repository-Hilfsmethode, die nie allein laufen darf.</li>
+  <li><b>SUPPORTS:</b> Die Methode macht mit, wenn eine läuft. Sonst läuft sie ohne Transaktion. Ein Beispiel ist eine Lese-Methode, die beides verträgt.</li>
+  <li><b>NOT_SUPPORTED:</b> Sie läuft immer ohne Transaktion. Eine laufende wird pausiert. Ein Beispiel ist ein langer externer HTTP-Aufruf.</li>
+  <li><b>NEVER:</b> Läuft eine Transaktion, kommt <code>IllegalTransactionStateException</code>. Ein Beispiel ist Code, der nie in einer Transaktion laufen darf.</li>
+</ol>
+<p><b>Weitere Regeln:</b></p>
+<ol>
+  <li><b>Entscheidung im Manager:</b> <code>getTransaction</code> im <code>AbstractPlatformTransactionManager</code> prüft zuerst, ob schon eine Transaktion läuft. Wenn ja, entscheidet <code>handleExistingTransaction</code> nach der Propagation. Wenn nein, wirft MANDATORY einen Fehler. REQUIRED, REQUIRES_NEW und NESTED starten neu.</li>
+  <li><b>Leere Transaktion:</b> SUPPORTS, NOT_SUPPORTED und NEVER ohne laufende Transaktion starten keine echte Transaktion. Spring erzeugt nur eine leere Transaktion, eventuell mit Synchronisation. Eine eigene Isolation wird dann ignoriert und im Log gewarnt.</li>
+  <li><b>Physisch vs logisch:</b> Eine <b>physische Transaktion</b> ist die echte DB-Transaktion. Jede <code>@Transactional</code>-Methode ist ein <b>logischer Scope</b>. Bei REQUIRED teilen sich viele Scopes eine physische Transaktion.</li>
+  <li><b>Attribute beim Mitmachen:</b> Eine teilnehmende Methode übernimmt Isolation, Timeout und readOnly der äusseren. Ihre eigenen Werte ignoriert Spring still.</li>
+  <li><b>validateExistingTransaction:</b> Dieses Flag am Transaction Manager lehnt abweichende Isolation und readOnly-Konflikte ab. Der Standard ist der stille Modus.</li>
+  <li><b>REQUIRES_NEW braucht eine zweite Connection:</b> Die äussere Connection bleibt belegt. Die Doku warnt vor Pool-Erschöpfung und Deadlock. Die Regel lautet, der Pool ist grösser als Threads plus 1.</li>
+  <li><b>NESTED und JPA:</b> NESTED nutzt JDBC-Savepoints. <code>DataSourceTransactionManager</code> kann es direkt. <code>JpaTransactionManager</code> hat <code>nestedTransactionAllowed = false</code> als Standard. Auch mit <code>true</code> gilt der Savepoint nur für JDBC, nicht für den EntityManager-Cache.</li>
+  <li><b>Rollback-Regeln:</b> Standard ist Rollback bei <code>RuntimeException</code> und <code>Error</code>. Checked Exceptions committen. Man ändert das mit <code>rollbackFor</code> und <code>noRollbackFor</code>. Seit 6.2 geht es global mit <code>@EnableTransactionManagement(rollbackOn = RollbackOn.ALL_EXCEPTIONS)</code>.</li>
+  <li><b>UnexpectedRollbackException:</b> Sie kommt, wenn innen rollback-only gesetzt wurde und aussen Commit gerufen wird. Sie zeigt, dass der Aufrufer an Commit glaubt, aber es Rollback gab.</li>
+  <li><b>globalRollbackOnParticipationFailure:</b> Dieses Flag (Standard <code>true</code>) markiert die ganze Transaktion bei einem Fehler in einem Teilnehmer. Ausschalten ist selten richtig.</li>
+</ol>
+<p><b>Isolation und die Datenbank:</b></p>
+<ol>
+  <li><b>DEFAULT:</b> Spring setzt nichts. Es gilt die Einstellung der Datenbank.</li>
+  <li><b>READ_UNCOMMITTED:</b> Sie erlaubt <b>Dirty Reads</b>, also das Lesen nicht committeter Daten. In PostgreSQL verhält sie sich wie READ COMMITTED.</li>
+  <li><b>READ_COMMITTED:</b> Es zählen nur committete Daten. Zwei Lesungen können verschiedene Werte liefern, das ist ein <b>Non-Repeatable Read</b>. Es ist der Standard in PostgreSQL und SQL Server.</li>
+  <li><b>REPEATABLE_READ:</b> Gelesene Zeilen bleiben gleich. Es ist der Standard in MySQL InnoDB. PostgreSQL verhindert hier auch <b>Phantom Reads</b>, also neue Zeilen in einer Abfrage.</li>
+  <li><b>SERIALIZABLE:</b> Das Ergebnis ist wie bei Ausführung nacheinander. PostgreSQL bricht Konflikte mit SQLSTATE <code>40001</code> ab. Die Anwendung muss die ganze Transaktion wiederholen.</li>
+  <li><b>SQL Server:</b> READ COMMITTED nutzt Locks, ausser <code>READ_COMMITTED_SNAPSHOT</code> ist an. In Azure SQL Database ist RCSI standardmässig an.</li>
+  <li><b>Mechanik:</b> Bei einer <b>neuen</b> Transaktion ruft der Manager <code>Connection.setTransactionIsolation(...)</code>. Danach setzt er den Wert zurück.</li>
+  <li><b>JPA:</b> Standard-JPA kennt keine eigene Isolation pro Transaktion. <code>HibernateJpaDialect</code> unterstützt sie, solange <code>prepareConnection</code> an ist (Standard).</li>
 </ol>
 
-<h2>3. Beispiel: UnexpectedRollbackException erzeugen</h2>
+<h2>4. Fallen</h2>
+<div class="trap">
+<ul>
+  <li>„Die innere Methode hat REQUIRED und eigene Isolation, also gilt die.“ → <b>Falsch.</b> Beim Mitmachen gilt die Isolation der äusseren Transaktion.</li>
+  <li>„Ich fange die Exception, dann committet alles.“ → <b>Falsch.</b> Die Transaktion ist schon rollback-only. Es kommt UnexpectedRollbackException.</li>
+  <li>„NESTED ist dasselbe wie REQUIRES_NEW.“ → <b>Falsch.</b> NESTED ist ein Savepoint in derselben Transaktion. Es committet erst mit der äusseren.</li>
+  <li>„NESTED funktioniert mit JPA einfach so.“ → <b>Falsch.</b> <code>JpaTransactionManager</code> erlaubt es standardmässig nicht. Und der Savepoint deckt nicht den EntityManager-Cache ab.</li>
+  <li>„READ_UNCOMMITTED macht PostgreSQL schneller.“ → <b>Falsch.</b> PostgreSQL behandelt es wie READ COMMITTED.</li>
+  <li>„Bei jeder Exception gibt es Rollback.“ → <b>Falsch.</b> Standard nur bei RuntimeException und Error.</li>
+  <li>„REQUIRES_NEW in derselben Klasse aufrufen reicht.“ → <b>Falsch.</b> Self-Invocation geht am Proxy vorbei. Die Annotation wirkt nicht.</li>
+</ul>
+</div>
+
+<h2>5. Selbsttest</h2>
+<h3>Warum?</h3>
+<details><summary>Was passiert mit der Isolation einer Methode, die nur mitmacht?</summary><p>Sie wird still ignoriert. Mit <code>validateExistingTransaction = true</code> wirft der Manager stattdessen einen Fehler.</p></details>
+<details><summary>Warum kann REQUIRES_NEW den Connection Pool blockieren?</summary><p>Jeder Thread hält die äussere Connection und braucht eine zweite. Ist der Pool voll, warten alle aufeinander.</p></details>
+<details><summary>Warum wirkt REQUIRES_NEW nicht, wenn ich die Methode in derselben Klasse aufrufe?</summary><p>Der Aufruf geht über <code>this</code>, nicht über den Proxy. Lösung: Methode in einen anderen Bean oder TransactionTemplate nutzen.</p></details>
+<h3>Wie innen?</h3>
+<details><summary>Was ist Transaction Propagation?</summary><p>Die Regel, was eine transaktionale Methode tut, wenn schon eine Transaktion läuft: mitmachen, neu starten, pausieren oder Fehler werfen.</p></details>
+<details><summary>Was macht REQUIRES_NEW?</summary><p>Es pausiert die laufende Transaktion und startet eine neue physische Transaktion. Sie committet oder rollt unabhängig zurück.</p></details>
+<details><summary>Was macht NESTED?</summary><p>Es setzt einen Savepoint in der laufenden Transaktion. Bei Fehler rollt nur der Teil bis zum Savepoint zurück. Ohne laufende Transaktion verhält es sich wie REQUIRED.</p></details>
+<details><summary>Welcher Transaction Manager unterstützt NESTED?</summary><p>Out of the box der JDBC <code>DataSourceTransactionManager</code>. <code>JpaTransactionManager</code> nur mit <code>nestedTransactionAllowed = true</code>, und dann nur für JDBC-Zugriffe.</p></details>
+<details><summary>Was ist der Unterschied zwischen physischer und logischer Transaktion?</summary><p>Die physische ist die echte DB-Transaktion. Jede @Transactional-Methode ist ein logischer Scope. Bei REQUIRED teilen sich mehrere Scopes eine physische Transaktion.</p></details>
+<details><summary>Wann kommt UnexpectedRollbackException?</summary><p>Ein innerer Teilnehmer markiert die Transaktion als rollback-only, der äussere ruft trotzdem Commit. Spring rollt zurück und meldet das mit dieser Exception.</p></details>
+<details><summary>Wie setzt Spring die Isolation technisch?</summary><p>Beim Start einer neuen Transaktion ruft der Manager <code>Connection.setTransactionIsolation</code>. Danach setzt er den alten Wert zurück.</p></details>
+<details><summary>Unterstützt JPA eigene Isolation pro Transaktion?</summary><p>Standard-JPA nicht. Spring macht es mit HibernateJpaDialect möglich, solange prepareConnection an ist.</p></details>
+<details><summary>Wie entscheidet der Transaction Manager bei Beginn einer Transaktion?</summary><p>getTransaction prüft, ob schon eine Transaktion läuft. Wenn ja, entscheidet handleExistingTransaction nach der Propagation. Wenn nein, wirft MANDATORY einen Fehler, und REQUIRED, REQUIRES_NEW und NESTED starten neu.</p></details>
+<h3>Zahlen</h3>
+<details><summary>Welche Isolationsstufen kennt Spring?</summary><p>DEFAULT, READ_UNCOMMITTED, READ_COMMITTED, REPEATABLE_READ, SERIALIZABLE. DEFAULT übernimmt die Einstellung der Datenbank.</p></details>
+<details><summary>Welche Isolation ist Standard in PostgreSQL, MySQL und SQL Server?</summary><p>PostgreSQL: READ COMMITTED. MySQL InnoDB: REPEATABLE READ. SQL Server: READ COMMITTED, in Azure SQL Database mit RCSI.</p></details>
+<details><summary>Was ist an REPEATABLE READ in PostgreSQL besonders?</summary><p>Es verhindert auch Phantom Reads. Dafür bricht es Konflikte mit einem Serialisierungsfehler ab.</p></details>
+<details><summary>Was muss die Anwendung bei SQLSTATE 40001 tun?</summary><p>Die ganze Transaktion abbrechen und wiederholen. Das Retry muss ausserhalb der Transaktion liegen.</p></details>
+<details><summary>Wie viele Propagation-Arten gibt es?</summary><p>Sieben. REQUIRED, REQUIRES_NEW, NESTED, MANDATORY, SUPPORTS, NOT_SUPPORTED und NEVER.</p></details>
+<h3>Vergleich</h3>
+<details><summary>Was ist der Unterschied zwischen MANDATORY und NEVER?</summary><p>MANDATORY wirft einen Fehler ohne laufende Transaktion. NEVER wirft einen Fehler mit laufender Transaktion.</p></details>
+<details><summary>SUPPORTS vs NOT_SUPPORTED?</summary><p>SUPPORTS macht mit, wenn eine Transaktion läuft, sonst läuft es ohne. NOT_SUPPORTED läuft immer ohne und pausiert eine laufende.</p></details>
+<details><summary>Was sind Dirty Read, Non-Repeatable Read und Phantom Read?</summary><p>Dirty Read: nicht committete Daten lesen. Non-Repeatable Read: gleiche Zeile, anderer Wert. Phantom Read: gleiche Abfrage, neue Zeilen.</p></details>
+<details><summary>Reicht SERIALIZABLE statt Locking?</summary><p>Manchmal, aber mit vielen Abbrüchen. Oft besser: READ_COMMITTED plus SELECT FOR UPDATE oder optimistisches Locking mit @Version.</p></details>
+<h3>Produktion</h3>
+<details><summary>Wie vermeiden Sie UnexpectedRollbackException?</summary><p>Exception nicht fangen und weitermachen, fachliche Fehler ohne Rollback-Regel, oder den inneren Schritt mit NESTED oder REQUIRES_NEW trennen.</p></details>
+<details><summary>Szenario: Im Log steht „Transaction silently rolled back because it has been marked as rollback-only“. Was prüfen Sie?</summary><p>Welcher innere Teilnehmer eine Exception warf, die aussen gefangen wurde. Mit DEBUG-Log des Transaction Managers sieht man „Participating transaction failed“. Dann Exception-Handling oder Propagation ändern.</p></details>
+<details><summary>Szenario: Unter Last hängen Requests, der Connection Pool ist voll, aber die DB ist ruhig. Woran denken Sie?</summary><p>An REQUIRES_NEW in einer äusseren Transaktion: Threads warten auf ihre zweite Connection. Pool-Metriken und Thread Dump prüfen. Lösung: Pool grösser, REQUIRES_NEW entfernen oder nach aussen verlegen.</p></details>
+<details><summary>Szenario: Ein Audit-Eintrag soll auch bei Fehler der Bestellung gespeichert werden. Wie bauen Sie das?</summary><p>Audit-Service in einem eigenen Bean mit REQUIRES_NEW. Dabei Pool-Grösse prüfen. Alternative: Audit nach dem Rollback in einem Listener schreiben.</p></details>
+<h3>Design</h3>
+<details><summary>Welche Propagation ist der Standard?</summary><p>REQUIRED. Läuft eine Transaktion, macht die Methode mit. Sonst startet sie eine neue.</p></details>
+<details><summary>Bei welchen Exceptions rollt Spring zurück?</summary><p>Standard: RuntimeException und Error. Checked Exceptions committen. Änderbar mit rollbackFor, noRollbackFor oder seit 6.2 global mit rollbackOn.</p></details>
+<details><summary>Wann wählen Sie REQUIRED, REQUIRES_NEW oder NESTED?</summary><p>REQUIRED ist der Standard für normale Service-Methoden. REQUIRES_NEW nehme ich nur für echte Unabhängigkeit wie ein Audit-Log. NESTED passt für einen Teilschritt, der scheitern darf, mit JDBC-Savepoint.</p></details>
+
+<details class="mehr"><summary>Mehr</summary>
+<h3>Gerüst</h3>
+<ul>
+  <li><b>Warum?</b> Mehrere Service-Methoden rufen sich auf, und jede hat <code>@Transactional</code>. Propagation sagt, ob sie eine Transaktion teilen.</li>
+  <li><b>Wie innen?</b> Der Manager entscheidet: neu starten, mitmachen, pausieren oder Fehler. Isolation setzt er mit <code>Connection.setTransactionIsolation</code>.</li>
+  <li><b>Zahlen</b> Es gibt 7 Propagation-Arten und 5 Isolationsstufen. Standard ist <code>REQUIRED</code> und <code>DEFAULT</code>. Postgres-Fehler bei Konflikt: <code>40001</code>.</li>
+  <li><b>Vergleich</b> REQUIRES_NEW committet unabhängig, NESTED ist ein Savepoint. Spring reicht Isolation nur weiter, die Bedeutung kommt von der Datenbank.</li>
+  <li><b>Produktion</b> Eine gefangene Exception in einer inneren Methode führt zu <code>UnexpectedRollbackException</code>. REQUIRES_NEW kann den Pool blockieren.</li>
+  <li><b>Design</b> Die Transaktionsgrenze liegt im Service. Isolation setzt man nur so hoch wie nötig, und Retry liegt ausserhalb der Transaktion.</li>
+</ul>
+<h3>Beispiel: UnexpectedRollbackException erzeugen</h3>
 <pre>@Service
 class OrderService {
   private final StockService stock; private final AuditService audit;
@@ -128,42 +238,7 @@ org.springframework.transaction.UnexpectedRollbackException:
   <li>Der äussere Commit wird zum Rollback. Spring meldet das laut mit <code>UnexpectedRollbackException</code>.</li>
   <li>Lösungen: <code>reserve</code> wirft eine fachliche Exception ohne Rollback (<code>noRollbackFor</code>), prüft vorher ohne Exception, oder läuft bewusst mit <code>REQUIRES_NEW</code> bzw. <code>NESTED</code>.</li>
 </ol>
-
-<h2>4. Details, die Interviewer fragen</h2>
-<p><b>Die 7 Propagation-Arten:</b></p>
-<ol>
-  <li><b>REQUIRED</b> (Standard): mitmachen, sonst neu starten. Beispiel: normale Service-Methode.</li>
-  <li><b>REQUIRES_NEW</b>: immer neue physische Transaktion, die laufende wird pausiert. Beispiel: Audit-Log, das auch bei Fehler bleiben soll.</li>
-  <li><b>NESTED</b>: im laufenden Fall ein <b>Savepoint</b> in derselben physischen Transaktion. Ohne laufende Transaktion wie REQUIRED. Beispiel: ein Teilschritt darf scheitern.</li>
-  <li><b>MANDATORY</b>: es muss eine Transaktion laufen, sonst <code>IllegalTransactionStateException</code>. Beispiel: Repository-Hilfsmethode, die nie allein laufen darf.</li>
-  <li><b>SUPPORTS</b>: mitmachen, wenn eine läuft, sonst ohne Transaktion. Beispiel: Lese-Methode, die beides verträgt.</li>
-  <li><b>NOT_SUPPORTED</b>: immer ohne Transaktion, eine laufende wird pausiert. Beispiel: langer externer HTTP-Aufruf.</li>
-  <li><b>NEVER</b>: läuft eine Transaktion, kommt <code>IllegalTransactionStateException</code>. Beispiel: Code, der nie in einer Transaktion laufen darf.</li>
-</ol>
-<p><b>Weitere Regeln:</b></p>
-<ol>
-  <li><b>Physisch vs logisch:</b> Eine <b>physische Transaktion</b> ist die echte DB-Transaktion. Jede <code>@Transactional</code>-Methode ist ein <b>logischer Scope</b>. Bei REQUIRED teilen sich viele Scopes eine physische Transaktion.</li>
-  <li><b>Attribute beim Mitmachen:</b> Eine teilnehmende Methode übernimmt Isolation, Timeout und readOnly der äusseren. Ihre eigenen Werte ignoriert Spring still.</li>
-  <li><b>validateExistingTransaction:</b> Dieses Flag am Transaction Manager lehnt abweichende Isolation und readOnly-Konflikte ab. Standard ist der stille Modus.</li>
-  <li><b>REQUIRES_NEW braucht eine zweite Connection:</b> Die äussere Connection bleibt belegt. Die Doku warnt vor Pool-Erschöpfung und Deadlock. Regel: Pool grösser als Threads plus 1.</li>
-  <li><b>NESTED und JPA:</b> NESTED nutzt JDBC-Savepoints. <code>DataSourceTransactionManager</code> kann es direkt. <code>JpaTransactionManager</code> hat <code>nestedTransactionAllowed = false</code> als Standard. Auch mit <code>true</code> gilt der Savepoint nur für JDBC, nicht für den EntityManager-Cache.</li>
-  <li><b>Rollback-Regeln:</b> Standard ist Rollback bei <code>RuntimeException</code> und <code>Error</code>. Checked Exceptions committen. Ändern mit <code>rollbackFor</code> / <code>noRollbackFor</code>. Seit 6.2 global mit <code>@EnableTransactionManagement(rollbackOn = RollbackOn.ALL_EXCEPTIONS)</code>.</li>
-  <li><b>UnexpectedRollbackException:</b> Sie kommt, wenn innen rollback-only gesetzt wurde und aussen Commit gerufen wird. Sie zeigt: Der Aufrufer glaubt an Commit, aber es gab Rollback.</li>
-  <li><b>globalRollbackOnParticipationFailure:</b> Dieses Flag (Standard <code>true</code>) markiert die ganze Transaktion bei Fehler in einem Teilnehmer. Ausschalten ist selten richtig.</li>
-</ol>
-<p><b>Isolation und die Datenbank:</b></p>
-<ol>
-  <li><b>DEFAULT:</b> Spring setzt nichts. Es gilt die Einstellung der Datenbank.</li>
-  <li><b>READ_UNCOMMITTED:</b> erlaubt <b>Dirty Reads</b>, also das Lesen nicht committeter Daten. In PostgreSQL verhält es sich wie READ COMMITTED.</li>
-  <li><b>READ_COMMITTED:</b> nur committete Daten. Zwei Lesungen können verschiedene Werte liefern (<b>Non-Repeatable Read</b>). Standard in PostgreSQL und SQL Server.</li>
-  <li><b>REPEATABLE_READ:</b> gelesene Zeilen bleiben gleich. Standard in MySQL InnoDB. PostgreSQL verhindert hier auch <b>Phantom Reads</b>, also neue Zeilen in einer Abfrage.</li>
-  <li><b>SERIALIZABLE:</b> Ergebnis wie bei Ausführung nacheinander. PostgreSQL bricht Konflikte mit SQLSTATE <code>40001</code> ab. Die Anwendung muss die ganze Transaktion wiederholen.</li>
-  <li><b>SQL Server:</b> READ COMMITTED nutzt Locks, ausser <code>READ_COMMITTED_SNAPSHOT</code> ist an. In Azure SQL Database ist RCSI standardmässig an.</li>
-  <li><b>Mechanik:</b> Bei einer <b>neuen</b> Transaktion ruft der Manager <code>Connection.setTransactionIsolation(...)</code> und setzt den Wert danach zurück.</li>
-  <li><b>JPA:</b> Standard-JPA kennt keine eigene Isolation pro Transaktion. <code>HibernateJpaDialect</code> unterstützt sie, solange <code>prepareConnection</code> an ist (Standard).</li>
-</ol>
-
-<h2>5. Vergleich</h2>
+<h3>Vergleich</h3>
 <ul>
   <li><b>REQUIRED vs REQUIRES_NEW:</b> eine gemeinsame Transaktion vs zwei unabhängige mit zwei Connections.</li>
   <li><b>REQUIRES_NEW vs NESTED:</b> REQUIRES_NEW committet unabhängig. NESTED ist ein Savepoint: rollt nur den Teil zurück, committet aber erst mit der äusseren.</li>
@@ -173,8 +248,7 @@ org.springframework.transaction.UnexpectedRollbackException:
   <li><b>Isolation vs Locking:</b> Isolation regelt Lesen. Für „lesen und dann ändern“ braucht man oft <code>SELECT ... FOR UPDATE</code> (<code>@Lock(PESSIMISTIC_WRITE)</code>) oder <code>@Version</code> (optimistisch).</li>
   <li><b>@Transactional vs TransactionTemplate:</b> deklarativ über Proxy vs programmatisch im Code. TransactionTemplate kennt die gleichen Propagation-Werte und hat kein Self-Invocation-Problem.</li>
 </ul>
-
-<h2>6. In der Produktion</h2>
+<h3>In der Produktion</h3>
 <ol>
   <li><b>UnexpectedRollbackException im Log:</b> Ein innerer Service wirft, der äussere fängt. Lösung: nicht fangen und weiterlaufen, oder den inneren Schritt mit NESTED / REQUIRES_NEW trennen, oder fachliche Ergebnisse statt Exceptions.</li>
   <li><b>Pool-Deadlock mit REQUIRES_NEW:</b> Alle Threads halten eine Connection und warten auf die zweite. Symptom: Timeouts beim Holen einer Connection. Lösung: Pool grösser als Threads, REQUIRES_NEW sparsam.</li>
@@ -183,8 +257,7 @@ org.springframework.transaction.UnexpectedRollbackException:
   <li><b>Lange Transaktionen:</b> Ein HTTP-Aufruf in der Transaktion hält Locks und Connection. Lösung: externe Aufrufe ausserhalb der Transaktion, z. B. danach per Outbox.</li>
   <li><b>Checked Exception committet:</b> Ein Fehler als checked Exception speichert halbe Daten. Lösung: <code>rollbackFor</code> oder global <code>rollbackOn = ALL_EXCEPTIONS</code> (6.2+).</li>
 </ol>
-
-<h2>7. Diagnose: Werkzeuge und Befehle</h2>
+<h3>Diagnose: Werkzeuge und Befehle</h3>
 <ul>
   <li><code>logging.level.org.springframework.orm.jpa.JpaTransactionManager=DEBUG</code> (oder <code>org.springframework.jdbc.support.JdbcTransactionManager</code>): zeigt „Creating new“, „Participating“, „Suspending“, „rollback-only“.</li>
   <li><code>logging.level.org.springframework.transaction.interceptor=TRACE</code>: zeigt jeden Ein- und Austritt pro Methode.</li>
@@ -193,8 +266,7 @@ org.springframework.transaction.UnexpectedRollbackException:
   <li><b>SQL Server:</b> <code>DBCC USEROPTIONS</code> zeigt die Isolation der Session.</li>
   <li><b>Actuator / Micrometer:</b> Pool-Metriken (aktive und wartende Connections) zeigen Pool-Erschöpfung durch REQUIRES_NEW.</li>
 </ul>
-
-<h2>8. Senior-Punkte</h2>
+<h3>Senior-Punkte</h3>
 <div class="senior">
 <ol>
   <li><b>Die Transaktionsgrenze ist eine Design-Entscheidung.</b> Sie gehört an den Anfang eines Use Cases, meist im Service. Nicht in den Controller, nicht ins Repository.</li>
@@ -205,49 +277,8 @@ org.springframework.transaction.UnexpectedRollbackException:
   <li><b>Retry um die Transaktion, nicht in ihr.</b> Ein Retry in einer abgebrochenen Transaktion hilft nicht. Spring Framework 7 bietet dafür <code>@Retryable</code>; die Retry-Grenze muss ausserhalb der Transaktion liegen.</li>
 </ol>
 </div>
-
-<h2>9. Aus dem Projekt</h2>
-<p>„Spring mit Hibernate und PostgreSQL nutzte ich bei NABODAT; ein konkreter Fall mit REQUIRES_NEW oder NESTED ist nicht dokumentiert. Das verwandte Problem ‚nebenläufige Läufe ohne Doppelverarbeitung‘ löste ich bei MATCH mit einem atomaren SQL-Claim (<code>UPDATE ... OUTPUT INSERTED.*</code>, Pending → Processing).“ <span class="small">(Prüfen und durch dein echtes Beispiel ersetzen.)</span></p>
-
-<h2>10. Fallen</h2>
-<div class="trap">
-<ul>
-  <li>„Die innere Methode hat REQUIRED und eigene Isolation, also gilt die.“ → <b>Falsch.</b> Beim Mitmachen gilt die Isolation der äusseren Transaktion.</li>
-  <li>„Ich fange die Exception, dann committet alles.“ → <b>Falsch.</b> Die Transaktion ist schon rollback-only. Es kommt UnexpectedRollbackException.</li>
-  <li>„NESTED ist dasselbe wie REQUIRES_NEW.“ → <b>Falsch.</b> NESTED ist ein Savepoint in derselben Transaktion. Es committet erst mit der äusseren.</li>
-  <li>„NESTED funktioniert mit JPA einfach so.“ → <b>Falsch.</b> <code>JpaTransactionManager</code> erlaubt es standardmässig nicht. Und der Savepoint deckt nicht den EntityManager-Cache ab.</li>
-  <li>„READ_UNCOMMITTED macht PostgreSQL schneller.“ → <b>Falsch.</b> PostgreSQL behandelt es wie READ COMMITTED.</li>
-  <li>„Bei jeder Exception gibt es Rollback.“ → <b>Falsch.</b> Standard nur bei RuntimeException und Error.</li>
-  <li>„REQUIRES_NEW in derselben Klasse aufrufen reicht.“ → <b>Falsch.</b> Self-Invocation geht am Proxy vorbei. Die Annotation wirkt nicht.</li>
-</ul>
-</div>
-
-<h2>11. Fragen</h2>
-<details><summary>Was ist Transaction Propagation?</summary><p>Die Regel, was eine transaktionale Methode tut, wenn schon eine Transaktion läuft: mitmachen, neu starten, pausieren oder Fehler werfen.</p></details>
-<details><summary>Welche Propagation ist der Standard?</summary><p>REQUIRED. Läuft eine Transaktion, macht die Methode mit. Sonst startet sie eine neue.</p></details>
-<details><summary>Was macht REQUIRES_NEW?</summary><p>Es pausiert die laufende Transaktion und startet eine neue physische Transaktion. Sie committet oder rollt unabhängig zurück.</p></details>
-<details><summary>Was macht NESTED?</summary><p>Es setzt einen Savepoint in der laufenden Transaktion. Bei Fehler rollt nur der Teil bis zum Savepoint zurück. Ohne laufende Transaktion verhält es sich wie REQUIRED.</p></details>
-<details><summary>Welcher Transaction Manager unterstützt NESTED?</summary><p>Out of the box der JDBC <code>DataSourceTransactionManager</code>. <code>JpaTransactionManager</code> nur mit <code>nestedTransactionAllowed = true</code>, und dann nur für JDBC-Zugriffe.</p></details>
-<details><summary>Was ist der Unterschied zwischen MANDATORY und NEVER?</summary><p>MANDATORY wirft einen Fehler ohne laufende Transaktion. NEVER wirft einen Fehler mit laufender Transaktion.</p></details>
-<details><summary>SUPPORTS vs NOT_SUPPORTED?</summary><p>SUPPORTS macht mit, wenn eine Transaktion läuft, sonst läuft es ohne. NOT_SUPPORTED läuft immer ohne und pausiert eine laufende.</p></details>
-<details><summary>Was ist der Unterschied zwischen physischer und logischer Transaktion?</summary><p>Die physische ist die echte DB-Transaktion. Jede @Transactional-Methode ist ein logischer Scope. Bei REQUIRED teilen sich mehrere Scopes eine physische Transaktion.</p></details>
-<details><summary>Wann kommt UnexpectedRollbackException?</summary><p>Ein innerer Teilnehmer markiert die Transaktion als rollback-only, der äussere ruft trotzdem Commit. Spring rollt zurück und meldet das mit dieser Exception.</p></details>
-<details><summary>Wie vermeiden Sie UnexpectedRollbackException?</summary><p>Exception nicht fangen und weitermachen, fachliche Fehler ohne Rollback-Regel, oder den inneren Schritt mit NESTED oder REQUIRES_NEW trennen.</p></details>
-<details><summary>Bei welchen Exceptions rollt Spring zurück?</summary><p>Standard: RuntimeException und Error. Checked Exceptions committen. Änderbar mit rollbackFor, noRollbackFor oder seit 6.2 global mit rollbackOn.</p></details>
-<details><summary>Welche Isolationsstufen kennt Spring?</summary><p>DEFAULT, READ_UNCOMMITTED, READ_COMMITTED, REPEATABLE_READ, SERIALIZABLE. DEFAULT übernimmt die Einstellung der Datenbank.</p></details>
-<details><summary>Wie setzt Spring die Isolation technisch?</summary><p>Beim Start einer neuen Transaktion ruft der Manager <code>Connection.setTransactionIsolation</code>. Danach setzt er den alten Wert zurück.</p></details>
-<details><summary>Was passiert mit der Isolation einer Methode, die nur mitmacht?</summary><p>Sie wird still ignoriert. Mit <code>validateExistingTransaction = true</code> wirft der Manager stattdessen einen Fehler.</p></details>
-<details><summary>Welche Isolation ist Standard in PostgreSQL, MySQL und SQL Server?</summary><p>PostgreSQL: READ COMMITTED. MySQL InnoDB: REPEATABLE READ. SQL Server: READ COMMITTED, in Azure SQL Database mit RCSI.</p></details>
-<details><summary>Was sind Dirty Read, Non-Repeatable Read und Phantom Read?</summary><p>Dirty Read: nicht committete Daten lesen. Non-Repeatable Read: gleiche Zeile, anderer Wert. Phantom Read: gleiche Abfrage, neue Zeilen.</p></details>
-<details><summary>Was ist an REPEATABLE READ in PostgreSQL besonders?</summary><p>Es verhindert auch Phantom Reads. Dafür bricht es Konflikte mit einem Serialisierungsfehler ab.</p></details>
-<details><summary>Was muss die Anwendung bei SQLSTATE 40001 tun?</summary><p>Die ganze Transaktion abbrechen und wiederholen. Das Retry muss ausserhalb der Transaktion liegen.</p></details>
-<details><summary>Warum kann REQUIRES_NEW den Connection Pool blockieren?</summary><p>Jeder Thread hält die äussere Connection und braucht eine zweite. Ist der Pool voll, warten alle aufeinander.</p></details>
-<details><summary>Unterstützt JPA eigene Isolation pro Transaktion?</summary><p>Standard-JPA nicht. Spring macht es mit HibernateJpaDialect möglich, solange prepareConnection an ist.</p></details>
-<details><summary>Reicht SERIALIZABLE statt Locking?</summary><p>Manchmal, aber mit vielen Abbrüchen. Oft besser: READ_COMMITTED plus SELECT FOR UPDATE oder optimistisches Locking mit @Version.</p></details>
-<details><summary>Warum wirkt REQUIRES_NEW nicht, wenn ich die Methode in derselben Klasse aufrufe?</summary><p>Der Aufruf geht über <code>this</code>, nicht über den Proxy. Lösung: Methode in einen anderen Bean oder TransactionTemplate nutzen.</p></details>
-<details><summary>Szenario: Im Log steht „Transaction silently rolled back because it has been marked as rollback-only“. Was prüfen Sie?</summary><p>Welcher innere Teilnehmer eine Exception warf, die aussen gefangen wurde. Mit DEBUG-Log des Transaction Managers sieht man „Participating transaction failed“. Dann Exception-Handling oder Propagation ändern.</p></details>
-<details><summary>Szenario: Unter Last hängen Requests, der Connection Pool ist voll, aber die DB ist ruhig. Woran denken Sie?</summary><p>An REQUIRES_NEW in einer äusseren Transaktion: Threads warten auf ihre zweite Connection. Pool-Metriken und Thread Dump prüfen. Lösung: Pool grösser, REQUIRES_NEW entfernen oder nach aussen verlegen.</p></details>
-<details><summary>Szenario: Ein Audit-Eintrag soll auch bei Fehler der Bestellung gespeichert werden. Wie bauen Sie das?</summary><p>Audit-Service in einem eigenen Bean mit REQUIRES_NEW. Dabei Pool-Grösse prüfen. Alternative: Audit nach dem Rollback in einem Listener schreiben.</p></details>
+<h3>Dein Beispiel</h3>
+</details>
 
 </body>
 </html>
