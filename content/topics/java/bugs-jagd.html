@@ -1,0 +1,365 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Drill: Bugs finden und fixen</title>
+<style>
+  body { font: 17px/1.55 -apple-system, system-ui, sans-serif; max-width: 760px; margin: 0 auto; padding: 16px; color: #1d1d1f; }
+  h1 { font-size: 28px; margin: 8px 0 4px; }
+  h2 { font-size: 21px; margin: 32px 0 8px; padding-top: 12px; border-top: 2px solid #e5e5ea; }
+  h3 { font-size: 17px; margin: 20px 0 6px; }
+  .kern { background: #eef6ff; border-left: 4px solid #0a66c2; padding: 10px 14px; border-radius: 6px; }
+  .senior { background: #f0faf0; border-left: 4px solid #2e7d32; padding: 10px 14px; border-radius: 6px; }
+  .trap { background: #fff4f2; border-left: 4px solid #c62828; padding: 10px 14px; border-radius: 6px; }
+  code { background: #f2f2f7; padding: 1px 5px; border-radius: 4px; font-size: 15px; }
+  pre { background: #1e1e1e; color: #e6e6e6; padding: 12px; border-radius: 8px; overflow-x: auto; font-size: 13.5px; line-height: 1.45; }
+  svg { width: 100%; height: auto; display: block; margin: 10px 0; }
+  ol li, ul li { margin: 4px 0; }
+  details { border: 1px solid #e5e5ea; border-radius: 8px; padding: 8px 12px; margin: 6px 0; }
+  summary { font-weight: 600; cursor: pointer; }
+  details p { margin: 6px 0 2px; }
+  .small { color: #6e6e73; font-size: 14px; }
+  .auftrag { border: 2px dashed #0a66c2; border-radius: 8px; padding: 10px 14px; margin: 10px 0; background: #fbfdff; }
+</style>
+</head>
+<body>
+<h1>Drill: Bugs finden und fixen</h1>
+<!-- sources: Java SE API Doku (String, HashMap, Iterator, Stream, Integer.valueOf, AutoCloseable), java.time Doku (DateTimeFormatter ist thread-safe und immutable), Spring Framework Referenzdoku (Proxying, @Transactional und Selbstaufruf), OWASP Cheat Sheet (SQL Injection Prevention, Prepared Statements) -->
+
+<div class="kern">
+<p><b>Vorgehen pro Snippet</b> — immer dieselben 3 Schritte, dann erst die Lösung öffnen:</p>
+<ol>
+<li><b>Laut lesen:</b> Zeile für Zeile sagen, was der Code <i>wirklich</i> tut — nicht, was er tun soll.</li>
+<li><b>Checkliste abklopfen:</b> Null? Gleichheit (== / equals / hashCode)? Threads und geteilter Zustand? Ressourcen geschlossen? Transaktion/Atomarität?</li>
+<li><b>Fix nennen + warum:</b> erst die Laufzeit-Folge (Exception, falscher Wert, Leak), dann die Fix-Zeile, dann der Mechanismus in einem Satz.</li>
+</ol>
+</div>
+
+<h2>1. Die Debug-Checkliste als Bild</h2>
+<svg viewBox="0 0 720 240" role="img" aria-label="Debug-Checkliste als Flussdiagramm">
+  <defs><marker id="arrG" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10z" fill="#1d1d1f"/></marker></defs>
+  <rect x="15" y="20" width="210" height="60" rx="10" fill="#fbfbfd" stroke="#1d1d1f" stroke-width="2.5"/>
+  <text x="120" y="46" text-anchor="middle" font-size="14" font-weight="700">Snippet laut lesen</text>
+  <text x="120" y="66" text-anchor="middle" font-size="12.5" fill="#6e6e73">was tut er wirklich?</text>
+  <line x1="225" y1="50" x2="248" y2="50" stroke="#1d1d1f" stroke-width="2" marker-end="url(#arrG)"/>
+  <rect x="253" y="20" width="210" height="60" rx="10" fill="#fff" stroke="#1d1d1f" stroke-width="2"/>
+  <text x="358" y="46" text-anchor="middle" font-size="14" font-weight="700">Null?</text>
+  <text x="358" y="66" text-anchor="middle" font-size="12.5" fill="#6e6e73">Rueckgaben, Unboxing, Optional</text>
+  <line x1="463" y1="50" x2="486" y2="50" stroke="#1d1d1f" stroke-width="2" marker-end="url(#arrG)"/>
+  <rect x="491" y="20" width="214" height="60" rx="10" fill="#fff" stroke="#1d1d1f" stroke-width="2"/>
+  <text x="598" y="46" text-anchor="middle" font-size="14" font-weight="700">Gleichheit?</text>
+  <text x="598" y="66" text-anchor="middle" font-size="12.5" fill="#6e6e73">== vs equals, hashCode-Vertrag</text>
+  <line x1="598" y1="80" x2="598" y2="115" stroke="#1d1d1f" stroke-width="2" marker-end="url(#arrG)"/>
+  <rect x="491" y="120" width="214" height="60" rx="10" fill="#fff" stroke="#1d1d1f" stroke-width="2"/>
+  <text x="598" y="146" text-anchor="middle" font-size="14" font-weight="700">Threads?</text>
+  <text x="598" y="166" text-anchor="middle" font-size="12.5" fill="#6e6e73">geteilter veraenderlicher Zustand</text>
+  <line x1="486" y1="150" x2="468" y2="150" stroke="#1d1d1f" stroke-width="2" marker-end="url(#arrG)"/>
+  <rect x="253" y="120" width="210" height="60" rx="10" fill="#fff" stroke="#1d1d1f" stroke-width="2"/>
+  <text x="358" y="146" text-anchor="middle" font-size="14" font-weight="700">Ressourcen?</text>
+  <text x="358" y="166" text-anchor="middle" font-size="12.5" fill="#6e6e73">close im Fehlerpfad erreichbar?</text>
+  <line x1="248" y1="150" x2="230" y2="150" stroke="#1d1d1f" stroke-width="2" marker-end="url(#arrG)"/>
+  <rect x="15" y="120" width="210" height="60" rx="10" fill="#fff" stroke="#1d1d1f" stroke-width="2"/>
+  <text x="120" y="146" text-anchor="middle" font-size="14" font-weight="700">Transaktion?</text>
+  <text x="120" y="166" text-anchor="middle" font-size="12.5" fill="#6e6e73">read-then-write atomar? Proxy aktiv?</text>
+  <text x="15" y="215" font-size="12.5" fill="#6e6e73">Fuenf Fragen, feste Reihenfolge — so uebersiehst du unter Interview-Stress nichts.</text>
+</svg>
+
+<h2>2. Übung 1</h2>
+<pre>@Service
+public class GutscheinService {
+    private final GutscheinRepository repo;
+
+    public GutscheinService(GutscheinRepository repo) { this.repo = repo; }
+
+    public BigDecimal rabatt(String eingabe) {
+        Gutschein g = repo.findeCode(eingabe.trim().toUpperCase());
+        if (g.status() == "AKTIV") {          // status() liefert String
+            return g.rabattProzent();
+        }
+        return BigDecimal.ZERO;
+    }
+}</pre>
+<div class="auftrag"><b>Finde den Bug. Was passiert zur Laufzeit? Dein Fix?</b></div>
+<details><summary>Lösung</summary>
+<p><b>Bug:</b> String-Vergleich mit <code>==</code>.</p>
+<p><b>Zur Laufzeit:</b> keine Exception, sondern ein <b>falscher Wert</b> — der Status aus der Datenbank ist ein anderes String-Objekt als das Literal <code>"AKTIV"</code>, der Vergleich ist fast immer <code>false</code>, jeder gültige Gutschein liefert 0&nbsp;%.</p>
+<p><b>Fix:</b> <code>if ("AKTIV".equals(g.status()))</code> — oder besser ein Enum für den Status.</p>
+<p><b>Mechanismus:</b> <code>==</code> vergleicht bei Objekten Referenzen, nie Inhalt; nur <code>equals</code> vergleicht Zeichen.</p>
+</details>
+<details><summary>Warum war der Unit-Test trotzdem grün?</summary>
+<p>Im Test stand vermutlich <code>new Gutschein(..., "AKTIV")</code> mit einem <b>Literal</b> — Literale landen im String-Pool, beide Referenzen zeigen auf dasselbe Objekt, <code>==</code> ist zufällig <code>true</code>. Strings aus DB, Netzwerk oder <code>toUpperCase()</code> sind frische Objekte. Genau deshalb ist „funktioniert im Test" hier kein Beweis.</p>
+</details>
+
+<h2>3. Übung 2</h2>
+<pre>public class ArtikelNummer {
+    private final String wert;
+
+    public ArtikelNummer(String wert) { this.wert = wert; }
+
+    @Override
+    public boolean equals(Object o) {
+        return o instanceof ArtikelNummer a &amp;&amp; wert.equals(a.wert);
+    }
+}
+
+Map&lt;ArtikelNummer, Integer&gt; bestand = new HashMap&lt;&gt;();
+bestand.put(new ArtikelNummer("A-100"), 25);
+int stueck = bestand.get(new ArtikelNummer("A-100"));</pre>
+<div class="auftrag"><b>Finde den Bug. Was passiert zur Laufzeit? Dein Fix?</b></div>
+<details><summary>Lösung</summary>
+<p><b>Bug:</b> <code>equals</code> überschrieben, <code>hashCode</code> nicht.</p>
+<p><b>Zur Laufzeit:</b> <code>get</code> liefert <code>null</code> (die zwei Objekte haben verschiedene Identitäts-Hashes und landen in verschiedenen Buckets) — und beim Unboxing in <code>int stueck</code> knallt eine <b>NullPointerException</b>.</p>
+<p><b>Fix:</b> <code>@Override public int hashCode() { return wert.hashCode(); }</code> — oder die Klasse als <code>record ArtikelNummer(String wert)</code> deklarieren, dann kommen beide Methoden konsistent geschenkt.</p>
+<p><b>Mechanismus:</b> HashMap sucht <b>erst</b> den Bucket per <code>hashCode</code>, erst darin vergleicht sie mit <code>equals</code> — ohne gleichen Hash wird <code>equals</code> nie gefragt.</p>
+</details>
+
+<h2>4. Übung 3</h2>
+<pre>public void bereinige(List&lt;Buchung&gt; buchungen) {
+    for (Buchung b : buchungen) {
+        if (b.istStorniert()) {
+            buchungen.remove(b);
+        }
+    }
+}</pre>
+<div class="auftrag"><b>Finde den Bug. Was passiert zur Laufzeit? Dein Fix?</b></div>
+<details><summary>Lösung</summary>
+<p><b>Bug:</b> Entfernen aus der Liste mitten im for-each über dieselbe Liste.</p>
+<p><b>Zur Laufzeit:</b> <b>ConcurrentModificationException</b> beim nächsten Iterationsschritt — single-threaded, ganz ohne Nebenläufigkeit: der Iterator prüft bei jedem <code>next()</code> seinen Änderungszähler (<code>modCount</code>) gegen die Liste.</p>
+<p><b>Fix:</b> <code>buchungen.removeIf(Buchung::istStorniert);</code> — oder explizit über <code>Iterator</code> laufen und <code>it.remove()</code> benutzen.</p>
+<p><b>Mechanismus:</b> for-each benutzt verdeckt einen Iterator; nur der Iterator selbst darf während des Laufs strukturell ändern.</p>
+</details>
+
+<h2>5. Übung 4</h2>
+<pre>@Service
+public class RechnungsExport {
+    private static final SimpleDateFormat FORMAT =
+            new SimpleDateFormat("yyyy-MM-dd");
+
+    // wird von vielen HTTP-Requests parallel aufgerufen
+    public String kopfzeile(Rechnung r) {
+        return r.nummer() + ";" + FORMAT.format(r.datum());
+    }
+}</pre>
+<div class="auftrag"><b>Finde den Bug. Was passiert zur Laufzeit? Dein Fix?</b></div>
+<details><summary>Lösung</summary>
+<p><b>Bug:</b> <code>SimpleDateFormat</code> als geteiltes static-Feld — die Klasse ist <b>nicht threadsafe</b> (sie hat ein internes, veränderliches Calendar-Objekt).</p>
+<p><b>Zur Laufzeit:</b> unter Last sporadisch <b>vertauschte/korrupte Datumswerte</b> oder <code>NumberFormatException</code> — zwei Threads schreiben gleichzeitig in denselben internen Zustand. Der schlimmste Bug-Typ: im Test nie, in Produktion freitags.</p>
+<p><b>Fix:</b> <code>private static final DateTimeFormatter FORMAT = DateTimeFormatter.ofPattern("yyyy-MM-dd");</code> und <code>LocalDate</code> statt <code>Date</code> — <code>DateTimeFormatter</code> ist immutable und laut Doku threadsafe.</p>
+<p><b>Mechanismus:</b> unveränderliche Objekte können gefahrlos geteilt werden; veränderliche geteilte Zustände brauchen Synchronisation — oder man schafft sie ab.</p>
+</details>
+
+<h2>6. Übung 5</h2>
+<pre>public List&lt;String&gt; leseZeilen(Path datei) throws IOException {
+    BufferedReader reader = Files.newBufferedReader(datei);
+    List&lt;String&gt; zeilen = new ArrayList&lt;&gt;();
+    String zeile;
+    while ((zeile = reader.readLine()) != null) {
+        zeilen.add(zeile);
+    }
+    reader.close();
+    return zeilen;
+}</pre>
+<div class="auftrag"><b>Finde den Bug. Was passiert zur Laufzeit? Dein Fix?</b></div>
+<details><summary>Lösung</summary>
+<p><b>Bug:</b> Ressourcen-Leak — <code>close()</code> wird bei einer Exception in <code>readLine()</code> nie erreicht.</p>
+<p><b>Zur Laufzeit:</b> jedes fehlerhafte Einlesen lässt ein offenes Datei-Handle zurück; unter Last endet das im Betriebssystem-Fehler <b>„too many open files"</b> — der ganze Prozess kann keine Dateien und Sockets mehr öffnen.</p>
+<p><b>Fix:</b> <code>try (BufferedReader reader = Files.newBufferedReader(datei)) { ... }</code> — oder hier gleich <code>Files.readAllLines(datei)</code>.</p>
+<p><b>Mechanismus:</b> try-with-resources ruft <code>close()</code> garantiert auf, auch im Fehlerfall, und hängt Folgefehler als suppressed Exceptions an.</p>
+</details>
+
+<h2>7. Übung 6</h2>
+<pre>public List&lt;Bestellung&gt; eigeneBestellungen(Integer kundeId,
+                                           List&lt;Bestellung&gt; alle) {
+    return alle.stream()
+            .filter(b -&gt; b.kundeId() == kundeId)   // beide Integer
+            .toList();
+}
+
+// Test:   kundeId = 42     → findet alles, gruen
+// Prod:   kundeId = 48213  → findet nichts</pre>
+<div class="auftrag"><b>Finde den Bug. Was passiert zur Laufzeit? Dein Fix?</b></div>
+<details><summary>Lösung</summary>
+<p><b>Bug:</b> <code>==</code> auf zwei <code>Integer</code>-Objekten.</p>
+<p><b>Zur Laufzeit:</b> <b>falscher Wert statt Exception</b> — <code>Integer.valueOf</code> cached die Werte −128 bis 127; kleine Test-Ids zeigen auf dasselbe gecachte Objekt (<code>==</code> true), echte Ids ab 128 sind frische Objekte (<code>==</code> false). Der Kunde sieht eine leere Bestellliste.</p>
+<p><b>Fix:</b> <code>b.kundeId().equals(kundeId)</code> — oder null-sicher <code>Objects.equals(b.kundeId(), kundeId)</code>; langfristig <code>long</code>/<code>Long</code> konsequent als Primitiv vergleichen.</p>
+<p><b>Mechanismus:</b> <code>==</code> vergleicht bei Wrapper-Objekten Referenzen; der kleine Cache macht den Fehler heimtückisch, weil er „bis 127 funktioniert".</p>
+</details>
+<details><summary>Warum gibt es diesen Cache überhaupt?</summary>
+<p>Autoboxing (<code>Integer x = 5;</code>) läuft über <code>Integer.valueOf</code>, und häufige kleine Werte zu teilen spart Objekte. Der Cache ist Pflicht für −128..127, kann aber per JVM-Option größer sein — noch ein Grund, warum sich <code>==</code> auf Wrappern nie lohnt: das Verhalten hängt an der Laufzeit-Konfiguration.</p>
+</details>
+
+<h2>8. Übung 7</h2>
+<pre>public class WarenkorbRechner {
+    // Preise liegen als double vor, z. B. 0.10 und 0.20
+    public double brutto(List&lt;Position&gt; positionen) {
+        double summe = 0.0;
+        for (Position p : positionen) {
+            summe += p.preis() * p.menge();
+        }
+        return summe * 1.19;
+    }
+}
+
+// brutto([0.10, 0.20]) erwartet: 0.357 — tatsaechlich?</pre>
+<div class="auftrag"><b>Finde den Bug. Was passiert zur Laufzeit? Dein Fix?</b></div>
+<details><summary>Lösung</summary>
+<p><b>Bug:</b> <code>double</code> für Geldbeträge.</p>
+<p><b>Zur Laufzeit:</b> schleichend <b>falsche Werte</b>: schon <code>0.1 + 0.2</code> ergibt <code>0.30000000000000004</code>, denn 0.1 ist binär nicht exakt darstellbar; über viele Positionen und die Steuer-Multiplikation wachsen Rundungsfehler bis zum sichtbaren Cent-Unterschied auf der Rechnung.</p>
+<p><b>Fix:</b> <code>BigDecimal</code>, erzeugt aus String: <code>new BigDecimal("0.10")</code>, summieren mit <code>add</code>, am Ende <code>setScale(2, RoundingMode.HALF_UP)</code>.</p>
+<p><b>Mechanismus:</b> Binär-Gleitkomma kann Zehntel nicht exakt speichern; <code>BigDecimal(String)</code> speichert dezimal exakt — der double-Konstruktor <code>new BigDecimal(0.1)</code> würde den Fehler dagegen mit übernehmen.</p>
+</details>
+
+<h2>9. Übung 8</h2>
+<pre>Stream&lt;Bestellung&gt; offene = bestellungen.stream()
+        .filter(b -&gt; b.status() == Status.OFFEN);
+
+long anzahl = offene.count();
+
+BigDecimal summe = offene
+        .map(Bestellung::betrag)
+        .reduce(BigDecimal.ZERO, BigDecimal::add);</pre>
+<div class="auftrag"><b>Finde den Bug. Was passiert zur Laufzeit? Dein Fix?</b></div>
+<details><summary>Lösung</summary>
+<p><b>Bug:</b> derselbe Stream wird zweimal benutzt.</p>
+<p><b>Zur Laufzeit:</b> <b>IllegalStateException: „stream has already been operated upon or closed"</b> — beim zweiten Zugriff, denn <code>count()</code> ist eine Terminal-Operation und verbraucht die Pipeline.</p>
+<p><b>Fix:</b> erst materialisieren: <code>List&lt;Bestellung&gt; offene = ...filter(...).toList();</code> und dann <code>offene.size()</code> und die Summe aus der Liste — oder zweimal frisch <code>bestellungen.stream()</code> aufsetzen.</p>
+<p><b>Mechanismus:</b> ein Stream ist eine Einweg-Pipeline über der Quelle, keine Datenstruktur — genau eine Terminal-Operation, danach ist er zu.</p>
+</details>
+
+<h2>10. Übung 9</h2>
+<pre>// equals/hashCode von Sitzplatz gehen ueber (reihe, nummer)
+Set&lt;Sitzplatz&gt; reserviert = new HashSet&lt;&gt;();
+
+Sitzplatz s = new Sitzplatz("A", 12);
+reserviert.add(s);
+
+s.setReihe("B");                        // Umbuchung
+
+reserviert.contains(s);                 // ?
+reserviert.remove(s);                   // ?
+System.out.println(reserviert.size());  // ?</pre>
+<div class="auftrag"><b>Finde den Bug. Was passiert zur Laufzeit? Dein Fix?</b></div>
+<details><summary>Lösung</summary>
+<p><b>Bug:</b> veränderlicher Schlüssel — das Objekt wird <b>nach</b> dem Einfügen ins HashSet mutiert.</p>
+<p><b>Zur Laufzeit:</b> <code>contains</code> ist <code>false</code> und <code>remove</code> wirkungslos (beide suchen im Bucket des <b>neuen</b> Hashes, das Objekt liegt aber im alten), <code>size()</code> bleibt 1 — der Platz ist unauffindbar, aber belegt: ein logisches Leck, das ewig „reserviert" bleibt.</p>
+<p><b>Fix:</b> Schlüsselklassen unveränderlich machen (<code>record Sitzplatz(String reihe, int nummer)</code>); eine Umbuchung ist dann <code>remove(alt)</code> + <code>add(neu)</code>.</p>
+<p><b>Mechanismus:</b> HashSet merkt sich den Bucket vom Einfüge-Zeitpunkt; ändert sich der Hash danach, zeigt die Suche auf den falschen Bucket.</p>
+</details>
+
+<h2>11. Übung 10</h2>
+<pre>@Service
+public class KontoService {
+    private final KontoRepository repo;
+
+    public KontoService(KontoRepository repo) { this.repo = repo; }
+
+    public void monatsabschluss(List&lt;Long&gt; kontoIds) {
+        for (Long id : kontoIds) {
+            verbuche(id);                    // interner Aufruf
+        }
+    }
+
+    @Transactional
+    private void verbuche(Long id) {
+        Konto k = repo.findById(id).orElseThrow();
+        k.zinsenGutschreiben();
+        repo.save(k);
+    }
+}</pre>
+<div class="auftrag"><b>Finde den Bug. Was passiert zur Laufzeit? Dein Fix?</b></div>
+<details><summary>Lösung</summary>
+<p><b>Bug:</b> <code>@Transactional</code> ist hier <b>wirkungslos</b> — doppelt: die Methode ist <code>private</code>, und sie wird per Selbstaufruf (<code>this.verbuche(id)</code>) gerufen.</p>
+<p><b>Zur Laufzeit:</b> keine Exception, es läuft einfach <b>ohne die erwartete Transaktion</b> — jede DB-Operation committet für sich; fliegt mitten im Abschluss ein Fehler, gibt es keinen Rollback, die Konten sind halb verbucht.</p>
+<p><b>Fix:</b> Methode <code>public</code> machen und den Aufruf <b>durch den Proxy</b> führen: die transaktionale Logik in eine zweite <code>@Service</code>-Bean auslagern und diese injizieren.</p>
+<p><b>Mechanismus:</b> Spring legt die Transaktion in einen <b>Proxy um die Bean</b>; nur Aufrufe von außen laufen durch ihn. <code>this.methode()</code> umgeht den Proxy, und private Methoden kann der Proxy gar nicht abfangen.</p>
+</details>
+<details><summary>Woran erkennst du diese Bug-Klasse in 5 Sekunden?</summary>
+<p>Suchmuster: eine annotierte Methode (<code>@Transactional</code>, <code>@Cacheable</code>, <code>@Async</code>), die aus <b>derselben Klasse</b> heraus aufgerufen wird. Sobald du „this." vor einem annotierten Aufruf siehst oder die Annotation auf etwas Nicht-Öffentlichem steht: Proxy-Mechanismus erklären — das ist eine klassische Senior-Erkennungsfrage.</p>
+</details>
+
+<h2>12. Übung 11</h2>
+<pre>public Kunde findePerEmail(String email) throws SQLException {
+    String sql = "SELECT id, name, email FROM kunde WHERE email = '"
+            + email + "'";
+    try (Statement st = verbindung.createStatement();
+         ResultSet rs = st.executeQuery(sql)) {
+        if (rs.next()) {
+            return new Kunde(rs.getLong(1), rs.getString(2), rs.getString(3));
+        }
+        return null;
+    }
+}</pre>
+<div class="auftrag"><b>Finde den Bug. Was passiert zur Laufzeit? Dein Fix?</b></div>
+<details><summary>Lösung</summary>
+<p><b>Bug:</b> SQL-Injection — Nutzereingabe wird in den SQL-Text konkateniert.</p>
+<p><b>Zur Laufzeit:</b> die Eingabe <code>' OR '1'='1</code> macht die WHERE-Bedingung immer wahr und liefert fremde Kundendaten; mit <code>'; DROP TABLE kunde;--</code> wird aus einer Suche ein Schema-Angriff. Kein Absturz — ein <b>Datenleck</b>.</p>
+<p><b>Fix:</b> <code>PreparedStatement ps = verbindung.prepareStatement("SELECT id, name, email FROM kunde WHERE email = ?"); ps.setString(1, email);</code></p>
+<p><b>Mechanismus:</b> beim PreparedStatement gehen SQL-Text und Parameter <b>getrennt</b> an die Datenbank — der Parameter wird nie als SQL geparst, egal was drinsteht.</p>
+</details>
+
+<h2>13. Übung 12</h2>
+<pre>@Transactional
+public void reserviere(long artikelId, int menge) {
+    Artikel a = repo.findById(artikelId).orElseThrow();
+
+    if (a.bestand() &gt;= menge) {              // 1. lesen + pruefen
+        a.setBestand(a.bestand() - menge);   // 2. schreiben
+        repo.save(a);
+    } else {
+        throw new AusverkauftException();
+    }
+}
+// Black-Friday: 2 Requests gleichzeitig, bestand = 1, menge = 1</pre>
+<div class="auftrag"><b>Finde den Bug. Was passiert zur Laufzeit? Dein Fix?</b></div>
+<details><summary>Lösung</summary>
+<p><b>Bug:</b> read-then-write ohne Atomarität — die Prüfung und das Schreiben sind zwei getrennte Schritte über Transaktionsgrenzen hinweg nicht geschützt.</p>
+<p><b>Zur Laufzeit:</b> <b>Doppelbuchung</b>: beide Transaktionen lesen <code>bestand = 1</code> (Read Committed sperrt Lesen nicht), beide bestehen die Prüfung, beide schreiben — Bestand −1, zwei Kunden haben denselben letzten Artikel gekauft.</p>
+<p><b>Fix:</b> die Datenbank atomar prüfen <i>und</i> schreiben lassen: <code>UPDATE artikel SET bestand = bestand - :menge WHERE id = :id AND bestand &gt;= :menge</code> — und die Anzahl betroffener Zeilen prüfen: 0 Zeilen = ausverkauft. Alternativen: <code>@Version</code> (Optimistic Locking) oder <code>SELECT ... FOR UPDATE</code>.</p>
+<p><b>Mechanismus:</b> ein einzelnes UPDATE sperrt die Zeile während der Ausführung — Bedingung und Schreiben passieren unteilbar in der DB statt in zwei Java-Schritten.</p>
+</details>
+<details><summary>Aber da steht doch @Transactional — warum rettet das nichts?</summary>
+<p>Eine Transaktion garantiert Atomarität <b>der eigenen Schritte</b> (alles oder nichts bei Commit/Rollback), aber mit Standard-Isolation Read Committed verhindert sie nicht, dass zwei parallele Transaktionen denselben alten Wert lesen (Lost Update). Isolation gegen parallele Leser-Schreiber kostet extra: atomares UPDATE, Locks oder eine Versionsspalte. Diesen Unterschied zu kennen trennt im Interview Mid von Senior.</p>
+</details>
+
+<h2>14. Spickzettel: == vs equals vs hashCode</h2>
+<svg viewBox="0 0 720 300" role="img" aria-label="Spickzettel zu Gleichheit in Java">
+  <rect x="15" y="15" width="690" height="62" rx="10" fill="#fff" stroke="#1d1d1f" stroke-width="2"/>
+  <text x="35" y="42" font-size="15" font-weight="700" font-family="monospace">==</text>
+  <text x="120" y="40" font-size="13.5">vergleicht bei Objekten die Referenz, nur bei Primitiven den Wert</text>
+  <text x="120" y="62" font-size="12.5" fill="#6e6e73">Fallen: String aus DB, Integer ab 128 — nur fuer Primitive und Enums sicher</text>
+  <rect x="15" y="92" width="690" height="62" rx="10" fill="#fff" stroke="#1d1d1f" stroke-width="2"/>
+  <text x="35" y="119" font-size="15" font-weight="700" font-family="monospace">equals</text>
+  <text x="120" y="117" font-size="13.5">inhaltliche Gleichheit — Default in Object ist aber wieder nur ==</text>
+  <text x="120" y="139" font-size="12.5" fill="#6e6e73">Literal zuerst: "AKTIV".equals(x) ist nullsicher; oder Objects.equals(a, b)</text>
+  <rect x="15" y="169" width="690" height="62" rx="10" fill="#fff" stroke="#1d1d1f" stroke-width="2"/>
+  <text x="35" y="196" font-size="15" font-weight="700" font-family="monospace">hashCode</text>
+  <text x="120" y="194" font-size="13.5">waehlt das Fach (Bucket) in HashMap und HashSet</text>
+  <text x="120" y="216" font-size="12.5" fill="#6e6e73">erst Bucket per Hash, dann equals im Bucket — ohne Hash-Treffer kein equals</text>
+  <rect x="15" y="246" width="690" height="42" rx="10" fill="#fbfbfd" stroke="#1d1d1f" stroke-width="2.5"/>
+  <text x="360" y="272" text-anchor="middle" font-size="13.5" font-weight="700">Vertrag: a.equals(b) ⇒ gleicher hashCode. equals ueberschrieben ⇒ hashCode IMMER mit.</text>
+</svg>
+
+<h2>15. So formulierst du den Fix im Interview</h2>
+<div class="senior">
+<p>Vier Sätze, feste Reihenfolge — damit klingst du nach Produktion, nicht nach Quiz:</p>
+<ol>
+<li><b>Bug:</b> „Hier wird der Status mit <code>==</code> verglichen — das prüft die Referenz, nicht den Inhalt."</li>
+<li><b>Laufzeit-Folge:</b> „Zur Laufzeit ist das fast immer false — gültige Gutscheine liefern 0 %, ohne jede Exception."</li>
+<li><b>Fix:</b> „Ich ersetze es durch <code>"AKTIV".equals(status)</code> — Literal zuerst, dann ist es auch nullsicher."</li>
+<li><b>Test:</b> „Und ich schreibe einen Test, der den Status als neues String-Objekt baut, damit die Regression nie zurückkommt."</li>
+</ol>
+</div>
+
+<h2>16. Drei Fallen beim Bug-Nennen</h2>
+<div class="trap">
+<ul>
+<li><b>Nur das Symptom nennen:</b> „Da kommt eine Exception" ist die halbe Antwort — ohne den Mechanismus (<i>warum</i> der Iterator wirft, <i>warum</i> der Bucket nicht mehr passt) klingt es geraten.</li>
+<li><b>Fix ohne Begründung:</b> „Ich nehme BigDecimal" überzeugt erst mit dem Warum — „weil 0.1 binär nicht exakt darstellbar ist und der String-Konstruktor dezimal exakt speichert".</li>
+<li><b>Den zweiten versteckten Bug raten:</b> nenne zuerst sicher den Haupt-Bug mit Mechanismus und Fix; danach <i>darfst</i> du sagen „zusätzlich würde ich X prüfen" — aber wackle nie die sichere Antwort durch Spekulation an.</li>
+</ul>
+</div>
+
+<p class="small">Übe jedes Snippet, bis Bug, Laufzeit-Folge, Fix und Mechanismus in 45 Sekunden frei kommen — genau in dieser Reihenfolge.</p>
+</body>
+</html>

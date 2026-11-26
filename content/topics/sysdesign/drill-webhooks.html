@@ -1,0 +1,310 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Drill 1: Webhook-Dienst (Queue, Retry, DLQ)</title>
+<style>
+  body { font: 17px/1.55 -apple-system, system-ui, sans-serif; max-width: 760px; margin: 0 auto; padding: 16px; color: #1d1d1f; }
+  h1 { font-size: 28px; margin: 8px 0 4px; }
+  h2 { font-size: 21px; margin: 32px 0 8px; padding-top: 12px; border-top: 2px solid #e5e5ea; }
+  h3 { font-size: 17px; margin: 20px 0 6px; }
+  .kern { background: #eef6ff; border-left: 4px solid #0a66c2; padding: 10px 14px; border-radius: 6px; }
+  .senior { background: #f0faf0; border-left: 4px solid #2e7d32; padding: 10px 14px; border-radius: 6px; }
+  .trap { background: #fff4f2; border-left: 4px solid #c62828; padding: 10px 14px; border-radius: 6px; }
+  code { background: #f2f2f7; padding: 1px 5px; border-radius: 4px; font-size: 15px; }
+  pre { background: #1e1e1e; color: #e6e6e6; padding: 12px; border-radius: 8px; overflow-x: auto; font-size: 13.5px; line-height: 1.45; }
+  svg { width: 100%; height: auto; display: block; margin: 10px 0; }
+  ol li, ul li { margin: 4px 0; }
+  details { border: 1px solid #e5e5ea; border-radius: 8px; padding: 8px 12px; margin: 6px 0; }
+  summary { font-weight: 600; cursor: pointer; }
+  details p { margin: 6px 0 2px; }
+  .small { color: #6e6e73; font-size: 14px; }
+  .auftrag { border: 2px dashed #0a66c2; border-radius: 8px; padding: 10px 14px; margin: 10px 0; background: #fbfdff; }
+</style>
+</head>
+<body>
+<h1>Drill 1: Webhook-Dienst (Queue, Retry, DLQ)</h1>
+<!-- sources: Kafka Doku (Consumer Groups, Partitionen, Offsets), Stripe Webhooks Doku (Signatur, Retry-Verhalten), Azure Service Bus Doku (Dead-Letter Queue), PostgreSQL Doku (Indexe, SKIP LOCKED), OWASP (SSRF) -->
+
+<h2>1. Die Aufgabe</h2>
+<p>So stellt sie der Interviewer, wörtlich:</p>
+<p><i>„Unsere Plattform soll Kunden per Webhook informieren: Bei Events wie <code>payment.succeeded</code> schicken wir einen HTTP-POST an eine URL, die der Kunde hinterlegt hat. Wir haben <b>5 Millionen Events pro Tag</b> und rund <b>2'000 Kunden-Endpunkte</b>. Manche Endpunkte sind langsam oder tagelang down. <b>Kein Event darf verloren gehen</b>, und unsere eigene API darf dadurch nicht langsamer werden — Annahme in <b>p95 unter 200 ms</b>. Design das."</i></p>
+<div class="auftrag"><b>20 Minuten:</b> Löse die Aufgabe laut an einem leeren Blatt — Methode, Anforderungen, DB, API, Pseudo-Code, Diagramm, Trade-offs. Erst danach weiterlesen und vergleichen.</div>
+
+<h2>2. Schritt 1: Verstehen (die 5-Minuten-Methode angewendet)</h2>
+<div class="kern">
+<p><b>Rückfragen mit plausiblen Interviewer-Antworten:</b></p>
+<ol>
+<li>„Wie gross ist ein Event?" — <i>„JSON, rund 2 KB."</i></li>
+<li>„Dürfen Duplikate ankommen?" — <i>„Ja, der Empfänger muss damit umgehen können."</i> → <b>at-least-once</b> reicht.</li>
+<li>„Muss die Reihenfolge pro Kunde stimmen?" — <i>„Nice to have, kein Muss."</i></li>
+<li>„Wie lange probieren wir es bei einem toten Endpunkt?" — <i>„Etwa einen Tag, danach manuell."</i> → Retry-Plan + <b>DLQ</b> (Dead-Letter Queue).</li>
+<li>„Spitzenlast?" — <i>„Monatsabrechnung: kurzzeitig das Zehnfache."</i></li>
+<li>„Aufbewahrung der Events?" — <i>„30 Tage, für Redelivery und Support."</i></li>
+</ol>
+<p><b>Zahlen laut vorrechnen:</b> 5 Mio ÷ ~100'000 s ≈ <b>60 QPS</b>, Spitze ≈ <b>600 QPS</b>. Speicher: 2 KB × 5 Mio = <b>10 GB/Tag</b>, bei 30 Tagen Retention ~300 GB — passt in eine Postgres. Ausgehend: 60 bis 600 POSTs/s auf 2'000 Endpunkte, dazu Retries obendrauf.</p>
+<p><b>Scope laut:</b> „Ich baue Annahme, Persistenz, Zustellung mit Retry und DLQ. Endpunkt-Verwaltung nur als CRUD, kein Multi-Region. Ok?"</p>
+</div>
+
+<h2>3. Anforderungen</h2>
+<p><b>Muss:</b></p>
+<ul>
+<li>Event annehmen und dauerhaft speichern, bevor wir 200 antworten (p95 &lt; 200 ms).</li>
+<li><b>At-least-once-Zustellung</b>: kein Event verloren, Duplikate erlaubt.</li>
+<li><b>Retry mit Backoff</b> (1m, 5m, 30m, 6h), danach <b>DLQ</b> mit manuellem Redelivery.</li>
+<li><b>Signatur</b> (HMAC) pro Request, damit der Kunde den Absender prüfen kann.</li>
+<li>Ein langsamer Kunde darf andere Kunden nicht blockieren (Isolation).</li>
+</ul>
+<p><b>Kann:</b></p>
+<ul>
+<li>Strikte Reihenfolge pro Endpunkt; exactly-once; Live-Dashboard für Kunden; Multi-Region; Event-Filter pro Endpunkt.</li>
+</ul>
+
+<h2>4. DB-Design</h2>
+<pre>
+CREATE TABLE endpoints (            -- 1 Zeile pro Kunden-URL
+  id          uuid PRIMARY KEY,
+  customer_id uuid NOT NULL,
+  url         text NOT NULL,
+  secret      text NOT NULL,        -- HMAC-Secret (aus Key Vault, hier nur Referenz)
+  active      boolean NOT NULL DEFAULT true
+);
+
+CREATE TABLE events (               -- das angenommene Event, unveraenderlich
+  id          uuid PRIMARY KEY,     -- = Idempotenz-Schluessel fuer den Empfaenger
+  type        text  NOT NULL,       -- z.B. payment.succeeded
+  payload     jsonb NOT NULL,       -- ~2 KB
+  created_at  timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE deliveries (           -- 1 Zeile pro (Event, Endpunkt): der Zustell-Zustand
+  id            bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  event_id      uuid NOT NULL REFERENCES events(id),
+  endpoint_id   uuid NOT NULL REFERENCES endpoints(id),
+  status        text NOT NULL,      -- PENDING | OK | RETRY | DEAD
+  attempts      int  NOT NULL DEFAULT 0,
+  next_retry_at timestamptz,
+  last_error    text
+);
+
+-- Index 1: der Scheduler fragt staendig "was ist jetzt faellig?"
+CREATE INDEX idx_due ON deliveries (next_retry_at) WHERE status = 'RETRY';
+-- Index 2: Kunden-Ansicht und Support: "alle Zustellungen dieses Endpunkts"
+CREATE INDEX idx_ep  ON deliveries (endpoint_id, id DESC);
+-- Index 3: DLQ-Uebersicht
+CREATE INDEX idx_dead ON deliveries (status) WHERE status = 'DEAD';
+</pre>
+<p>Warum so: <code>events</code> ist unveränderliche Wahrheit (Replay jederzeit möglich). <code>deliveries</code> trägt den veränderlichen Zustand pro Ziel — Status und Zähler gehören nie ins Event. <code>endpoints</code> trennt Kunden-Konfiguration von Daten.</p>
+
+<h2>5. API</h2>
+<ul>
+<li><code>POST /v1/events</code> — intern: Event annehmen, persistieren, 202 zurück.</li>
+<li><code>POST /v1/endpoints</code> — Kunde registriert URL, bekommt Secret einmalig zurück.</li>
+<li><code>GET /v1/endpoints/{id}/deliveries?status=DEAD</code> — Fehlerliste für Kunde/Support.</li>
+<li><code>POST /v1/deliveries/{id}/redeliver</code> — manuelles Redelivery aus der DLQ.</li>
+<li><code>POST /v1/endpoints/{id}/ping</code> — Test-Event senden (spart Support-Tickets).</li>
+<li><code>DELETE /v1/endpoints/{id}</code> — deaktivieren, offene Deliveries abbrechen.</li>
+</ul>
+
+<h2>6. Pseudo-Code an der Tafel</h2>
+<pre>
+// --- Annahme (API, synchron, &lt; 200 ms) ---
+function annehmen(event):
+  db.tx:
+    events.insert(event)                      // 1. dauerhaft speichern
+    for ep in aktiveEndpunkte(event.type):    // 2. Zustell-Auftraege anlegen
+      deliveries.insert(event.id, ep.id, status=PENDING)
+    outbox.insert(event.id)                   // 3. Outbox: gleiche Transaktion!
+  return 202                                  // erst NACH Commit bestaetigen
+
+// --- Outbox-Publisher (eigener Prozess) ---
+loop:
+  rows = outbox.leseOffen(limit=500)          // Polling, z.B. alle 200 ms
+  queue.publish(rows, key=endpoint_id)        // Key: Reihenfolge pro Endpunkt
+  outbox.markierePubliziert(rows)             // Broker down? Outbox puffert.
+
+// --- Worker (Consumer Group, viele Instanzen) ---
+function zustellen(delivery):
+  sig = hmac(endpoint.secret, body + timestamp)
+  resp = httpPost(endpoint.url, body,
+                  headers={Webhook-Id: event.id, Signature: sig},
+                  timeout=5s)                 // hartes Timeout, immer
+  if resp.status in 200..299:
+    delivery.status = OK
+  else:
+    delivery.attempts += 1
+    plan = [1m, 5m, 30m, 6h]                  // Backoff-Stufen + Jitter
+    if delivery.attempts &lt;= 4:
+      delivery.status = RETRY
+      delivery.next_retry_at = now + plan[attempts-1] + zufall(0..30s)
+    else:
+      delivery.status = DEAD                  // DLQ: Mensch uebernimmt, Alarm
+// Idempotenz: Webhook-Id ist immer dieselbe event.id —
+// der Empfaenger dedupliziert damit; wir duerfen doppelt senden.
+</pre>
+
+<h2>7. Architektur</h2>
+<svg viewBox="0 0 740 330" role="img" aria-label="Webhook-Architektur">
+  <defs><marker id="arrW" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10z" fill="#1d1d1f"/></marker></defs>
+  <rect x="10" y="20" width="120" height="56" rx="10" fill="#fff" stroke="#1d1d1f" stroke-width="2"/>
+  <text x="70" y="44" text-anchor="middle" font-size="14" font-weight="700">Produzenten</text>
+  <text x="70" y="63" text-anchor="middle" font-size="12.5" fill="#6e6e73">60–600 QPS</text>
+  <line x1="130" y1="48" x2="160" y2="48" stroke="#1d1d1f" stroke-width="2" marker-end="url(#arrW)"/>
+  <rect x="165" y="20" width="130" height="56" rx="10" fill="#fff" stroke="#1d1d1f" stroke-width="2"/>
+  <text x="230" y="44" text-anchor="middle" font-size="14" font-weight="700">Ingest-API</text>
+  <text x="230" y="63" text-anchor="middle" font-size="12.5" fill="#6e6e73">2+ Pods, LB davor</text>
+  <line x1="295" y1="48" x2="325" y2="48" stroke="#1d1d1f" stroke-width="2" marker-end="url(#arrW)"/>
+  <rect x="330" y="20" width="150" height="76" rx="10" fill="#fff" stroke="#1d1d1f" stroke-width="2.5"/>
+  <text x="405" y="44" text-anchor="middle" font-size="14" font-weight="700">PostgreSQL</text>
+  <text x="405" y="63" text-anchor="middle" font-size="12.5" fill="#6e6e73">events + deliveries</text>
+  <text x="405" y="81" text-anchor="middle" font-size="12.5" fill="#6e6e73">+ Outbox-Tabelle</text>
+  <line x1="480" y1="58" x2="510" y2="58" stroke="#1d1d1f" stroke-width="2" marker-end="url(#arrW)"/>
+  <rect x="515" y="30" width="130" height="56" rx="10" fill="#fff" stroke="#1d1d1f" stroke-width="1.5"/>
+  <text x="580" y="54" text-anchor="middle" font-size="14">Outbox-</text>
+  <text x="580" y="72" text-anchor="middle" font-size="14">Publisher</text>
+  <line x1="580" y1="86" x2="580" y2="120" stroke="#1d1d1f" stroke-width="2" marker-end="url(#arrW)"/>
+  <rect x="420" y="125" width="310" height="60" rx="10" fill="#eef6ff" stroke="#0a66c2" stroke-width="2.5"/>
+  <text x="575" y="150" text-anchor="middle" font-size="14" font-weight="700">Queue/Topic „deliveries"</text>
+  <text x="575" y="170" text-anchor="middle" font-size="12.5" fill="#6e6e73">Key = endpoint_id · n Partitionen</text>
+  <line x1="575" y1="185" x2="575" y2="215" stroke="#1d1d1f" stroke-width="2" marker-end="url(#arrW)"/>
+  <rect x="420" y="220" width="310" height="60" rx="10" fill="#fff" stroke="#1d1d1f" stroke-width="2"/>
+  <text x="575" y="245" text-anchor="middle" font-size="14" font-weight="700">Worker-Pool (Consumer Group)</text>
+  <text x="575" y="265" text-anchor="middle" font-size="12.5" fill="#6e6e73">HTTP-POST + HMAC, Timeout 5 s</text>
+  <line x1="420" y1="250" x2="320" y2="250" stroke="#1d1d1f" stroke-width="2" marker-end="url(#arrW)"/>
+  <rect x="180" y="220" width="135" height="60" rx="10" fill="#fff" stroke="#1d1d1f" stroke-width="2"/>
+  <text x="247" y="245" text-anchor="middle" font-size="14" font-weight="700">2'000 Kunden-</text>
+  <text x="247" y="264" text-anchor="middle" font-size="14" font-weight="700">Endpunkte</text>
+  <line x1="490" y1="220" x2="440" y2="110" stroke="#6e6e73" stroke-width="1.5" stroke-dasharray="6 4" marker-end="url(#arrW)"/>
+  <text x="400" y="200" text-anchor="middle" font-size="12.5" fill="#6e6e73">Status/Retry zurück in DB</text>
+  <rect x="20" y="125" width="150" height="60" rx="10" fill="#fff4f2" stroke="#c62828" stroke-width="2"/>
+  <text x="95" y="150" text-anchor="middle" font-size="14" font-weight="700">DLQ (status=DEAD)</text>
+  <text x="95" y="170" text-anchor="middle" font-size="12.5" fill="#6e6e73">Alarm + Redelivery-API</text>
+</svg>
+<p>Der Kernsatz dazu: „Die API schreibt nur in die DB und antwortet. Alles Langsame — fremde Endpunkte, Retries — passiert hinter der Queue, entkoppelt von der Annahme."</p>
+
+<h2>8. Der schwierige Teil als Bild: Retry, Backoff, DLQ</h2>
+<svg viewBox="0 0 740 300" role="img" aria-label="Zustandsfluss Retry Backoff DLQ">
+  <defs><marker id="arrR" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10z" fill="#1d1d1f"/></marker></defs>
+  <rect x="10" y="30" width="130" height="56" rx="10" fill="#fff" stroke="#1d1d1f" stroke-width="2"/>
+  <text x="75" y="54" text-anchor="middle" font-size="14" font-weight="700">PENDING</text>
+  <text x="75" y="73" text-anchor="middle" font-size="12.5" fill="#6e6e73">in Queue</text>
+  <line x1="140" y1="58" x2="180" y2="58" stroke="#1d1d1f" stroke-width="2" marker-end="url(#arrR)"/>
+  <rect x="185" y="30" width="140" height="56" rx="10" fill="#fff" stroke="#1d1d1f" stroke-width="2"/>
+  <text x="255" y="54" text-anchor="middle" font-size="14" font-weight="700">SENDEN</text>
+  <text x="255" y="73" text-anchor="middle" font-size="12.5" fill="#6e6e73">POST, Timeout 5 s</text>
+  <line x1="325" y1="48" x2="400" y2="48" stroke="#2e7d32" stroke-width="2" marker-end="url(#arrR)"/>
+  <text x="362" y="38" text-anchor="middle" font-size="12.5" fill="#2e7d32">2xx</text>
+  <rect x="405" y="22" width="110" height="52" rx="10" fill="#f0faf0" stroke="#2e7d32" stroke-width="2.5"/>
+  <text x="460" y="53" text-anchor="middle" font-size="15" font-weight="700">OK</text>
+  <line x1="255" y1="86" x2="255" y2="130" stroke="#c62828" stroke-width="2" marker-end="url(#arrR)"/>
+  <text x="330" y="115" text-anchor="middle" font-size="12.5" fill="#c62828">Fehler / Timeout / 5xx</text>
+  <rect x="100" y="135" width="310" height="76" rx="10" fill="#fff" stroke="#1d1d1f" stroke-width="2"/>
+  <text x="255" y="160" text-anchor="middle" font-size="14" font-weight="700">RETRY (attempts += 1)</text>
+  <text x="255" y="181" text-anchor="middle" font-size="13">Wartezeit: 1 m → 5 m → 30 m → 6 h</text>
+  <text x="255" y="200" text-anchor="middle" font-size="12.5" fill="#6e6e73">+ Jitter 0–30 s gegen Gleichtakt</text>
+  <path d="M110 150 C 40 140, 40 60, 100 50" fill="none" stroke="#1d1d1f" stroke-width="2" marker-end="url(#arrR)"/>
+  <text x="38" y="110" text-anchor="middle" font-size="12.5" fill="#6e6e73">fällig →</text>
+  <text x="38" y="126" text-anchor="middle" font-size="12.5" fill="#6e6e73">neu senden</text>
+  <line x1="410" y1="173" x2="520" y2="173" stroke="#c62828" stroke-width="2" marker-end="url(#arrR)"/>
+  <text x="465" y="162" text-anchor="middle" font-size="12.5" fill="#c62828">5. Fehlschlag</text>
+  <rect x="525" y="140" width="200" height="66" rx="10" fill="#fff4f2" stroke="#c62828" stroke-width="2.5"/>
+  <text x="625" y="165" text-anchor="middle" font-size="14" font-weight="700">DEAD (DLQ)</text>
+  <text x="625" y="186" text-anchor="middle" font-size="12.5" fill="#6e6e73">Alarm · Kunde sieht Fehler</text>
+  <path d="M620 206 C 600 260, 330 270, 262 215" fill="none" stroke="#6e6e73" stroke-width="1.5" stroke-dasharray="6 4" marker-end="url(#arrR)"/>
+  <text x="450" y="262" text-anchor="middle" font-size="12.5" fill="#6e6e73">manuelles Redelivery (API) → zurück in RETRY</text>
+  <text x="370" y="290" text-anchor="middle" font-size="13">Gesamtfenster: 1 m + 5 m + 30 m + 6 h ≈ 6,6 h automatisch, danach Mensch.</text>
+</svg>
+<p>Warum diese Stufen: früh schnell (kurze Netz-Aussetzer heilen in Sekunden), spät selten (ein toter Server kommt nicht schneller zurück, nur weil du hämmerst). <b>Jitter</b> (Zufallsanteil) verhindert, dass tausende Retries im Gleichtakt feuern, wenn der Endpunkt zurückkommt.</p>
+
+<h2>9. Frontend kurz (Angular)</h2>
+<ul>
+<li>Komponenten: <code>EndpointListComponent</code>, <code>DeliveryTableComponent</code> (Filter: status), <code>RedeliverButtonComponent</code>.</li>
+<li>State: ein Service mit Signals; Daten per REST, <b>Polling alle 10 s</b> — WebSocket lohnt sich für ein Admin-Dashboard nicht.</li>
+<li>Redeliver: optimistisches Update vermeiden — Status erst nach Server-Antwort umschalten, sonst lügt die Tabelle.</li>
+</ul>
+
+<h2>10. Cloud (Azure)</h2>
+<div class="senior">
+<ul>
+<li><b>AKS</b> für Worker + API: ein Pool, horizontal skalierbar; App Service ginge für die API, aber Worker und API zusammen auf AKS halten das Deployment einheitlich.</li>
+<li><b>Azure Service Bus</b> statt selbst betriebenem Kafka: eingebaute Dead-Letter Queue und per-Message-Scheduling (<i>scheduled delivery</i>) passen exakt zu Retry/DLQ — bei 600 QPS brauchen wir Kafkas Durchsatz nicht. Event Hubs wäre für reines Hochvolumen-Streaming, hat aber kein per-Message-Retry.</li>
+<li><b>Azure Database for PostgreSQL</b> (managed): Backups, Patching, Replica per Klick — Betrieb ist hier nicht unser Geschäft.</li>
+<li><b>Blob Storage</b>: Events älter als 30 Tage als Archiv auslagern, DB bleibt klein.</li>
+<li><b>Key Vault</b>: HMAC-Secrets der Endpunkte — Secrets gehören nie als Klartext in die DB.</li>
+<li><b>Azure Monitor</b>: Alarm auf DLQ-Rate und Queue-Tiefe — die zwei Zahlen, die nachts wecken dürfen.</li>
+</ul>
+</div>
+
+<h2>11. Trade-offs</h2>
+<ul>
+<li><b>At-least-once vs exactly-once → at-least-once</b>, weil exactly-once über HTTP zu einem fremden System nicht garantierbar ist (Antwort kann nach Erfolg verloren gehen). Preis: Empfänger muss per <code>Webhook-Id</code> deduplizieren — das dokumentieren wir.</li>
+<li><b>Outbox in der DB vs direkt in den Broker publizieren → Outbox</b>, weil DB-Commit und Publish sonst auseinanderfallen können (Event gespeichert, Publish verloren — oder umgekehrt). Preis: Polling-Latenz (~Sekunden) und eine Tabelle mehr.</li>
+<li><b>Push mit Retry vs Pull-API für Kunden → Push</b>, weil das der Standard ist und Kunden keine Infrastruktur brauchen. Preis: wir tragen Retry-Komplexität; als Ergänzung bieten wir die Delivery-Liste als Pull-API für Abgleich an.</li>
+<li><b>Service Bus (managed) vs eigenes Kafka → Service Bus</b>, weil DLQ und Scheduling fertig sind und 600 QPS weit unter jeder Durchsatzgrenze liegen. Preis: Vendor-Lock-in und weniger Kontrolle über Partitionierung.</li>
+<li><b>Gemeinsame Queue + Rate Limit pro Endpunkt vs eine Queue pro Kunde → gemeinsam</b>, weil 2'000 Queues Betriebs-Chaos sind. Preis: Head-of-Line-Risiko — darum Timeout 5 s, Retries laufen über Scheduling (nicht blockierend) und max N parallele Sends pro Endpunkt.</li>
+</ul>
+
+<h2>12. Selbsttest: Folgefragen des Interviewers</h2>
+<details><summary>„Wie viel Speicher braucht ein Jahr Events?"</summary>
+<p>2 KB × 5 Mio × 365 ≈ <b>3,7 TB pro Jahr</b>. Darum Retention 30 Tage in der DB (~300 GB) und Archiv in Blob Storage — dort kostet 1 TB wenige Franken pro Monat.</p>
+</details>
+<details><summary>„Ein grosser Kunde ist 6 Stunden down. Was passiert bei euch?"</summary>
+<p>Seine Deliveries laufen in RETRY und warten per <code>next_retry_at</code> — sie liegen in der DB, nicht im Speicher. Queue-Tiefe und Worker bleiben normal, andere Kunden merken nichts. Nach Rückkehr verteilt der Jitter die Nachlieferung.</p>
+</details>
+<details><summary>„Was geht kaputt, wenn der Worker den Offset vor dem HTTP-POST committet?"</summary>
+<p>Stirbt der Worker zwischen Commit und POST, ist die Nachricht aus Sicht des Brokers erledigt — das Event wird <b>nie zugestellt</b> und verletzt „kein Verlust". Regel: erst Arbeit abschliessen (oder Retry-Zustand persistieren), dann Offset committen. Das macht die Verarbeitung at-least-once.</p>
+</details>
+<details><summary>„Warum ist eure Zustellung trotzdem nur at-least-once?"</summary>
+<p>Der POST kann beim Kunden ankommen, aber die 200-Antwort geht im Netz verloren — wir müssen wiederholen, der Kunde sieht das Event doppelt. Das ist prinzipbedingt bei HTTP ohne gemeinsame Transaktion. Lösung: stabile <code>Webhook-Id</code>, Empfänger dedupliziert.</p>
+</details>
+<details><summary>„Wonach wählt ihr den Partition Key, und was wäre falsch?"</summary>
+<p><code>endpoint_id</code>: gleiche Partition = Reihenfolge pro Endpunkt bleibt grob erhalten, Last verteilt sich über 2'000 Endpunkte. Falsch wäre <code>customer_id</code> eines Riesen-Kunden als Hotspot oder gar kein Key (Round-Robin): dann ist jede Reihenfolge weg.</p>
+</details>
+<details><summary>„Wie skaliert der Worker-Pool — und wo ist die Grenze?"</summary>
+<p>Worker sind eine <b>Consumer Group</b>: jede Partition wird von genau einem Consumer der Gruppe gelesen. Mehr Worker als Partitionen bringen nichts — die Parallelität ist durch die Partitionszahl gedeckelt. Darum Partitionen von Anfang an grosszügig wählen (z. B. 32).</p>
+</details>
+<details><summary>„×10: 50 Mio Events/Tag. Was ändert ihr?"</summary>
+<p>600 QPS Durchschnitt, 6'000 Spitze: API-Pods und Worker horizontal hoch, Partitionen prüfen, DB-Schreiblast über Batch-Inserts bündeln; 100 GB/Tag → Retention in der DB auf 7 Tage senken, Rest nur noch Blob. Architektur bleibt gleich — das sage ich laut, denn genau dafür war die Queue da.</p>
+</details>
+<details><summary>„Sicherheitsfrage: Der Kunde trägt http://10.0.0.5/admin als URL ein."</summary>
+<p>Das ist <b>SSRF</b> (Server-Side Request Forgery): unser Worker würde ins eigene interne Netz posten. Abwehr: URL-Validierung (nur https, keine privaten IP-Bereiche, DNS-Auflösung prüfen) und Egress über einen Proxy ohne Route ins interne Netz.</p>
+</details>
+<details><summary>„Wie prüft der Kunde, dass der Webhook echt ist?"</summary>
+<p>Wir signieren <code>timestamp + body</code> mit HMAC und seinem Secret und senden Signatur + Timestamp im Header. Er rechnet die Signatur nach und verwirft Requests mit altem Timestamp (z. B. &gt; 5 min) — das blockt Fälschung <i>und</i> Replay.</p>
+</details>
+<details><summary>„Was ist eine Poison Message, und was tut ihr dagegen?"</summary>
+<p>Eine Nachricht, deren Verarbeitung immer crasht (z. B. kaputtes JSON) — ohne Schutz blockiert sie ihre Partition für immer. Darum: Fehler fangen, attempts zählen, nach Limit in DEAD schieben und den Offset trotzdem committen. Die Partition läuft weiter.</p>
+</details>
+<details><summary>„Endpunkt kommt nach 6 h zurück, 50'000 offene Deliveries. Zerlegt ihr ihn?"</summary>
+<p>Ohne Schutz ja — Thundering Herd. Zwei Bremsen: Jitter verteilt die fälligen Retries, und pro Endpunkt gilt ein Sende-Limit (z. B. 50 parallel / Token Bucket). Lieber in 10 Minuten nachliefern als den Kunden erneut umwerfen.</p>
+</details>
+<details><summary>„Postgres ist down. Was passiert mit eurem p95 &lt; 200 ms?"</summary>
+<p>Die Annahme schlägt fehl — wir antworten schnell mit 503 statt zu hängen (Timeout auf dem DB-Call). Der Produzent muss retryen können; „annehmen ohne zu persistieren" wäre schlimmer, denn eine 202 wäre dann eine Lüge. Gegenmassnahme: HA-Postgres mit Failover.</p>
+</details>
+<details><summary>„Warum pollt der Outbox-Publisher? Ist das nicht hässlich?"</summary>
+<p>Polling alle 200 ms ist simpel, crash-sicher und bei 60 QPS völlig ausreichend (Latenz &lt; 1 s). Die Alternativen (DB-Trigger, Change Data Capture) sind mehr Betrieb. Senior-Antwort: „Hässlich, aber korrekt und billig — CDC rüste ich nach, wenn die Latenz je stört."</p>
+</details>
+<details><summary>„Wie merkt ihr, dass das System insgesamt kippt?"</summary>
+<p>Drei Metriken mit Alarm: Queue-Tiefe (wächst = Worker kommen nicht nach), DLQ-Rate (springt = Bug oder grosser Kunde tot), Alter des ältesten unpublizierten Outbox-Eintrags (wächst = Publisher hängt). Dazu p95 der Ingest-API.</p>
+</details>
+<details><summary>„Der Kunde sagt: Ich habe Event X nie bekommen. Wie beweist ihr das Gegenteil?"</summary>
+<p><code>deliveries</code> hält pro Versuch Status, Zeitpunkt und <code>last_error</code>; dazu loggen wir den Antwort-Status des Kunden. Support-Antwort in einer Query: „5 Versuche, dein Server gab 500, hier die Zeiten — Redelivery-Knopf ist im Dashboard."</p>
+</details>
+<details><summary>„Braucht die Reihenfolge-Garantie den Retry-Pfad nicht kaputt zu machen?"</summary>
+<p>Doch, genau das tut sie: Event 2 kann gelingen, während Event 1 im Retry hängt — Reihenfolge weg. Strikte Ordnung pro Endpunkt hiesse: bei Fehler <i>alles</i> für diesen Endpunkt anhalten. Das war als „Kann" eingestuft; genau deshalb klärt man es in Minute 4 und nicht in Minute 40.</p>
+</details>
+<div class="trap">
+<p><b>Typische Fehler bei genau dieser Aufgabe:</b></p>
+<ul>
+<li><b>Synchron zustellen:</b> API ruft den Kunden-Endpunkt direkt auf — ein langsamer Kunde macht eure API langsam. Die 200-ms-Anforderung ist dann unhaltbar.</li>
+<li><b>Retry im RAM:</b> Worker-Neustart = alle wartenden Retries weg = Events verloren. Retry-Zustand gehört in die DB.</li>
+<li><b>Exactly-once versprechen:</b> Über fremdes HTTP nicht möglich — wer es verspricht, bekommt die Folgefrage und fällt.</li>
+<li><b>DLQ vergessen:</b> Ohne Endzustand retryt ihr tote Endpunkte ewig und niemand merkt es. DLQ + Alarm + Redelivery-API gehören zur Antwort.</li>
+<li><b>SSRF nie erwähnen:</b> Vom Kunden kontrollierte URLs sind die klassische Sicherheitsfalle dieser Aufgabe.</li>
+</ul>
+</div>
+
+<p class="small">Übe den Drill, bis du Aufgabe → Zahlen → Diagramm → Retry-Bild in 20 Minuten frei an der Tafel schaffst.</p>
+</body>
+</html>

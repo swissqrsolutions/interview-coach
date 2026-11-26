@@ -1,0 +1,300 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Drill 2: Live-Chat (WebSocket, Kafka, Fan-out)</title>
+<style>
+  body { font: 17px/1.55 -apple-system, system-ui, sans-serif; max-width: 760px; margin: 0 auto; padding: 16px; color: #1d1d1f; }
+  h1 { font-size: 28px; margin: 8px 0 4px; }
+  h2 { font-size: 21px; margin: 32px 0 8px; padding-top: 12px; border-top: 2px solid #e5e5ea; }
+  h3 { font-size: 17px; margin: 20px 0 6px; }
+  .kern { background: #eef6ff; border-left: 4px solid #0a66c2; padding: 10px 14px; border-radius: 6px; }
+  .senior { background: #f0faf0; border-left: 4px solid #2e7d32; padding: 10px 14px; border-radius: 6px; }
+  .trap { background: #fff4f2; border-left: 4px solid #c62828; padding: 10px 14px; border-radius: 6px; }
+  code { background: #f2f2f7; padding: 1px 5px; border-radius: 4px; font-size: 15px; }
+  pre { background: #1e1e1e; color: #e6e6e6; padding: 12px; border-radius: 8px; overflow-x: auto; font-size: 13.5px; line-height: 1.45; }
+  svg { width: 100%; height: auto; display: block; margin: 10px 0; }
+  ol li, ul li { margin: 4px 0; }
+  details { border: 1px solid #e5e5ea; border-radius: 8px; padding: 8px 12px; margin: 6px 0; }
+  summary { font-weight: 600; cursor: pointer; }
+  details p { margin: 6px 0 2px; }
+  .small { color: #6e6e73; font-size: 14px; }
+  .auftrag { border: 2px dashed #0a66c2; border-radius: 8px; padding: 10px 14px; margin: 10px 0; background: #fbfdff; }
+</style>
+</head>
+<body>
+<h1>Drill 2: Live-Chat (WebSocket, Kafka, Fan-out)</h1>
+<!-- sources: Kafka Doku (Partitionen, Keys, Consumer Groups), MDN (WebSocket), Redis Doku (TTL, Pub/Sub), PostgreSQL Doku (Indexe, Keyset Pagination), Azure Doku (SignalR Service, AKS, Event Hubs) -->
+
+<h2>1. Die Aufgabe</h2>
+<p>So stellt sie der Interviewer, wörtlich:</p>
+<p><i>„Design einen Live-Chat für unsere App: 1:1-Chats und Gruppen bis <b>200 Mitglieder</b>. Zur Spitze sind <b>50'000 Nutzer gleichzeitig verbunden</b>, es werden rund <b>500 Nachrichten pro Sekunde</b> gesendet. Nachrichten dürfen nicht verloren gehen, der Verlauf muss abrufbar sein, und wer offline ist, bekommt die Nachricht beim nächsten Öffnen. Latenz: Nachricht beim Empfänger in <b>unter 1 Sekunde</b>."</i></p>
+<div class="auftrag"><b>20 Minuten:</b> Laut lösen — Methode, Anforderungen, DB, API, Pseudo-Code, Diagramm, Trade-offs. Erst danach vergleichen.</div>
+
+<h2>2. Schritt 1: Verstehen (die 5-Minuten-Methode angewendet)</h2>
+<div class="kern">
+<p><b>Rückfragen mit plausiblen Interviewer-Antworten:</b></p>
+<ol>
+<li>„Wie gross ist eine Nachricht, gibt es Bilder?" — <i>„Text ~0,5 KB; Bilder ja, aber als URL."</i> → Bytes in Object Storage, Chat trägt nur Links.</li>
+<li>„Durchschnittliche Empfängerzahl pro Nachricht?" — <i>„Meist 1:1, Gruppen im Schnitt 10."</i> → Fan-out ≈ 500 × 10 = <b>5'000 Pushes/s</b> im Mittel.</li>
+<li>„Muss die Reihenfolge stimmen?" — <i>„Innerhalb eines Chats ja, global egal."</i> → Ordnung <b>pro Chat</b> = Partition Key.</li>
+<li>„Zustellgarantie?" — <i>„Nichts verlieren; Dubletten darf der Client wegfiltern."</i> → persistieren vor Push, at-least-once.</li>
+<li>„Lesen vs Schreiben?" — <i>„Verlauf-Scrollen dominiert klar."</i> → leselastig: Index + Pagination zählen.</li>
+<li>„Presence (online/offline) nötig?" — <i>„Ja, grüner Punkt reicht, darf 30 s alt sein."</i> → Redis mit TTL, nichts Exaktes.</li>
+</ol>
+<p><b>Zahlen laut vorrechnen:</b> Schreiben: 500 msg/s × 0,5 KB = 250 KB/s ≈ <b>21 GB/Tag</b> ≈ <b>8 TB/Jahr</b> — Postgres geht, aber Partitionierung nach Zeit einplanen. Verbindungen: 50'000 gleichzeitig; ein Gateway-Knoten hält ~10k Verbindungen bequem → <b>5 bis 8 Gateway-Knoten</b>. Spitze: 10× auf 5'000 msg/s bei Grossereignissen.</p>
+<p><b>Scope laut:</b> „Ich baue Senden, Zustellen, Verlauf, Presence. Ende-zu-Ende-Verschlüsselung, Reactions und Suche lasse ich weg. Ok?"</p>
+</div>
+
+<h2>3. Anforderungen</h2>
+<p><b>Muss:</b></p>
+<ul>
+<li>Zustellung online &lt; 1 s; <b>keine Nachricht verloren</b> (persistiert, bevor bestätigt).</li>
+<li>Reihenfolge <b>innerhalb eines Chats</b> stabil.</li>
+<li>Offline-Fall: Push-Notification + Nachholen beim Reconnect.</li>
+<li>Verlauf mit Pagination (ältere Nachrichten nachladen).</li>
+<li>Presence mit Toleranz (bis 30 s alt ok).</li>
+</ul>
+<p><b>Kann:</b></p>
+<ul>
+<li>Gelesen-Haken, Tippt-gerade-Anzeige, Ende-zu-Ende-Verschlüsselung, Volltext-Suche, Multi-Region.</li>
+</ul>
+
+<h2>4. DB-Design</h2>
+<pre>
+CREATE TABLE chats (                 -- 1:1 oder Gruppe
+  id         uuid PRIMARY KEY,
+  is_group   boolean NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE chat_members (          -- wer ist in welchem Chat
+  chat_id   uuid NOT NULL REFERENCES chats(id),
+  user_id   uuid NOT NULL,
+  last_read_msg_id bigint,           -- fuer Ungelesen-Zaehler und Nachholen
+  PRIMARY KEY (chat_id, user_id)
+);
+
+CREATE TABLE messages (              -- append-only, nie UPDATE im Hot Path
+  id         bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  chat_id    uuid  NOT NULL REFERENCES chats(id),
+  sender_id  uuid  NOT NULL,
+  client_msg_id uuid NOT NULL,       -- Idempotenz: Client-Retry erzeugt kein Duplikat
+  body       text  NOT NULL,         -- ~0,5 KB; Bilder nur als URL
+  created_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (chat_id, client_msg_id)
+);
+
+-- DER Index: Verlauf = "letzte N Nachrichten dieses Chats"
+CREATE INDEX idx_hist ON messages (chat_id, id DESC);
+-- Mitglieds-Sicht: "meine Chats" aufloesen
+CREATE INDEX idx_user ON chat_members (user_id);
+</pre>
+<p>Warum so: <code>messages</code> ist append-only — Schreiben bleibt billig, und <code>id</code> (monoton pro Tabelle) ordnet den Verlauf. <code>chat_members.last_read_msg_id</code> macht Nachholen und Ungelesen-Zähler zu einer einzigen Range-Query. <code>UNIQUE (chat_id, client_msg_id)</code> fängt Client-Retries in der DB ab, nicht im Code.</p>
+
+<h2>5. API</h2>
+<ul>
+<li><code>GET /ws</code> — WebSocket-Verbindung (Auth per Token beim Handshake); senden + empfangen laufen hierüber.</li>
+<li><code>GET /v1/chats</code> — meine Chats mit letzter Nachricht + Ungelesen-Zähler.</li>
+<li><code>GET /v1/chats/{id}/messages?before_id=&amp;limit=50</code> — Verlauf, Keyset-Pagination (nie OFFSET).</li>
+<li><code>POST /v1/chats</code> — Chat/Gruppe anlegen.</li>
+<li><code>POST /v1/chats/{id}/members</code> — Mitglied hinzufügen.</li>
+<li><code>POST /v1/uploads</code> — Upload-URL für Bilder holen (Blob, nicht über den Chat-Pfad).</li>
+</ul>
+
+<h2>6. Pseudo-Code an der Tafel</h2>
+<pre>
+// --- Gateway: Client sendet ueber WebSocket ---
+function onMessage(conn, msg):
+  pruefeMitglied(conn.userId, msg.chatId)       // AuthZ bei jeder Nachricht
+  id = db.insertMessage(msg)                    // 1. persistieren (Idempotenz-Key!)
+  kafka.produce("messages", key=msg.chatId,     // 2. gleicher Chat → gleiche
+                value={id, ...msg})             //    Partition → Reihenfolge bleibt
+  conn.send(ack(msg.clientMsgId, id))           // 3. Haken an den Sender
+
+// --- Fan-out-Worker (Consumer Group, n Instanzen) ---
+function onKafkaRecord(rec):
+  mitglieder = membersCache.get(rec.chatId)     // Redis-Cache, DB als Fallback
+  for userId in mitglieder ohne rec.senderId:
+    gatewayNode = redis.get("conn:" + userId)   // wo haengt der Nutzer?
+    if gatewayNode != null:                     // --- ONLINE ---
+      rpc(gatewayNode).push(userId, rec)        //   Gateway pusht ueber WebSocket
+    else:                                       // --- OFFLINE ---
+      pushDienst.notify(userId, vorschau(rec))  //   mobile Push-Notification
+      // kein "Postfach" noetig: Nachricht liegt in der DB
+  commitOffset(rec)                             // erst NACH dem Fan-out
+
+// --- Client beim Reconnect: Nachholen ---
+function onReconnect():
+  fuer jeden chat: GET /messages?after_id=last_read_msg_id
+  // Die DB ist die Wahrheit — der Push ist nur die schnelle Abkuerzung.
+</pre>
+
+<h2>7. Architektur</h2>
+<svg viewBox="0 0 740 330" role="img" aria-label="Chat-Architektur">
+  <defs><marker id="arrC1" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10z" fill="#1d1d1f"/></marker></defs>
+  <rect x="10" y="30" width="120" height="60" rx="10" fill="#fff" stroke="#1d1d1f" stroke-width="2"/>
+  <text x="70" y="55" text-anchor="middle" font-size="14" font-weight="700">Clients</text>
+  <text x="70" y="75" text-anchor="middle" font-size="12.5" fill="#6e6e73">50k verbunden</text>
+  <line x1="130" y1="60" x2="160" y2="60" stroke="#1d1d1f" stroke-width="2" marker-end="url(#arrC1)"/>
+  <rect x="165" y="30" width="110" height="60" rx="10" fill="#fff" stroke="#1d1d1f" stroke-width="2"/>
+  <text x="220" y="55" text-anchor="middle" font-size="14" font-weight="700">LB (L4)</text>
+  <text x="220" y="75" text-anchor="middle" font-size="12.5" fill="#6e6e73">WebSocket-fähig</text>
+  <line x1="275" y1="60" x2="305" y2="60" stroke="#1d1d1f" stroke-width="2" marker-end="url(#arrC1)"/>
+  <rect x="310" y="20" width="180" height="80" rx="10" fill="#fff" stroke="#1d1d1f" stroke-width="2.5"/>
+  <text x="400" y="46" text-anchor="middle" font-size="14" font-weight="700">WS-Gateways</text>
+  <text x="400" y="66" text-anchor="middle" font-size="12.5" fill="#6e6e73">6–8 Knoten à ~10k Conns</text>
+  <text x="400" y="84" text-anchor="middle" font-size="12.5" fill="#6e6e73">zustandslos bis auf Conns</text>
+  <line x1="400" y1="100" x2="400" y2="130" stroke="#1d1d1f" stroke-width="2" marker-end="url(#arrC1)"/>
+  <rect x="245" y="135" width="310" height="60" rx="10" fill="#eef6ff" stroke="#0a66c2" stroke-width="2.5"/>
+  <text x="400" y="160" text-anchor="middle" font-size="14" font-weight="700">Kafka-Topic „messages"</text>
+  <text x="400" y="180" text-anchor="middle" font-size="12.5" fill="#6e6e73">Key = chat_id · Ordnung pro Chat</text>
+  <line x1="400" y1="195" x2="400" y2="225" stroke="#1d1d1f" stroke-width="2" marker-end="url(#arrC1)"/>
+  <rect x="245" y="230" width="310" height="60" rx="10" fill="#fff" stroke="#1d1d1f" stroke-width="2"/>
+  <text x="400" y="255" text-anchor="middle" font-size="14" font-weight="700">Fan-out-Worker (Consumer Group)</text>
+  <text x="400" y="275" text-anchor="middle" font-size="12.5" fill="#6e6e73">online → Gateway-Push · offline → Notification</text>
+  <path d="M555 255 C 640 250, 650 120, 495 70" fill="none" stroke="#1d1d1f" stroke-width="2" marker-end="url(#arrC1)"/>
+  <text x="645" y="180" text-anchor="middle" font-size="12.5" fill="#6e6e73">Push an das</text>
+  <text x="645" y="196" text-anchor="middle" font-size="12.5" fill="#6e6e73">richtige Gateway</text>
+  <rect x="20" y="135" width="190" height="60" rx="10" fill="#fff" stroke="#1d1d1f" stroke-width="2"/>
+  <text x="115" y="160" text-anchor="middle" font-size="14" font-weight="700">PostgreSQL</text>
+  <text x="115" y="180" text-anchor="middle" font-size="12.5" fill="#6e6e73">messages (append-only)</text>
+  <line x1="310" y1="95" x2="195" y2="135" stroke="#1d1d1f" stroke-width="2" marker-end="url(#arrC1)"/>
+  <text x="222" y="108" text-anchor="middle" font-size="12.5" fill="#6e6e73">1. persistieren</text>
+  <rect x="20" y="230" width="190" height="60" rx="10" fill="#fff" stroke="#1d1d1f" stroke-width="2"/>
+  <text x="115" y="255" text-anchor="middle" font-size="14" font-weight="700">Redis</text>
+  <text x="115" y="275" text-anchor="middle" font-size="12.5" fill="#6e6e73">Presence + user→Gateway</text>
+  <line x1="245" y1="262" x2="215" y2="262" stroke="#1d1d1f" stroke-width="2" marker-end="url(#arrC1)"/>
+</svg>
+<p>Der Kernsatz dazu: „Das Gateway persistiert und produziert nur — <b>wer</b> die Nachricht bekommt, entscheidet der Fan-out-Worker hinter Kafka. So skalieren Annahme und Zustellung unabhängig."</p>
+
+<h2>8. Der schwierige Teil als Bild: Fan-out, online und offline</h2>
+<svg viewBox="0 0 740 320" role="img" aria-label="Fan-out mit Partition pro chat_id, Online- und Offline-Pfad">
+  <defs><marker id="arrC2" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10z" fill="#1d1d1f"/></marker></defs>
+  <rect x="10" y="20" width="150" height="60" rx="10" fill="#fff" stroke="#1d1d1f" stroke-width="2"/>
+  <text x="85" y="45" text-anchor="middle" font-size="14" font-weight="700">msg: chat 42</text>
+  <text x="85" y="65" text-anchor="middle" font-size="12.5" fill="#6e6e73">key = chat_id</text>
+  <line x1="160" y1="50" x2="195" y2="50" stroke="#1d1d1f" stroke-width="2" marker-end="url(#arrC2)"/>
+  <rect x="200" y="10" width="190" height="110" rx="10" fill="#eef6ff" stroke="#0a66c2" stroke-width="2.5"/>
+  <text x="295" y="34" text-anchor="middle" font-size="13.5" font-weight="700">hash(chat_id) wählt Partition</text>
+  <rect x="215" y="44" width="160" height="20" rx="4" fill="#fff" stroke="#0a66c2"/>
+  <text x="295" y="59" text-anchor="middle" font-size="12.5">P0: chats 42, 77, …</text>
+  <rect x="215" y="68" width="160" height="20" rx="4" fill="#fff" stroke="#6e6e73"/>
+  <text x="295" y="83" text-anchor="middle" font-size="12.5">P1: chats 13, 99, …</text>
+  <rect x="215" y="92" width="160" height="20" rx="4" fill="#fff" stroke="#6e6e73"/>
+  <text x="295" y="107" text-anchor="middle" font-size="12.5">P2 … Pn</text>
+  <line x1="390" y1="54" x2="425" y2="54" stroke="#1d1d1f" stroke-width="2" marker-end="url(#arrC2)"/>
+  <rect x="430" y="24" width="190" height="60" rx="10" fill="#fff" stroke="#1d1d1f" stroke-width="2"/>
+  <text x="525" y="48" text-anchor="middle" font-size="14" font-weight="700">Worker für P0</text>
+  <text x="525" y="68" text-anchor="middle" font-size="12.5" fill="#6e6e73">liest Mitglieder: A, B, C</text>
+  <line x1="500" y1="84" x2="400" y2="160" stroke="#2e7d32" stroke-width="2" marker-end="url(#arrC2)"/>
+  <text x="400" y="128" text-anchor="middle" font-size="12.5" fill="#2e7d32">A, B online</text>
+  <line x1="560" y1="84" x2="610" y2="160" stroke="#c62828" stroke-width="2" marker-end="url(#arrC2)"/>
+  <text x="630" y="128" text-anchor="middle" font-size="12.5" fill="#c62828">C offline</text>
+  <rect x="280" y="165" width="240" height="70" rx="10" fill="#f0faf0" stroke="#2e7d32" stroke-width="2.5"/>
+  <text x="400" y="190" text-anchor="middle" font-size="13.5" font-weight="700">Redis: conn:A → gw-3, conn:B → gw-7</text>
+  <text x="400" y="212" text-anchor="middle" font-size="12.5" fill="#6e6e73">Key hat TTL 60 s, Heartbeat alle 30 s</text>
+  <rect x="540" y="165" width="190" height="70" rx="10" fill="#fff4f2" stroke="#c62828" stroke-width="2.5"/>
+  <text x="635" y="190" text-anchor="middle" font-size="13.5" font-weight="700">kein conn:C in Redis</text>
+  <text x="635" y="212" text-anchor="middle" font-size="12.5" fill="#6e6e73">→ Push-Notification</text>
+  <line x1="380" y1="235" x2="330" y2="270" stroke="#2e7d32" stroke-width="2" marker-end="url(#arrC2)"/>
+  <rect x="200" y="272" width="250" height="40" rx="10" fill="#fff" stroke="#1d1d1f" stroke-width="2"/>
+  <text x="325" y="297" text-anchor="middle" font-size="13.5">gw-3 und gw-7 pushen über WebSocket</text>
+  <rect x="470" y="272" width="260" height="40" rx="10" fill="#fff" stroke="#1d1d1f" stroke-width="2"/>
+  <text x="600" y="289" text-anchor="middle" font-size="13">C holt beim nächsten Öffnen nach:</text>
+  <text x="600" y="306" text-anchor="middle" font-size="12.5" fill="#6e6e73">GET /messages?after_id=last_read</text>
+</svg>
+<p>Merksatz: <b>Gleicher Key → gleiche Partition → eine Reihenfolge.</b> Innerhalb einer Partition liest der Worker die Nachrichten in Schreibreihenfolge — darum stimmt die Ordnung pro Chat, ohne globale Koordination.</p>
+
+<h2>9. Frontend kurz (Angular)</h2>
+<ul>
+<li>Komponenten: <code>ChatListComponent</code>, <code>ChatWindowComponent</code> (Virtual Scrolling für den Verlauf), <code>MessageInputComponent</code>.</li>
+<li><code>ChatSocketService</code>: eine WebSocket-Verbindung pro App, Reconnect mit Backoff + Jitter; nach Reconnect erst nachholen, dann live.</li>
+<li>State über Signals: Nachricht optimistisch anzeigen (grau), beim Ack per <code>client_msg_id</code> bestätigen — Dubletten filtert dieselbe Id.</li>
+</ul>
+
+<h2>10. Cloud (Azure)</h2>
+<div class="senior">
+<ul>
+<li><b>AKS</b> für Gateways + Worker: 50k langlebige WebSocket-Verbindungen brauchen Kontrolle über Timeouts, Drain beim Deploy und Skalierung — auf AKS habe ich das; App Service ist für langlebige Verbindungen dieser Zahl die falsche Abstraktion.</li>
+<li><b>Azure SignalR Service</b> als Alternative laut nennen: managed WebSocket-Fan-out, nimmt mir die Gateway-Schicht ab. Preis: weniger Kontrolle, Kosten pro Verbindung — als Option erwähnen zeigt Azure-Kenntnis.</li>
+<li><b>Event Hubs</b> statt selbst betriebenem Kafka: Kafka-kompatibles Protokoll, Partitionen + Consumer Groups vorhanden, kein Cluster-Betrieb. Eigenes Kafka erst, wenn Features oder Kosten es erzwingen.</li>
+<li><b>Azure Database for PostgreSQL</b> für den Verlauf; <b>Blob Storage</b> für Bilder (Chat trägt nur URLs).</li>
+<li><b>Azure Cache for Redis</b> für Presence und user→Gateway-Routing.</li>
+<li><b>Key Vault</b> für Token-Signatur-Keys; <b>Monitor</b>: Alarm auf Consumer-Lag und Verbindungszahl pro Gateway.</li>
+</ul>
+</div>
+
+<h2>11. Trade-offs</h2>
+<ul>
+<li><b>Kafka vs direkter WebSocket-Broadcast vom Gateway → Kafka</b>, weil der Sender-Gateway sonst alle Empfänger auf allen Knoten selbst finden müsste und bei Absturz Nachrichten ohne Zustellung verloren wären. Preis: ein paar Millisekunden Latenz und eine Komponente mehr Betrieb.</li>
+<li><b>Verlauf in Postgres vs Cassandra → Postgres</b>, weil 8 TB/Jahr mit Zeit-Partitionierung beherrschbar sind und das Team Postgres kann. Preis: bei 100× Chat-Volumen (WhatsApp-Klasse) müsste ich auf einen Wide-Column-Store wie Cassandra migrieren — den Punkt nenne ich laut.</li>
+<li><b>Presence via Redis-TTL vs exakte Events in der DB → Redis-TTL</b> (Heartbeat 30 s, TTL 60 s): Absturz heilt sich selbst, wenn der Key abläuft. Preis: der grüne Punkt kann bis 60 s lügen — die Anforderung erlaubt das ausdrücklich.</li>
+<li><b>Persistieren vor Publish vs Publish zuerst → DB zuerst</b>, weil „keine Nachricht verloren" sonst am Broker-Ack hängt und Reconnect-Nachholen die DB als Wahrheit braucht. Preis: der Insert liegt im Latenzpfad des Senders (~wenige ms).</li>
+<li><b>Sticky Sessions vs Routing-Tabelle in Redis → Redis-Routing</b>, weil Sticky beim Gateway-Ausfall alle Sessions verliert und Rebalancing verhindert. Preis: jeder Fan-out macht einen Redis-Lookup — bei 5'000 Pushes/s gut innerhalb von Redis-Grenzen (~100k ops/s).</li>
+</ul>
+
+<h2>12. Selbsttest: Folgefragen des Interviewers</h2>
+<details><summary>„Rechne: Wie viel Speicher braucht der Verlauf pro Jahr?"</summary>
+<p>500 msg/s × 0,5 KB ≈ 250 KB/s ≈ 21 GB/Tag ≈ <b>8 TB/Jahr</b>. Antwort dazu: Zeit-Partitionierung in Postgres, alte Partitionen nach Blob archivieren oder löschen, je nach Produktentscheid.</p>
+</details>
+<details><summary>„Warum ist chat_id der richtige Partition Key — und was wäre an user_id falsch?"</summary>
+<p>Die Ordnungs-Anforderung gilt pro Chat, und Kafka garantiert Ordnung nur innerhalb einer Partition — gleicher Key, gleiche Partition, fertig. <code>user_id</code> würde die Nachrichten eines Chats über Partitionen verstreuen: Reihenfolge weg, Fan-out-Logik kaputt.</p>
+</details>
+<details><summary>„Was geht kaputt, wenn ein Gateway-Knoten abstürzt?"</summary>
+<p>~10k Clients verlieren die Verbindung und reconnecten über den LB auf andere Knoten — mit Backoff + Jitter, sonst Reconnect-Sturm. Ihre <code>conn:</code>-Keys in Redis laufen per TTL ab. Verpasste Nachrichten? Keine: sie liegen in der DB, Nachholen per <code>after_id</code>.</p>
+</details>
+<details><summary>„Wie viele Fan-out-Worker können parallel arbeiten?"</summary>
+<p>Höchstens so viele wie Partitionen: In einer Consumer Group liest jede Partition genau ein Consumer. Bei 32 Partitionen bringen 40 Worker nichts — 8 stehen still. Darum Partitionszahl von Anfang an über dem Zielwert wählen; nachträgliches Erhöhen verschiebt die Key-Zuordnung.</p>
+</details>
+<details><summary>„Wann committet der Worker den Offset — und warum genau dann?"</summary>
+<p>Nach dem Fan-out. Committet er vorher und stirbt, ist die Nachricht aus Broker-Sicht erledigt, aber nie gepusht — Clients sehen sie erst beim Reconnect. Commit nach der Arbeit heisst at-least-once: Im Crash-Fall wird doppelt gepusht, und der Client filtert per Message-Id.</p>
+</details>
+<details><summary>„Eine Gruppe hat 200 Mitglieder. Was kostet eine Nachricht?"</summary>
+<p>1 DB-Insert, 1 Kafka-Produce, dann 200 Redis-Lookups (gebündelt per Pipeline/MGET: 1 Roundtrip) und bis zu 200 Pushes verteilt auf die Gateways. Der teure Teil ist der Push, nicht die Persistenz — genau darum liegt er asynchron hinter Kafka.</p>
+</details>
+<details><summary>„×10: 500k Verbindungen, 5'000 msg/s. Was ändert ihr?"</summary>
+<p>Gateways: ~60 Knoten statt 6 — zustandslos, also nur Geld. Kafka: Partitionen und Worker hoch. Postgres-Schreiblast: 5'000 Inserts/s → Batching und Zeit-Partitionen; ab hier beginnt die ehrliche Diskussion über Cassandra für den Verlauf. Redis: 50k Pushes/s Lookups → Pipelines, dann Cluster.</p>
+</details>
+<details><summary>„Sicherheitsfrage: Wie verhindert ihr, dass jemand fremde Chats liest oder hineinschreibt?"</summary>
+<p>AuthN beim WebSocket-Handshake (kurzlebiges Token), AuthZ bei <b>jeder</b> Aktion gegen <code>chat_members</code> — nie nur beim Connect, Mitgliedschaften ändern sich. Verlauf-API prüft dieselbe Tabelle. Bild-URLs sind signierte, ablaufende Blob-Links, keine öffentlichen Pfade.</p>
+</details>
+<details><summary>„Der Nutzer sendet, das WLAN bricht ab, die App retryt. Zwei Nachrichten?"</summary>
+<p>Nein: Der Client generiert pro Nachricht eine <code>client_msg_id</code>; <code>UNIQUE (chat_id, client_msg_id)</code> macht den zweiten Insert zum No-op, der Client bekommt dasselbe Ack. Idempotenz liegt in der DB-Constraint, nicht in Anwendungslogik.</p>
+</details>
+<details><summary>„Warum nicht Redis Pub/Sub statt Kafka für den Fan-out?"</summary>
+<p>Pub/Sub ist fire-and-forget: kein Replay, keine Offsets, kein Nachlesen nach Worker-Crash — wer nicht lauscht, verpasst. Kafka speichert die Nachrichten; ein neu gestarteter Worker liest ab seinem Offset weiter. Bei „nichts verlieren" ist das der Unterschied, der zählt.</p>
+</details>
+<details><summary>„Wie funktioniert der Ungelesen-Zähler, ohne die DB zu quälen?"</summary>
+<p><code>last_read_msg_id</code> pro Mitglied; ungelesen = Nachrichten mit <code>id &gt;</code> diesem Wert — eine Range-Query auf <code>idx_hist</code>. Beim Öffnen des Chats wird der Wert hochgesetzt. Kein Zähler-UPDATE pro eingehender Nachricht, das wäre eine Hot Row pro Gruppe.</p>
+</details>
+<details><summary>„Was passiert bei einem Netsplit: Nutzer wirkt online, ist aber weg?"</summary>
+<p>Der Push an sein Gateway läuft ins Leere, die Verbindung ist tot. Sichtbar wird das über den fehlenden Heartbeat: Nach spätestens 60 s (TTL) gilt er als offline. Die Nachricht ist nicht verloren — sie steht in der DB und kommt beim Reconnect per Nachholen.</p>
+</details>
+<details><summary>„Warum Keyset-Pagination (before_id) statt OFFSET beim Verlauf?"</summary>
+<p>OFFSET 10'000 liest und verwirft 10'000 Zeilen — wird mit jeder Seite langsamer. <code>WHERE chat_id = ? AND id &lt; ? ORDER BY id DESC LIMIT 50</code> springt per Index direkt an die Stelle: konstante Kosten, egal wie tief gescrollt wird.</p>
+</details>
+<details><summary>„Zwei Geräte desselben Nutzers gleichzeitig — was ändert sich?"</summary>
+<p>Aus <code>conn:user</code> wird eine Menge: <code>conn:user:device → gateway</code>, Fan-out pusht an alle Einträge. Gelesen-Status wird über <code>last_read_msg_id</code> zwischen Geräten konsistent, weil er serverseitig liegt und nicht im Client.</p>
+</details>
+<details><summary>„Woran erkennt ihr im Betrieb, dass die Zustellung kippt?"</summary>
+<p><b>Consumer-Lag</b> (Abstand Worker zu neuester Nachricht) ist die Metrik Nummer eins: wächst er, dauert die Zustellung länger als 1 s, lange bevor etwas crasht. Dazu: Verbindungen pro Gateway, Redis-Latenz, p95 vom Senden bis zum Push (Ende-zu-Ende gemessen).</p>
+</details>
+<details><summary>„Tippt-gerade und Gelesen-Haken: Gehören die in denselben Pfad?"</summary>
+<p>Nein. „Tippt gerade" ist verlierbar und flüchtig: direkt Gateway-zu-Gateway oder Redis Pub/Sub, nie persistieren — sonst verzehnfacht ein Feature ohne Wert die Schreiblast. Gelesen-Haken ist ein <code>last_read</code>-Update, gedrosselt (z. B. max 1/s pro Chat).</p>
+</details>
+<div class="trap">
+<p><b>Typische Fehler bei genau dieser Aufgabe:</b></p>
+<ul>
+<li><b>Push zuerst, DB später:</b> Gateway crasht nach dem Push, vor dem Insert — die Nachricht existiert beim Empfänger, aber nicht im Verlauf. Persistieren kommt immer zuerst.</li>
+<li><b>Ordnung global versprechen:</b> Unbezahlbar und unnötig. Die Anforderung ist Ordnung pro Chat — genau das liefert der Partition Key.</li>
+<li><b>Presence exakt bauen wollen:</b> Disconnect-Events gehen verloren (Stromausfall sendet kein Goodbye). TTL + Heartbeat ist das einzige robuste Modell.</li>
+<li><b>Offline-Postfach pro Nutzer puffern:</b> Doppelte Wahrheit neben der DB, die auseinanderläuft. Die DB ist das Postfach; offline heisst nur: Notification statt Push.</li>
+<li><b>WebSocket-Details vergessen:</b> LB-Idle-Timeouts, Heartbeats, Drain beim Deploy — wer „einfach WebSocket" sagt, bekommt genau hier die Folgefragen.</li>
+</ul>
+</div>
+
+<p class="small">Übe den Drill, bis du Aufgabe → Zahlen → Diagramm → Fan-out-Bild in 20 Minuten frei an der Tafel schaffst — und vergleiche mit Drill 1: gleiche Methode, anderes System.</p>
+</body>
+</html>

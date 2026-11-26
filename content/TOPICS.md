@@ -2,7 +2,7 @@
 
 Generated from content/syllabus.json. Priority 1 = asked in almost every interview. Mark: **Projekt** = shown in CV/Gmail · **— kein Projekt** = no project experience · **? prüfen** = unclear, you decide.
 
-437 topics · P1 267 · P2 132 · P3 38 · written 313
+437 topics · P1 267 · P2 132 · P3 38 · written 325
 
 ## Java 21 (core + advanced) (42)
 Sources: Java SE 21/25 docs (docs.oracle.com) · JVM Specification · OpenJDK source + JEPs (openjdk.org) · Oracle Java SE 21 Developer exam 1Z0-830 topics
@@ -36,7 +36,7 @@ Sources: Java SE 21/25 docs (docs.oracle.com) · JVM Specification · OpenJDK so
 | 1 | Java-Versionen 8 bis 25 | Projekt | ✓ |
 | 1 | Thread Dumps lesen | ? prüfen | ✓ |
 | 1 | Profiling mit JFR und async-profiler | ? prüfen | ✓ |
-| 1 | Drill: Bugs finden und fixen | — kein Projekt |  |
+| 1 | Drill: Bugs finden und fixen | — kein Projekt | ✓ |
 | 2 | Class Loading | Projekt | ✓ |
 | 2 | Atomic-Klassen und CAS | ? prüfen | ✓ |
 | 2 | CompletableFuture | ? prüfen | ✓ |
@@ -57,7 +57,7 @@ Sources: Spring Framework reference · Spring Boot 3 reference · Spring Securit
 
 | P | Topic | Project | Written |
 |---|---|---|---|
-| 1 | Top 30 Fragen mit Kurzantworten | — kein Projekt |  |
+| 1 | Top 30 Fragen mit Kurzantworten | — kein Projekt | ✓ |
 | 1 | IoC und Dependency Injection | Projekt | ✓ |
 | 1 | Bean-Lebenszyklus | Projekt | ✓ |
 | 1 | Bean Scopes | Projekt | ✓ |
@@ -87,7 +87,7 @@ Sources: RFC 9110 HTTP Semantics · RFC 9457 Problem Details · OpenAPI 3.1 spec
 
 | P | Topic | Project | Written |
 |---|---|---|---|
-| 1 | Top 30 Fragen mit Kurzantworten | — kein Projekt |  |
+| 1 | Top 30 Fragen mit Kurzantworten | — kein Projekt | ✓ |
 | 1 | HTTP-Methoden | Projekt | ✓ |
 | 1 | HTTP-Statuscodes | Projekt | ✓ |
 | 1 | Ressourcen-Design | Projekt | ✓ |
@@ -129,7 +129,7 @@ Sources: Apache Kafka documentation · Confluent developer docs · Confluent CCD
 
 | P | Topic | Project | Written |
 |---|---|---|---|
-| 1 | Top 30 Fragen mit Kurzantworten | — kein Projekt |  |
+| 1 | Kafka: Top 30 Fragen mit Kurzantworten | — kein Projekt | ✓ |
 | 1 | Kafka-Architektur: Broker, Topic, Partition, KRaft | Projekt | ✓ |
 | 1 | Producer intern: Batching, acks, Idempotenz, Partitioner | ? prüfen | ✓ |
 | 1 | Consumer Groups und Rebalancing | Projekt | ✓ |
@@ -237,7 +237,7 @@ Sources: PostgreSQL 16/17 documentation · Use The Index, Luke (Markus Winand)
 
 | P | Topic | Project | Written |
 |---|---|---|---|
-| 1 | Top 30 Fragen mit Kurzantworten | — kein Projekt |  |
+| 1 | Postgres: Top 30 Fragen mit Kurzantworten | — kein Projekt | ✓ |
 | 1 | ACID und Transaktionen | Projekt | ✓ |
 | 1 | MVCC: wie PostgreSQL Versionen speichert | ? prüfen | ✓ |
 | 1 | VACUUM, Autovacuum, Bloat | ? prüfen | ✓ |
@@ -272,7 +272,7 @@ Sources: Hibernate ORM 6 user guide · Jakarta Persistence 3 spec · Vlad Mihalc
 
 | P | Topic | Project | Written |
 |---|---|---|---|
-| 1 | Top 30 Fragen mit Kurzantworten | — kein Projekt |  |
+| 1 | Top 30 Fragen mit Kurzantworten | — kein Projekt | ✓ |
 | 1 | Entity-Lebenszyklus | Projekt | ✓ |
 | 1 | Persistence Context | ? prüfen | ✓ |
 | 1 | Lazy vs Eager Loading | Projekt | ✓ |
@@ -509,7 +509,7 @@ Sources: angular.dev guides (v20) · RxJS docs
 
 | P | Topic | Project | Written |
 |---|---|---|---|
-| 1 | Top 30 Fragen mit Kurzantworten | — kein Projekt |  |
+| 1 | Angular: Top 30 Fragen mit Kurzantworten | — kein Projekt | ✓ |
 | 1 | Angular-Architektur: Standalone vs NgModule | Projekt | ✓ |
 | 1 | Komponenten und Lifecycle Hooks | Projekt | ✓ |
 | 1 | Change Detection: Zone.js, OnPush, Zoneless | ? prüfen | ✓ |
@@ -567,7 +567,7 @@ Sources: Design Patterns (GoF) · Hexagonal Architecture (Alistair Cockburn) · 
 | 1 | Onion und Clean Architecture | ? prüfen | ✓ |
 | 1 | DDD taktisch | ? prüfen | ✓ |
 | 1 | Anti-Patterns und Code Smells | ? prüfen | ✓ |
-| 1 | Drill: Pattern im Code erkennen | — kein Projekt |  |
+| 1 | Drill: Pattern im Code erkennen | — kein Projekt | ✓ |
 | 2 | DDD strategisch: Bounded Context, Context Map | ? prüfen |  |
 
 ## Search (Elasticsearch, OpenSearch, vector search) (7)
@@ -650,11 +650,11 @@ Sources: Designing Data-Intensive Applications (Kleppmann) · System Design Inte
 | 1 | Fall: Benachrichtigungs-System | — kein Projekt | ✓ |
 | 1 | Übung: Das kaputte Microservices-Design (8 Services) | — kein Projekt | ✓ |
 | 1 | Methode: Jede Aufgabe in 5 Minuten verstehen | — kein Projekt | ✓ |
-| 1 | Drill 1: Webhook-Dienst (Queue, Retry, DLQ) | — kein Projekt |  |
-| 1 | Drill 2: Live-Chat (WebSocket, Kafka, Fan-out) | — kein Projekt |  |
+| 1 | Drill 1: Webhook-Dienst (Queue, Retry, DLQ) | — kein Projekt | ✓ |
+| 1 | Drill 2: Live-Chat (WebSocket, Kafka, Fan-out) | — kein Projekt | ✓ |
 | 1 | Drill 3: Terminbuchung (Locking, Reminder-Queue) | — kein Projekt | ✓ |
-| 1 | Drill 4: Monats-Rechnungen (Batch, Worker, idempotent) | — kein Projekt |  |
-| 1 | Drill 5: IoT-Telemetrie (Kafka, Zeitreihen, Alarme) | — kein Projekt |  |
+| 1 | Drill 4: Monats-Rechnungen (Batch, Worker, idempotent) | — kein Projekt | ✓ |
+| 1 | Drill 5: IoT-Telemetrie (Kafka, Zeitreihen, Alarme) | — kein Projekt | ✓ |
 | 2 | Consistent Hashing | — kein Projekt | ✓ |
 | 2 | Fall: News-Feed | — kein Projekt | ✓ |
 | 2 | Fall: Verteilter Job-Scheduler | — kein Projekt | ✓ |
