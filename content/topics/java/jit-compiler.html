@@ -35,14 +35,9 @@
 <h1>JIT-Compiler</h1>
 <!-- sources: Java · Tier 1 · Quellen: OpenJDK HotSpot, JEP 197, JEP 483, JEP 515, -XX:+PrintFlagsFinal auf OpenJDK 17.0.3, HotSpot-Quellcode compiler_globals.hpp -->
 
-<div class="geruest"><h2>Gerüst</h2><dl>
-  <dt>Warum?</dt><dd>Interpreter ist langsam: 3700 ms gegen 120 ms mit JIT. Kompiliert wird nur heisser Code, mit echtem Profil.</dd>
-  <dt>Wie innen?</dt><dd>Stufe 0 Interpreter → 3 C1 mit Profil → 4 C2. Falsche Annahme → Deoptimierung; lange Schleife → OSR.</dd>
-  <dt>Zahlen</dt><dd>C1 ab ca. 200, C2 ab ca. 5000 Aufrufen. Inlining bis 35 Bytes, heiss bis 325. Code Cache 240 MB.</dd>
-  <dt>Vergleich</dt><dd>JIT: Warm-up, dann Spitzenleistung. Native Image: Start in ms, kein Laufzeit-Profil. AOT Cache: JIT mit warmem Start.</dd>
-  <dt>Produktion</dt><dd>Erste Requests nach Deploy langsam; 0,5 CPU verlängert Warm-up. Code Cache voll → Compiler aus.</dd>
-  <dt>Design</dt><dd>Kleine Methoden, wenige Klassen pro heisser Aufrufstelle → Inlining. Lang laufend → JIT, kurz lebend → Native Image.</dd>
-</dl></div>
+<div class="kern">
+<b>Kern:</b> Der JIT-Compiler (<b>Just-in-Time</b>) übersetzt <b>heissen Bytecode</b> zur Laufzeit in <b>optimierten Maschinencode</b>. Er optimiert mit echten Messdaten aus dem laufenden Programm. Er macht die <b>Ausführung</b> schnell, nicht die Kompilierung.
+</div>
 
 <div class="muster"><h3>Antwort-Muster</h3><p class="mq"><b>Frage:</b> Was macht der JIT-Compiler?</p><ol>
   <li>Mechanismus: Er übersetzt heissen Bytecode zur Laufzeit in Maschinencode und nutzt dabei das Profil.</li>
@@ -51,11 +46,32 @@
   <li>Produktion: Darum melde ich einen Pod erst nach Warm-up-Requests als bereit.</li>
 </ol></div>
 
-<div class="kern">
-<b>Kern:</b> Der JIT-Compiler (<b>Just-in-Time</b>) übersetzt <b>heissen Bytecode</b> zur Laufzeit in <b>optimierten Maschinencode</b>. Er optimiert mit echten Messdaten aus dem laufenden Programm. Er macht die <b>Ausführung</b> schnell, nicht die Kompilierung.
-</div>
+<h2>1. Die Reise einer Methode</h2>
+<svg viewBox="0 0 720 300" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="b" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker><marker id="r" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#c62828"/></marker></defs>
+  <rect x="10" y="60" width="150" height="80" rx="10" fill="#eee" stroke="#777"/><text x="85" y="88" text-anchor="middle" font-weight="700">Stufe 0</text><text x="85" y="108" text-anchor="middle">Interpreter</text><text x="85" y="126" text-anchor="middle" font-size="12">zählt Aufrufe</text>
+  <line x1="160" y1="100" x2="238" y2="100" stroke="#555" stroke-width="2" marker-end="url(#b)"/><text x="199" y="90" text-anchor="middle" font-size="12">ca. 200×</text>
+  <rect x="240" y="60" width="180" height="80" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="330" y="88" text-anchor="middle" font-weight="700">Stufe 3 · C1</text><text x="330" y="108" text-anchor="middle">schnell kompiliert</text><text x="330" y="126" text-anchor="middle" font-size="12">sammelt Profil</text>
+  <line x1="420" y1="100" x2="498" y2="100" stroke="#555" stroke-width="2" marker-end="url(#b)"/><text x="459" y="90" text-anchor="middle" font-size="12">ca. 5000×</text>
+  <rect x="500" y="60" width="210" height="80" rx="10" fill="#0a66c2" stroke="#0a66c2"/><text x="605" y="88" text-anchor="middle" fill="#fff" font-weight="700">Stufe 4 · C2</text><text x="605" y="108" text-anchor="middle" fill="#fff">stark optimiert</text><text x="605" y="126" text-anchor="middle" fill="#fff" font-size="12">nutzt das Profil</text>
+  <path d="M605,140 C605,240 85,240 85,142" fill="none" stroke="#c62828" stroke-width="2" stroke-dasharray="6 4" marker-end="url(#r)"/>
+  <text x="345" y="232" text-anchor="middle" fill="#c62828" font-weight="700">Deoptimierung</text>
+  <text x="345" y="252" text-anchor="middle" fill="#c62828" font-size="12">Annahme falsch → zurück in den Interpreter → neu messen</text>
+  <rect x="240" y="8" width="180" height="34" rx="8" fill="#fff" stroke="#999"/><text x="330" y="30" text-anchor="middle" font-size="13">Code Cache</text>
+  <line x1="330" y1="60" x2="330" y2="44" stroke="#999" stroke-width="1.5" marker-end="url(#b)"/>
+  <line x1="605" y1="60" x2="422" y2="28" stroke="#999" stroke-width="1.5" marker-end="url(#b)"/>
+</svg>
+<ol>
+  <li><b>Start: Interpreter (Stufe 0).</b> Die JVM führt Bytecode Befehl für Befehl aus. Das ist langsam, aber sofort bereit. Sie <b>zählt</b> Aufrufe und Schleifen-Durchläufe jeder Methode.</li>
+  <li><b>Die Methode wird heiss: C1 (Stufe 3).</b> Nach ca. 200 Aufrufen kompiliert <b>C1</b> sie schnell zu Maschinencode. Dieser Code <b>sammelt ein Profil</b>: welche Klassen kommen vor, welche <code>if</code>-Zweige laufen.</li>
+  <li><b>Die Methode ist sehr heiss: C2 (Stufe 4).</b> Nach ca. 5000 Aufrufen kompiliert <b>C2</b> sie neu. C2 nutzt das Profil und <b>wettet</b>: „Hier kommt immer nur <code>ArrayList</code>.“ Damit optimiert er stark.</li>
+  <li><b>Code Cache.</b> Der Maschinencode liegt im Code Cache. Ab jetzt springt die JVM direkt dorthin.</li>
+  <li><b>Die Wette ist falsch: Deoptimierung.</b> Kommt plötzlich eine <code>LinkedList</code>, trifft der Code eine <b>uncommon trap</b>. Die JVM wirft den C2-Code weg (<b>made not entrant</b>), geht zurück in den Interpreter und misst neu.</li>
+  <li><b>Lange Schleife in <code>main</code>?</b> Die Methode wird nur einmal aufgerufen. Darum ersetzt die JVM den Code <b>mitten in der Schleife</b>: <b>On-Stack Replacement (OSR)</b>.</li>
+</ol>
+<p>Diese 5 Stufen (0–4) heissen <b>Tiered Compilation</b>. Sie ist seit Java 8 Standard. Stufe 1 und 2 nutzt C1 nur in Sonderfällen (z. B. wenn C2 überlastet ist).</p>
 
-<h2>1. Wo sitzt der JIT in der JVM?</h2>
+<h2>2. Aufbau</h2>
 <svg viewBox="0 0 720 330" font-family="-apple-system, system-ui, sans-serif" font-size="14">
   <defs><marker id="a" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
   <rect x="10" y="20" width="120" height="44" rx="8" fill="#fff" stroke="#555"/><text x="70" y="47" text-anchor="middle">Demo.java</text>
@@ -81,61 +97,7 @@
   <li>Der JIT legt den fertigen Maschinencode in den <b>Code Cache</b>.</li>
 </ol>
 
-<h2>2. Die Reise einer Methode (die Geschichte zum Merken)</h2>
-<svg viewBox="0 0 720 300" font-family="-apple-system, system-ui, sans-serif" font-size="14">
-  <defs><marker id="b" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker><marker id="r" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#c62828"/></marker></defs>
-  <rect x="10" y="60" width="150" height="80" rx="10" fill="#eee" stroke="#777"/><text x="85" y="88" text-anchor="middle" font-weight="700">Stufe 0</text><text x="85" y="108" text-anchor="middle">Interpreter</text><text x="85" y="126" text-anchor="middle" font-size="12">zählt Aufrufe</text>
-  <line x1="160" y1="100" x2="238" y2="100" stroke="#555" stroke-width="2" marker-end="url(#b)"/><text x="199" y="90" text-anchor="middle" font-size="12">ca. 200×</text>
-  <rect x="240" y="60" width="180" height="80" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="330" y="88" text-anchor="middle" font-weight="700">Stufe 3 · C1</text><text x="330" y="108" text-anchor="middle">schnell kompiliert</text><text x="330" y="126" text-anchor="middle" font-size="12">sammelt Profil</text>
-  <line x1="420" y1="100" x2="498" y2="100" stroke="#555" stroke-width="2" marker-end="url(#b)"/><text x="459" y="90" text-anchor="middle" font-size="12">ca. 5000×</text>
-  <rect x="500" y="60" width="210" height="80" rx="10" fill="#0a66c2" stroke="#0a66c2"/><text x="605" y="88" text-anchor="middle" fill="#fff" font-weight="700">Stufe 4 · C2</text><text x="605" y="108" text-anchor="middle" fill="#fff">stark optimiert</text><text x="605" y="126" text-anchor="middle" fill="#fff" font-size="12">nutzt das Profil</text>
-  <path d="M605,140 C605,240 85,240 85,142" fill="none" stroke="#c62828" stroke-width="2" stroke-dasharray="6 4" marker-end="url(#r)"/>
-  <text x="345" y="232" text-anchor="middle" fill="#c62828" font-weight="700">Deoptimierung</text>
-  <text x="345" y="252" text-anchor="middle" fill="#c62828" font-size="12">Annahme falsch → zurück in den Interpreter → neu messen</text>
-  <rect x="240" y="8" width="180" height="34" rx="8" fill="#fff" stroke="#999"/><text x="330" y="30" text-anchor="middle" font-size="13">Code Cache</text>
-  <line x1="330" y1="60" x2="330" y2="44" stroke="#999" stroke-width="1.5" marker-end="url(#b)"/>
-  <line x1="605" y1="60" x2="422" y2="28" stroke="#999" stroke-width="1.5" marker-end="url(#b)"/>
-</svg>
-<ol>
-  <li><b>Start: Interpreter (Stufe 0).</b> Die JVM führt Bytecode Befehl für Befehl aus. Das ist langsam, aber sofort bereit. Sie <b>zählt</b> Aufrufe und Schleifen-Durchläufe jeder Methode.</li>
-  <li><b>Die Methode wird heiss: C1 (Stufe 3).</b> Nach ca. 200 Aufrufen kompiliert <b>C1</b> sie schnell zu Maschinencode. Dieser Code <b>sammelt ein Profil</b>: welche Klassen kommen vor, welche <code>if</code>-Zweige laufen.</li>
-  <li><b>Die Methode ist sehr heiss: C2 (Stufe 4).</b> Nach ca. 5000 Aufrufen kompiliert <b>C2</b> sie neu. C2 nutzt das Profil und <b>wettet</b>: „Hier kommt immer nur <code>ArrayList</code>.“ Damit optimiert er stark.</li>
-  <li><b>Code Cache.</b> Der Maschinencode liegt im Code Cache. Ab jetzt springt die JVM direkt dorthin.</li>
-  <li><b>Die Wette ist falsch: Deoptimierung.</b> Kommt plötzlich eine <code>LinkedList</code>, trifft der Code eine <b>uncommon trap</b>. Die JVM wirft den C2-Code weg (<b>made not entrant</b>), geht zurück in den Interpreter und misst neu.</li>
-  <li><b>Lange Schleife in <code>main</code>?</b> Die Methode wird nur einmal aufgerufen. Darum ersetzt die JVM den Code <b>mitten in der Schleife</b>: <b>On-Stack Replacement (OSR)</b>.</li>
-</ol>
-<p>Diese 5 Stufen (0–4) heissen <b>Tiered Compilation</b>. Sie ist seit Java 8 Standard. Stufe 1 und 2 nutzt C1 nur in Sonderfällen (z. B. wenn C2 überlastet ist).</p>
-
-<h2>3. Beispiel: den JIT bei der Arbeit sehen</h2>
-<pre>public class Demo {
-  static int square(int x) { return x * x; }
-  public static void main(String[] args) {
-    long sum = 0;
-    for (int i = 0; i &lt; 1_000_000; i++) sum += square(i);
-    System.out.println(sum);
-  }
-}</pre>
-<pre>$ java -XX:+PrintCompilation Demo
-15    6       3   Demo::square (4 bytes)
-16    7       4   Demo::square (4 bytes)
-16    6       3   Demo::square (4 bytes)   made not entrant
-16    8 %     3   Demo::main @ 4 (32 bytes)
-16   10 %     4   Demo::main @ 4 (32 bytes)</pre>
-<p class="small">Echte Ausgabe, OpenJDK 21. Spalten: Zeit in ms · Compile-ID · <code>%</code> = OSR · Stufe · Methode.</p>
-<ol>
-  <li><code>square</code> wird zuerst von <b>C1</b> (Stufe 3), dann von <b>C2</b> (Stufe 4) kompiliert.</li>
-  <li>Danach wird die C1-Version weggeworfen: <b>made not entrant</b>. Die C2-Version ersetzt sie.</li>
-  <li><code>main</code> läuft nur einmal, aber die Schleife ist heiss. Darum <b>OSR</b> (<code>%</code>) mitten in der Schleife.</li>
-</ol>
-<p><b>Gemessen (300 Mio. Durchläufe, gleicher Code):</b></p>
-<ul>
-  <li><code>-Xint</code> (nur Interpreter): <b>3700 ms</b></li>
-  <li><code>-XX:TieredStopAtLevel=1</code> (nur C1): <b>133 ms</b></li>
-  <li>Standard (C1 + C2): <b>120 ms</b></li>
-</ul>
-<p>Der JIT macht diesen Code also ca. <b>30× schneller</b>.</p>
-
-<h2>4. Die wichtigsten Optimierungen von C2</h2>
+<h2>3. Die wichtigsten Optimierungen von C2</h2>
 <ol>
   <li><b>Inlining</b> (die wichtigste): Der Code einer kleinen Methode wird direkt an der Aufrufstelle eingesetzt. Kein Aufruf mehr, und alle anderen Optimierungen sehen mehr Code. Grenzen: heisse Methoden bis 325 Bytes Bytecode, andere bis 35 Bytes.</li>
   <li><b>Devirtualisierung:</b> Ein Interface-Aufruf hat oft nur eine echte Klasse. Der JIT ruft sie direkt auf und kann sie inlinen.
@@ -147,54 +109,7 @@
   <li><b>Intrinsics:</b> Für bekannte Methoden (z. B. <code>System.arraycopy</code>, <code>Math</code>, <code>String</code>) hat der JIT fertigen CPU-Code.</li>
 </ol>
 
-<h2>5. JIT vs AOT vs Interpreter</h2>
-<ul>
-  <li><b>Interpreter:</b> startet sofort, läuft langsam, kein Kompilieren.</li>
-  <li><b>JIT (HotSpot):</b> Warm-up nötig, dann höchste Leistung. Passt sich zur Laufzeit an. Braucht CPU und Speicher für Compiler und Code Cache.</li>
-  <li><b>AOT – GraalVM Native Image:</b> alles vorher kompiliert. Start in Millisekunden, wenig Speicher. Aber: lange Build-Zeit, Reflection braucht Konfiguration, keine Laufzeit-Optimierung, Spitzenleistung oft etwas tiefer. Spring Boot 3 unterstützt es.</li>
-  <li><b>Mittelweg – AOT Cache (Projekt Leyden):</b> Java 24 speichert geladene Klassen vorab (JEP 483). Java 25 speichert auch Profile (JEP 515). Der JIT startet so schneller warm, bleibt aber ein JIT.</li>
-  <li><b>CDS</b> (Class Data Sharing): geladene Klassen als Datei teilen. Schnellerer Start, älter und einfacher als Leyden.</li>
-</ul>
-
-<h2>6. In der Produktion</h2>
-<ol>
-  <li><b>Warm-up nach jedem Deployment:</b> Die ersten Requests sind langsam (Interpreter und C1). Lösung: Readiness Probe erst nach Warm-up-Requests auf „bereit“ setzen, AOT Cache oder CDS nutzen.</li>
-  <li><b>Kleine CPU-Limits in Kubernetes:</b> Die Compiler-Threads brauchen CPU. Bei 0,5 CPU dauert der Warm-up lange, und es gibt CPU-Throttling. Darum beim Start mehr CPU erlauben (Requests/Limits passend setzen).</li>
-  <li><b>Code Cache voll:</b> Meldung <code>CodeCache is full. Compiler has been disabled.</code> Danach wird neuer Code nur noch interpretiert, die Anwendung wird langsam. Lösung: <code>-XX:ReservedCodeCacheSize</code> erhöhen (Standard 240 MB).</li>
-  <li><b>Serverless</b> (z. B. Azure Functions): Kalte Starts mit JIT sind teuer. Native Image oder AOT Cache helfen.</li>
-  <li><b>Benchmarks:</b> Ohne Warm-up misst man den Interpreter. Und der JIT löscht Code, dessen Ergebnis niemand nutzt. Darum <b>JMH</b>.</li>
-  <li><b>Riesige Methoden:</b> Über 8000 Bytes Bytecode kompiliert HotSpot nicht (z. B. generierter Code). Lösung: Methode aufteilen.</li>
-</ol>
-
-<h2>7. Diagnose: Werkzeuge und Flags</h2>
-<ul>
-  <li><code>-XX:+PrintCompilation</code>: welche Methode wann auf welcher Stufe kompiliert wird.</li>
-  <li><code>-XX:+UnlockDiagnosticVMOptions -XX:+PrintInlining</code>: was inlined wird und warum nicht.</li>
-  <li><b>JFR</b> (Java Flight Recorder): Events <code>jdk.Compilation</code>, <code>jdk.Deoptimization</code>, <code>jdk.CodeCacheFull</code>. Geeignet für die Produktion.</li>
-  <li><code>jcmd &lt;pid&gt; Compiler.codecache</code>: wie voll der Code Cache ist.</li>
-  <li><code>-Xint</code> (nur Interpreter), <code>-XX:TieredStopAtLevel=1</code> (nur C1, schneller Start, z. B. lokal in der Entwicklung).</li>
-  <li><b>JITWatch</b>: JIT-Logs grafisch lesen.</li>
-  <li><code>java -XX:+PrintFlagsFinal -version</code>: zeigt die echten Schwellwerte. Auf OpenJDK 17.0.3: <code>Tier3InvocationThreshold = 200</code>, <code>Tier4InvocationThreshold = 5000</code>, <code>Tier3BackEdgeThreshold = 60000</code>, <code>Tier4BackEdgeThreshold = 40000</code> (Schleifen-Zähler für OSR).</li>
-  <li>Gleiche Ausgabe, Inlining und Code Cache: <code>MaxInlineSize = 35</code>, <code>FreqInlineSize = 325</code>, <code>ReservedCodeCacheSize = 251658240</code> (240 MB), <code>DontCompileHugeMethods = true</code>. Die Grenze 8000 Bytes (<code>HugeMethodLimit</code>) ist ein develop-Flag und steht nur im Quellcode.</li>
-  <li><b>Schwellen sind nicht fix:</b> Schwellen wachsen mit der Queue-Länge: bei 5 wartenden Methoden pro C1-Thread doppelt, bei 10 dreifach (<code>Tier3LoadFeedback = 5</code>). So schützt sich die JVM vor Überlast.</li>
-</ul>
-
-<h2>8. Senior-Punkte</h2>
-<div class="senior">
-<ol>
-  <li><b>Der JIT wettet.</b> Er optimiert mit Annahmen aus dem Profil. Ist eine Annahme falsch, deoptimiert er. Darum kann Leistung kurz einbrechen, z. B. wenn neuer Code oder eine neue Klasse geladen wird.</li>
-  <li><b>Warm-up ist ein Betriebsthema,</b> nicht nur ein Java-Thema: Readiness Probe, CPU-Limits, Rolling Update langsam genug.</li>
-  <li><b>Lesbarer Code ist meist schneller Code.</b> Kleine Methoden werden inlined. Mikro-Optimierungen von Hand helfen selten.</li>
-  <li><b>Megamorphe Aufrufe</b> (viele Klassen hinter einem Interface an einer heissen Stelle) verhindern Inlining. Das sieht man im Profiler, nicht im Code-Review.</li>
-  <li><b>JIT oder Native Image ist eine Abwägung:</b> lange laufender Service mit viel Last → JIT. Kurz lebende Funktion, wenig Speicher → Native Image oder AOT Cache.</li>
-  <li><b>Erst messen,</b> dann Flags ändern. Standard-Einstellungen sind fast immer richtig.</li>
-</ol>
-</div>
-
-<h2>9. Aus dem Projekt</h2>
-<p>„Bei MATCH laufen Spark-Jobs auf der JVM. Kurze Jobs bleiben oft im Interpreter und C1. Darum lohnt es sich, kleine Jobs zu bündeln statt viele kurze Executors zu starten.“ <span class="small">(Prüfen und durch dein echtes Beispiel ersetzen.)</span></p>
-
-<h2>10. Fallen</h2>
+<h2>4. Fallen</h2>
 <div class="trap">
 <ul>
   <li>„Der JIT macht das Kompilieren schneller.“ → <b>Falsch.</b> Er macht die <b>Ausführung</b> schneller. Kompilieren kostet sogar Zeit.</li>
@@ -204,7 +119,7 @@
 </ul>
 </div>
 
-<h2>11. Selbsttest</h2>
+<h2>5. Selbsttest</h2>
 <h3>Warum?</h3>
 <details><summary>Was ist der JIT-Compiler?</summary><p>Er übersetzt heissen Bytecode zur Laufzeit in optimierten Maschinencode. Er nutzt dafür Messdaten aus dem laufenden Programm.</p></details>
 <details><summary>Warum interpretiert die JVM zuerst?</summary><p>Schneller Start. Und sie sammelt Profildaten, damit der JIT später besser optimiert.</p></details>
@@ -235,6 +150,87 @@
 <details><summary>Wann wählen Sie JIT, wann GraalVM Native Image?</summary><p>JIT für lange laufende Services mit hoher Last. Native Image für schnellen Start und wenig Speicher, z. B. Serverless. Preis: Build-Zeit, Reflection-Konfiguration, keine Laufzeit-Optimierung.</p></details>
 <details><summary>Warum können megamorphe Aufrufe langsam sein?</summary><p>An der Aufrufstelle kommen 3 oder mehr Klassen vor. Der JIT ruft dann über die Methodentabelle auf und kann nicht inlinen.</p></details>
 <details><summary>Warum lohnt sich Mikro-Optimierung von Hand selten?</summary><p>Der JIT inlinet kleine Methoden und entfernt Objekte per Escape Analysis selbst. Lesbarer Code mit kleinen Methoden ist meist schon schnell. Erst messen, dann ändern.</p></details>
+
+<details class="mehr"><summary>Mehr</summary>
+<h3>Gerüst</h3>
+<ul>
+  <li><b>Warum?</b> Interpreter ist langsam: 3700 ms gegen 120 ms mit JIT. Kompiliert wird nur heisser Code, mit echtem Profil.</li>
+  <li><b>Wie innen?</b> Stufe 0 Interpreter → 3 C1 mit Profil → 4 C2. Falsche Annahme → Deoptimierung; lange Schleife → OSR.</li>
+  <li><b>Zahlen</b> C1 ab ca. 200, C2 ab ca. 5000 Aufrufen. Inlining bis 35 Bytes, heiss bis 325. Code Cache 240 MB.</li>
+  <li><b>Vergleich</b> JIT: Warm-up, dann Spitzenleistung. Native Image: Start in ms, kein Laufzeit-Profil. AOT Cache: JIT mit warmem Start.</li>
+  <li><b>Produktion</b> Erste Requests nach Deploy langsam; 0,5 CPU verlängert Warm-up. Code Cache voll → Compiler aus.</li>
+  <li><b>Design</b> Kleine Methoden, wenige Klassen pro heisser Aufrufstelle → Inlining. Lang laufend → JIT, kurz lebend → Native Image.</li>
+</ul>
+<h3>Beispiel: den JIT bei der Arbeit sehen</h3>
+<pre>public class Demo {
+  static int square(int x) { return x * x; }
+  public static void main(String[] args) {
+    long sum = 0;
+    for (int i = 0; i &lt; 1_000_000; i++) sum += square(i);
+    System.out.println(sum);
+  }
+}</pre>
+<pre>$ java -XX:+PrintCompilation Demo
+15    6       3   Demo::square (4 bytes)
+16    7       4   Demo::square (4 bytes)
+16    6       3   Demo::square (4 bytes)   made not entrant
+16    8 %     3   Demo::main @ 4 (32 bytes)
+16   10 %     4   Demo::main @ 4 (32 bytes)</pre>
+<p class="small">Echte Ausgabe, OpenJDK 21. Spalten: Zeit in ms · Compile-ID · <code>%</code> = OSR · Stufe · Methode.</p>
+<ol>
+  <li><code>square</code> wird zuerst von <b>C1</b> (Stufe 3), dann von <b>C2</b> (Stufe 4) kompiliert.</li>
+  <li>Danach wird die C1-Version weggeworfen: <b>made not entrant</b>. Die C2-Version ersetzt sie.</li>
+  <li><code>main</code> läuft nur einmal, aber die Schleife ist heiss. Darum <b>OSR</b> (<code>%</code>) mitten in der Schleife.</li>
+</ol>
+<p><b>Gemessen (300 Mio. Durchläufe, gleicher Code):</b></p>
+<ul>
+  <li><code>-Xint</code> (nur Interpreter): <b>3700 ms</b></li>
+  <li><code>-XX:TieredStopAtLevel=1</code> (nur C1): <b>133 ms</b></li>
+  <li>Standard (C1 + C2): <b>120 ms</b></li>
+</ul>
+<p>Der JIT macht diesen Code also ca. <b>30× schneller</b>.</p>
+<h3>JIT vs AOT vs Interpreter</h3>
+<ul>
+  <li><b>Interpreter:</b> startet sofort, läuft langsam, kein Kompilieren.</li>
+  <li><b>JIT (HotSpot):</b> Warm-up nötig, dann höchste Leistung. Passt sich zur Laufzeit an. Braucht CPU und Speicher für Compiler und Code Cache.</li>
+  <li><b>AOT – GraalVM Native Image:</b> alles vorher kompiliert. Start in Millisekunden, wenig Speicher. Aber: lange Build-Zeit, Reflection braucht Konfiguration, keine Laufzeit-Optimierung, Spitzenleistung oft etwas tiefer. Spring Boot 3 unterstützt es.</li>
+  <li><b>Mittelweg – AOT Cache (Projekt Leyden):</b> Java 24 speichert geladene Klassen vorab (JEP 483). Java 25 speichert auch Profile (JEP 515). Der JIT startet so schneller warm, bleibt aber ein JIT.</li>
+  <li><b>CDS</b> (Class Data Sharing): geladene Klassen als Datei teilen. Schnellerer Start, älter und einfacher als Leyden.</li>
+</ul>
+<h3>In der Produktion</h3>
+<ol>
+  <li><b>Warm-up nach jedem Deployment:</b> Die ersten Requests sind langsam (Interpreter und C1). Lösung: Readiness Probe erst nach Warm-up-Requests auf „bereit“ setzen, AOT Cache oder CDS nutzen.</li>
+  <li><b>Kleine CPU-Limits in Kubernetes:</b> Die Compiler-Threads brauchen CPU. Bei 0,5 CPU dauert der Warm-up lange, und es gibt CPU-Throttling. Darum beim Start mehr CPU erlauben (Requests/Limits passend setzen).</li>
+  <li><b>Code Cache voll:</b> Meldung <code>CodeCache is full. Compiler has been disabled.</code> Danach wird neuer Code nur noch interpretiert, die Anwendung wird langsam. Lösung: <code>-XX:ReservedCodeCacheSize</code> erhöhen (Standard 240 MB).</li>
+  <li><b>Serverless</b> (z. B. Azure Functions): Kalte Starts mit JIT sind teuer. Native Image oder AOT Cache helfen.</li>
+  <li><b>Benchmarks:</b> Ohne Warm-up misst man den Interpreter. Und der JIT löscht Code, dessen Ergebnis niemand nutzt. Darum <b>JMH</b>.</li>
+  <li><b>Riesige Methoden:</b> Über 8000 Bytes Bytecode kompiliert HotSpot nicht (z. B. generierter Code). Lösung: Methode aufteilen.</li>
+</ol>
+<h3>Diagnose: Werkzeuge und Flags</h3>
+<ul>
+  <li><code>-XX:+PrintCompilation</code>: welche Methode wann auf welcher Stufe kompiliert wird.</li>
+  <li><code>-XX:+UnlockDiagnosticVMOptions -XX:+PrintInlining</code>: was inlined wird und warum nicht.</li>
+  <li><b>JFR</b> (Java Flight Recorder): Events <code>jdk.Compilation</code>, <code>jdk.Deoptimization</code>, <code>jdk.CodeCacheFull</code>. Geeignet für die Produktion.</li>
+  <li><code>jcmd &lt;pid&gt; Compiler.codecache</code>: wie voll der Code Cache ist.</li>
+  <li><code>-Xint</code> (nur Interpreter), <code>-XX:TieredStopAtLevel=1</code> (nur C1, schneller Start, z. B. lokal in der Entwicklung).</li>
+  <li><b>JITWatch</b>: JIT-Logs grafisch lesen.</li>
+  <li><code>java -XX:+PrintFlagsFinal -version</code>: zeigt die echten Schwellwerte. Auf OpenJDK 17.0.3: <code>Tier3InvocationThreshold = 200</code>, <code>Tier4InvocationThreshold = 5000</code>, <code>Tier3BackEdgeThreshold = 60000</code>, <code>Tier4BackEdgeThreshold = 40000</code> (Schleifen-Zähler für OSR).</li>
+  <li>Gleiche Ausgabe, Inlining und Code Cache: <code>MaxInlineSize = 35</code>, <code>FreqInlineSize = 325</code>, <code>ReservedCodeCacheSize = 251658240</code> (240 MB), <code>DontCompileHugeMethods = true</code>. Die Grenze 8000 Bytes (<code>HugeMethodLimit</code>) ist ein develop-Flag und steht nur im Quellcode.</li>
+  <li><b>Schwellen sind nicht fix:</b> Schwellen wachsen mit der Queue-Länge: bei 5 wartenden Methoden pro C1-Thread doppelt, bei 10 dreifach (<code>Tier3LoadFeedback = 5</code>). So schützt sich die JVM vor Überlast.</li>
+</ul>
+<h3>Senior-Punkte</h3>
+<div class="senior">
+<ol>
+  <li><b>Der JIT wettet.</b> Er optimiert mit Annahmen aus dem Profil. Ist eine Annahme falsch, deoptimiert er. Darum kann Leistung kurz einbrechen, z. B. wenn neuer Code oder eine neue Klasse geladen wird.</li>
+  <li><b>Warm-up ist ein Betriebsthema,</b> nicht nur ein Java-Thema: Readiness Probe, CPU-Limits, Rolling Update langsam genug.</li>
+  <li><b>Lesbarer Code ist meist schneller Code.</b> Kleine Methoden werden inlined. Mikro-Optimierungen von Hand helfen selten.</li>
+  <li><b>Megamorphe Aufrufe</b> (viele Klassen hinter einem Interface an einer heissen Stelle) verhindern Inlining. Das sieht man im Profiler, nicht im Code-Review.</li>
+  <li><b>JIT oder Native Image ist eine Abwägung:</b> lange laufender Service mit viel Last → JIT. Kurz lebende Funktion, wenig Speicher → Native Image oder AOT Cache.</li>
+  <li><b>Erst messen,</b> dann Flags ändern. Standard-Einstellungen sind fast immer richtig.</li>
+</ol>
+</div>
+<h3>Dein Beispiel</h3>
+</details>
 
 </body>
 </html>

@@ -35,14 +35,9 @@
 <h1>Connection Pooling: HikariCP, PgBouncer</h1>
 <!-- sources: PostgreSQL · Quellen: PostgreSQL 17 Doku (aktuell ist PostgreSQL 19; wichtige Unterschiede in 18/19 laut Release Notes stehen im Text) (19.3 Connections, 27.2 pg_stat_activity, 52.x Architektur), HikariCP README und Wiki „About Pool Sizing“, PgBouncer Doku (config, features, usage), Microsoft Learn „PgBouncer in Azure Database for PostgreSQL Flexible Server“, pgJDBC Doku (prepareThreshold), PgBouncer Changelog 1.21–1.26, PostgreSQL Release Notes 18 -->
 
-<div class="geruest"><h2>Gerüst</h2><dl>
-  <dt>Warum?</dt><dd>1 Verbindung = 1 Prozess: Fork, Login, TLS, eigener Speicher. Der Pool verwendet offene Verbindungen wieder und begrenzt ihre Zahl.</dd>
-  <dt>Wie innen?</dt><dd>HikariCP verleiht pro Thread, <code>close()</code> gibt zurück. PgBouncer Transaction Mode: Server-Verbindung nur von BEGIN bis COMMIT, Session-Zustand geht verloren.</dd>
-  <dt>Zahlen</dt><dd><code>max_connections</code> 100 (Neustart). Hikari: Pool 10, Wartezeit 30 s, maxLifetime 30 min. PgBouncer <code>max_prepared_statements</code> 200, Azure 0.</dd>
-  <dt>Vergleich</dt><dd>HikariCP: in der App, schnell, aber pro Pod. PgBouncer: zentrale Grenze über alle Pods, dafür ein Hop mehr und Feature-Grenzen.</dd>
-  <dt>Produktion</dt><dd>Pool leer → Requests hängen genau <code>connectionTimeout</code>. Pods × Pool &gt; <code>max_connections</code> → „too many clients already“.</dd>
-  <dt>Design</dt><dd>Verbindungen sind ein Budget. Kleiner Pool (Startwert DB-Kerne × 2), kurze Transaktionen, bei vielen Pods PgBouncer davor.</dd>
-</dl></div>
+<div class="kern">
+<b>Kern:</b> Ein <b>Connection Pool</b> ist eine Menge offener Datenbankverbindungen, die viele Anfragen nacheinander wiederverwenden. Er löst ein PostgreSQL-Problem: Jede Verbindung ist ein <b>eigener Betriebssystem-Prozess</b> und teuer im Aufbau und im Speicher. <b>HikariCP</b> poolt in der Java-Anwendung, <b>PgBouncer</b> poolt zentral vor der Datenbank.
+</div>
 
 <div class="muster"><h3>Antwort-Muster</h3><p class="mq"><b>Frage:</b> Warum braucht PostgreSQL einen Connection Pool, und wie gross machen Sie ihn?</p><ol>
   <li>Mechanismus: Jede Verbindung ist ein eigener Prozess mit Fork, Login und Speicher. Ein Pool verwendet offene Verbindungen wieder.</li>
@@ -51,11 +46,34 @@
   <li>Produktion: Ich rechne Pods × Poolgrösse gegen <code>max_connections</code>. Bei vielen Pods setze ich PgBouncer im Transaction Mode davor.</li>
 </ol></div>
 
-<div class="kern">
-<b>Kern:</b> Ein <b>Connection Pool</b> ist eine Menge offener Datenbankverbindungen, die viele Anfragen nacheinander wiederverwenden. Er löst ein PostgreSQL-Problem: Jede Verbindung ist ein <b>eigener Betriebssystem-Prozess</b> und teuer im Aufbau und im Speicher. <b>HikariCP</b> poolt in der Java-Anwendung, <b>PgBouncer</b> poolt zentral vor der Datenbank.
-</div>
+<h2>1. Die Reise einer Anfrage durch zwei Pools</h2>
+<svg viewBox="0 0 720 320" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="b" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker><marker id="r" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#c62828"/></marker></defs>
+  <rect x="10" y="30" width="130" height="70" rx="10" fill="#eee" stroke="#777"/><text x="75" y="58" text-anchor="middle" font-weight="700">1. Thread</text><text x="75" y="78" text-anchor="middle" font-size="12">getConnection()</text>
+  <line x1="140" y1="65" x2="178" y2="65" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="180" y="30" width="160" height="70" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="260" y="58" text-anchor="middle" font-weight="700">2. HikariCP</text><text x="260" y="78" text-anchor="middle" font-size="12">freie Verbindung?</text>
+  <line x1="340" y1="65" x2="378" y2="65" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="380" y="30" width="160" height="70" rx="10" fill="#e8f5e9" stroke="#2e7d32"/><text x="460" y="58" text-anchor="middle" font-weight="700">3. PgBouncer</text><text x="460" y="78" text-anchor="middle" font-size="12">BEGIN → Server holen</text>
+  <line x1="540" y1="65" x2="578" y2="65" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="580" y="30" width="130" height="70" rx="10" fill="#0a66c2"/><text x="645" y="58" text-anchor="middle" fill="#fff" font-weight="700">4. Backend</text><text x="645" y="78" text-anchor="middle" fill="#fff" font-size="12">führt SQL aus</text>
+  <path d="M645,100 C645,170 460,170 460,102" fill="none" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <text x="552" y="182" text-anchor="middle" font-size="12">5. COMMIT → Server zurück in PgBouncer-Pool</text>
+  <path d="M440,100 C440,210 260,210 260,102" fill="none" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <text x="350" y="226" text-anchor="middle" font-size="12">6. close() → Verbindung zurück in Hikari</text>
+  <path d="M260,30 C260,0 75,0 75,28" fill="none" stroke="#c62828" stroke-width="2" stroke-dasharray="6 4" marker-end="url(#r)"/>
+  <text x="168" y="14" text-anchor="middle" fill="#c62828" font-size="12">kein Platz: warten bis connectionTimeout</text>
+  <rect x="120" y="250" width="480" height="56" rx="10" fill="#fff4f2" stroke="#c62828"/><text x="360" y="274" text-anchor="middle" fill="#c62828" font-weight="700">nach 30 s: SQLTransientConnectionException</text><text x="360" y="294" text-anchor="middle" fill="#c62828" font-size="12">„Connection is not available, request timed out after 30000ms“</text>
+</svg>
+<ol>
+  <li><b>Thread fragt an.</b> Ein Request-Thread in Spring startet <code>@Transactional</code>. Spring ruft <code>DataSource.getConnection()</code> auf.</li>
+  <li><b>HikariCP verleiht.</b> Ist eine Verbindung frei, bekommt der Thread sie in Mikrosekunden. Sonst wartet er bis <code>connectionTimeout</code> (Standard 30 s). Dann kommt eine Exception.</li>
+  <li><b>PgBouncer ordnet zu.</b> Im <b>Transaction Mode</b> bekommt der Client erst bei <code>BEGIN</code> eine echte Server-Verbindung. Vorher ist er nur „Client“ ohne Server.</li>
+  <li><b>Backend arbeitet.</b> Der PostgreSQL-Prozess führt die Statements aus.</li>
+  <li><b>COMMIT gibt frei.</b> PgBouncer legt die Server-Verbindung zurück. Ein anderer Client kann sie sofort nutzen.</li>
+  <li><b>close() gibt frei.</b> HikariCP schliesst nicht wirklich. Es setzt den Zustand zurück (z. B. Autocommit) und legt die Verbindung in den Pool.</li>
+</ol>
 
-<h2>1. Wo sitzt der Pool?</h2>
+<h2>2. Aufbau</h2>
 <svg viewBox="0 0 720 320" font-family="-apple-system, system-ui, sans-serif" font-size="14">
   <defs><marker id="a" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
   <rect x="10" y="20" width="180" height="80" rx="8" fill="#fff" stroke="#555"/><text x="100" y="44" text-anchor="middle" font-weight="700">Pod 1 (Spring Boot)</text><rect x="30" y="56" width="140" height="32" rx="6" fill="#0a66c2"/><text x="100" y="77" text-anchor="middle" fill="#fff" font-size="13">HikariCP · 10</text>
@@ -85,67 +103,7 @@
   <li><b>max_connections:</b> die harte Obergrenze für Backends. Standard 100. Änderung braucht einen Neustart.</li>
 </ol>
 
-<h2>2. Die Reise einer Anfrage durch zwei Pools</h2>
-<svg viewBox="0 0 720 320" font-family="-apple-system, system-ui, sans-serif" font-size="14">
-  <defs><marker id="b" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker><marker id="r" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#c62828"/></marker></defs>
-  <rect x="10" y="30" width="130" height="70" rx="10" fill="#eee" stroke="#777"/><text x="75" y="58" text-anchor="middle" font-weight="700">1. Thread</text><text x="75" y="78" text-anchor="middle" font-size="12">getConnection()</text>
-  <line x1="140" y1="65" x2="178" y2="65" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
-  <rect x="180" y="30" width="160" height="70" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="260" y="58" text-anchor="middle" font-weight="700">2. HikariCP</text><text x="260" y="78" text-anchor="middle" font-size="12">freie Verbindung?</text>
-  <line x1="340" y1="65" x2="378" y2="65" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
-  <rect x="380" y="30" width="160" height="70" rx="10" fill="#e8f5e9" stroke="#2e7d32"/><text x="460" y="58" text-anchor="middle" font-weight="700">3. PgBouncer</text><text x="460" y="78" text-anchor="middle" font-size="12">BEGIN → Server holen</text>
-  <line x1="540" y1="65" x2="578" y2="65" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
-  <rect x="580" y="30" width="130" height="70" rx="10" fill="#0a66c2"/><text x="645" y="58" text-anchor="middle" fill="#fff" font-weight="700">4. Backend</text><text x="645" y="78" text-anchor="middle" fill="#fff" font-size="12">führt SQL aus</text>
-  <path d="M645,100 C645,170 460,170 460,102" fill="none" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
-  <text x="552" y="182" text-anchor="middle" font-size="12">5. COMMIT → Server zurück in PgBouncer-Pool</text>
-  <path d="M440,100 C440,210 260,210 260,102" fill="none" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
-  <text x="350" y="226" text-anchor="middle" font-size="12">6. close() → Verbindung zurück in Hikari</text>
-  <path d="M260,30 C260,0 75,0 75,28" fill="none" stroke="#c62828" stroke-width="2" stroke-dasharray="6 4" marker-end="url(#r)"/>
-  <text x="168" y="14" text-anchor="middle" fill="#c62828" font-size="12">kein Platz: warten bis connectionTimeout</text>
-  <rect x="120" y="250" width="480" height="56" rx="10" fill="#fff4f2" stroke="#c62828"/><text x="360" y="274" text-anchor="middle" fill="#c62828" font-weight="700">nach 30 s: SQLTransientConnectionException</text><text x="360" y="294" text-anchor="middle" fill="#c62828" font-size="12">„Connection is not available, request timed out after 30000ms“</text>
-</svg>
-<ol>
-  <li><b>Thread fragt an.</b> Ein Request-Thread in Spring startet <code>@Transactional</code>. Spring ruft <code>DataSource.getConnection()</code> auf.</li>
-  <li><b>HikariCP verleiht.</b> Ist eine Verbindung frei, bekommt der Thread sie in Mikrosekunden. Sonst wartet er bis <code>connectionTimeout</code> (Standard 30 s). Dann kommt eine Exception.</li>
-  <li><b>PgBouncer ordnet zu.</b> Im <b>Transaction Mode</b> bekommt der Client erst bei <code>BEGIN</code> eine echte Server-Verbindung. Vorher ist er nur „Client“ ohne Server.</li>
-  <li><b>Backend arbeitet.</b> Der PostgreSQL-Prozess führt die Statements aus.</li>
-  <li><b>COMMIT gibt frei.</b> PgBouncer legt die Server-Verbindung zurück. Ein anderer Client kann sie sofort nutzen.</li>
-  <li><b>close() gibt frei.</b> HikariCP schliesst nicht wirklich. Es setzt den Zustand zurück (z. B. Autocommit) und legt die Verbindung in den Pool.</li>
-</ol>
-
-<h2>3. Beispiel: Pool richtig einstellen und prüfen</h2>
-<pre># application.yml (Spring Boot 3.x)
-spring:
-  datasource:
-    url: jdbc:postgresql://pg.example.internal:6432/orders?prepareThreshold=0
-    hikari:
-      maximum-pool-size: 10        # fester Pool, minimum-idle nicht setzen
-      connection-timeout: 3000     # 3 s statt 30 s: schnell scheitern
-      max-lifetime: 1500000        # 25 min, kürzer als Limits von LB/Firewall
-      keepalive-time: 120000       # 2 min Ping auf idle Verbindungen
-      leak-detection-threshold: 20000
-      pool-name: orders-pool</pre>
-<pre>-- Wer belegt die Verbindungen?
-SELECT application_name, state, count(*)
-FROM pg_stat_activity
-WHERE backend_type = 'client backend'
-GROUP BY 1, 2 ORDER BY 3 DESC;</pre>
-<pre> application_name |        state        | count
-------------------+---------------------+-------
- orders-service   | idle                |    34
- orders-service   | active              |     4
- orders-service   | idle in transaction |     2
- psql             | active              |     1
-(4 rows)</pre>
-<p class="small">Erwartetes Ergebnis (laut Doku, nicht ausgeführt). Zahlen sind ein Beispiel für 4 Pods mit je 10 Verbindungen direkt auf Port 5432.</p>
-<ol>
-  <li><code>prepareThreshold=0</code> schaltet benannte Server-Prepared-Statements im pgJDBC-Treiber ab. Das braucht man hinter PgBouncer im Transaction Mode, wenn <code>max_prepared_statements</code> dort 0 ist.</li>
-  <li><code>maximum-pool-size</code> ohne <code>minimum-idle</code> ergibt einen <b>Fixed-Size-Pool</b>. Das empfiehlt HikariCP selbst.</li>
-  <li>34 von 40 Verbindungen sind <b>idle</b>. Sie kosten in PostgreSQL trotzdem einen Prozess. Hier lohnt sich ein kleinerer Pool oder PgBouncer.</li>
-  <li><b>idle in transaction</b> heisst: Die Transaktion ist offen, aber niemand arbeitet. Diese Verbindung ist blockiert und hält Locks und alte Snapshots.</li>
-  <li><code>application_name</code> setzt pgJDBC per Parameter <code>ApplicationName</code>. Ohne ihn sieht man nicht, wer die Verbindungen hält.</li>
-</ol>
-
-<h2>4. Details, die Interviewer fragen</h2>
+<h2>3. Details, die Interviewer fragen</h2>
 <ol>
   <li><b>Process-per-Connection:</b> PostgreSQL startet pro Verbindung einen Prozess. Der Aufbau braucht Fork, Authentifizierung und TLS-Handshake. Das dauert Millisekunden, viel länger als eine kurze Abfrage.</li>
   <li><b>Kosten idle Verbindungen:</b> Jede idle Verbindung hält Speicher. Viele Verbindungen machen Snapshots teurer, weil PostgreSQL alle laufenden Transaktionen prüfen muss. PostgreSQL 14 hat das stark verbessert, aber nicht beseitigt.</li>
@@ -170,62 +128,13 @@ GROUP BY 1, 2 ORDER BY 3 DESC;</pre>
     </ul></li>
   <li><b>Grenzen im Transaction Mode:</b> Laut PgBouncer-Doku gehen nicht: <code>SET</code>/<code>RESET</code> auf Session-Ebene, <code>LISTEN</code>, <code>WITH HOLD</code>-Cursor, SQL-<code>PREPARE</code>/<code>DEALLOCATE</code>, Temp-Tabellen über Transaktionen, <code>LOAD</code>, Session-Advisory-Locks. <code>SET LOCAL</code> innerhalb der Transaktion geht.</li>
   <li><b>Prepared Statements:</b> pgJDBC nutzt ab der 5. Ausführung (<code>prepareThreshold=5</code>) benannte Server-Statements wie <code>S_1</code>. Im Transaction Mode landet die nächste Ausführung auf einem anderen Backend. Fehler: <code>prepared statement "S_1" does not exist</code>. Seit PgBouncer 1.21 löst <code>max_prepared_statements &gt; 0</code> das auf Protokoll-Ebene. Upstream-Standard seit PgBouncer 1.24 ist 200, in Azure 0.</li>
-  <li><b>Welche Werte PgBouncer mitnimmt:</b> PgBouncer kennt nur Parameter, deren Änderung PostgreSQL dem Client meldet. Diese stellt er pro Client auf dem Backend wieder her. Seit PostgreSQL 18 meldet der Server auch <code>search_path</code>-Änderungen (<a href="https://www.postgresql.org/docs/18/release-18.html#RELEASE-18-LIBPQ">Release Notes 18</a>). Seit PgBouncer 1.26 verfolgt PgBouncer <code>search_path</code> darum standardmässig (<a href="https://www.pgbouncer.org/changelog.html#pgbouncer-126x">Changelog 1.26</a>). Eigene Werte wie <code>app.tenant_id</code> meldet PostgreSQL nicht. Sie kleben weiter am Backend.</li>
+  <li><b>Welche Werte PgBouncer mitnimmt:</b> PgBouncer kennt nur Parameter, deren Änderung PostgreSQL dem Client meldet. Diese stellt er pro Client auf dem Backend wieder her. Seit PostgreSQL 18 meldet der Server auch <code>search_path</code>-Änderungen (Release Notes 18). Seit PgBouncer 1.26 verfolgt PgBouncer <code>search_path</code> darum standardmässig (Changelog 1.26). Eigene Werte wie <code>app.tenant_id</code> meldet PostgreSQL nicht. Sie kleben weiter am Backend.</li>
   <li><b>PgBouncer-Grössen:</b> <code>max_client_conn</code> (Clients, upstream 100), <code>default_pool_size</code> (Server-Verbindungen pro User/Datenbank-Paar, upstream 20), <code>query_wait_timeout</code> (120 s Wartezeit auf einen Server).</li>
   <li><b>Azure Database for PostgreSQL Flexible Server:</b> eingebauter PgBouncer (aktuell 1.26.1) auf Port 6432, gleiche Host-Adresse. Aktivieren mit Server-Parameter <code>pgbouncer.enabled = true</code>, ohne Neustart. Standard: <code>pool_mode = transaction</code>, <code>default_pool_size = 50</code>, <code>max_client_conn = 5000</code>, <code>max_prepared_statements = 0</code>. Nicht im <b>Burstable</b>-Tier.</li>
   <li><b>Azure-Grenzen:</b> PgBouncer ist single-threaded und läuft auf derselben VM. Bei Restart, Skalierung oder HA-Failover startet er neu, Verbindungen brechen ab. Nach einem Failover läuft er auf dem neuen Primary, der Connection String bleibt gleich.</li>
 </ol>
 
-<h2>5. Vergleich</h2>
-<ul>
-  <li><b>Kein Pool:</b> jede Anfrage baut eine Verbindung auf. Hohe Latenz, schnell <code>too many clients</code>.</li>
-  <li><b>HikariCP (Client-Pool):</b> in der App, sehr schnell, kennt Threads und Transaktionen. Aber pro Instanz, also N Pods × Grösse.</li>
-  <li><b>PgBouncer (Server-Pool):</b> zentral, begrenzt die Gesamtzahl über alle Apps. Ein Netzwerk-Hop mehr, Feature-Grenzen im Transaction Mode.</li>
-  <li><b>Beides zusammen:</b> üblich in Kubernetes. Hikari klein halten, PgBouncer im Transaction Mode, Prepared-Statement-Thema lösen.</li>
-  <li><b>Pgpool-II:</b> Pooling plus Load Balancing und Replikations-Funktionen. Schwerer zu betreiben.</li>
-  <li><b>PgCat / Odyssey:</b> multi-threaded Pooler. Option, wenn ein einzelner PgBouncer-Thread zum Engpass wird.</li>
-  <li><b>R2DBC-Pool:</b> für reaktive Anwendungen ohne blockierende Threads. Die DB-Grenzen bleiben gleich.</li>
-</ul>
-
-<h2>6. In der Produktion</h2>
-<ol>
-  <li><b>Pool-Erschöpfung:</b> Symptome: Latenz springt auf genau <code>connectionTimeout</code>, Log <code>Connection is not available, request timed out after 30000ms</code>, Metrik <code>hikaricp_connections_pending</code> steigt. Ursache meist: langsame Abfragen, lange Transaktionen oder HTTP-Calls innerhalb von <code>@Transactional</code>. Lösung: Ursache finden, nicht einfach den Pool vergrössern.</li>
-  <li><b>„FATAL: sorry, too many clients already“:</b> Autoscaling hat Pods hinzugefügt. Pods × Poolgrösse übersteigt <code>max_connections</code>. Lösung: Budget rechnen, PgBouncer davor, HPA-Maximum begrenzen.</li>
-  <li><b>Verbindungs-Leak:</b> Code holt eine Connection und schliesst sie nicht. Der Pool leert sich langsam. Lösung: <code>leakDetectionThreshold</code>, try-with-resources, Spring-Templates nutzen.</li>
-  <li><b>Tote Verbindungen nach Idle:</b> Eine Firewall oder ein Load Balancer schliesst idle TCP-Verbindungen still. Erste Abfrage danach scheitert. Lösung: <code>keepaliveTime</code> und <code>maxLifetime</code> unter dem Limit.</li>
-  <li><b>Prepared-Statement-Fehler hinter PgBouncer:</b> <code>prepared statement "S_3" already exists</code> oder <code>does not exist</code>. Lösung: <code>pgbouncer.max_prepared_statements</code> setzen oder <code>prepareThreshold=0</code>.</li>
-  <li><b>Falsche Session-Werte im Transaction Mode:</b> Ein <code>SET app.tenant_id</code> bleibt auf dem Backend kleben. Der nächste Client erbt ihn. Bei <code>SET search_path</code> passiert das nur mit PostgreSQL vor 18 oder PgBouncer vor 1.26 (siehe Details). Lösung: <code>SET LOCAL</code> oder <code>set_config(..., true)</code> in der Transaktion.</li>
-  <li><b>Flyway oder Advisory Locks über PgBouncer:</b> Session-Advisory-Locks funktionieren im Transaction Mode nicht zuverlässig. Flyway nimmt standardmässig einen transaktionalen Advisory Lock. Mit <code>flyway.postgresql.transactional.lock = false</code> (nötig z. B. für <code>CREATE INDEX CONCURRENTLY</code>) wird er zum Session-Lock. Sichere Lösung: Migrationen direkt auf Port 5432.</li>
-</ol>
-
-<h2>7. Diagnose: Werkzeuge und Abfragen</h2>
-<ul>
-  <li><code>SELECT count(*), state FROM pg_stat_activity GROUP BY state;</code>: Verbindungen nach Zustand.</li>
-  <li><code>SHOW max_connections;</code> und <code>SELECT count(*) FROM pg_stat_activity;</code>: wie nah an der Grenze.</li>
-  <li><code>SELECT pid, now() - xact_start, query FROM pg_stat_activity WHERE state = 'idle in transaction';</code>: hängende Transaktionen.</li>
-  <li><b>Kosten des Verbindungsaufbaus messen:</b> <code>log_connections = 'setup_durations'</code> loggt drei Zeiten: Aufbau gesamt (bis bereit für die erste Abfrage), Fork des Backends und Authentifizierung. Neu in PostgreSQL 18 (<a href="https://www.postgresql.org/docs/18/release-18.html#RELEASE-18-MONITORING">Release Notes 18</a>). Standard ist <code>''</code>, also aus.</li>
-  <li><code>idle_in_transaction_session_timeout</code>: beendet solche Sessions automatisch. <code>idle_session_timeout</code> für idle Sessions (nicht hinter PgBouncer setzen).</li>
-  <li><b>HikariCP-Metriken</b> über Micrometer/Actuator: <code>hikaricp_connections_active</code>, <code>_idle</code>, <code>_pending</code>, <code>_timeout_total</code>, <code>_acquire_seconds</code>, <code>_usage_seconds</code>.</li>
-  <li><b>PgBouncer-Konsole:</b> <code>psql -p 6432 dbname=pgbouncer</code>, dann <code>SHOW POOLS;</code> (<code>cl_waiting</code>, <code>sv_active</code>, <code>maxwait</code>), <code>SHOW STATS;</code>, <code>SHOW CLIENTS;</code>. In Azure braucht der User <code>pgbouncer.stats_users</code>.</li>
-  <li><b>Azure-Metriken:</b> <code>metrics.pgbouncer_diagnostics = on</code>, dann <code>client_connections_waiting</code> und <code>server_connections_active</code>. Logs in <code>PGSQLPgBouncer</code>.</li>
-</ul>
-
-<h2>8. Senior-Punkte</h2>
-<div class="senior">
-<ol>
-  <li><b>Verbindungen sind ein Budget.</b> Summe über alle Services, Pods (inkl. HPA-Maximum), Jobs und Admins muss unter <code>max_connections</code> minus Reserve bleiben.</li>
-  <li><b>Kleiner Pool, schnelle Transaktionen.</b> Mehr Verbindungen als CPU-Kerne auf der DB machen sie nicht schneller. Die Warteschlange gehört in die App, nicht in die DB.</li>
-  <li><b>Pool-Erschöpfung ist ein Symptom.</b> Die Ursache ist fast immer zu lange gehaltene Verbindungen: langsame SQL, Remote-Calls in Transaktionen, Leaks.</li>
-  <li><b>Kurzes connectionTimeout</b> (wenige Sekunden) lässt Requests schnell scheitern. Ein Circuit Breaker kann dann greifen, statt dass Threads 30 s hängen.</li>
-  <li><b>PgBouncer Transaction Mode verändert die Semantik.</b> Session-Zustand gibt es nicht mehr. Das muss das ganze Team wissen, nicht nur Ops.</li>
-  <li><b>Getrennte Pools</b> für OLTP und Batch/Reports. Ein langer Report soll die Web-Requests nicht aushungern.</li>
-</ol>
-</div>
-
-<h2>9. Aus dem Projekt</h2>
-<p>„Beim Personen-Service von DigiSanté hat jeder Mandant eine eigene PostgreSQL-Datenbank. Darum braucht jede Mandanten-Datenbank eigene Verbindungen, und die Summe muss ich gegen <code>max_connections</code> planen.“ <span class="small">(Prüfen und durch dein echtes Beispiel ersetzen. Konkrete Poolgrössen und ob PgBouncer genutzt wurde, stehen nicht im Profil.)</span></p>
-
-<h2>10. Fallen</h2>
+<h2>4. Fallen</h2>
 <div class="trap">
 <ul>
   <li>„Mehr Verbindungen = mehr Durchsatz.“ → <b>Falsch.</b> Über die CPU-Kerne der DB hinaus steigen nur Kontextwechsel und Lock-Konkurrenz.</li>
@@ -237,7 +146,7 @@ GROUP BY 1, 2 ORDER BY 3 DESC;</pre>
 </ul>
 </div>
 
-<h2>11. Selbsttest</h2>
+<h2>5. Selbsttest</h2>
 <h3>Warum?</h3>
 <details><summary>Warum braucht PostgreSQL einen Connection Pool?</summary><p>Jede Verbindung ist ein eigener Prozess mit Fork, Authentifizierung und Speicher. Ein Pool verwendet offene Verbindungen wieder und begrenzt ihre Anzahl.</p></details>
 <details><summary>Was ist das Process-per-Connection-Modell?</summary><p>Der Postmaster startet für jede Client-Verbindung einen Backend-Prozess. Er teilt nur Shared Memory wie Shared Buffers mit den anderen.</p></details>
@@ -271,6 +180,93 @@ GROUP BY 1, 2 ORDER BY 3 DESC;</pre>
 <details><summary>Wie setzen Sie einen Mandanten-Wert sicher hinter PgBouncer?</summary><p>Mit SET LOCAL oder set_config('app.tenant_id', x, true) in der Transaktion. Der Wert endet mit COMMIT.</p></details>
 <details><summary>Warum getrennte Pools für Web-Requests und Reports?</summary><p>Ein langer Report hält Verbindungen minutenlang. Im gemeinsamen Pool warten dann die Web-Requests bis zum Timeout.</p></details>
 <details><summary>Szenario: Beim Hochskalieren auf 30 Pods kommt „too many clients already“. Was tun Sie?</summary><p>Das Verbindungsbudget rechnen. Kurzfristig Poolgrösse senken oder HPA begrenzen. Langfristig PgBouncer im Transaction Mode davor.</p></details>
+
+<details class="mehr"><summary>Mehr</summary>
+<h3>Gerüst</h3>
+<ul>
+  <li><b>Warum?</b> 1 Verbindung = 1 Prozess: Fork, Login, TLS, eigener Speicher. Der Pool verwendet offene Verbindungen wieder und begrenzt ihre Zahl.</li>
+  <li><b>Wie innen?</b> HikariCP verleiht pro Thread, <code>close()</code> gibt zurück. PgBouncer Transaction Mode: Server-Verbindung nur von BEGIN bis COMMIT, Session-Zustand geht verloren.</li>
+  <li><b>Zahlen</b> <code>max_connections</code> 100 (Neustart). Hikari: Pool 10, Wartezeit 30 s, maxLifetime 30 min. PgBouncer <code>max_prepared_statements</code> 200, Azure 0.</li>
+  <li><b>Vergleich</b> HikariCP: in der App, schnell, aber pro Pod. PgBouncer: zentrale Grenze über alle Pods, dafür ein Hop mehr und Feature-Grenzen.</li>
+  <li><b>Produktion</b> Pool leer → Requests hängen genau <code>connectionTimeout</code>. Pods × Pool &gt; <code>max_connections</code> → „too many clients already“.</li>
+  <li><b>Design</b> Verbindungen sind ein Budget. Kleiner Pool (Startwert DB-Kerne × 2), kurze Transaktionen, bei vielen Pods PgBouncer davor.</li>
+</ul>
+<h3>Beispiel: Pool richtig einstellen und prüfen</h3>
+<pre># application.yml (Spring Boot 3.x)
+spring:
+  datasource:
+    url: jdbc:postgresql://pg.example.internal:6432/orders?prepareThreshold=0
+    hikari:
+      maximum-pool-size: 10        # fester Pool, minimum-idle nicht setzen
+      connection-timeout: 3000     # 3 s statt 30 s: schnell scheitern
+      max-lifetime: 1500000        # 25 min, kürzer als Limits von LB/Firewall
+      keepalive-time: 120000       # 2 min Ping auf idle Verbindungen
+      leak-detection-threshold: 20000
+      pool-name: orders-pool</pre>
+<pre>-- Wer belegt die Verbindungen?
+SELECT application_name, state, count(*)
+FROM pg_stat_activity
+WHERE backend_type = 'client backend'
+GROUP BY 1, 2 ORDER BY 3 DESC;</pre>
+<pre> application_name |        state        | count
+------------------+---------------------+-------
+ orders-service   | idle                |    34
+ orders-service   | active              |     4
+ orders-service   | idle in transaction |     2
+ psql             | active              |     1
+(4 rows)</pre>
+<p class="small">Erwartetes Ergebnis (laut Doku, nicht ausgeführt). Zahlen sind ein Beispiel für 4 Pods mit je 10 Verbindungen direkt auf Port 5432.</p>
+<ol>
+  <li><code>prepareThreshold=0</code> schaltet benannte Server-Prepared-Statements im pgJDBC-Treiber ab. Das braucht man hinter PgBouncer im Transaction Mode, wenn <code>max_prepared_statements</code> dort 0 ist.</li>
+  <li><code>maximum-pool-size</code> ohne <code>minimum-idle</code> ergibt einen <b>Fixed-Size-Pool</b>. Das empfiehlt HikariCP selbst.</li>
+  <li>34 von 40 Verbindungen sind <b>idle</b>. Sie kosten in PostgreSQL trotzdem einen Prozess. Hier lohnt sich ein kleinerer Pool oder PgBouncer.</li>
+  <li><b>idle in transaction</b> heisst: Die Transaktion ist offen, aber niemand arbeitet. Diese Verbindung ist blockiert und hält Locks und alte Snapshots.</li>
+  <li><code>application_name</code> setzt pgJDBC per Parameter <code>ApplicationName</code>. Ohne ihn sieht man nicht, wer die Verbindungen hält.</li>
+</ol>
+<h3>Vergleich</h3>
+<ul>
+  <li><b>Kein Pool:</b> jede Anfrage baut eine Verbindung auf. Hohe Latenz, schnell <code>too many clients</code>.</li>
+  <li><b>HikariCP (Client-Pool):</b> in der App, sehr schnell, kennt Threads und Transaktionen. Aber pro Instanz, also N Pods × Grösse.</li>
+  <li><b>PgBouncer (Server-Pool):</b> zentral, begrenzt die Gesamtzahl über alle Apps. Ein Netzwerk-Hop mehr, Feature-Grenzen im Transaction Mode.</li>
+  <li><b>Beides zusammen:</b> üblich in Kubernetes. Hikari klein halten, PgBouncer im Transaction Mode, Prepared-Statement-Thema lösen.</li>
+  <li><b>Pgpool-II:</b> Pooling plus Load Balancing und Replikations-Funktionen. Schwerer zu betreiben.</li>
+  <li><b>PgCat / Odyssey:</b> multi-threaded Pooler. Option, wenn ein einzelner PgBouncer-Thread zum Engpass wird.</li>
+  <li><b>R2DBC-Pool:</b> für reaktive Anwendungen ohne blockierende Threads. Die DB-Grenzen bleiben gleich.</li>
+</ul>
+<h3>In der Produktion</h3>
+<ol>
+  <li><b>Pool-Erschöpfung:</b> Symptome: Latenz springt auf genau <code>connectionTimeout</code>, Log <code>Connection is not available, request timed out after 30000ms</code>, Metrik <code>hikaricp_connections_pending</code> steigt. Ursache meist: langsame Abfragen, lange Transaktionen oder HTTP-Calls innerhalb von <code>@Transactional</code>. Lösung: Ursache finden, nicht einfach den Pool vergrössern.</li>
+  <li><b>„FATAL: sorry, too many clients already“:</b> Autoscaling hat Pods hinzugefügt. Pods × Poolgrösse übersteigt <code>max_connections</code>. Lösung: Budget rechnen, PgBouncer davor, HPA-Maximum begrenzen.</li>
+  <li><b>Verbindungs-Leak:</b> Code holt eine Connection und schliesst sie nicht. Der Pool leert sich langsam. Lösung: <code>leakDetectionThreshold</code>, try-with-resources, Spring-Templates nutzen.</li>
+  <li><b>Tote Verbindungen nach Idle:</b> Eine Firewall oder ein Load Balancer schliesst idle TCP-Verbindungen still. Erste Abfrage danach scheitert. Lösung: <code>keepaliveTime</code> und <code>maxLifetime</code> unter dem Limit.</li>
+  <li><b>Prepared-Statement-Fehler hinter PgBouncer:</b> <code>prepared statement "S_3" already exists</code> oder <code>does not exist</code>. Lösung: <code>pgbouncer.max_prepared_statements</code> setzen oder <code>prepareThreshold=0</code>.</li>
+  <li><b>Falsche Session-Werte im Transaction Mode:</b> Ein <code>SET app.tenant_id</code> bleibt auf dem Backend kleben. Der nächste Client erbt ihn. Bei <code>SET search_path</code> passiert das nur mit PostgreSQL vor 18 oder PgBouncer vor 1.26 (siehe Details). Lösung: <code>SET LOCAL</code> oder <code>set_config(..., true)</code> in der Transaktion.</li>
+  <li><b>Flyway oder Advisory Locks über PgBouncer:</b> Session-Advisory-Locks funktionieren im Transaction Mode nicht zuverlässig. Flyway nimmt standardmässig einen transaktionalen Advisory Lock. Mit <code>flyway.postgresql.transactional.lock = false</code> (nötig z. B. für <code>CREATE INDEX CONCURRENTLY</code>) wird er zum Session-Lock. Sichere Lösung: Migrationen direkt auf Port 5432.</li>
+</ol>
+<h3>Diagnose: Werkzeuge und Abfragen</h3>
+<ul>
+  <li><code>SELECT count(*), state FROM pg_stat_activity GROUP BY state;</code>: Verbindungen nach Zustand.</li>
+  <li><code>SHOW max_connections;</code> und <code>SELECT count(*) FROM pg_stat_activity;</code>: wie nah an der Grenze.</li>
+  <li><code>SELECT pid, now() - xact_start, query FROM pg_stat_activity WHERE state = 'idle in transaction';</code>: hängende Transaktionen.</li>
+  <li><b>Kosten des Verbindungsaufbaus messen:</b> <code>log_connections = 'setup_durations'</code> loggt drei Zeiten: Aufbau gesamt (bis bereit für die erste Abfrage), Fork des Backends und Authentifizierung. Neu in PostgreSQL 18 (Release Notes 18). Standard ist <code>''</code>, also aus.</li>
+  <li><code>idle_in_transaction_session_timeout</code>: beendet solche Sessions automatisch. <code>idle_session_timeout</code> für idle Sessions (nicht hinter PgBouncer setzen).</li>
+  <li><b>HikariCP-Metriken</b> über Micrometer/Actuator: <code>hikaricp_connections_active</code>, <code>_idle</code>, <code>_pending</code>, <code>_timeout_total</code>, <code>_acquire_seconds</code>, <code>_usage_seconds</code>.</li>
+  <li><b>PgBouncer-Konsole:</b> <code>psql -p 6432 dbname=pgbouncer</code>, dann <code>SHOW POOLS;</code> (<code>cl_waiting</code>, <code>sv_active</code>, <code>maxwait</code>), <code>SHOW STATS;</code>, <code>SHOW CLIENTS;</code>. In Azure braucht der User <code>pgbouncer.stats_users</code>.</li>
+  <li><b>Azure-Metriken:</b> <code>metrics.pgbouncer_diagnostics = on</code>, dann <code>client_connections_waiting</code> und <code>server_connections_active</code>. Logs in <code>PGSQLPgBouncer</code>.</li>
+</ul>
+<h3>Senior-Punkte</h3>
+<div class="senior">
+<ol>
+  <li><b>Verbindungen sind ein Budget.</b> Summe über alle Services, Pods (inkl. HPA-Maximum), Jobs und Admins muss unter <code>max_connections</code> minus Reserve bleiben.</li>
+  <li><b>Kleiner Pool, schnelle Transaktionen.</b> Mehr Verbindungen als CPU-Kerne auf der DB machen sie nicht schneller. Die Warteschlange gehört in die App, nicht in die DB.</li>
+  <li><b>Pool-Erschöpfung ist ein Symptom.</b> Die Ursache ist fast immer zu lange gehaltene Verbindungen: langsame SQL, Remote-Calls in Transaktionen, Leaks.</li>
+  <li><b>Kurzes connectionTimeout</b> (wenige Sekunden) lässt Requests schnell scheitern. Ein Circuit Breaker kann dann greifen, statt dass Threads 30 s hängen.</li>
+  <li><b>PgBouncer Transaction Mode verändert die Semantik.</b> Session-Zustand gibt es nicht mehr. Das muss das ganze Team wissen, nicht nur Ops.</li>
+  <li><b>Getrennte Pools</b> für OLTP und Batch/Reports. Ein langer Report soll die Web-Requests nicht aushungern.</li>
+</ol>
+</div>
+<h3>Dein Beispiel</h3>
+</details>
 
 </body>
 </html>

@@ -35,14 +35,9 @@
 <h1>Constraints, Keys, Sequences vs UUID</h1>
 <!-- sources: PostgreSQL 19 (aktuell seit 19.11.2026; Beispiele auf 17.12 ausgeführt) · Quellen: PostgreSQL 19 Doku, Kapitel 5.5 „Constraints“, CREATE TABLE, ALTER TABLE (NOT VALID, VALIDATE CONSTRAINT), CREATE SEQUENCE, Kapitel 9.15 „UUID Functions“, Modul btree_gist, Release Notes 15 (NULLS NOT DISTINCT), 18 (uuidv7(), WITHOUT OVERLAPS, NOT ENFORCED, NOT NULL in pg_constraint, SQLSTATE 23001), 19 (CHECK [NOT] ENFORCED per ALTER CONSTRAINT, Cast bytea ↔ uuid) -->
 
-<div class="geruest"><h2>Gerüst</h2><dl>
-  <dt>Warum?</dt><dd>Regel in der DB gilt für jeden Schreiber und gegen Race Conditions. App-Check allein reicht nicht.</dd>
-  <dt>Wie innen?</dt><dd>PK/UNIQUE = Unique B-Tree-Index, EXCLUDE = GiST-Index, FK = interne RI-Trigger mit FOR KEY SHARE. CHECK sieht nur die eigene Zeile.</dd>
-  <dt>Zahlen</dt><dd>bigint 8 Byte, uuid 16 Byte. integer endet bei 2 147 483 647. Sequence-CACHE 1, Hibernate allocationSize 50.</dd>
-  <dt>Vergleich</dt><dd>bigint: kompakt, zentral. UUIDv4: zufällig, Seitensplits. UUIDv7: zeitlich sortiert, verrät Erstellzeit.</dd>
-  <dt>Produktion</dt><dd>FK ohne Index im Kind → DELETE mit Seq Scan pro Zeile. ADD FK auf Riesentabelle → NOT VALID + VALIDATE.</dd>
-  <dt>Design</dt><dd>bigint intern, UUIDv7 bei verteilten oder öffentlichen IDs. Lückenlos ist Fachlogik: Zähler-Tabelle mit Lock.</dd>
-</dl></div>
+<div class="kern">
+<b>Kern:</b> Ein <b>Constraint</b> ist eine Regel, die PostgreSQL bei jedem Schreiben prüft. Sie hält die Daten korrekt, egal welche Anwendung schreibt. Der <b>Primärschlüssel</b> ist der wichtigste Constraint; seine Werte kommen aus einer <b>Sequence</b> (<code>bigint</code>) oder sind eine <b>UUID</b>, seit PostgreSQL 18 auch zeitlich sortierbar mit <code>uuidv7()</code> (Release Notes 18, Functions).
+</div>
 
 <div class="muster"><h3>Antwort-Muster</h3><p class="mq"><b>Frage:</b> bigint-Sequence oder UUID als Primärschlüssel?</p><ol>
   <li>Mechanismus: Beide füllen einen Unique B-Tree-Index; zufällige UUIDs landen überall im Baum, Sequences rechts.</li>
@@ -51,37 +46,7 @@
   <li>Produktion: Ich nehme bigint intern und UUIDv7, wenn IDs verteilt oder öffentlich sind.</li>
 </ol></div>
 
-<div class="kern">
-<b>Kern:</b> Ein <b>Constraint</b> ist eine Regel, die PostgreSQL bei jedem Schreiben prüft. Sie hält die Daten korrekt, egal welche Anwendung schreibt. Der <b>Primärschlüssel</b> ist der wichtigste Constraint; seine Werte kommen aus einer <b>Sequence</b> (<code>bigint</code>) oder sind eine <b>UUID</b>, seit PostgreSQL 18 auch zeitlich sortierbar mit <code>uuidv7()</code> (<a href="https://www.postgresql.org/docs/release/18.0/#RELEASE-18-FUNCTIONS">Release Notes 18, Functions</a>).
-</div>
-
-<h2>1. Wo sitzen die Constraints?</h2>
-<svg viewBox="0 0 720 310" font-family="-apple-system, system-ui, sans-serif" font-size="14">
-  <defs><marker id="a" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
-  <rect x="10" y="20" width="200" height="60" rx="8" fill="#fff" stroke="#555"/><text x="110" y="44" text-anchor="middle" font-weight="700">pg_constraint</text><text x="110" y="62" text-anchor="middle" font-size="12">Katalog: alle Regeln</text>
-  <rect x="260" y="20" width="200" height="60" rx="8" fill="#dbe9fb" stroke="#0a66c2"/><text x="360" y="44" text-anchor="middle" font-weight="700">Tabelle (Heap)</text><text x="360" y="62" text-anchor="middle" font-size="12">NOT NULL · CHECK</text>
-  <rect x="510" y="20" width="200" height="60" rx="8" fill="#fff" stroke="#555"/><text x="610" y="44" text-anchor="middle" font-weight="700">Sequence</text><text x="610" y="62" text-anchor="middle" font-size="12">nextval() für Identity</text>
-  <line x1="510" y1="50" x2="462" y2="50" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
-  <line x1="210" y1="50" x2="258" y2="50" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
-  <line x1="320" y1="80" x2="200" y2="138" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
-  <line x1="360" y1="80" x2="360" y2="138" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
-  <line x1="400" y1="80" x2="560" y2="138" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
-  <rect x="60" y="140" width="220" height="64" rx="8" fill="#e8f5e9" stroke="#2e7d32"/><text x="170" y="164" text-anchor="middle" font-weight="700">Unique B-Tree-Index</text><text x="170" y="184" text-anchor="middle" font-size="12">PRIMARY KEY · UNIQUE</text>
-  <rect x="290" y="140" width="140" height="64" rx="8" fill="#e8f5e9" stroke="#2e7d32"/><text x="360" y="164" text-anchor="middle" font-weight="700">GiST-Index</text><text x="360" y="184" text-anchor="middle" font-size="12">EXCLUDE</text>
-  <rect x="460" y="140" width="250" height="64" rx="8" fill="#fff4f2" stroke="#c62828"/><text x="585" y="164" text-anchor="middle" font-weight="700">Interne Trigger</text><text x="585" y="184" text-anchor="middle" font-size="12">FOREIGN KEY (RI-Trigger)</text>
-  <line x1="585" y1="204" x2="585" y2="248" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
-  <rect x="440" y="250" width="270" height="50" rx="8" fill="#fff" stroke="#555"/><text x="575" y="272" text-anchor="middle" font-weight="700">Eltern-Tabelle</text><text x="575" y="290" text-anchor="middle" font-size="12">Lookup über deren PK/UNIQUE</text>
-</svg>
-<ol>
-  <li><b>pg_constraint:</b> Der Katalog speichert jeden Constraint mit Name und Typ (<code>p</code>, <code>u</code>, <code>f</code>, <code>c</code>, <code>x</code>). Seit 18 stehen auch NOT-NULL-Constraints dort, mit eigenem Namen (<a href="https://www.postgresql.org/docs/release/18.0/#RELEASE-18-CONSTRAINTS">Release Notes 18, Constraints</a>).</li>
-  <li><b>NOT NULL und CHECK:</b> PostgreSQL prüft sie direkt an der neuen Zeile. Kein Index nötig. Beispiel: <code>CHECK (preis &gt; 0)</code>.</li>
-  <li><b>PRIMARY KEY und UNIQUE:</b> Beide erzeugen automatisch einen <b>Unique B-Tree-Index</b>. Der Index prüft die Eindeutigkeit. Ein PK setzt zusätzlich NOT NULL.</li>
-  <li><b>EXCLUDE:</b> Ein <b>Exclusion Constraint</b> verbietet zwei Zeilen, für die alle Operatoren true liefern. Er erzeugt einen Index, meist GiST. Beispiel: keine überlappenden Buchungen pro Raum.</li>
-  <li><b>FOREIGN KEY:</b> Er läuft über interne <b>RI-Trigger</b> (Referential Integrity). Beim Schreiben im Kind sucht PostgreSQL die Eltern-Zeile über deren PK.</li>
-  <li><b>Sequence:</b> Eine <b>Sequence</b> ist ein eigenes Objekt, das Zahlen ausgibt. Eine <b>Identity-Spalte</b> holt ihren Default per <code>nextval()</code> daraus.</li>
-</ol>
-
-<h2>2. Die Reise eines INSERT durch die Constraints (die Geschichte zum Merken)</h2>
+<h2>1. Die Reise eines INSERT durch die Constraints</h2>
 <svg viewBox="0 0 720 320" font-family="-apple-system, system-ui, sans-serif" font-size="14">
   <defs><marker id="b" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
   <rect x="10" y="20" width="160" height="60" rx="10" fill="#eee" stroke="#777"/><text x="90" y="44" text-anchor="middle" font-weight="700">1. Default</text><text x="90" y="64" text-anchor="middle" font-size="12">nextval() → id 3</text>
@@ -108,7 +73,116 @@
   <li><b>Fehler:</b> Ein Verstoss rollt die Anweisung zurück. Die Sequence-Nummer ist trotzdem weg. Darum hat eine Identity-Spalte <b>Lücken</b>.</li>
 </ol>
 
-<h2>3. Beispiel: Identity, Lücke, NULL in UNIQUE, NOT VALID, EXCLUDE, UUID-Indexgrösse</h2>
+<h2>2. Aufbau</h2>
+<svg viewBox="0 0 720 310" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="a" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="10" y="20" width="200" height="60" rx="8" fill="#fff" stroke="#555"/><text x="110" y="44" text-anchor="middle" font-weight="700">pg_constraint</text><text x="110" y="62" text-anchor="middle" font-size="12">Katalog: alle Regeln</text>
+  <rect x="260" y="20" width="200" height="60" rx="8" fill="#dbe9fb" stroke="#0a66c2"/><text x="360" y="44" text-anchor="middle" font-weight="700">Tabelle (Heap)</text><text x="360" y="62" text-anchor="middle" font-size="12">NOT NULL · CHECK</text>
+  <rect x="510" y="20" width="200" height="60" rx="8" fill="#fff" stroke="#555"/><text x="610" y="44" text-anchor="middle" font-weight="700">Sequence</text><text x="610" y="62" text-anchor="middle" font-size="12">nextval() für Identity</text>
+  <line x1="510" y1="50" x2="462" y2="50" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <line x1="210" y1="50" x2="258" y2="50" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <line x1="320" y1="80" x2="200" y2="138" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <line x1="360" y1="80" x2="360" y2="138" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <line x1="400" y1="80" x2="560" y2="138" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="60" y="140" width="220" height="64" rx="8" fill="#e8f5e9" stroke="#2e7d32"/><text x="170" y="164" text-anchor="middle" font-weight="700">Unique B-Tree-Index</text><text x="170" y="184" text-anchor="middle" font-size="12">PRIMARY KEY · UNIQUE</text>
+  <rect x="290" y="140" width="140" height="64" rx="8" fill="#e8f5e9" stroke="#2e7d32"/><text x="360" y="164" text-anchor="middle" font-weight="700">GiST-Index</text><text x="360" y="184" text-anchor="middle" font-size="12">EXCLUDE</text>
+  <rect x="460" y="140" width="250" height="64" rx="8" fill="#fff4f2" stroke="#c62828"/><text x="585" y="164" text-anchor="middle" font-weight="700">Interne Trigger</text><text x="585" y="184" text-anchor="middle" font-size="12">FOREIGN KEY (RI-Trigger)</text>
+  <line x1="585" y1="204" x2="585" y2="248" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="440" y="250" width="270" height="50" rx="8" fill="#fff" stroke="#555"/><text x="575" y="272" text-anchor="middle" font-weight="700">Eltern-Tabelle</text><text x="575" y="290" text-anchor="middle" font-size="12">Lookup über deren PK/UNIQUE</text>
+</svg>
+<ol>
+  <li><b>pg_constraint:</b> Der Katalog speichert jeden Constraint mit Name und Typ (<code>p</code>, <code>u</code>, <code>f</code>, <code>c</code>, <code>x</code>). Seit 18 stehen auch NOT-NULL-Constraints dort, mit eigenem Namen (Release Notes 18, Constraints).</li>
+  <li><b>NOT NULL und CHECK:</b> PostgreSQL prüft sie direkt an der neuen Zeile. Kein Index nötig. Beispiel: <code>CHECK (preis &gt; 0)</code>.</li>
+  <li><b>PRIMARY KEY und UNIQUE:</b> Beide erzeugen automatisch einen <b>Unique B-Tree-Index</b>. Der Index prüft die Eindeutigkeit. Ein PK setzt zusätzlich NOT NULL.</li>
+  <li><b>EXCLUDE:</b> Ein <b>Exclusion Constraint</b> verbietet zwei Zeilen, für die alle Operatoren true liefern. Er erzeugt einen Index, meist GiST. Beispiel: keine überlappenden Buchungen pro Raum.</li>
+  <li><b>FOREIGN KEY:</b> Er läuft über interne <b>RI-Trigger</b> (Referential Integrity). Beim Schreiben im Kind sucht PostgreSQL die Eltern-Zeile über deren PK.</li>
+  <li><b>Sequence:</b> Eine <b>Sequence</b> ist ein eigenes Objekt, das Zahlen ausgibt. Eine <b>Identity-Spalte</b> holt ihren Default per <code>nextval()</code> daraus.</li>
+</ol>
+
+<h2>3. Details, die Interviewer fragen</h2>
+<ol>
+  <li><b>Primärschlüssel:</b> Er ist UNIQUE plus NOT NULL und erzeugt einen Unique B-Tree-Index. Pro Tabelle gibt es höchstens einen.</li>
+  <li><b>Natürlicher vs Surrogat-Schlüssel:</b> Ein <b>natürlicher Schlüssel</b> kommt aus der Fachlichkeit, z. B. AHV-Nummer. Ein <b>Surrogat-Schlüssel</b> ist eine technische ID. Üblich: Surrogat als PK plus UNIQUE auf den natürlichen Schlüssel.</li>
+  <li><b>FK braucht Index im Kind:</b> PostgreSQL legt keinen Index auf die referenzierende Spalte an. Ohne Index liest jedes <code>DELETE</code> im Eltern-Teil die ganze Kind-Tabelle.</li>
+  <li><b>ON DELETE:</b> <code>NO ACTION</code> (Standard), <code>RESTRICT</code>, <code>CASCADE</code>, <code>SET NULL</code>, <code>SET DEFAULT</code>. <code>NO ACTION</code> lässt sich aufschieben, <code>RESTRICT</code> nicht. Seit 18 meldet <code>RESTRICT</code> SQLSTATE 23001 statt 23503 (Release Notes 18, Migration).</li>
+  <li><b>NOT VALID und VALIDATE:</b> <code>ADD CONSTRAINT … NOT VALID</code> prüft nur neue Zeilen und ist schnell. <code>VALIDATE CONSTRAINT</code> prüft später die Altdaten mit einem schwächeren Lock. Gilt für CHECK und FK, seit 18 auch NOT NULL (Release Notes 18, Constraints).</li>
+  <li><b>NOT ENFORCED (seit 18):</b> Ein CHECK oder FK wird nur dokumentiert, nicht geprüft (Release Notes 18, Constraints). Seit 19 lässt sich das auch bei CHECK per <code>ALTER CONSTRAINT … [NOT] ENFORCED</code> umschalten; vorher ging das nur beim FK (Release Notes 19, Constraints).</li>
+  <li><b>CHECK-Grenzen:</b> Ein CHECK sieht nur die eigene Zeile. Er muss <b>immutable</b> sein, also für dieselbe Zeile immer gleich antworten. Regeln über mehrere Zeilen: UNIQUE, EXCLUDE, FK oder Trigger.</li>
+  <li><b>Temporale Schlüssel (seit 18):</b> <code>PRIMARY KEY (raum, zeit WITHOUT OVERLAPS)</code> verbietet überlappende Zeiträume pro Schlüssel. Der FK dazu nutzt <code>PERIOD</code> (Release Notes 18, Constraints).</li>
+  <li><b>Identity vs serial:</b> <code>serial</code> ist eine Abkürzung für Sequence plus Default, nicht SQL-Standard. <code>GENERATED … AS IDENTITY</code> ist Standard und an die Spalte gebunden. <code>ALWAYS</code> blockt eigene Werte, <code>BY DEFAULT</code> nicht.</li>
+  <li><b>Sequence-Lücken:</b> <code>nextval()</code> wird nie zurückgerollt. Für lückenlose Nummern (z. B. Rechnungen) braucht es eine Zähler-Tabelle mit Lock, und das ist viel langsamer.</li>
+  <li><b>Sequence-CACHE:</b> Standard ist 1. Mit grösserem Cache reserviert jede Session einen Block. Werte sind dann eindeutig, aber nicht mehr global in Reihenfolge.</li>
+  <li><b>JPA/Hibernate:</b> Der JPA-Standard <code>allocationSize</code> ist 50. Die Sequence braucht dann <code>INCREMENT BY 50</code>, sonst passen IDs nicht zusammen.</li>
+  <li><b>UUID-Typ:</b> <code>uuid</code> speichert 16 Byte binär, nicht 36 Zeichen Text. Als <code>text</code> gespeichert kostet eine UUID mehr als doppelt so viel.</li>
+  <li><b>UUIDv4 vs UUIDv7:</b> <code>gen_random_uuid()</code> bzw. <code>uuidv4()</code> ist rein zufällig. <code>uuidv7()</code> (seit 18, Release Notes 18, Functions; dort kam auch der Alias <code>uuidv4()</code>) beginnt mit einem Zeitstempel in Millisekunden und ist darum ungefähr sortiert. Neue Werte landen rechts im B-Tree.</li>
+  <li><b>Zeit aus der UUID:</b> <code>uuid_extract_timestamp()</code> liest den Zeitstempel einer v7-UUID. Das verrät die Erstellzeit: bei öffentlichen IDs bedenken.</li>
+</ol>
+
+<h2>4. Fallen</h2>
+<div class="trap">
+<ul>
+  <li>„Ein Foreign Key legt automatisch einen Index an.“ → <b>Falsch.</b> Nur PK und UNIQUE auf der Eltern-Seite haben einen Index. Das Kind braucht einen eigenen.</li>
+  <li>„Eine Sequence ist lückenlos.“ → <b>Falsch.</b> Rollbacks, Fehler, Cache und Crashs erzeugen Lücken.</li>
+  <li>„UNIQUE verbietet doppelte NULL.“ → <b>Falsch.</b> Nur mit <code>NULLS NOT DISTINCT</code>.</li>
+  <li>„UUIDs sind immer schlecht als Primärschlüssel.“ → <b>Falsch.</b> Zufällige v4 sind teuer im Index. v7 verhält sich fast wie eine Sequence.</li>
+  <li>„RESTRICT und NO ACTION sind gleich.“ → <b>Fast.</b> NO ACTION lässt sich bis zum COMMIT aufschieben, RESTRICT nicht.</li>
+  <li>„Ein CHECK kann andere Zeilen prüfen.“ → <b>Falsch.</b> Er sieht nur die eigene Zeile.</li>
+  <li>„serial und Identity sind verschiedene Techniken.“ → <b>Falsch.</b> Beide nutzen eine Sequence. Identity ist nur die Standard-Syntax mit mehr Schutz.</li>
+</ul>
+</div>
+
+<h2>5. Selbsttest</h2>
+<h3>Warum?</h3>
+<details><summary>Was ist ein Constraint?</summary><p>Eine Regel, die PostgreSQL bei jedem Schreiben prüft. Verstösse brechen die Anweisung ab.</p></details>
+<details><summary>Warum reicht eine Prüfung in der Anwendung nicht?</summary><p>Zwei parallele Requests prüfen gleichzeitig und sehen beide keinen Konflikt. Ausserdem schreiben Skripte und Batch-Jobs an der App vorbei. Nur der Constraint in der DB gilt für alle.</p></details>
+<details><summary>Wie verhindere ich doppelte Einträge bei parallelen Requests?</summary><p>Mit einem UNIQUE Constraint und INSERT … ON CONFLICT. Ein Check in der App vorher reicht nicht.</p></details>
+<h3>Wie innen?</h3>
+<details><summary>Welche Constraint-Arten gibt es?</summary><p>NOT NULL, CHECK, UNIQUE, PRIMARY KEY, FOREIGN KEY und EXCLUDE.</p></details>
+<details><summary>Was ist der Unterschied zwischen PRIMARY KEY und UNIQUE?</summary><p>Der PK ist zusätzlich NOT NULL und es gibt nur einen pro Tabelle. Beide erzeugen einen Unique B-Tree-Index.</p></details>
+<details><summary>Was ist ein Deferrable Constraint?</summary><p>Ein Constraint, dessen Prüfung bis zum COMMIT warten kann. Nützlich bei zyklischen FKs oder beim Tauschen eindeutiger Werte.</p></details>
+<details><summary>Was macht NOT VALID?</summary><p>Der Constraint gilt sofort für neue Zeilen, prüft aber die Altdaten nicht. VALIDATE CONSTRAINT holt das später nach.</p></details>
+<details><summary>Was kann ein CHECK nicht?</summary><p>Andere Zeilen oder Tabellen prüfen. Er muss immutable sein und sieht nur die neue Zeile.</p></details>
+<details><summary>Was ist ein Exclusion Constraint?</summary><p>Er verbietet zwei Zeilen, für die alle angegebenen Operatoren true liefern. Beispiel: gleicher Raum und überlappende Zeit.</p></details>
+<details><summary>Was ist der Unterschied zwischen GENERATED ALWAYS und BY DEFAULT?</summary><p>ALWAYS lehnt eigene Werte ab, ausser mit OVERRIDING SYSTEM VALUE. BY DEFAULT nimmt eigene Werte an.</p></details>
+<details><summary>Warum hat meine ID-Spalte Lücken?</summary><p>nextval() wird nie zurückgerollt. Rollbacks, Fehler, Sequence-Cache und Crashs verbrauchen Nummern.</p></details>
+<details><summary>Was macht der Sequence-CACHE?</summary><p>Jede Session reserviert einen Block von Werten. Das spart Zugriffe, aber Werte sind nicht mehr global in Reihenfolge und Lücken werden grösser.</p></details>
+<h3>Zahlen</h3>
+<details><summary>Wie gross ist eine UUID?</summary><p>16 Byte im Typ uuid, doppelt so viel wie bigint. Als text gespeichert etwa 37 Byte.</p></details>
+<details><summary>Warum allocationSize 50 bei Hibernate?</summary><p>Hibernate holt einen Wert und vergibt 50 IDs im Speicher. Die Sequence muss dazu mit INCREMENT BY 50 laufen.</p></details>
+<details><summary>Was geht kaputt, wenn eine ID-Spalte vom Typ integer ist?</summary><p>Bei 2 147 483 647 ist Schluss, jeder weitere Insert scheitert. Umstellen auf bigint heisst die Tabelle umschreiben. Darum von Anfang an bigint.</p></details>
+<h3>Vergleich</h3>
+<details><summary>Darf eine UNIQUE-Spalte mehrere NULL haben?</summary><p>Ja, standardmässig. Mit NULLS NOT DISTINCT seit Version 15 nicht.</p></details>
+<details><summary>NO ACTION vs RESTRICT?</summary><p>Beide verhindern das Löschen. NO ACTION kann aufgeschoben werden, RESTRICT prüft sofort.</p></details>
+<details><summary>serial oder Identity?</summary><p>Identity. Es ist SQL-Standard, an die Spalte gebunden, und mit ALWAYS sind manuelle Werte gesperrt.</p></details>
+<details><summary>Natürlicher oder Surrogat-Schlüssel?</summary><p>Meist Surrogat als PK, weil natürliche Werte sich ändern. Der natürliche Schlüssel bekommt zusätzlich einen UNIQUE Constraint.</p></details>
+<details><summary>Was ist UUIDv7?</summary><p>Eine UUID, die mit einem Millisekunden-Zeitstempel beginnt. Sie ist ungefähr sortiert und verhält sich im Index fast wie eine Sequence. In PostgreSQL seit 18 per uuidv7() (Release Notes 18).</p></details>
+<details><summary>Warum sind zufällige UUIDs als PK teuer?</summary><p>Jeder Insert landet an zufälliger Stelle im B-Tree. Das spaltet Seiten, braucht mehr Cache und erzeugt mehr WAL.</p></details>
+<details><summary>Hat UUIDv7 einen Nachteil?</summary><p>Ja. Die Erstellzeit ist ablesbar, z. B. mit uuid_extract_timestamp(). Für öffentliche IDs kann das ein Datenschutzthema sein.</p></details>
+<h3>Produktion</h3>
+<details><summary>Braucht ein Foreign Key einen Index?</summary><p>Auf der Eltern-Seite ist er durch PK oder UNIQUE da. Auf der Kind-Seite muss man ihn selbst anlegen, sonst sind DELETE und UPDATE auf den Eltern langsam.</p></details>
+<details><summary>Wie finde ich Foreign Keys ohne Index?</summary><p>pg_constraint mit contype 'f' gegen pg_index abgleichen: Gibt es einen Index, der mit den FK-Spalten beginnt?</p></details>
+<details><summary>Was geht kaputt, wenn ON DELETE CASCADE über mehrere Tabellen geht?</summary><p>Ein einziges DELETE löscht ganze Bäume von Daten, oft mehr als gewollt. CASCADE nur für echte Teile eines Ganzen, sonst RESTRICT und bewusstes Löschen.</p></details>
+<details><summary>Szenario: Ein DELETE auf der Kunden-Tabelle dauert pro Zeile Sekunden. Was prüfen Sie?</summary><p>Ob alle FKs, die auf Kunden zeigen, einen Index im Kind haben. EXPLAIN ANALYZE zeigt die Zeit in den RI-Triggern. Lösung: fehlende Indizes CONCURRENTLY anlegen.</p></details>
+<details><summary>Szenario: Nach einem Datenimport scheitern alle Inserts mit „duplicate key“. Warum?</summary><p>Der Import hat eigene IDs geschrieben, die Sequence steht noch tief. Lösung: Sequence auf max(id) setzen, z. B. mit setval oder ALTER COLUMN … RESTART.</p></details>
+<h3>Design</h3>
+<details><summary>Welche ON-DELETE-Aktionen gibt es?</summary><p>NO ACTION, RESTRICT, CASCADE, SET NULL und SET DEFAULT. Standard ist NO ACTION.</p></details>
+<details><summary>Was ist NOT ENFORCED?</summary><p>Seit 18 (Release Notes 18): Ein CHECK oder FK wird deklariert, aber nicht geprüft. Er dokumentiert eine Beziehung, schützt aber nicht.</p></details>
+<details><summary>Was bringt WITHOUT OVERLAPS?</summary><p>Seit 18 (Release Notes 18) ein temporaler PK oder UNIQUE: pro Schlüssel keine überlappenden Zeiträume. Der passende FK nutzt PERIOD.</p></details>
+<details><summary>Wie baue ich lückenlose Rechnungsnummern?</summary><p>Mit einer Zähler-Tabelle, die in derselben Transaktion gesperrt und erhöht wird. Das serialisiert alle Schreiber.</p></details>
+<details><summary>Warum ist ein EXCLUDE-Constraint für Raumbuchungen besser als eine Prüfung im Code?</summary><p>Im Code sehen zwei parallele Buchungen beide keinen Konflikt. Der Exclusion Constraint prüft im Index: Die zweite Buchung wartet auf die erste und scheitert dann mit 23P01.</p></details>
+<details><summary>Szenario: Sie müssen einen FK auf eine Tabelle mit 500 Millionen Zeilen hinzufügen, ohne Downtime. Wie?</summary><p>Erst Index auf die FK-Spalte CONCURRENTLY, dann ADD CONSTRAINT … NOT VALID, dann VALIDATE CONSTRAINT. Vorher Altdaten bereinigen.</p></details>
+
+<details class="mehr"><summary>Mehr</summary>
+<h3>Gerüst</h3>
+<ul>
+  <li><b>Warum?</b> Regel in der DB gilt für jeden Schreiber und gegen Race Conditions. App-Check allein reicht nicht.</li>
+  <li><b>Wie innen?</b> PK/UNIQUE = Unique B-Tree-Index, EXCLUDE = GiST-Index, FK = interne RI-Trigger mit FOR KEY SHARE. CHECK sieht nur die eigene Zeile.</li>
+  <li><b>Zahlen</b> bigint 8 Byte, uuid 16 Byte. integer endet bei 2 147 483 647. Sequence-CACHE 1, Hibernate allocationSize 50.</li>
+  <li><b>Vergleich</b> bigint: kompakt, zentral. UUIDv4: zufällig, Seitensplits. UUIDv7: zeitlich sortiert, verrät Erstellzeit.</li>
+  <li><b>Produktion</b> FK ohne Index im Kind → DELETE mit Seq Scan pro Zeile. ADD FK auf Riesentabelle → NOT VALID + VALIDATE.</li>
+  <li><b>Design</b> bigint intern, UUIDv7 bei verteilten oder öffentlichen IDs. Lückenlos ist Fachlogik: Zähler-Tabelle mit Lock.</li>
+</ul>
+<h3>Beispiel: Identity, Lücke, NULL in UNIQUE, NOT VALID, EXCLUDE, UUID-Indexgrösse</h3>
 <pre>CREATE SCHEMA demo_constraints_keys; SET search_path = demo_constraints_keys;
 -- 1) Identity ALWAYS
 CREATE TABLE kunde (id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
@@ -197,7 +271,7 @@ INSERT 0 1
  uuid zufaellig | 19 MB
  uuid sortiert  | 15 MB
 (3 rows)</pre>
-<p class="small">Echte Ausgabe, PostgreSQL 17.12. Gekürzt: <code>CREATE</code>/<code>SET</code>/<code>INSERT</code>-Meldungen ohne Aussage; Fehlerzeilen (stderr) an ihre Anweisung gesetzt; eine lange DETAIL-Zeile umbrochen. Server-Zeitzone UTC, darum 08:00 statt 09:00+01. <code>uuidv7()</code> gibt es erst ab 18 (<a href="https://www.postgresql.org/docs/release/18.0/#RELEASE-18-FUNCTIONS">Release Notes 18</a>), darum simuliert Teil 6 sie mit sortierten UUIDs.</p>
+<p class="small">Echte Ausgabe, PostgreSQL 17.12. Gekürzt: <code>CREATE</code>/<code>SET</code>/<code>INSERT</code>-Meldungen ohne Aussage; Fehlerzeilen (stderr) an ihre Anweisung gesetzt; eine lange DETAIL-Zeile umbrochen. Server-Zeitzone UTC, darum 08:00 statt 09:00+01. <code>uuidv7()</code> gibt es erst ab 18 (Release Notes 18), darum simuliert Teil 6 sie mit sortierten UUIDs.</p>
 <ol>
   <li><b>GENERATED ALWAYS:</b> Eine eigene ID wird abgelehnt. Nur <code>OVERRIDING SYSTEM VALUE</code> erlaubt sie, z. B. bei einer Migration.</li>
   <li><b>Lücke:</b> Die ID 2 ging an die zurückgerollte Transaktion. Der nächste Kunde bekommt 3. <code>nextval()</code> wird nie zurückgerollt.</li>
@@ -206,27 +280,7 @@ INSERT 0 1
   <li><b>EXCLUDE:</b> Raum 1 von 09:30 bis 11:00 überlappt mit 09:00 bis 10:00 und wird abgelehnt. Raum 2 zur gleichen Zeit ist erlaubt. <code>btree_gist</code> liefert den <code>=</code>-Operator für GiST.</li>
   <li><b>Indexgrösse:</b> UUID braucht 16 Byte, <code>bigint</code> 8 Byte. Zufällige UUIDs landen überall im Baum und spalten Seiten, darum 19 MB statt 15 MB bei gleichen Werten in wachsender Reihenfolge.</li>
 </ol>
-
-<h2>4. Details, die Interviewer fragen</h2>
-<ol>
-  <li><b>Primärschlüssel:</b> Er ist UNIQUE plus NOT NULL und erzeugt einen Unique B-Tree-Index. Pro Tabelle gibt es höchstens einen.</li>
-  <li><b>Natürlicher vs Surrogat-Schlüssel:</b> Ein <b>natürlicher Schlüssel</b> kommt aus der Fachlichkeit, z. B. AHV-Nummer. Ein <b>Surrogat-Schlüssel</b> ist eine technische ID. Üblich: Surrogat als PK plus UNIQUE auf den natürlichen Schlüssel.</li>
-  <li><b>FK braucht Index im Kind:</b> PostgreSQL legt keinen Index auf die referenzierende Spalte an. Ohne Index liest jedes <code>DELETE</code> im Eltern-Teil die ganze Kind-Tabelle.</li>
-  <li><b>ON DELETE:</b> <code>NO ACTION</code> (Standard), <code>RESTRICT</code>, <code>CASCADE</code>, <code>SET NULL</code>, <code>SET DEFAULT</code>. <code>NO ACTION</code> lässt sich aufschieben, <code>RESTRICT</code> nicht. Seit 18 meldet <code>RESTRICT</code> SQLSTATE 23001 statt 23503 (<a href="https://www.postgresql.org/docs/release/18.0/#RELEASE-18-MIGRATION">Release Notes 18, Migration</a>).</li>
-  <li><b>NOT VALID und VALIDATE:</b> <code>ADD CONSTRAINT … NOT VALID</code> prüft nur neue Zeilen und ist schnell. <code>VALIDATE CONSTRAINT</code> prüft später die Altdaten mit einem schwächeren Lock. Gilt für CHECK und FK, seit 18 auch NOT NULL (<a href="https://www.postgresql.org/docs/release/18.0/#RELEASE-18-CONSTRAINTS">Release Notes 18, Constraints</a>).</li>
-  <li><b>NOT ENFORCED (seit 18):</b> Ein CHECK oder FK wird nur dokumentiert, nicht geprüft (<a href="https://www.postgresql.org/docs/release/18.0/#RELEASE-18-CONSTRAINTS">Release Notes 18, Constraints</a>). Seit 19 lässt sich das auch bei CHECK per <code>ALTER CONSTRAINT … [NOT] ENFORCED</code> umschalten; vorher ging das nur beim FK (<a href="https://www.postgresql.org/docs/release/19.0/#RELEASE-19-CONSTRAINTS">Release Notes 19, Constraints</a>).</li>
-  <li><b>CHECK-Grenzen:</b> Ein CHECK sieht nur die eigene Zeile. Er muss <b>immutable</b> sein, also für dieselbe Zeile immer gleich antworten. Regeln über mehrere Zeilen: UNIQUE, EXCLUDE, FK oder Trigger.</li>
-  <li><b>Temporale Schlüssel (seit 18):</b> <code>PRIMARY KEY (raum, zeit WITHOUT OVERLAPS)</code> verbietet überlappende Zeiträume pro Schlüssel. Der FK dazu nutzt <code>PERIOD</code> (<a href="https://www.postgresql.org/docs/release/18.0/#RELEASE-18-CONSTRAINTS">Release Notes 18, Constraints</a>).</li>
-  <li><b>Identity vs serial:</b> <code>serial</code> ist eine Abkürzung für Sequence plus Default, nicht SQL-Standard. <code>GENERATED … AS IDENTITY</code> ist Standard und an die Spalte gebunden. <code>ALWAYS</code> blockt eigene Werte, <code>BY DEFAULT</code> nicht.</li>
-  <li><b>Sequence-Lücken:</b> <code>nextval()</code> wird nie zurückgerollt. Für lückenlose Nummern (z. B. Rechnungen) braucht es eine Zähler-Tabelle mit Lock, und das ist viel langsamer.</li>
-  <li><b>Sequence-CACHE:</b> Standard ist 1. Mit grösserem Cache reserviert jede Session einen Block. Werte sind dann eindeutig, aber nicht mehr global in Reihenfolge.</li>
-  <li><b>JPA/Hibernate:</b> Der JPA-Standard <code>allocationSize</code> ist 50. Die Sequence braucht dann <code>INCREMENT BY 50</code>, sonst passen IDs nicht zusammen.</li>
-  <li><b>UUID-Typ:</b> <code>uuid</code> speichert 16 Byte binär, nicht 36 Zeichen Text. Als <code>text</code> gespeichert kostet eine UUID mehr als doppelt so viel.</li>
-  <li><b>UUIDv4 vs UUIDv7:</b> <code>gen_random_uuid()</code> bzw. <code>uuidv4()</code> ist rein zufällig. <code>uuidv7()</code> (seit 18, <a href="https://www.postgresql.org/docs/release/18.0/#RELEASE-18-FUNCTIONS">Release Notes 18, Functions</a>; dort kam auch der Alias <code>uuidv4()</code>) beginnt mit einem Zeitstempel in Millisekunden und ist darum ungefähr sortiert. Neue Werte landen rechts im B-Tree.</li>
-  <li><b>Zeit aus der UUID:</b> <code>uuid_extract_timestamp()</code> liest den Zeitstempel einer v7-UUID. Das verrät die Erstellzeit: bei öffentlichen IDs bedenken.</li>
-</ol>
-
-<h2>5. Vergleich</h2>
+<h3>Vergleich</h3>
 <ul>
   <li><b>bigint Identity:</b> 8 Byte, kompakter Index, schnelle Inserts rechts im Baum. Nachteil: zentral vergeben, erratbar, Konflikte beim Zusammenführen von Datenbanken.</li>
   <li><b>UUIDv4:</b> 16 Byte, überall erzeugbar, nicht erratbar. Nachteil: zufällige Index-Position, mehr Seitensplits, mehr WAL, schlechterer Cache.</li>
@@ -236,8 +290,7 @@ INSERT 0 1
   <li><b>CHECK vs Trigger:</b> CHECK ist deklarativ und schnell, sieht aber nur eine Zeile. Ein Trigger kann alles, ist aber versteckte Logik.</li>
   <li><b>Constraint in DB vs Validierung in der App:</b> Die App liefert gute Fehlermeldungen. Nur die DB schützt gegen Race Conditions und andere Schreiber. Beides zusammen ist richtig.</li>
 </ul>
-
-<h2>6. In der Produktion</h2>
+<h3>In der Produktion</h3>
 <ol>
   <li><b>DELETE auf Eltern-Tabelle dauert Minuten:</b> Der FK hat keinen Index im Kind. Jede gelöschte Zeile löst einen Seq Scan aus. Lösung: Index auf die FK-Spalte, z. B. <code>CREATE INDEX CONCURRENTLY</code>.</li>
   <li><b>ALTER TABLE ADD FOREIGN KEY blockiert:</b> Die Prüfung aller Altdaten dauert lange. Lösung: <code>NOT VALID</code> anlegen, dann separat <code>VALIDATE CONSTRAINT</code> laufen lassen.</li>
@@ -247,20 +300,18 @@ INSERT 0 1
   <li><b>CASCADE löscht zu viel:</b> Eine Kette von <code>ON DELETE CASCADE</code> löscht ganze Bäume. Lösung: CASCADE nur für echte Teile eines Ganzen, sonst <code>RESTRICT</code> und bewusstes Löschen.</li>
   <li><b>Unique-Verstoss unter Last:</b> „Prüfen, dann einfügen“ in der App ist eine Race Condition. Lösung: UNIQUE in der DB und <code>INSERT … ON CONFLICT</code>.</li>
 </ol>
-
-<h2>7. Diagnose: Werkzeuge und Abfragen</h2>
+<h3>Diagnose: Werkzeuge und Abfragen</h3>
 <ul>
   <li><b>Alle Constraints einer Tabelle:</b> <code>SELECT conname, contype, convalidated, pg_get_constraintdef(oid) FROM pg_constraint WHERE conrelid = 't'::regclass;</code></li>
-  <li><b>Nicht validierte Constraints:</b> <code>WHERE NOT convalidated</code> auf <code>pg_constraint</code>. Seit 18 zeigt <code>conenforced</code> auch nicht erzwungene (<a href="https://www.postgresql.org/docs/release/18.0/#RELEASE-18-CONSTRAINTS">Release Notes 18, Constraints</a>).</li>
+  <li><b>Nicht validierte Constraints:</b> <code>WHERE NOT convalidated</code> auf <code>pg_constraint</code>. Seit 18 zeigt <code>conenforced</code> auch nicht erzwungene (Release Notes 18, Constraints).</li>
   <li><b>FK ohne Index finden:</b> <code>pg_constraint</code> mit <code>contype = 'f'</code> gegen <code>pg_index</code> prüfen: Beginnt ein Index mit <code>conkey</code>?</li>
   <li><b>Sequence-Stand:</b> <code>SELECT * FROM pg_sequences;</code> zeigt <code>last_value</code>, <code>max_value</code>, <code>increment_by</code>, <code>cache_size</code>.</li>
   <li><b>Überlauf früh erkennen:</b> <code>last_value / max_value</code> aus <code>pg_sequences</code> überwachen.</li>
   <li><b>Identity-Sequence finden:</b> <code>SELECT pg_get_serial_sequence('kunde', 'id');</code></li>
   <li><b>Indexgrösse und Bloat:</b> <code>pg_relation_size('…_pkey')</code>, genauer mit <code>pgstattuple</code> bzw. <code>pgstatindex</code> (Seite VACUUM).</li>
-  <li><b>Fehlercodes:</b> 23505 unique, 23503 FK, 23001 restrict (seit 18, <a href="https://www.postgresql.org/docs/release/18.0/#RELEASE-18-MIGRATION">Release Notes 18</a>), 23514 check, 23502 not null, 23P01 exclusion.</li>
+  <li><b>Fehlercodes:</b> 23505 unique, 23503 FK, 23001 restrict (seit 18, Release Notes 18), 23514 check, 23502 not null, 23P01 exclusion.</li>
 </ul>
-
-<h2>8. Senior-Punkte</h2>
+<h3>Senior-Punkte</h3>
 <div class="senior">
 <ol>
   <li><b>Integrität gehört in die Datenbank.</b> Anwendungen ändern sich, Batch-Jobs und Skripte schreiben auch. Die Regel in der DB gilt für alle.</li>
@@ -272,63 +323,8 @@ INSERT 0 1
   <li><b>Namen für Constraints</b> vergeben. Dann sind Fehlermeldungen und Migrationen lesbar.</li>
 </ol>
 </div>
-
-<h2>9. Aus dem Projekt</h2>
-<p>„Beim Personen-Service von BAG DigiSanté hat jeder Mandant eine eigene PostgreSQL-Datenbank, und Flyway migriert das Schema automatisch pro Mandant. Darum liegen Constraints und Schlüssel als versionierte Migration im Code und sind in jeder Mandanten-Datenbank gleich.“ <span class="small">(Prüfen und durch dein echtes Beispiel ersetzen. Welche Schlüssel-Strategie (bigint oder UUID) dort genutzt wurde, steht nicht im Profil.)</span></p>
-
-<h2>10. Fallen</h2>
-<div class="trap">
-<ul>
-  <li>„Ein Foreign Key legt automatisch einen Index an.“ → <b>Falsch.</b> Nur PK und UNIQUE auf der Eltern-Seite haben einen Index. Das Kind braucht einen eigenen.</li>
-  <li>„Eine Sequence ist lückenlos.“ → <b>Falsch.</b> Rollbacks, Fehler, Cache und Crashs erzeugen Lücken.</li>
-  <li>„UNIQUE verbietet doppelte NULL.“ → <b>Falsch.</b> Nur mit <code>NULLS NOT DISTINCT</code>.</li>
-  <li>„UUIDs sind immer schlecht als Primärschlüssel.“ → <b>Falsch.</b> Zufällige v4 sind teuer im Index. v7 verhält sich fast wie eine Sequence.</li>
-  <li>„RESTRICT und NO ACTION sind gleich.“ → <b>Fast.</b> NO ACTION lässt sich bis zum COMMIT aufschieben, RESTRICT nicht.</li>
-  <li>„Ein CHECK kann andere Zeilen prüfen.“ → <b>Falsch.</b> Er sieht nur die eigene Zeile.</li>
-  <li>„serial und Identity sind verschiedene Techniken.“ → <b>Falsch.</b> Beide nutzen eine Sequence. Identity ist nur die Standard-Syntax mit mehr Schutz.</li>
-</ul>
-</div>
-
-<h2>11. Selbsttest</h2>
-<h3>Warum?</h3>
-<details><summary>Was ist ein Constraint?</summary><p>Eine Regel, die PostgreSQL bei jedem Schreiben prüft. Verstösse brechen die Anweisung ab.</p></details>
-<details><summary>Warum reicht eine Prüfung in der Anwendung nicht?</summary><p>Zwei parallele Requests prüfen gleichzeitig und sehen beide keinen Konflikt. Ausserdem schreiben Skripte und Batch-Jobs an der App vorbei. Nur der Constraint in der DB gilt für alle.</p></details>
-<details><summary>Wie verhindere ich doppelte Einträge bei parallelen Requests?</summary><p>Mit einem UNIQUE Constraint und INSERT … ON CONFLICT. Ein Check in der App vorher reicht nicht.</p></details>
-<h3>Wie innen?</h3>
-<details><summary>Welche Constraint-Arten gibt es?</summary><p>NOT NULL, CHECK, UNIQUE, PRIMARY KEY, FOREIGN KEY und EXCLUDE.</p></details>
-<details><summary>Was ist der Unterschied zwischen PRIMARY KEY und UNIQUE?</summary><p>Der PK ist zusätzlich NOT NULL und es gibt nur einen pro Tabelle. Beide erzeugen einen Unique B-Tree-Index.</p></details>
-<details><summary>Was ist ein Deferrable Constraint?</summary><p>Ein Constraint, dessen Prüfung bis zum COMMIT warten kann. Nützlich bei zyklischen FKs oder beim Tauschen eindeutiger Werte.</p></details>
-<details><summary>Was macht NOT VALID?</summary><p>Der Constraint gilt sofort für neue Zeilen, prüft aber die Altdaten nicht. VALIDATE CONSTRAINT holt das später nach.</p></details>
-<details><summary>Was kann ein CHECK nicht?</summary><p>Andere Zeilen oder Tabellen prüfen. Er muss immutable sein und sieht nur die neue Zeile.</p></details>
-<details><summary>Was ist ein Exclusion Constraint?</summary><p>Er verbietet zwei Zeilen, für die alle angegebenen Operatoren true liefern. Beispiel: gleicher Raum und überlappende Zeit.</p></details>
-<details><summary>Was ist der Unterschied zwischen GENERATED ALWAYS und BY DEFAULT?</summary><p>ALWAYS lehnt eigene Werte ab, ausser mit OVERRIDING SYSTEM VALUE. BY DEFAULT nimmt eigene Werte an.</p></details>
-<details><summary>Warum hat meine ID-Spalte Lücken?</summary><p>nextval() wird nie zurückgerollt. Rollbacks, Fehler, Sequence-Cache und Crashs verbrauchen Nummern.</p></details>
-<details><summary>Was macht der Sequence-CACHE?</summary><p>Jede Session reserviert einen Block von Werten. Das spart Zugriffe, aber Werte sind nicht mehr global in Reihenfolge und Lücken werden grösser.</p></details>
-<h3>Zahlen</h3>
-<details><summary>Wie gross ist eine UUID?</summary><p>16 Byte im Typ uuid, doppelt so viel wie bigint. Als text gespeichert etwa 37 Byte.</p></details>
-<details><summary>Warum allocationSize 50 bei Hibernate?</summary><p>Hibernate holt einen Wert und vergibt 50 IDs im Speicher. Die Sequence muss dazu mit INCREMENT BY 50 laufen.</p></details>
-<details><summary>Was geht kaputt, wenn eine ID-Spalte vom Typ integer ist?</summary><p>Bei 2 147 483 647 ist Schluss, jeder weitere Insert scheitert. Umstellen auf bigint heisst die Tabelle umschreiben. Darum von Anfang an bigint.</p></details>
-<h3>Vergleich</h3>
-<details><summary>Darf eine UNIQUE-Spalte mehrere NULL haben?</summary><p>Ja, standardmässig. Mit NULLS NOT DISTINCT seit Version 15 nicht.</p></details>
-<details><summary>NO ACTION vs RESTRICT?</summary><p>Beide verhindern das Löschen. NO ACTION kann aufgeschoben werden, RESTRICT prüft sofort.</p></details>
-<details><summary>serial oder Identity?</summary><p>Identity. Es ist SQL-Standard, an die Spalte gebunden, und mit ALWAYS sind manuelle Werte gesperrt.</p></details>
-<details><summary>Natürlicher oder Surrogat-Schlüssel?</summary><p>Meist Surrogat als PK, weil natürliche Werte sich ändern. Der natürliche Schlüssel bekommt zusätzlich einen UNIQUE Constraint.</p></details>
-<details><summary>Was ist UUIDv7?</summary><p>Eine UUID, die mit einem Millisekunden-Zeitstempel beginnt. Sie ist ungefähr sortiert und verhält sich im Index fast wie eine Sequence. In PostgreSQL seit 18 per uuidv7() (<a href="https://www.postgresql.org/docs/release/18.0/#RELEASE-18-FUNCTIONS">Release Notes 18</a>).</p></details>
-<details><summary>Warum sind zufällige UUIDs als PK teuer?</summary><p>Jeder Insert landet an zufälliger Stelle im B-Tree. Das spaltet Seiten, braucht mehr Cache und erzeugt mehr WAL.</p></details>
-<details><summary>Hat UUIDv7 einen Nachteil?</summary><p>Ja. Die Erstellzeit ist ablesbar, z. B. mit uuid_extract_timestamp(). Für öffentliche IDs kann das ein Datenschutzthema sein.</p></details>
-<h3>Produktion</h3>
-<details><summary>Braucht ein Foreign Key einen Index?</summary><p>Auf der Eltern-Seite ist er durch PK oder UNIQUE da. Auf der Kind-Seite muss man ihn selbst anlegen, sonst sind DELETE und UPDATE auf den Eltern langsam.</p></details>
-<details><summary>Wie finde ich Foreign Keys ohne Index?</summary><p>pg_constraint mit contype 'f' gegen pg_index abgleichen: Gibt es einen Index, der mit den FK-Spalten beginnt?</p></details>
-<details><summary>Was geht kaputt, wenn ON DELETE CASCADE über mehrere Tabellen geht?</summary><p>Ein einziges DELETE löscht ganze Bäume von Daten, oft mehr als gewollt. CASCADE nur für echte Teile eines Ganzen, sonst RESTRICT und bewusstes Löschen.</p></details>
-<details><summary>Szenario: Ein DELETE auf der Kunden-Tabelle dauert pro Zeile Sekunden. Was prüfen Sie?</summary><p>Ob alle FKs, die auf Kunden zeigen, einen Index im Kind haben. EXPLAIN ANALYZE zeigt die Zeit in den RI-Triggern. Lösung: fehlende Indizes CONCURRENTLY anlegen.</p></details>
-<details><summary>Szenario: Nach einem Datenimport scheitern alle Inserts mit „duplicate key“. Warum?</summary><p>Der Import hat eigene IDs geschrieben, die Sequence steht noch tief. Lösung: Sequence auf max(id) setzen, z. B. mit setval oder ALTER COLUMN … RESTART.</p></details>
-<h3>Design</h3>
-<details><summary>Welche ON-DELETE-Aktionen gibt es?</summary><p>NO ACTION, RESTRICT, CASCADE, SET NULL und SET DEFAULT. Standard ist NO ACTION.</p></details>
-<details><summary>Was ist NOT ENFORCED?</summary><p>Seit 18 (<a href="https://www.postgresql.org/docs/release/18.0/#RELEASE-18-CONSTRAINTS">Release Notes 18</a>): Ein CHECK oder FK wird deklariert, aber nicht geprüft. Er dokumentiert eine Beziehung, schützt aber nicht.</p></details>
-<details><summary>Was bringt WITHOUT OVERLAPS?</summary><p>Seit 18 (<a href="https://www.postgresql.org/docs/release/18.0/#RELEASE-18-CONSTRAINTS">Release Notes 18</a>) ein temporaler PK oder UNIQUE: pro Schlüssel keine überlappenden Zeiträume. Der passende FK nutzt PERIOD.</p></details>
-<details><summary>Wie baue ich lückenlose Rechnungsnummern?</summary><p>Mit einer Zähler-Tabelle, die in derselben Transaktion gesperrt und erhöht wird. Das serialisiert alle Schreiber.</p></details>
-<details><summary>Warum ist ein EXCLUDE-Constraint für Raumbuchungen besser als eine Prüfung im Code?</summary><p>Im Code sehen zwei parallele Buchungen beide keinen Konflikt. Der Exclusion Constraint prüft im Index: Die zweite Buchung wartet auf die erste und scheitert dann mit 23P01.</p></details>
-<details><summary>Szenario: Sie müssen einen FK auf eine Tabelle mit 500 Millionen Zeilen hinzufügen, ohne Downtime. Wie?</summary><p>Erst Index auf die FK-Spalte CONCURRENTLY, dann ADD CONSTRAINT … NOT VALID, dann VALIDATE CONSTRAINT. Vorher Altdaten bereinigen.</p></details>
+<h3>Dein Beispiel</h3>
+</details>
 
 </body>
 </html>

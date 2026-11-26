@@ -35,14 +35,9 @@
 <h1>Isolation Levels und Anomalien</h1>
 <!-- sources: PostgreSQL · Tier 1 · Quellen: PostgreSQL 17 Doku (aktuell ist PostgreSQL 19; wichtige Unterschiede in 18/19 laut Release Notes stehen im Text): „Concurrency Control“ – „Transaction Isolation“ (Read Committed, Repeatable Read, Serializable), „Serialization Failure Handling“, „Data Consistency Checks at the Application Level“, SQL-Befehl SET TRANSACTION, Anhang „PostgreSQL Error Codes“ (40001, 40P01), PostgreSQL Wiki „SSI“, PostgreSQL 19 Doku „Lock Management“ (max_pred_locks_*) -->
 
-<div class="geruest"><h2>Gerüst</h2><dl>
-  <dt>Warum?</dt><dd>Parallele Transaktionen erzeugen Anomalien: Lost Update, Write Skew. Das Level tauscht Anomalien gegen Abbrüche.</dd>
-  <dt>Wie innen?</dt><dd>MVCC-Snapshot: Read Committed pro Befehl, Repeatable Read pro Transaktion. Serializable = Snapshot + SSI, SIRead Locks blockieren nie.</dd>
-  <dt>Zahlen</dt><dd>SQLSTATE 40001 = Serialization Failure, 40P01 = Deadlock. 64 Predicate Locks pro Transaktion, über 32 pro Tabelle → Tabellen-Lock.</dd>
-  <dt>Vergleich</dt><dd>PG Repeatable Read verhindert Phantoms, der Standard nicht. Oracle „Serializable“ ist Snapshot Isolation mit Write Skew.</dd>
-  <dt>Produktion</dt><dd>Serializable ohne Retry → Fehler 500. Seq Scan → Lock auf ganze Tabelle → mehr False Positives.</dd>
-  <dt>Design</dt><dd>Standard Read Committed + atomares <code>UPDATE</code>. Serializable nur für Mehrzeilen-Regeln, mit zentralem Retry. Constraint schlägt Isolation.</dd>
-</dl></div>
+<div class="kern">
+<b>Kern:</b> Ein <b>Isolation Level</b> legt fest, wie viel eine Transaktion von parallelen Transaktionen sieht. PostgreSQL hat drei echte Stufen: <b>Read Committed</b> (Standard, Snapshot pro Befehl), <b>Repeatable Read</b> (ein Snapshot pro Transaktion) und <b>Serializable</b> (Snapshot plus <b>SSI</b>, das gefährliche Muster erkennt). Je höher die Stufe, desto weniger <b>Anomalien</b>, aber desto mehr <b>Serialization Failures</b>, die die Anwendung <b>wiederholen</b> muss.
+</div>
 
 <div class="muster"><h3>Antwort-Muster</h3><p class="mq"><b>Frage:</b> Welche Isolation Levels gibt es, und welches nehmen Sie?</p><ol>
   <li>Mechanismus: Read Committed, Repeatable Read und Serializable, alle auf MVCC-Snapshots.</li>
@@ -51,36 +46,7 @@
   <li>Produktion: Ich lasse Read Committed, schreibe Updates atomar und nutze Serializable nur mit zentralem Retry.</li>
 </ol></div>
 
-<div class="kern">
-<b>Kern:</b> Ein <b>Isolation Level</b> legt fest, wie viel eine Transaktion von parallelen Transaktionen sieht. PostgreSQL hat drei echte Stufen: <b>Read Committed</b> (Standard, Snapshot pro Befehl), <b>Repeatable Read</b> (ein Snapshot pro Transaktion) und <b>Serializable</b> (Snapshot plus <b>SSI</b>, das gefährliche Muster erkennt). Je höher die Stufe, desto weniger <b>Anomalien</b>, aber desto mehr <b>Serialization Failures</b>, die die Anwendung <b>wiederholen</b> muss.
-</div>
-
-<h2>1. Wo sitzt die Isolation?</h2>
-<svg viewBox="0 0 720 310" font-family="-apple-system, system-ui, sans-serif" font-size="14">
-  <defs><marker id="a" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
-  <rect x="10" y="20" width="200" height="60" rx="8" fill="#fff" stroke="#555"/><text x="110" y="44" text-anchor="middle" font-weight="700">Transaktion A</text><text x="110" y="64" text-anchor="middle" font-size="12">Level + Snapshot</text>
-  <rect x="10" y="200" width="200" height="60" rx="8" fill="#fff" stroke="#555"/><text x="110" y="224" text-anchor="middle" font-weight="700">Transaktion B</text><text x="110" y="244" text-anchor="middle" font-size="12">Level + Snapshot</text>
-  <rect x="270" y="110" width="200" height="70" rx="8" fill="#f7f7fa" stroke="#555"/><text x="370" y="136" text-anchor="middle" font-weight="700">Heap</text><text x="370" y="156" text-anchor="middle" font-size="12">Zeilenversionen (MVCC)</text>
-  <line x1="210" y1="60" x2="268" y2="125" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
-  <line x1="210" y1="220" x2="268" y2="165" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
-  <rect x="520" y="20" width="190" height="60" rx="8" fill="#dbe9fb" stroke="#0a66c2"/><text x="615" y="44" text-anchor="middle" font-weight="700">Row Locks</text><text x="615" y="64" text-anchor="middle" font-size="12">Schreiber gegen Schreiber</text>
-  <rect x="520" y="115" width="190" height="60" rx="8" fill="#e8f5e9" stroke="#2e7d32"/><text x="615" y="139" text-anchor="middle" font-weight="700">SSI</text><text x="615" y="159" text-anchor="middle" font-size="12">SIRead Locks (nur Serializable)</text>
-  <rect x="520" y="210" width="190" height="60" rx="8" fill="#fff4f2" stroke="#c62828"/><text x="615" y="234" text-anchor="middle" font-weight="700">Fehler 40001</text><text x="615" y="254" text-anchor="middle" font-size="12">→ Retry in der App</text>
-  <line x1="470" y1="130" x2="518" y2="55" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
-  <line x1="470" y1="145" x2="518" y2="145" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
-  <line x1="615" y1="175" x2="615" y2="208" stroke="#c62828" stroke-width="2" marker-end="url(#a)"/>
-  <line x1="615" y1="80" x2="615" y2="113" stroke="#999" stroke-width="1.5" stroke-dasharray="5 4"/>
-</svg>
-<ol>
-  <li><b>Transaktion:</b> hat ein Level, gesetzt mit <code>BEGIN ISOLATION LEVEL …</code> oder <code>default_transaction_isolation</code>.</li>
-  <li><b>Snapshot:</b> bestimmt, welche Versionen die Transaktion sieht. Read Committed nimmt pro Befehl einen neuen.</li>
-  <li><b>Heap:</b> hält alle Versionen. Leser lesen ohne Sperre.</li>
-  <li><b>Row Locks:</b> Zwei Schreiber auf dieselbe Zeile warten aufeinander, in jedem Level.</li>
-  <li><b>SSI:</b> Serializable Snapshot Isolation. Nur bei Serializable merkt sich PostgreSQL, was gelesen wurde (<b>SIRead Locks</b>). Diese Locks blockieren nie.</li>
-  <li><b>Fehler 40001:</b> <code>serialization_failure</code>. Die Transaktion wird abgebrochen. Die Anwendung muss sie komplett wiederholen.</li>
-</ol>
-
-<h2>2. Die Reise einer Write-Skew-Anomalie (die Geschichte zum Merken)</h2>
+<h2>1. Die Reise einer Write-Skew-Anomalie</h2>
 <svg viewBox="0 0 720 340" font-family="-apple-system, system-ui, sans-serif" font-size="14">
   <defs><marker id="b" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
   <text x="130" y="22" text-anchor="middle" font-weight="700">Session A (Alice)</text>
@@ -106,42 +72,32 @@
   <li><b>Serializable erkennt es:</b> SSI sieht zwei <b>rw-Abhängigkeiten</b> (A las, was B schrieb, und umgekehrt). Einer muss abbrechen: Fehler <code>40001</code>. Bob wiederholt, sieht nun 1 Arzt und darf nicht gehen.</li>
 </ol>
 
-<h2>3. Beispiel: Lost Update und Write Skew</h2>
-<pre>CREATE TABLE konto   (id int PRIMARY KEY, saldo int);
-CREATE TABLE doctors (name text PRIMARY KEY, on_call bool);
-INSERT INTO konto VALUES (1, 100);
-INSERT INTO doctors VALUES ('Alice', true), ('Bob', true);
-
--- A) Lost Update unter REPEATABLE READ
-A: BEGIN ISOLATION LEVEL REPEATABLE READ;  SELECT saldo FROM konto WHERE id = 1;  -- 100
-B: BEGIN ISOLATION LEVEL REPEATABLE READ;  SELECT saldo FROM konto WHERE id = 1;  -- 100
-A: UPDATE konto SET saldo = 100 + 10 WHERE id = 1;  COMMIT;
-B: UPDATE konto SET saldo = 100 + 20 WHERE id = 1;
-
--- B) Write Skew unter SERIALIZABLE
-A: BEGIN ISOLATION LEVEL SERIALIZABLE;  SELECT count(*) FROM doctors WHERE on_call;  -- 2
-B: BEGIN ISOLATION LEVEL SERIALIZABLE;  SELECT count(*) FROM doctors WHERE on_call;  -- 2
-A: UPDATE doctors SET on_call = false WHERE name = 'Alice';
-B: UPDATE doctors SET on_call = false WHERE name = 'Bob';
-A: COMMIT;
-B: COMMIT;</pre>
-<pre>-- A) Session B beim UPDATE:
-ERROR:  could not serialize access due to concurrent update
-
--- B) Session B beim COMMIT:
-ERROR:  could not serialize access due to read/write dependencies among transactions
-DETAIL:  Reason code: Canceled on identification as a pivot, during commit attempt.
-HINT:  The transaction might succeed if retried.</pre>
-<p class="small">Erwartetes Ergebnis (laut Doku, nicht ausgeführt), zwei psql-Sessions mit PostgreSQL 17. Der „Reason code“ kann je nach Ablauf anders lauten.</p>
+<h2>2. Aufbau</h2>
+<svg viewBox="0 0 720 310" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="a" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="10" y="20" width="200" height="60" rx="8" fill="#fff" stroke="#555"/><text x="110" y="44" text-anchor="middle" font-weight="700">Transaktion A</text><text x="110" y="64" text-anchor="middle" font-size="12">Level + Snapshot</text>
+  <rect x="10" y="200" width="200" height="60" rx="8" fill="#fff" stroke="#555"/><text x="110" y="224" text-anchor="middle" font-weight="700">Transaktion B</text><text x="110" y="244" text-anchor="middle" font-size="12">Level + Snapshot</text>
+  <rect x="270" y="110" width="200" height="70" rx="8" fill="#f7f7fa" stroke="#555"/><text x="370" y="136" text-anchor="middle" font-weight="700">Heap</text><text x="370" y="156" text-anchor="middle" font-size="12">Zeilenversionen (MVCC)</text>
+  <line x1="210" y1="60" x2="268" y2="125" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <line x1="210" y1="220" x2="268" y2="165" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="520" y="20" width="190" height="60" rx="8" fill="#dbe9fb" stroke="#0a66c2"/><text x="615" y="44" text-anchor="middle" font-weight="700">Row Locks</text><text x="615" y="64" text-anchor="middle" font-size="12">Schreiber gegen Schreiber</text>
+  <rect x="520" y="115" width="190" height="60" rx="8" fill="#e8f5e9" stroke="#2e7d32"/><text x="615" y="139" text-anchor="middle" font-weight="700">SSI</text><text x="615" y="159" text-anchor="middle" font-size="12">SIRead Locks (nur Serializable)</text>
+  <rect x="520" y="210" width="190" height="60" rx="8" fill="#fff4f2" stroke="#c62828"/><text x="615" y="234" text-anchor="middle" font-weight="700">Fehler 40001</text><text x="615" y="254" text-anchor="middle" font-size="12">→ Retry in der App</text>
+  <line x1="470" y1="130" x2="518" y2="55" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <line x1="470" y1="145" x2="518" y2="145" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <line x1="615" y1="175" x2="615" y2="208" stroke="#c62828" stroke-width="2" marker-end="url(#a)"/>
+  <line x1="615" y1="80" x2="615" y2="113" stroke="#999" stroke-width="1.5" stroke-dasharray="5 4"/>
+</svg>
 <ol>
-  <li>In A rechnet die Anwendung den neuen Wert selbst (<b>read-modify-write</b>). Unter <b>Read Committed</b> würde B einfach 120 schreiben. Die +10 von A wären verloren: <b>Lost Update</b>.</li>
-  <li>Unter <b>Repeatable Read</b> merkt B: Die Zeile wurde nach meinem Snapshot geändert. B bekommt <code>40001</code> statt den Wert zu überschreiben.</li>
-  <li>In B ändern A und B verschiedene Zeilen. Es gibt keinen Lock-Konflikt. Unter Repeatable Read kämen beide durch.</li>
-  <li>Unter <b>Serializable</b> erkennt SSI den Zyklus und bricht B ab. Der <code>HINT</code> sagt es klar: wiederholen.</li>
-  <li>Beide Fehler haben SQLSTATE <code>40001</code>. Der Retry-Code muss genau darauf reagieren.</li>
+  <li><b>Transaktion:</b> hat ein Level, gesetzt mit <code>BEGIN ISOLATION LEVEL …</code> oder <code>default_transaction_isolation</code>.</li>
+  <li><b>Snapshot:</b> bestimmt, welche Versionen die Transaktion sieht. Read Committed nimmt pro Befehl einen neuen.</li>
+  <li><b>Heap:</b> hält alle Versionen. Leser lesen ohne Sperre.</li>
+  <li><b>Row Locks:</b> Zwei Schreiber auf dieselbe Zeile warten aufeinander, in jedem Level.</li>
+  <li><b>SSI:</b> Serializable Snapshot Isolation. Nur bei Serializable merkt sich PostgreSQL, was gelesen wurde (<b>SIRead Locks</b>). Diese Locks blockieren nie.</li>
+  <li><b>Fehler 40001:</b> <code>serialization_failure</code>. Die Transaktion wird abgebrochen. Die Anwendung muss sie komplett wiederholen.</li>
 </ol>
 
-<h2>4. Details, die Interviewer fragen</h2>
+<h2>3. Details, die Interviewer fragen</h2>
 <ol>
   <li><b>Dirty Read:</b> Lesen von nicht committeten Daten. In PostgreSQL <b>nie</b> möglich. <code>READ UNCOMMITTED</code> verhält sich wie Read Committed.</li>
   <li><b>Non-repeatable Read:</b> Dieselbe Zeile zweimal gelesen, anderer Wert, weil jemand dazwischen committet hat. Möglich in Read Committed.</li>
@@ -160,64 +116,7 @@ HINT:  The transaction might succeed if retried.</pre>
   <li><b>Write Skew ohne Serializable verhindern:</b> Die gelesenen Zeilen mit <code>FOR UPDATE</code> sperren. Oder den Konflikt „materialisieren“: eine Zeile, die beide ändern müssen. Oder ein Constraint.</li>
 </ol>
 
-<h2>5. Vergleich</h2>
-<ul>
-  <li><b>Read Committed:</b> kein Dirty Read. Non-repeatable Read, Phantom, Lost Update und Write Skew möglich. Fast nie 40001.</li>
-  <li><b>Repeatable Read:</b> kein Dirty, Non-repeatable oder Phantom Read. Lost Update wird zu Fehler 40001. Write Skew möglich.</li>
-  <li><b>Serializable:</b> keine Anomalie. Ergebnis wie bei einer seriellen Reihenfolge. Mehr 40001, etwas Overhead für Predicate Locks.</li>
-  <li><b>SQL-Standard vs PostgreSQL:</b> Der Standard erlaubt Phantoms in Repeatable Read. PostgreSQL verhindert sie. Read Uncommitted gibt es nur dem Namen nach.</li>
-  <li><b>SQL Server:</b> Standard Read Committed <b>mit Locks</b>: Leser warten auf Schreiber. <code>SNAPSHOT</code> entspricht etwa PostgreSQL Repeatable Read. Serializable dort mit Range Locks, also blockierend.</li>
-  <li><b>Oracle:</b> Standard Read Committed. Sein „Serializable“ ist Snapshot Isolation, erlaubt also Write Skew.</li>
-  <li><b>MySQL InnoDB:</b> Standard Repeatable Read mit Gap Locks gegen Phantoms bei sperrenden Reads.</li>
-  <li><b>Pessimistisch vs optimistisch:</b> <code>FOR UPDATE</code> wartet vorher. Repeatable Read, Serializable und <code>@Version</code> scheitern nachher und brauchen Retry.</li>
-</ul>
-
-<h2>6. In der Produktion</h2>
-<ol>
-  <li><b>Lost Update in Read Committed:</b> Lagerbestand per <code>SELECT</code> lesen, in Java rechnen, zurückschreiben. Unter Last stimmt der Bestand nicht. Lösung: <code>SET bestand = bestand - 1</code> mit <code>WHERE bestand &gt; 0</code>, oder <code>FOR UPDATE</code>.</li>
-  <li><b>Serializable ohne Retry:</b> Das Team schaltet Serializable ein. Unter Last sehen Nutzer Fehler 500. Lösung: generischer Retry für 40001 um die ganze Transaktion.</li>
-  <li><b>Retry wiederholt Seiteneffekte:</b> Die Transaktion schickt vor dem COMMIT eine E-Mail. Bei Retry kommt sie doppelt. Lösung: Seiteneffekte erst nach COMMIT, z. B. per Outbox.</li>
-  <li><b>Viele False Positives:</b> Serializable mit vielen Sequential Scans sperrt ganze Tabellen als Prädikat. Lösung: passende Indexe, kurze Transaktionen, <code>max_pred_locks_per_transaction</code> erhöhen.</li>
-  <li><b>Report ist inkonsistent:</b> Ein Report liest mehrere Tabellen in Read Committed. Zwischen den Abfragen ändern sich Daten. Lösung: Repeatable Read oder Serializable Read Only Deferrable für den Report.</li>
-  <li><b>Lange Repeatable-Read-Transaktion:</b> Sie hält einen alten Snapshot. VACUUM kann nicht aufräumen. Lösung: Reports kurz halten oder auf eine Replica legen.</li>
-</ol>
-
-<h2>7. Diagnose: Werkzeuge und Abfragen</h2>
-<pre>SHOW default_transaction_isolation;          -- read committed
-SHOW transaction_isolation;                  -- aktuelle Transaktion
-
--- Predicate Locks von SSI sehen
-SELECT pid, locktype, relation::regclass, page, tuple
-FROM pg_locks WHERE mode = 'SIReadLock';
-
--- Abbrüche zählen (PostgreSQL 17)
-SELECT datname, xact_rollback, conflicts, deadlocks FROM pg_stat_database;</pre>
-<ul>
-  <li>Logs: Fehler mit SQLSTATE <code>40001</code> zählen. <code>log_line_prefix</code> mit <code>%e</code> zeigt den SQLSTATE.</li>
-  <li><code>pg_locks</code> mit <code>mode = 'SIReadLock'</code>: wie grob SSI sperrt (Tupel, Seite, Relation).</li>
-  <li><code>pg_stat_database</code>: <code>xact_rollback</code> und <code>deadlocks</code> steigen bei vielen Konflikten.</li>
-  <li>Anwendungs-Metrik: Anzahl Retries pro Endpoint. Sie zeigt Hotspots.</li>
-  <li><code>max_pred_locks_per_transaction</code> (64), <code>max_pred_locks_per_relation</code>, <code>max_pred_locks_per_page</code>: steuern, wann SSI auf gröbere Locks wechselt.</li>
-  <li><b>Die Standardwerte genau:</b> <code>max_pred_locks_per_page = 2</code>. Ab mehr als 2 gesperrten Tupeln einer Seite gilt der Lock für die ganze Seite. <code>max_pred_locks_per_relation = -2</code> heisst: 64 / 2 = 32 Seiten- oder Tupel-Locks pro Tabelle, dann ein Lock auf die ganze Tabelle.</li>
-  <li><b>Warum das zählt:</b> Jede Vergröberung meldet mehr scheinbare Konflikte. Die Doku nennt das als Grund für steigende 40001-Raten. Gegenmittel: die drei Werte erhöhen oder Index Scans statt Seq Scans.</li>
-</ul>
-
-<h2>8. Senior-Punkte</h2>
-<div class="senior">
-<ol>
-  <li><b>Read Committed ist oft genug,</b> wenn Updates atomar formuliert sind. Die meisten Bugs kommen von read-modify-write im Code.</li>
-  <li><b>Serializable ist die einfachste korrekte Lösung</b> für komplexe Regeln über mehrere Zeilen. Der Preis: Retry-Logik und etwas Durchsatz.</li>
-  <li><b>Retry ist Pflicht ab Repeatable Read.</b> Er gehört an eine zentrale Stelle, nicht in jede Methode. Seiteneffekte erst nach dem COMMIT.</li>
-  <li><b>Pessimistisch bei hohem Konflikt,</b> optimistisch bei seltenem Konflikt. Viele Retries kosten mehr als kurzes Warten.</li>
-  <li><b>Isolation Level ist pro Transaktion wählbar.</b> Standard lassen und nur kritische Pfade höher stellen.</li>
-  <li><b>Constraints schlagen Isolation.</b> Ein <code>UNIQUE</code>- oder <code>EXCLUDE</code>-Constraint schützt eine Regel in jedem Level.</li>
-</ol>
-</div>
-
-<h2>9. Aus dem Projekt</h2>
-<p>„Bei MATCH darf eine Nachricht nicht doppelt verarbeitet werden. Darum holt ein Job sie mit einem einzigen atomaren UPDATE (Pending → Processing), nicht mit SELECT und danach UPDATE. In PostgreSQL wäre das <code>UPDATE … RETURNING</code>. Dafür reicht Read Committed.“ <span class="small">(Prüfen und durch dein echtes Beispiel ersetzen.)</span></p>
-
-<h2>10. Fallen</h2>
+<h2>4. Fallen</h2>
 <div class="trap">
 <ul>
   <li>„PostgreSQL erlaubt Dirty Reads mit READ UNCOMMITTED.“ → <b>Falsch.</b> READ UNCOMMITTED ist dort Read Committed.</li>
@@ -230,7 +129,7 @@ SELECT datname, xact_rollback, conflicts, deadlocks FROM pg_stat_database;</pre>
 </ul>
 </div>
 
-<h2>11. Selbsttest</h2>
+<h2>5. Selbsttest</h2>
 <h3>Warum?</h3>
 <details><summary>Warum gibt es überhaupt verschiedene Isolation Levels?</summary><p>Mehr Isolation verhindert mehr Anomalien, führt aber zu mehr Abbrüchen und Retries. Jede Transaktion wählt ihren Kompromiss selbst.</p></details>
 <details><summary>Was ist ein Dirty Read?</summary><p>Lesen von Daten, die noch nicht committed sind. In PostgreSQL in keinem Level möglich.</p></details>
@@ -267,6 +166,103 @@ SELECT datname, xact_rollback, conflicts, deadlocks FROM pg_stat_database;</pre>
 <details><summary>Wie verhindern Sie Write Skew ohne Serializable?</summary><p>Gelesene Zeilen mit FOR UPDATE sperren, den Konflikt in einer gemeinsamen Zeile materialisieren, oder ein Constraint nutzen.</p></details>
 <details><summary>Warum schlägt ein Constraint die Isolation?</summary><p>Ein <code>UNIQUE</code>- oder <code>EXCLUDE</code>-Constraint gilt in jedem Level und für jeden Client. Die Regel hängt dann nicht am richtigen Level im Code.</p></details>
 <details><summary>Szenario: Zwei Buchungen für denselben Raum und Zeitraum kommen gleichzeitig durch. Wie verhindern Sie das?</summary><p>Am besten mit einem EXCLUDE-Constraint auf Raum und Zeitbereich. Alternativ Serializable mit Retry oder FOR UPDATE auf eine Raum-Zeile.</p></details>
+
+<details class="mehr"><summary>Mehr</summary>
+<h3>Gerüst</h3>
+<ul>
+  <li><b>Warum?</b> Parallele Transaktionen erzeugen Anomalien: Lost Update, Write Skew. Das Level tauscht Anomalien gegen Abbrüche.</li>
+  <li><b>Wie innen?</b> MVCC-Snapshot: Read Committed pro Befehl, Repeatable Read pro Transaktion. Serializable = Snapshot + SSI, SIRead Locks blockieren nie.</li>
+  <li><b>Zahlen</b> SQLSTATE 40001 = Serialization Failure, 40P01 = Deadlock. 64 Predicate Locks pro Transaktion, über 32 pro Tabelle → Tabellen-Lock.</li>
+  <li><b>Vergleich</b> PG Repeatable Read verhindert Phantoms, der Standard nicht. Oracle „Serializable“ ist Snapshot Isolation mit Write Skew.</li>
+  <li><b>Produktion</b> Serializable ohne Retry → Fehler 500. Seq Scan → Lock auf ganze Tabelle → mehr False Positives.</li>
+  <li><b>Design</b> Standard Read Committed + atomares <code>UPDATE</code>. Serializable nur für Mehrzeilen-Regeln, mit zentralem Retry. Constraint schlägt Isolation.</li>
+</ul>
+<h3>Beispiel: Lost Update und Write Skew</h3>
+<pre>CREATE TABLE konto   (id int PRIMARY KEY, saldo int);
+CREATE TABLE doctors (name text PRIMARY KEY, on_call bool);
+INSERT INTO konto VALUES (1, 100);
+INSERT INTO doctors VALUES ('Alice', true), ('Bob', true);
+
+-- A) Lost Update unter REPEATABLE READ
+A: BEGIN ISOLATION LEVEL REPEATABLE READ;  SELECT saldo FROM konto WHERE id = 1;  -- 100
+B: BEGIN ISOLATION LEVEL REPEATABLE READ;  SELECT saldo FROM konto WHERE id = 1;  -- 100
+A: UPDATE konto SET saldo = 100 + 10 WHERE id = 1;  COMMIT;
+B: UPDATE konto SET saldo = 100 + 20 WHERE id = 1;
+
+-- B) Write Skew unter SERIALIZABLE
+A: BEGIN ISOLATION LEVEL SERIALIZABLE;  SELECT count(*) FROM doctors WHERE on_call;  -- 2
+B: BEGIN ISOLATION LEVEL SERIALIZABLE;  SELECT count(*) FROM doctors WHERE on_call;  -- 2
+A: UPDATE doctors SET on_call = false WHERE name = 'Alice';
+B: UPDATE doctors SET on_call = false WHERE name = 'Bob';
+A: COMMIT;
+B: COMMIT;</pre>
+<pre>-- A) Session B beim UPDATE:
+ERROR:  could not serialize access due to concurrent update
+
+-- B) Session B beim COMMIT:
+ERROR:  could not serialize access due to read/write dependencies among transactions
+DETAIL:  Reason code: Canceled on identification as a pivot, during commit attempt.
+HINT:  The transaction might succeed if retried.</pre>
+<p class="small">Erwartetes Ergebnis (laut Doku, nicht ausgeführt), zwei psql-Sessions mit PostgreSQL 17. Der „Reason code“ kann je nach Ablauf anders lauten.</p>
+<ol>
+  <li>In A rechnet die Anwendung den neuen Wert selbst (<b>read-modify-write</b>). Unter <b>Read Committed</b> würde B einfach 120 schreiben. Die +10 von A wären verloren: <b>Lost Update</b>.</li>
+  <li>Unter <b>Repeatable Read</b> merkt B: Die Zeile wurde nach meinem Snapshot geändert. B bekommt <code>40001</code> statt den Wert zu überschreiben.</li>
+  <li>In B ändern A und B verschiedene Zeilen. Es gibt keinen Lock-Konflikt. Unter Repeatable Read kämen beide durch.</li>
+  <li>Unter <b>Serializable</b> erkennt SSI den Zyklus und bricht B ab. Der <code>HINT</code> sagt es klar: wiederholen.</li>
+  <li>Beide Fehler haben SQLSTATE <code>40001</code>. Der Retry-Code muss genau darauf reagieren.</li>
+</ol>
+<h3>Vergleich</h3>
+<ul>
+  <li><b>Read Committed:</b> kein Dirty Read. Non-repeatable Read, Phantom, Lost Update und Write Skew möglich. Fast nie 40001.</li>
+  <li><b>Repeatable Read:</b> kein Dirty, Non-repeatable oder Phantom Read. Lost Update wird zu Fehler 40001. Write Skew möglich.</li>
+  <li><b>Serializable:</b> keine Anomalie. Ergebnis wie bei einer seriellen Reihenfolge. Mehr 40001, etwas Overhead für Predicate Locks.</li>
+  <li><b>SQL-Standard vs PostgreSQL:</b> Der Standard erlaubt Phantoms in Repeatable Read. PostgreSQL verhindert sie. Read Uncommitted gibt es nur dem Namen nach.</li>
+  <li><b>SQL Server:</b> Standard Read Committed <b>mit Locks</b>: Leser warten auf Schreiber. <code>SNAPSHOT</code> entspricht etwa PostgreSQL Repeatable Read. Serializable dort mit Range Locks, also blockierend.</li>
+  <li><b>Oracle:</b> Standard Read Committed. Sein „Serializable“ ist Snapshot Isolation, erlaubt also Write Skew.</li>
+  <li><b>MySQL InnoDB:</b> Standard Repeatable Read mit Gap Locks gegen Phantoms bei sperrenden Reads.</li>
+  <li><b>Pessimistisch vs optimistisch:</b> <code>FOR UPDATE</code> wartet vorher. Repeatable Read, Serializable und <code>@Version</code> scheitern nachher und brauchen Retry.</li>
+</ul>
+<h3>In der Produktion</h3>
+<ol>
+  <li><b>Lost Update in Read Committed:</b> Lagerbestand per <code>SELECT</code> lesen, in Java rechnen, zurückschreiben. Unter Last stimmt der Bestand nicht. Lösung: <code>SET bestand = bestand - 1</code> mit <code>WHERE bestand &gt; 0</code>, oder <code>FOR UPDATE</code>.</li>
+  <li><b>Serializable ohne Retry:</b> Das Team schaltet Serializable ein. Unter Last sehen Nutzer Fehler 500. Lösung: generischer Retry für 40001 um die ganze Transaktion.</li>
+  <li><b>Retry wiederholt Seiteneffekte:</b> Die Transaktion schickt vor dem COMMIT eine E-Mail. Bei Retry kommt sie doppelt. Lösung: Seiteneffekte erst nach COMMIT, z. B. per Outbox.</li>
+  <li><b>Viele False Positives:</b> Serializable mit vielen Sequential Scans sperrt ganze Tabellen als Prädikat. Lösung: passende Indexe, kurze Transaktionen, <code>max_pred_locks_per_transaction</code> erhöhen.</li>
+  <li><b>Report ist inkonsistent:</b> Ein Report liest mehrere Tabellen in Read Committed. Zwischen den Abfragen ändern sich Daten. Lösung: Repeatable Read oder Serializable Read Only Deferrable für den Report.</li>
+  <li><b>Lange Repeatable-Read-Transaktion:</b> Sie hält einen alten Snapshot. VACUUM kann nicht aufräumen. Lösung: Reports kurz halten oder auf eine Replica legen.</li>
+</ol>
+<h3>Diagnose: Werkzeuge und Abfragen</h3>
+<pre>SHOW default_transaction_isolation;          -- read committed
+SHOW transaction_isolation;                  -- aktuelle Transaktion
+
+-- Predicate Locks von SSI sehen
+SELECT pid, locktype, relation::regclass, page, tuple
+FROM pg_locks WHERE mode = 'SIReadLock';
+
+-- Abbrüche zählen (PostgreSQL 17)
+SELECT datname, xact_rollback, conflicts, deadlocks FROM pg_stat_database;</pre>
+<ul>
+  <li>Logs: Fehler mit SQLSTATE <code>40001</code> zählen. <code>log_line_prefix</code> mit <code>%e</code> zeigt den SQLSTATE.</li>
+  <li><code>pg_locks</code> mit <code>mode = 'SIReadLock'</code>: wie grob SSI sperrt (Tupel, Seite, Relation).</li>
+  <li><code>pg_stat_database</code>: <code>xact_rollback</code> und <code>deadlocks</code> steigen bei vielen Konflikten.</li>
+  <li>Anwendungs-Metrik: Anzahl Retries pro Endpoint. Sie zeigt Hotspots.</li>
+  <li><code>max_pred_locks_per_transaction</code> (64), <code>max_pred_locks_per_relation</code>, <code>max_pred_locks_per_page</code>: steuern, wann SSI auf gröbere Locks wechselt.</li>
+  <li><b>Die Standardwerte genau:</b> <code>max_pred_locks_per_page = 2</code>. Ab mehr als 2 gesperrten Tupeln einer Seite gilt der Lock für die ganze Seite. <code>max_pred_locks_per_relation = -2</code> heisst: 64 / 2 = 32 Seiten- oder Tupel-Locks pro Tabelle, dann ein Lock auf die ganze Tabelle.</li>
+  <li><b>Warum das zählt:</b> Jede Vergröberung meldet mehr scheinbare Konflikte. Die Doku nennt das als Grund für steigende 40001-Raten. Gegenmittel: die drei Werte erhöhen oder Index Scans statt Seq Scans.</li>
+</ul>
+<h3>Senior-Punkte</h3>
+<div class="senior">
+<ol>
+  <li><b>Read Committed ist oft genug,</b> wenn Updates atomar formuliert sind. Die meisten Bugs kommen von read-modify-write im Code.</li>
+  <li><b>Serializable ist die einfachste korrekte Lösung</b> für komplexe Regeln über mehrere Zeilen. Der Preis: Retry-Logik und etwas Durchsatz.</li>
+  <li><b>Retry ist Pflicht ab Repeatable Read.</b> Er gehört an eine zentrale Stelle, nicht in jede Methode. Seiteneffekte erst nach dem COMMIT.</li>
+  <li><b>Pessimistisch bei hohem Konflikt,</b> optimistisch bei seltenem Konflikt. Viele Retries kosten mehr als kurzes Warten.</li>
+  <li><b>Isolation Level ist pro Transaktion wählbar.</b> Standard lassen und nur kritische Pfade höher stellen.</li>
+  <li><b>Constraints schlagen Isolation.</b> Ein <code>UNIQUE</code>- oder <code>EXCLUDE</code>-Constraint schützt eine Regel in jedem Level.</li>
+</ol>
+</div>
+<h3>Dein Beispiel</h3>
+</details>
 
 </body>
 </html>

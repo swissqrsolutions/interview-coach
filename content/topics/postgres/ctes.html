@@ -35,14 +35,9 @@
 <h1>CTEs und rekursive Abfragen</h1>
 <!-- sources: PostgreSQL 19 (aktuell seit 19.11.2026; Beispiele auf 17.12 ausgeführt, CTE-Verhalten in 17–19 gleich) · Quellen: PostgreSQL 19 Doku, Kapitel 7.8 „WITH Queries (Common Table Expressions)“, SQL-Befehl SELECT (WITH-Klausel), Release Notes 12 (CTE-Inlining), 14 (SEARCH/CYCLE), 17 (CTE-Statistiken), 18 (EXPLAIN-Speicher für CTE-Knoten) -->
 
-<div class="geruest"><h2>Gerüst</h2><dl>
-  <dt>Warum?</dt><dd>Lange SQL in benannte Schritte teilen. <code>WITH RECURSIVE</code> für Bäume und Graphen. DML im WITH: mehrere Änderungen atomar in einer Anweisung.</dd>
-  <dt>Wie innen?</dt><dd>Seit 12: einmal genutzt, reines SELECT, nicht volatil, nicht rekursiv → gefaltet. Sonst CTE Scan. Rekursion = Schleife über eine Working Table.</dd>
-  <dt>Zahlen</dt><dd>Inlining seit 12, <code>SEARCH</code>/<code>CYCLE</code> seit 14, CTE-Statistiken seit 17, Speicher im EXPLAIN seit 18 (<a href="https://www.postgresql.org/docs/18/release-18.html#RELEASE-18-EXPLAIN">PG 18 Release Notes</a>). Puffer über <code>work_mem</code> (4 MB) → Platte.</dd>
-  <dt>Vergleich</dt><dd>CTE = eine Anweisung. Temp-Tabelle = Session, mit Index und Statistik. View = gespeichert für alle. Oracle hat zusätzlich <code>CONNECT BY</code>.</dd>
-  <dt>Produktion</dt><dd>Zyklus in den Daten → Endlosschleife, <code>UNION ALL</code> hilft nicht. <code>MATERIALIZED</code> oder Mehrfachnutzung → Filter wandert nicht hinein → Seq Scan.</dd>
-  <dt>Design</dt><dd><code>MATERIALIZED</code> nur nach Plan-Vergleich. Jede Rekursion: <code>CYCLE</code> + Tiefengrenze + Timeout. Grosse Bäume: <code>ltree</code> oder Closure Table.</dd>
-</dl></div>
+<div class="kern">
+<b>Kern:</b> Eine <b>CTE</b> (<b>Common Table Expression</b>) ist eine benannte Hilfsabfrage im <code>WITH</code>-Teil einer Anweisung. Sie macht lange SQL-Abfragen lesbar und erlaubt mit <code>WITH RECURSIVE</code> Abfragen über Bäume und Graphen. Seit PostgreSQL 12 ist eine einfache CTE <b>kein Optimierungszaun</b> mehr: Der Planner faltet sie in die Hauptabfrage.
+</div>
 
 <div class="muster"><h3>Antwort-Muster</h3><p class="mq"><b>Frage:</b> Ist eine CTE in PostgreSQL ein Optimierungszaun?</p><ol>
   <li>Mechanismus: Seit Version 12 faltet der Planner eine einfache CTE in die Hauptabfrage, dann wandern äussere Filter hinein.</li>
@@ -51,36 +46,7 @@
   <li>Produktion: Ich lasse den Standard und setze <code>MATERIALIZED</code> nur nach einem Plan-Vergleich, mit Kommentar.</li>
 </ol></div>
 
-<div class="kern">
-<b>Kern:</b> Eine <b>CTE</b> (<b>Common Table Expression</b>) ist eine benannte Hilfsabfrage im <code>WITH</code>-Teil einer Anweisung. Sie macht lange SQL-Abfragen lesbar und erlaubt mit <code>WITH RECURSIVE</code> Abfragen über Bäume und Graphen. Seit PostgreSQL 12 ist eine einfache CTE <b>kein Optimierungszaun</b> mehr: Der Planner faltet sie in die Hauptabfrage.
-</div>
-
-<h2>1. Wo sitzt die CTE?</h2>
-<svg viewBox="0 0 720 300" font-family="-apple-system, system-ui, sans-serif" font-size="14">
-  <defs><marker id="a" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
-  <rect x="10" y="20" width="160" height="56" rx="8" fill="#fff" stroke="#555"/><text x="90" y="44" text-anchor="middle" font-weight="700">SQL-Text</text><text x="90" y="62" text-anchor="middle" font-size="12">WITH a AS (...) SELECT</text>
-  <line x1="170" y1="48" x2="218" y2="48" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
-  <rect x="220" y="20" width="140" height="56" rx="8" fill="#dbe9fb" stroke="#0a66c2"/><text x="290" y="44" text-anchor="middle" font-weight="700">Parser</text><text x="290" y="62" text-anchor="middle" font-size="12">CTE als Unterabfrage</text>
-  <line x1="360" y1="48" x2="408" y2="48" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
-  <rect x="410" y="20" width="300" height="56" rx="8" fill="#dbe9fb" stroke="#0a66c2"/><text x="560" y="44" text-anchor="middle" font-weight="700">Planner: falten oder nicht?</text><text x="560" y="62" text-anchor="middle" font-size="12">1× genutzt, SELECT, nicht volatil, nicht rekursiv</text>
-  <line x1="480" y1="76" x2="300" y2="138" stroke="#555" stroke-width="2" marker-end="url(#a)"/><text x="350" y="104" font-size="12">ja</text>
-  <line x1="640" y1="76" x2="590" y2="138" stroke="#555" stroke-width="2" marker-end="url(#a)"/><text x="630" y="110" font-size="12">nein / MATERIALIZED</text>
-  <rect x="160" y="140" width="250" height="64" rx="8" fill="#e8f5e9" stroke="#2e7d32"/><text x="285" y="164" text-anchor="middle" font-weight="700">Inline (gefaltet)</text><text x="285" y="184" text-anchor="middle" font-size="12">WHERE wandert hinein, Index nutzbar</text>
-  <rect x="460" y="140" width="250" height="64" rx="8" fill="#fff4f2" stroke="#c62828"/><text x="585" y="164" text-anchor="middle" font-weight="700">CTE Scan</text><text x="585" y="184" text-anchor="middle" font-size="12">einmal rechnen, Ergebnis puffern</text>
-  <rect x="10" y="230" width="700" height="56" rx="8" fill="#f7f7fa" stroke="#999"/><text x="360" y="254" text-anchor="middle" font-weight="700">Executor</text><text x="360" y="272" text-anchor="middle" font-size="12">WITH RECURSIVE → Recursive Union + WorkTable Scan · DML in WITH → ModifyTable mit RETURNING</text>
-  <line x1="285" y1="204" x2="285" y2="228" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
-  <line x1="585" y1="204" x2="585" y2="228" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
-</svg>
-<ol>
-  <li><b>WITH-Klausel:</b> Sie steht vor der Hauptabfrage und definiert eine oder mehrere benannte Hilfsabfragen. Beispiel: <code>WITH aktive AS (SELECT …) SELECT … FROM aktive</code>.</li>
-  <li><b>Parser:</b> Er macht aus jeder CTE eine Unterabfrage mit Namen. Andere CTEs im selben <code>WITH</code> dürfen sie benutzen.</li>
-  <li><b>Planner:</b> Er entscheidet, ob er die CTE <b>inline</b> faltet, also wie eine Unterabfrage behandelt. Bedingungen: nicht rekursiv, ein reines <code>SELECT</code> ohne volatile Funktionen, genau einmal referenziert.</li>
-  <li><b>CTE Scan:</b> Sonst rechnet PostgreSQL die CTE einmal aus und puffert das Ergebnis. Die Hauptabfrage liest dann diesen Puffer.</li>
-  <li><b>Rekursive CTE:</b> Sie wird im Plan zu <b>Recursive Union</b> mit einem <b>WorkTable Scan</b>, also einer Schleife über eine Arbeitstabelle.</li>
-  <li><b>Datenändernde CTE:</b> <code>INSERT</code>, <code>UPDATE</code>, <code>DELETE</code> oder <code>MERGE</code> im <code>WITH</code>. Nur ihr <code>RETURNING</code> ist für den Rest der Abfrage sichtbar.</li>
-</ol>
-
-<h2>2. Die Reise einer rekursiven Abfrage (die Geschichte zum Merken)</h2>
+<h2>1. Die Reise einer rekursiven Abfrage</h2>
 <svg viewBox="0 0 720 320" font-family="-apple-system, system-ui, sans-serif" font-size="14">
   <defs><marker id="b" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
   <rect x="10" y="20" width="200" height="60" rx="10" fill="#eee" stroke="#777"/><text x="110" y="44" text-anchor="middle" font-weight="700">1. Anker-Teil</text><text x="110" y="64" text-anchor="middle" font-size="12">WHERE chef_id IS NULL</text>
@@ -105,7 +71,111 @@
   <li><b>Ende:</b> Liefert eine Runde keine Zeile mehr, endet die Schleife. „Rekursiv“ heisst intern also <b>iterativ</b>, Runde für Runde.</li>
 </ol>
 
-<h2>3. Beispiel: Hierarchie, Zyklus, Inline vs Materialized, Daten verschieben</h2>
+<h2>2. Aufbau</h2>
+<svg viewBox="0 0 720 300" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="a" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="10" y="20" width="160" height="56" rx="8" fill="#fff" stroke="#555"/><text x="90" y="44" text-anchor="middle" font-weight="700">SQL-Text</text><text x="90" y="62" text-anchor="middle" font-size="12">WITH a AS (...) SELECT</text>
+  <line x1="170" y1="48" x2="218" y2="48" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="220" y="20" width="140" height="56" rx="8" fill="#dbe9fb" stroke="#0a66c2"/><text x="290" y="44" text-anchor="middle" font-weight="700">Parser</text><text x="290" y="62" text-anchor="middle" font-size="12">CTE als Unterabfrage</text>
+  <line x1="360" y1="48" x2="408" y2="48" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="410" y="20" width="300" height="56" rx="8" fill="#dbe9fb" stroke="#0a66c2"/><text x="560" y="44" text-anchor="middle" font-weight="700">Planner: falten oder nicht?</text><text x="560" y="62" text-anchor="middle" font-size="12">1× genutzt, SELECT, nicht volatil, nicht rekursiv</text>
+  <line x1="480" y1="76" x2="300" y2="138" stroke="#555" stroke-width="2" marker-end="url(#a)"/><text x="350" y="104" font-size="12">ja</text>
+  <line x1="640" y1="76" x2="590" y2="138" stroke="#555" stroke-width="2" marker-end="url(#a)"/><text x="630" y="110" font-size="12">nein / MATERIALIZED</text>
+  <rect x="160" y="140" width="250" height="64" rx="8" fill="#e8f5e9" stroke="#2e7d32"/><text x="285" y="164" text-anchor="middle" font-weight="700">Inline (gefaltet)</text><text x="285" y="184" text-anchor="middle" font-size="12">WHERE wandert hinein, Index nutzbar</text>
+  <rect x="460" y="140" width="250" height="64" rx="8" fill="#fff4f2" stroke="#c62828"/><text x="585" y="164" text-anchor="middle" font-weight="700">CTE Scan</text><text x="585" y="184" text-anchor="middle" font-size="12">einmal rechnen, Ergebnis puffern</text>
+  <rect x="10" y="230" width="700" height="56" rx="8" fill="#f7f7fa" stroke="#999"/><text x="360" y="254" text-anchor="middle" font-weight="700">Executor</text><text x="360" y="272" text-anchor="middle" font-size="12">WITH RECURSIVE → Recursive Union + WorkTable Scan · DML in WITH → ModifyTable mit RETURNING</text>
+  <line x1="285" y1="204" x2="285" y2="228" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <line x1="585" y1="204" x2="585" y2="228" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+</svg>
+<ol>
+  <li><b>WITH-Klausel:</b> Sie steht vor der Hauptabfrage und definiert eine oder mehrere benannte Hilfsabfragen. Beispiel: <code>WITH aktive AS (SELECT …) SELECT … FROM aktive</code>.</li>
+  <li><b>Parser:</b> Er macht aus jeder CTE eine Unterabfrage mit Namen. Andere CTEs im selben <code>WITH</code> dürfen sie benutzen.</li>
+  <li><b>Planner:</b> Er entscheidet, ob er die CTE <b>inline</b> faltet, also wie eine Unterabfrage behandelt. Bedingungen: nicht rekursiv, ein reines <code>SELECT</code> ohne volatile Funktionen, genau einmal referenziert.</li>
+  <li><b>CTE Scan:</b> Sonst rechnet PostgreSQL die CTE einmal aus und puffert das Ergebnis. Die Hauptabfrage liest dann diesen Puffer.</li>
+  <li><b>Rekursive CTE:</b> Sie wird im Plan zu <b>Recursive Union</b> mit einem <b>WorkTable Scan</b>, also einer Schleife über eine Arbeitstabelle.</li>
+  <li><b>Datenändernde CTE:</b> <code>INSERT</code>, <code>UPDATE</code>, <code>DELETE</code> oder <code>MERGE</code> im <code>WITH</code>. Nur ihr <code>RETURNING</code> ist für den Rest der Abfrage sichtbar.</li>
+</ol>
+
+<h2>3. Details, die Interviewer fragen</h2>
+<ol>
+  <li><b>Inlining-Regel:</b> Seit PostgreSQL 12 faltet der Planner eine CTE, wenn sie nicht rekursiv, frei von Seiteneffekten und genau einmal referenziert ist. Vorher wurde jede CTE immer zuerst ausgerechnet.</li>
+  <li><b>MATERIALIZED:</b> Es erzwingt das separate Ausrechnen. Nutzen: eine teure Funktion soll nur einmal laufen, oder man will dem Planner bewusst eine Grenze setzen.</li>
+  <li><b>NOT MATERIALIZED:</b> Es erzwingt das Falten, auch bei mehrfacher Nutzung. Risiko: doppelte Berechnung. Gewinn: Jede Nutzung liest nur ihren kleinen Teil per Index.</li>
+  <li><b>Mehrfach referenzierte CTE:</b> Sie läuft einmal pro Ausführung der Hauptabfrage. Der Planner schiebt keine Filter der Hauptabfrage hinein.</li>
+  <li><b>Volatile Funktionen:</b> Enthält die CTE <code>random()</code> oder <code>nextval()</code>, wird sie nicht gefaltet. So läuft die Funktion nur einmal pro Zeile.</li>
+  <li><b>Aufbau einer rekursiven CTE:</b> Immer <b>Anker-Teil</b>, dann <code>UNION</code> oder <code>UNION ALL</code>, dann <b>rekursiver Teil</b>. Nur der rekursive Teil darf die CTE selbst referenzieren.</li>
+  <li><b>UNION vs UNION ALL:</b> <code>UNION</code> verwirft Zeilen, die schon im Ergebnis sind. Das stoppt Zyklen nur, wenn die ganze Zeile gleich ist. Eine wachsende Spalte wie <code>ebene</code> macht jede Zeile neu.</li>
+  <li><b>Einschränkungen im rekursiven Teil:</b> Keine Aggregate (siehe Beispiel). Die CTE darf dort nur einmal vorkommen. Lösung: Zählen und Gruppieren in der Hauptabfrage.</li>
+  <li><b>SEARCH (seit 14):</b> <code>SEARCH DEPTH FIRST BY id SET ord</code> oder <code>BREADTH FIRST</code> erzeugt eine Sortierspalte. Sie steuert nicht die Auswertung, nur das spätere <code>ORDER BY</code>.</li>
+  <li><b>CYCLE (seit 14):</b> <code>CYCLE id SET ist_zyklus USING pfad</code> erkennt Zyklen. Vorher schrieb man das von Hand mit einem Array-Pfad und <code>id = ANY(pfad)</code>.</li>
+  <li><b>Datenändernde CTE:</b> Sie läuft genau einmal und immer vollständig. Das gilt auch, wenn die Hauptabfrage ihr <code>RETURNING</code> nie liest.</li>
+  <li><b>Ein Snapshot:</b> Alle Teile einer Anweisung sehen denselben Snapshot. Sie sehen gegenseitig ihre Änderungen nicht. Der einzige Kanal ist <code>RETURNING</code>. Details zum Snapshot: Seite MVCC.</li>
+  <li><b>Gleiche Zeile zweimal ändern:</b> Das ist in einer Anweisung nicht unterstützt. Nur eine Änderung wirkt, welche, ist nicht sicher vorhersagbar.</li>
+  <li><b>Nur auf oberster Ebene:</b> Datenändernde CTEs sind nur im <code>WITH</code> der obersten Anweisung erlaubt. Bei <code>INSERT … SELECT</code> gehört das <code>WITH</code> vor das <code>INSERT</code>.</li>
+  <li><b>Statistiken (seit 17):</b> Der Planner nutzt bei einer CTE die Statistiken und die Sortierung ihrer Spalten. Schätzungen über einen CTE Scan sind damit besser als früher.</li>
+</ol>
+
+<h2>4. Fallen</h2>
+<div class="trap">
+<ul>
+  <li>„Eine CTE ist immer ein Optimierungszaun.“ → <b>Falsch.</b> Das galt bis Version 11. Seit 12 wird eine einfache CTE gefaltet.</li>
+  <li>„Eine CTE wird immer nur einmal ausgerechnet.“ → <b>Falsch.</b> Gefaltet läuft sie als Teil der Hauptabfrage, mit <code>NOT MATERIALIZED</code> sogar pro Nutzung.</li>
+  <li>„UNION ALL verhindert Endlosschleifen.“ → <b>Falsch.</b> <code>UNION ALL</code> behält alles. Erst <code>CYCLE</code> oder ein Pfad-Check stoppt Zyklen.</li>
+  <li>„Rekursiv heisst, PostgreSQL ruft sich selbst auf.“ → <b>Falsch.</b> Die Auswertung ist eine Schleife über eine Working Table.</li>
+  <li>„Die Hauptabfrage sieht die Änderungen aus dem WITH.“ → <b>Falsch.</b> Alle Teile nutzen denselben Snapshot. Nur <code>RETURNING</code> transportiert Änderungen.</li>
+  <li>„Eine DML-CTE ohne Verwendung läuft nicht.“ → <b>Falsch.</b> Sie läuft immer genau einmal und vollständig.</li>
+  <li>„SEARCH DEPTH FIRST ändert die Auswertung.“ → <b>Falsch.</b> Es erzeugt nur eine Sortierspalte.</li>
+</ul>
+</div>
+
+<h2>5. Selbsttest</h2>
+<h3>Warum?</h3>
+<details><summary>Was ist eine CTE?</summary><p>Eine benannte Hilfsabfrage im WITH-Teil einer Anweisung. Sie gilt nur für diese eine Anweisung.</p></details>
+<details><summary>Wozu nutzt man CTEs?</summary><p>Für Lesbarkeit, für Rekursion über Bäume und Graphen und für mehrere Änderungen in einer atomaren Anweisung.</p></details>
+<details><summary>Warum war eine CTE bis Version 11 ein Optimierungszaun?</summary><p>Bis 11 rechnete PostgreSQL jede CTE zuerst ganz aus. Filter der Hauptabfrage wanderten nicht hinein, Indizes blieben ungenutzt. Seit 12 wird eine einfache CTE gefaltet.</p></details>
+<h3>Wie innen?</h3>
+<details><summary>Ist eine CTE in PostgreSQL ein Optimierungszaun?</summary><p>Seit Version 12 nicht mehr, wenn sie nicht rekursiv, ohne Seiteneffekte und einmal referenziert ist. Dann wird sie gefaltet.</p></details>
+<details><summary>Was macht MATERIALIZED?</summary><p>Es erzwingt, dass die CTE separat ausgerechnet und gepuffert wird. Filter der Hauptabfrage wandern dann nicht hinein.</p></details>
+<details><summary>Was macht NOT MATERIALIZED?</summary><p>Es erzwingt das Falten, auch bei mehrfacher Nutzung. Das kann doppelte Arbeit bedeuten, spart aber, wenn jede Nutzung nur wenig braucht.</p></details>
+<details><summary>Woran sehe ich im Plan, ob eine CTE materialisiert wurde?</summary><p>An einem Knoten „CTE Scan“ mit einem Unterplan „CTE name“. Fehlt er, wurde gefaltet.</p></details>
+<details><summary>Wie ist eine rekursive CTE aufgebaut?</summary><p>Anker-Teil, dann UNION oder UNION ALL, dann der rekursive Teil, der die CTE selbst referenziert.</p></details>
+<details><summary>Wie wertet PostgreSQL eine rekursive CTE aus?</summary><p>Iterativ: Der Anker füllt die Working Table. Jede Runde joint nur die Zeilen der letzten Runde. Ist eine Runde leer, ist Schluss.</p></details>
+<details><summary>Was macht die SEARCH-Klausel?</summary><p>Sie erzeugt eine Sortierspalte für Tiefen- oder Breitensuche. Sortiert wird erst mit ORDER BY auf diese Spalte.</p></details>
+<details><summary>Warum sieht die Hauptabfrage die Änderung einer CTE nicht?</summary><p>Alle Teile einer Anweisung laufen mit demselben Snapshot. Die Änderung ist darin noch nicht sichtbar. Nur über RETURNING kommen die neuen Werte an.</p></details>
+<h3>Zahlen</h3>
+<details><summary>Seit wann gibt es SEARCH und CYCLE?</summary><p>Seit PostgreSQL 14. Vorher schrieb man Pfad-Array und Zyklus-Check von Hand.</p></details>
+<details><summary>Wann faltet PostgreSQL eine CTE nicht?</summary><p>Wenn sie rekursiv ist, Daten ändert, volatile Funktionen enthält, mehrfach genutzt wird oder MATERIALIZED trägt.</p></details>
+<details><summary>Was zeigt EXPLAIN seit PostgreSQL 18 bei einem CTE-Knoten?</summary><p>Speicher- und Plattenverbrauch des CTE-Puffers, wie bei Material- und WindowAgg-Knoten (PG 18 Release Notes). So sieht man, ob die CTE auf Platte ging.</p></details>
+<details><summary>Was geht kaputt, wenn ein materialisiertes CTE-Ergebnis grösser als work_mem ist?</summary><p>Nichts bricht ab, aber der Puffer geht in temporäre Dateien. Standard ist work_mem 4 MB. Die Abfrage wird langsamer, log_temp_files zeigt es.</p></details>
+<h3>Vergleich</h3>
+<details><summary>Warum stoppt UNION einen Zyklus oft nicht?</summary><p>UNION entfernt nur Zeilen, die ganz gleich sind. Eine wachsende Spalte wie ebene oder pfad macht jede Zeile neu. UNION ALL ist schneller, stoppt aber gar nichts.</p></details>
+<details><summary>CTE oder temporäre Tabelle?</summary><p>CTE für eine Anweisung. Temporäre Tabelle, wenn mehrere Abfragen das Zwischenergebnis brauchen oder es Indizes und Statistiken braucht.</p></details>
+<h3>Produktion</h3>
+<details><summary>Wie verhindere ich eine Endlosschleife?</summary><p>Mit der CYCLE-Klausel, einer Tiefengrenze im rekursiven Teil und einem statement_timeout.</p></details>
+<details><summary>Was macht die CYCLE-Klausel?</summary><p>Sie merkt sich den Pfad der Schlüsselspalten. Sieht sie einen Wert erneut, setzt sie die Markierungsspalte auf true und verfolgt die Zeile nicht weiter.</p></details>
+<details><summary>Darf ich im rekursiven Teil count(*) nutzen?</summary><p>Nein. Aggregate sind dort verboten. Gezählt wird in der Hauptabfrage.</p></details>
+<details><summary>Was geht kaputt, wenn zwei Teile einer Anweisung dieselbe Zeile ändern?</summary><p>Nur eine Änderung wirkt, und welche, ist nicht sicher vorhersagbar. Das muss man vermeiden.</p></details>
+<details><summary>Szenario: Nach dem Upgrade von PostgreSQL 11 ist ein Report langsamer. Was prüfen Sie?</summary><p>Ob eine CTE jetzt gefaltet wird und der Plan schlechter ist. Plan vor und nach vergleichen, bei Bedarf MATERIALIZED setzen und Statistiken prüfen.</p></details>
+<details><summary>Szenario: Eine Organigramm-Abfrage läuft plötzlich endlos. Was ist los?</summary><p>Vermutlich ein Zyklus in den Daten. Mit CYCLE den Zyklus finden, Daten korrigieren, und künftig CYCLE plus Tiefengrenze und Timeout einbauen.</p></details>
+<details><summary>Szenario: Eine CTE wird dreimal genutzt und liest jedes Mal die ganze Tabelle. Was tun Sie?</summary><p>Den Filter in die CTE ziehen oder NOT MATERIALIZED setzen, damit jede Nutzung per Index nur ihre Zeilen liest. Danach mit EXPLAIN ANALYZE prüfen.</p></details>
+<h3>Design</h3>
+<details><summary>Was ist eine datenändernde CTE?</summary><p>Ein INSERT, UPDATE, DELETE oder MERGE im WITH. Mit RETURNING liefert es Zeilen an die Hauptabfrage.</p></details>
+<details><summary>Läuft eine DML-CTE, wenn niemand ihr Ergebnis liest?</summary><p>Ja. Sie läuft genau einmal und vollständig.</p></details>
+<details><summary>Wie verschiebe ich Zeilen atomar in ein Archiv?</summary><p>WITH weg AS (DELETE … RETURNING *) INSERT INTO archiv SELECT * FROM weg. Beides ist eine Anweisung und damit eine Transaktion.</p></details>
+<details><summary>Wie bekomme ich alle Vorgesetzten eines Mitarbeiters?</summary><p>Rekursive CTE von unten nach oben: Anker ist der Mitarbeiter, der rekursive Teil joint auf m.id = k.chef_id.</p></details>
+<details><summary>Warum speichert man grosse, oft gelesene Bäume nicht nur mit chef_id?</summary><p>Jede Teilbaum-Abfrage braucht dann eine Rekursion mit vielen Runden. Mit Materialized Path (ltree) oder einer Closure Table ist sie ein einfacher Index-Zugriff. Preis: Schreiben und Verschieben werden aufwendiger.</p></details>
+
+<details class="mehr"><summary>Mehr</summary>
+<h3>Gerüst</h3>
+<ul>
+  <li><b>Warum?</b> Lange SQL in benannte Schritte teilen. <code>WITH RECURSIVE</code> für Bäume und Graphen. DML im WITH: mehrere Änderungen atomar in einer Anweisung.</li>
+  <li><b>Wie innen?</b> Seit 12: einmal genutzt, reines SELECT, nicht volatil, nicht rekursiv → gefaltet. Sonst CTE Scan. Rekursion = Schleife über eine Working Table.</li>
+  <li><b>Zahlen</b> Inlining seit 12, <code>SEARCH</code>/<code>CYCLE</code> seit 14, CTE-Statistiken seit 17, Speicher im EXPLAIN seit 18 (PG 18 Release Notes). Puffer über <code>work_mem</code> (4 MB) → Platte.</li>
+  <li><b>Vergleich</b> CTE = eine Anweisung. Temp-Tabelle = Session, mit Index und Statistik. View = gespeichert für alle. Oracle hat zusätzlich <code>CONNECT BY</code>.</li>
+  <li><b>Produktion</b> Zyklus in den Daten → Endlosschleife, <code>UNION ALL</code> hilft nicht. <code>MATERIALIZED</code> oder Mehrfachnutzung → Filter wandert nicht hinein → Seq Scan.</li>
+  <li><b>Design</b> <code>MATERIALIZED</code> nur nach Plan-Vergleich. Jede Rekursion: <code>CYCLE</code> + Tiefengrenze + Timeout. Grosse Bäume: <code>ltree</code> oder Closure Table.</li>
+</ul>
+<h3>Beispiel: Hierarchie, Zyklus, Inline vs Materialized, Daten verschieben</h3>
 <pre>CREATE SCHEMA demo_ctes; SET search_path = demo_ctes;
 CREATE TABLE mitarbeiter (id int PRIMARY KEY, name text,
                           chef_id int REFERENCES mitarbeiter(id));
@@ -216,27 +286,7 @@ ERROR:  aggregate functions are not allowed in a recursive query's recursive ter
   <li><b>Snapshot:</b> Die Hauptabfrage liest die Tabelle mit dem alten Snapshot und sieht noch „Beat“. Nur <code>RETURNING</code> zeigt den neuen Wert „BEAT“.</li>
   <li><b>Einschränkung:</b> Aggregate sind im rekursiven Teil verboten. Zählen geht erst in der Hauptabfrage.</li>
 </ol>
-
-<h2>4. Details, die Interviewer fragen</h2>
-<ol>
-  <li><b>Inlining-Regel:</b> Seit PostgreSQL 12 faltet der Planner eine CTE, wenn sie nicht rekursiv, frei von Seiteneffekten und genau einmal referenziert ist. Vorher wurde jede CTE immer zuerst ausgerechnet.</li>
-  <li><b>MATERIALIZED:</b> Es erzwingt das separate Ausrechnen. Nutzen: eine teure Funktion soll nur einmal laufen, oder man will dem Planner bewusst eine Grenze setzen.</li>
-  <li><b>NOT MATERIALIZED:</b> Es erzwingt das Falten, auch bei mehrfacher Nutzung. Risiko: doppelte Berechnung. Gewinn: Jede Nutzung liest nur ihren kleinen Teil per Index.</li>
-  <li><b>Mehrfach referenzierte CTE:</b> Sie läuft einmal pro Ausführung der Hauptabfrage. Der Planner schiebt keine Filter der Hauptabfrage hinein.</li>
-  <li><b>Volatile Funktionen:</b> Enthält die CTE <code>random()</code> oder <code>nextval()</code>, wird sie nicht gefaltet. So läuft die Funktion nur einmal pro Zeile.</li>
-  <li><b>Aufbau einer rekursiven CTE:</b> Immer <b>Anker-Teil</b>, dann <code>UNION</code> oder <code>UNION ALL</code>, dann <b>rekursiver Teil</b>. Nur der rekursive Teil darf die CTE selbst referenzieren.</li>
-  <li><b>UNION vs UNION ALL:</b> <code>UNION</code> verwirft Zeilen, die schon im Ergebnis sind. Das stoppt Zyklen nur, wenn die ganze Zeile gleich ist. Eine wachsende Spalte wie <code>ebene</code> macht jede Zeile neu.</li>
-  <li><b>Einschränkungen im rekursiven Teil:</b> Keine Aggregate (siehe Beispiel). Die CTE darf dort nur einmal vorkommen. Lösung: Zählen und Gruppieren in der Hauptabfrage.</li>
-  <li><b>SEARCH (seit 14):</b> <code>SEARCH DEPTH FIRST BY id SET ord</code> oder <code>BREADTH FIRST</code> erzeugt eine Sortierspalte. Sie steuert nicht die Auswertung, nur das spätere <code>ORDER BY</code>.</li>
-  <li><b>CYCLE (seit 14):</b> <code>CYCLE id SET ist_zyklus USING pfad</code> erkennt Zyklen. Vorher schrieb man das von Hand mit einem Array-Pfad und <code>id = ANY(pfad)</code>.</li>
-  <li><b>Datenändernde CTE:</b> Sie läuft genau einmal und immer vollständig. Das gilt auch, wenn die Hauptabfrage ihr <code>RETURNING</code> nie liest.</li>
-  <li><b>Ein Snapshot:</b> Alle Teile einer Anweisung sehen denselben Snapshot. Sie sehen gegenseitig ihre Änderungen nicht. Der einzige Kanal ist <code>RETURNING</code>. Details zum Snapshot: Seite MVCC.</li>
-  <li><b>Gleiche Zeile zweimal ändern:</b> Das ist in einer Anweisung nicht unterstützt. Nur eine Änderung wirkt, welche, ist nicht sicher vorhersagbar.</li>
-  <li><b>Nur auf oberster Ebene:</b> Datenändernde CTEs sind nur im <code>WITH</code> der obersten Anweisung erlaubt. Bei <code>INSERT … SELECT</code> gehört das <code>WITH</code> vor das <code>INSERT</code>.</li>
-  <li><b>Statistiken (seit 17):</b> Der Planner nutzt bei einer CTE die Statistiken und die Sortierung ihrer Spalten. Schätzungen über einen CTE Scan sind damit besser als früher.</li>
-</ol>
-
-<h2>5. Vergleich</h2>
+<h3>Vergleich</h3>
 <ul>
   <li><b>CTE vs Unterabfrage:</b> Gefaltet sind beide gleich schnell. Die CTE ist lesbarer und kann mehrfach genutzt werden.</li>
   <li><b>CTE vs temporäre Tabelle:</b> Eine <b>temporäre Tabelle</b> lebt für die Session, bekommt Indizes und mit <code>ANALYZE</code> echte Statistiken. Gut für grosse Zwischenergebnisse, die mehrere Abfragen brauchen.</li>
@@ -246,8 +296,7 @@ ERROR:  aggregate functions are not allowed in a recursive query's recursive ter
   <li><b>Rekursive CTE vs Graph-Datenbank:</b> Für Bäume und kleine Graphen reicht die CTE. Für tiefe Traversierung über Millionen Kanten ist eine Graph-Engine meist schneller.</li>
   <li><b>PostgreSQL vs Oracle:</b> Oracle kennt zusätzlich <code>CONNECT BY</code>. PostgreSQL nutzt nur den SQL-Standard <code>WITH RECURSIVE</code>.</li>
 </ul>
-
-<h2>6. In der Produktion</h2>
+<h3>In der Produktion</h3>
 <ol>
   <li><b>Abfrage langsam nach Upgrade von 11 oder älter:</b> Vorher war jede CTE ein Zaun, danach wird gefaltet. Meist schneller, manchmal plant der Planner schlechter. Lösung: Plan vergleichen, gezielt <code>MATERIALIZED</code> setzen.</li>
   <li><b>Riesiger CTE Scan:</b> Eine mehrfach genutzte CTE liest die ganze Tabelle, obwohl jede Nutzung nur wenige Zeilen braucht. Lösung: <code>NOT MATERIALIZED</code> oder den Filter in die CTE schreiben.</li>
@@ -256,18 +305,16 @@ ERROR:  aggregate functions are not allowed in a recursive query's recursive ter
   <li><b>Unerwartetes Ergebnis bei DML in CTE:</b> Die Hauptabfrage liest die Tabelle und sieht die Änderung nicht. Lösung: immer über <code>RETURNING</code> lesen.</li>
   <li><b>Lange Transaktion durch Batch-Verschiebung:</b> <code>DELETE … RETURNING</code> über Millionen Zeilen hält Locks lange und erzeugt viel WAL. Lösung: in Paketen mit <code>LIMIT</code> in einer Unterabfrage verschieben.</li>
 </ol>
-
-<h2>7. Diagnose: Werkzeuge und Abfragen</h2>
+<h3>Diagnose: Werkzeuge und Abfragen</h3>
 <ul>
-  <li><code>EXPLAIN (ANALYZE, BUFFERS)</code>: Ein Knoten <code>CTE Scan</code> zeigt Materialisierung. Fehlt er, wurde gefaltet. Seit 18 zeigt EXPLAIN dort auch Speicher und Plattenverbrauch (<a href="https://www.postgresql.org/docs/18/release-18.html#RELEASE-18-EXPLAIN">PG 18 Release Notes</a>).</li>
+  <li><code>EXPLAIN (ANALYZE, BUFFERS)</code>: Ein Knoten <code>CTE Scan</code> zeigt Materialisierung. Fehlt er, wurde gefaltet. Seit 18 zeigt EXPLAIN dort auch Speicher und Plattenverbrauch (PG 18 Release Notes).</li>
   <li><b>Recursive Union / WorkTable Scan</b> im Plan: <code>loops</code> beim WorkTable Scan zeigt die Zahl der Runden.</li>
   <li><code>log_temp_files = 0</code>: protokolliert jede temporäre Datei, auch von grossen CTEs.</li>
   <li><code>pg_stat_statements</code>: findet die teuersten Abfragen; dann den Plan mit EXPLAIN prüfen (Seite Planner und EXPLAIN).</li>
   <li><code>SET statement_timeout</code> beim Testen einer neuen Rekursion: schützt vor Endlosschleifen.</li>
   <li>Zyklen in den Daten finden: dieselbe Abfrage mit <code>CYCLE … SET ist_zyklus</code> laufen lassen und <code>WHERE ist_zyklus</code> filtern.</li>
 </ul>
-
-<h2>8. Senior-Punkte</h2>
+<h3>Senior-Punkte</h3>
 <div class="senior">
 <ol>
   <li><b>Lesbarkeit kostet seit 12 nichts mehr.</b> Lange Abfragen in benannte CTEs zerlegen ist der Normalfall.</li>
@@ -278,59 +325,8 @@ ERROR:  aggregate functions are not allowed in a recursive query's recursive ter
   <li><b>ORMs erzeugen selten CTEs.</b> Für Baum-Abfragen schreibe ich natives SQL und teste es mit echten Datenmengen.</li>
 </ol>
 </div>
-
-<h2>9. Aus dem Projekt</h2>
-<p>„Rekursive CTEs in Produktion stehen nicht in meinem Profil. Das Muster der datenändernden CTE kenne ich aus MATCH: Der Claim ist ein atomares <code>UPDATE … OUTPUT INSERTED.*</code> auf SQL Server; in PostgreSQL wäre das <code>UPDATE … RETURNING</code>, auch innerhalb eines <code>WITH</code>.“ <span class="small">(Prüfen und durch dein echtes Beispiel ersetzen. PostgreSQL im Einsatz: CARIAD-Backend, NABODAT mit PostGIS, Person-Service bei BAG DigiSanté.)</span></p>
-
-<h2>10. Fallen</h2>
-<div class="trap">
-<ul>
-  <li>„Eine CTE ist immer ein Optimierungszaun.“ → <b>Falsch.</b> Das galt bis Version 11. Seit 12 wird eine einfache CTE gefaltet.</li>
-  <li>„Eine CTE wird immer nur einmal ausgerechnet.“ → <b>Falsch.</b> Gefaltet läuft sie als Teil der Hauptabfrage, mit <code>NOT MATERIALIZED</code> sogar pro Nutzung.</li>
-  <li>„UNION ALL verhindert Endlosschleifen.“ → <b>Falsch.</b> <code>UNION ALL</code> behält alles. Erst <code>CYCLE</code> oder ein Pfad-Check stoppt Zyklen.</li>
-  <li>„Rekursiv heisst, PostgreSQL ruft sich selbst auf.“ → <b>Falsch.</b> Die Auswertung ist eine Schleife über eine Working Table.</li>
-  <li>„Die Hauptabfrage sieht die Änderungen aus dem WITH.“ → <b>Falsch.</b> Alle Teile nutzen denselben Snapshot. Nur <code>RETURNING</code> transportiert Änderungen.</li>
-  <li>„Eine DML-CTE ohne Verwendung läuft nicht.“ → <b>Falsch.</b> Sie läuft immer genau einmal und vollständig.</li>
-  <li>„SEARCH DEPTH FIRST ändert die Auswertung.“ → <b>Falsch.</b> Es erzeugt nur eine Sortierspalte.</li>
-</ul>
-</div>
-
-<h2>11. Selbsttest</h2>
-<h3>Warum?</h3>
-<details><summary>Was ist eine CTE?</summary><p>Eine benannte Hilfsabfrage im WITH-Teil einer Anweisung. Sie gilt nur für diese eine Anweisung.</p></details>
-<details><summary>Wozu nutzt man CTEs?</summary><p>Für Lesbarkeit, für Rekursion über Bäume und Graphen und für mehrere Änderungen in einer atomaren Anweisung.</p></details>
-<details><summary>Warum war eine CTE bis Version 11 ein Optimierungszaun?</summary><p>Bis 11 rechnete PostgreSQL jede CTE zuerst ganz aus. Filter der Hauptabfrage wanderten nicht hinein, Indizes blieben ungenutzt. Seit 12 wird eine einfache CTE gefaltet.</p></details>
-<h3>Wie innen?</h3>
-<details><summary>Ist eine CTE in PostgreSQL ein Optimierungszaun?</summary><p>Seit Version 12 nicht mehr, wenn sie nicht rekursiv, ohne Seiteneffekte und einmal referenziert ist. Dann wird sie gefaltet.</p></details>
-<details><summary>Was macht MATERIALIZED?</summary><p>Es erzwingt, dass die CTE separat ausgerechnet und gepuffert wird. Filter der Hauptabfrage wandern dann nicht hinein.</p></details>
-<details><summary>Was macht NOT MATERIALIZED?</summary><p>Es erzwingt das Falten, auch bei mehrfacher Nutzung. Das kann doppelte Arbeit bedeuten, spart aber, wenn jede Nutzung nur wenig braucht.</p></details>
-<details><summary>Woran sehe ich im Plan, ob eine CTE materialisiert wurde?</summary><p>An einem Knoten „CTE Scan“ mit einem Unterplan „CTE name“. Fehlt er, wurde gefaltet.</p></details>
-<details><summary>Wie ist eine rekursive CTE aufgebaut?</summary><p>Anker-Teil, dann UNION oder UNION ALL, dann der rekursive Teil, der die CTE selbst referenziert.</p></details>
-<details><summary>Wie wertet PostgreSQL eine rekursive CTE aus?</summary><p>Iterativ: Der Anker füllt die Working Table. Jede Runde joint nur die Zeilen der letzten Runde. Ist eine Runde leer, ist Schluss.</p></details>
-<details><summary>Was macht die SEARCH-Klausel?</summary><p>Sie erzeugt eine Sortierspalte für Tiefen- oder Breitensuche. Sortiert wird erst mit ORDER BY auf diese Spalte.</p></details>
-<details><summary>Warum sieht die Hauptabfrage die Änderung einer CTE nicht?</summary><p>Alle Teile einer Anweisung laufen mit demselben Snapshot. Die Änderung ist darin noch nicht sichtbar. Nur über RETURNING kommen die neuen Werte an.</p></details>
-<h3>Zahlen</h3>
-<details><summary>Seit wann gibt es SEARCH und CYCLE?</summary><p>Seit PostgreSQL 14. Vorher schrieb man Pfad-Array und Zyklus-Check von Hand.</p></details>
-<details><summary>Wann faltet PostgreSQL eine CTE nicht?</summary><p>Wenn sie rekursiv ist, Daten ändert, volatile Funktionen enthält, mehrfach genutzt wird oder MATERIALIZED trägt.</p></details>
-<details><summary>Was zeigt EXPLAIN seit PostgreSQL 18 bei einem CTE-Knoten?</summary><p>Speicher- und Plattenverbrauch des CTE-Puffers, wie bei Material- und WindowAgg-Knoten (<a href="https://www.postgresql.org/docs/18/release-18.html#RELEASE-18-EXPLAIN">PG 18 Release Notes</a>). So sieht man, ob die CTE auf Platte ging.</p></details>
-<details><summary>Was geht kaputt, wenn ein materialisiertes CTE-Ergebnis grösser als work_mem ist?</summary><p>Nichts bricht ab, aber der Puffer geht in temporäre Dateien. Standard ist work_mem 4 MB. Die Abfrage wird langsamer, log_temp_files zeigt es.</p></details>
-<h3>Vergleich</h3>
-<details><summary>Warum stoppt UNION einen Zyklus oft nicht?</summary><p>UNION entfernt nur Zeilen, die ganz gleich sind. Eine wachsende Spalte wie ebene oder pfad macht jede Zeile neu. UNION ALL ist schneller, stoppt aber gar nichts.</p></details>
-<details><summary>CTE oder temporäre Tabelle?</summary><p>CTE für eine Anweisung. Temporäre Tabelle, wenn mehrere Abfragen das Zwischenergebnis brauchen oder es Indizes und Statistiken braucht.</p></details>
-<h3>Produktion</h3>
-<details><summary>Wie verhindere ich eine Endlosschleife?</summary><p>Mit der CYCLE-Klausel, einer Tiefengrenze im rekursiven Teil und einem statement_timeout.</p></details>
-<details><summary>Was macht die CYCLE-Klausel?</summary><p>Sie merkt sich den Pfad der Schlüsselspalten. Sieht sie einen Wert erneut, setzt sie die Markierungsspalte auf true und verfolgt die Zeile nicht weiter.</p></details>
-<details><summary>Darf ich im rekursiven Teil count(*) nutzen?</summary><p>Nein. Aggregate sind dort verboten. Gezählt wird in der Hauptabfrage.</p></details>
-<details><summary>Was geht kaputt, wenn zwei Teile einer Anweisung dieselbe Zeile ändern?</summary><p>Nur eine Änderung wirkt, und welche, ist nicht sicher vorhersagbar. Das muss man vermeiden.</p></details>
-<details><summary>Szenario: Nach dem Upgrade von PostgreSQL 11 ist ein Report langsamer. Was prüfen Sie?</summary><p>Ob eine CTE jetzt gefaltet wird und der Plan schlechter ist. Plan vor und nach vergleichen, bei Bedarf MATERIALIZED setzen und Statistiken prüfen.</p></details>
-<details><summary>Szenario: Eine Organigramm-Abfrage läuft plötzlich endlos. Was ist los?</summary><p>Vermutlich ein Zyklus in den Daten. Mit CYCLE den Zyklus finden, Daten korrigieren, und künftig CYCLE plus Tiefengrenze und Timeout einbauen.</p></details>
-<details><summary>Szenario: Eine CTE wird dreimal genutzt und liest jedes Mal die ganze Tabelle. Was tun Sie?</summary><p>Den Filter in die CTE ziehen oder NOT MATERIALIZED setzen, damit jede Nutzung per Index nur ihre Zeilen liest. Danach mit EXPLAIN ANALYZE prüfen.</p></details>
-<h3>Design</h3>
-<details><summary>Was ist eine datenändernde CTE?</summary><p>Ein INSERT, UPDATE, DELETE oder MERGE im WITH. Mit RETURNING liefert es Zeilen an die Hauptabfrage.</p></details>
-<details><summary>Läuft eine DML-CTE, wenn niemand ihr Ergebnis liest?</summary><p>Ja. Sie läuft genau einmal und vollständig.</p></details>
-<details><summary>Wie verschiebe ich Zeilen atomar in ein Archiv?</summary><p>WITH weg AS (DELETE … RETURNING *) INSERT INTO archiv SELECT * FROM weg. Beides ist eine Anweisung und damit eine Transaktion.</p></details>
-<details><summary>Wie bekomme ich alle Vorgesetzten eines Mitarbeiters?</summary><p>Rekursive CTE von unten nach oben: Anker ist der Mitarbeiter, der rekursive Teil joint auf m.id = k.chef_id.</p></details>
-<details><summary>Warum speichert man grosse, oft gelesene Bäume nicht nur mit chef_id?</summary><p>Jede Teilbaum-Abfrage braucht dann eine Rekursion mit vielen Runden. Mit Materialized Path (ltree) oder einer Closure Table ist sie ein einfacher Index-Zugriff. Preis: Schreiben und Verschieben werden aufwendiger.</p></details>
+<h3>Dein Beispiel</h3>
+</details>
 
 </body>
 </html>

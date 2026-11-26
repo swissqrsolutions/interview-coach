@@ -35,14 +35,9 @@
 <h1>Replikation und Hochverfügbarkeit</h1>
 <!-- sources: PostgreSQL 19 (aktuell seit 19.11.2026; Beispiele auf 17.12 ausgeführt) · Quellen: PostgreSQL 19 Doku, Kapitel 26 „High Availability, Load Balancing, and Replication“ (Log-Shipping Standby, Streaming Replication, Replication Slots, Synchronous Replication, Failover, Hot Standby), Kapitel 19.6 „Replication“ (Parameter und Defaults), Kapitel 29 „Logical Replication“ (Restrictions, Failover), SQL-Befehl WAIT, View pg_replication_slots, pg_stat_replication, pg_rewind; Release Notes 17 (Failover-Slots, pg_createsubscriber), 18 (idle_replication_slot_timeout), 19 (WAIT FOR LSN, automatisches logisches Decoding bei wal_level = replica, Sequenzen in logischer Replikation) -->
 
-<div class="geruest"><h2>Gerüst</h2><dl>
-  <dt>Warum?</dt><dd>Server-Ausfall überleben und Leselast verteilen. Kein Backup: Ein <code>DROP TABLE</code> wird sofort mitkopiert.</dd>
-  <dt>Wie innen?</dt><dd>walsender streamt WAL → walreceiver schreibt → Startup-Prozess spielt ein. Ein Slot hält WAL fest, bis der Empfänger es hat.</dd>
-  <dt>Zahlen</dt><dd><code>max_wal_senders</code> 10, <code>max_standby_streaming_delay</code> 30 s, <code>max_slot_wal_keep_size</code> -1 (unbegrenzt), WAL-Segment 16 MB.</dd>
-  <dt>Vergleich</dt><dd>Physisch: ganzer Cluster, gleiche Hauptversion, HA. Logisch: Tabellen, über Versionen, Upgrades. Async: RPO &gt; 0. Sync: + 1 Rundreise pro Commit.</dd>
-  <dt>Produktion</dt><dd>Vergessener Slot → Platte voll. Einziger Sync-Standby weg → alle Commits hängen. Report auf Standby → „conflict with recovery“.</dd>
-  <dt>Design</dt><dd>Erst RPO/RTO klären. Failover mit Patroni oder Operator plus Fencing, nie selbst skripten. Read-your-writes: Primary oder <code>WAIT FOR LSN</code>.</dd>
-</dl></div>
+<div class="kern">
+<b>Kern:</b> <b>Replikation</b> ist das Kopieren aller Änderungen von einem <b>Primary</b> auf einen oder mehrere <b>Standbys</b>, über das <b>WAL</b> (Write-Ahead Log). Sie schützt vor Server-Ausfall und verteilt Leselast. <b>Hochverfügbarkeit</b> (HA) heisst zusätzlich: Ein Werkzeug erkennt den Ausfall und befördert einen Standby automatisch zum neuen Primary.
+</div>
 
 <div class="muster"><h3>Antwort-Muster</h3><p class="mq"><b>Frage:</b> Wie funktioniert Replikation in PostgreSQL, und synchron oder asynchron?</p><ol>
   <li>Mechanismus: Der Primary streamt sein WAL über einen walsender. Der Standby schreibt es und spielt es ein.</li>
@@ -51,38 +46,7 @@
   <li>Produktion: Ich kläre zuerst RPO und RTO, nutze Patroni oder einen Operator und überwache Slots und Lag.</li>
 </ol></div>
 
-<div class="kern">
-<b>Kern:</b> <b>Replikation</b> ist das Kopieren aller Änderungen von einem <b>Primary</b> auf einen oder mehrere <b>Standbys</b>, über das <b>WAL</b> (Write-Ahead Log). Sie schützt vor Server-Ausfall und verteilt Leselast. <b>Hochverfügbarkeit</b> (HA) heisst zusätzlich: Ein Werkzeug erkennt den Ausfall und befördert einen Standby automatisch zum neuen Primary.
-</div>
-
-<h2>1. Wo sitzt die Replikation?</h2>
-<svg viewBox="0 0 720 310" font-family="-apple-system, system-ui, sans-serif" font-size="14">
-  <defs><marker id="a" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
-  <rect x="10" y="14" width="300" height="150" rx="10" fill="#f7f7fa" stroke="#999" stroke-dasharray="5 4"/><text x="160" y="34" text-anchor="middle" font-weight="700">Primary</text>
-  <rect x="25" y="46" width="125" height="46" rx="8" fill="#fff" stroke="#555"/><text x="87" y="74" text-anchor="middle">Backends</text>
-  <line x1="150" y1="69" x2="173" y2="69" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
-  <rect x="175" y="46" width="120" height="46" rx="8" fill="#dbe9fb" stroke="#0a66c2"/><text x="235" y="74" text-anchor="middle" font-weight="700">WAL</text>
-  <line x1="235" y1="92" x2="235" y2="108" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
-  <rect x="175" y="110" width="120" height="44" rx="8" fill="#e8f5e9" stroke="#2e7d32"/><text x="235" y="130" text-anchor="middle" font-weight="700">walsender</text><text x="235" y="146" text-anchor="middle" font-size="11">+ Slot</text>
-  <rect x="25" y="110" width="125" height="44" rx="8" fill="#fff" stroke="#555"/><text x="87" y="130" text-anchor="middle" font-size="13">Archiv</text><text x="87" y="146" text-anchor="middle" font-size="11">archive_command</text>
-  <line x1="295" y1="132" x2="408" y2="70" stroke="#555" stroke-width="2" marker-end="url(#a)"/><text x="350" y="88" font-size="12">physisch</text>
-  <line x1="295" y1="140" x2="408" y2="210" stroke="#555" stroke-width="2" marker-end="url(#a)"/><text x="335" y="200" font-size="12">logisch</text>
-  <rect x="410" y="20" width="300" height="100" rx="10" fill="#fff" stroke="#555"/><text x="560" y="42" text-anchor="middle" font-weight="700">Physischer Standby</text><text x="560" y="62" text-anchor="middle" font-size="12">walreceiver → Startup-Prozess (Replay)</text><text x="560" y="80" text-anchor="middle" font-size="12">Kopie Byte für Byte, nur Lesen</text><text x="560" y="98" text-anchor="middle" font-size="12">Failover-Ziel</text>
-  <rect x="410" y="150" width="300" height="90" rx="10" fill="#fff" stroke="#555"/><text x="560" y="172" text-anchor="middle" font-weight="700">Logischer Subscriber</text><text x="560" y="192" text-anchor="middle" font-size="12">Publication → Subscription</text><text x="560" y="210" text-anchor="middle" font-size="12">Zeilen-Änderungen, eigene Schreibrechte</text><text x="560" y="228" text-anchor="middle" font-size="12">andere Version möglich</text>
-  <rect x="10" y="255" width="700" height="48" rx="8" fill="#fff4f2" stroke="#c62828"/><text x="360" y="276" text-anchor="middle" font-weight="700">HA-Manager (z. B. Patroni + etcd) oder Cloud-Dienst</text><text x="360" y="294" text-anchor="middle" font-size="12">Health Check · Leader-Wahl · Promote · Fencing · Endpunkt umschalten</text>
-</svg>
-<ol>
-  <li><b>WAL:</b> Jede Änderung steht zuerst im <b>Write-Ahead Log</b>. Replikation schickt genau dieses Log weiter (Seite ACID).</li>
-  <li><b>walsender:</b> Ein Prozess auf dem Primary pro Standby. Er liest WAL und streamt es. Höchstzahl: <code>max_wal_senders</code>, Standard 10.</li>
-  <li><b>walreceiver und Replay:</b> Auf dem Standby schreibt der <b>walreceiver</b> das WAL auf Platte, der <b>Startup-Prozess</b> spielt es ein. Der Standby ist eine exakte Kopie.</li>
-  <li><b>Hot Standby:</b> Während des Replays erlaubt der Standby Lese-Abfragen (<code>hot_standby = on</code>, Standard).</li>
-  <li><b>Replication Slot:</b> Ein <b>Slot</b> merkt sich, bis wohin ein Empfänger WAL bekommen hat. Der Primary löscht älteres WAL nicht.</li>
-  <li><b>Archiv:</b> <code>archive_command</code> oder <code>archive_library</code> kopiert fertige WAL-Segmente weg. Ein Standby kann daraus nachholen (Seite Backup und PITR).</li>
-  <li><b>Logische Replikation:</b> Sie dekodiert das WAL in Zeilen-Änderungen pro Tabelle. Der Subscriber ist eine eigene, beschreibbare Datenbank.</li>
-  <li><b>HA-Manager:</b> PostgreSQL selbst hat kein automatisches Failover. Das macht ein Werkzeug wie <b>Patroni</b> oder der Cloud-Anbieter.</li>
-</ol>
-
-<h2>2. Die Reise eines COMMIT zum Standby und ein Failover (die Geschichte zum Merken)</h2>
+<h2>1. Die Reise eines COMMIT zum Standby und ein Failover</h2>
 <svg viewBox="0 0 720 330" font-family="-apple-system, system-ui, sans-serif" font-size="14">
   <defs><marker id="b" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
   <rect x="10" y="20" width="160" height="60" rx="10" fill="#eee" stroke="#777"/><text x="90" y="44" text-anchor="middle" font-weight="700">1. COMMIT</text><text x="90" y="64" text-anchor="middle" font-size="12">WAL lokal geflusht</text>
@@ -109,7 +73,115 @@
   <li><b>Umleiten:</b> Clients folgen einer neuen IP, einem DNS-Namen oder einem Proxy. Der alte Primary darf nie wieder schreiben (<b>Fencing</b>). Er kommt mit <code>pg_rewind</code> als Standby zurück.</li>
 </ol>
 
-<h2>3. Beispiel: Slot hält WAL fest, logisches Decoding braucht wal_level</h2>
+<h2>2. Aufbau</h2>
+<svg viewBox="0 0 720 310" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="a" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="10" y="14" width="300" height="150" rx="10" fill="#f7f7fa" stroke="#999" stroke-dasharray="5 4"/><text x="160" y="34" text-anchor="middle" font-weight="700">Primary</text>
+  <rect x="25" y="46" width="125" height="46" rx="8" fill="#fff" stroke="#555"/><text x="87" y="74" text-anchor="middle">Backends</text>
+  <line x1="150" y1="69" x2="173" y2="69" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="175" y="46" width="120" height="46" rx="8" fill="#dbe9fb" stroke="#0a66c2"/><text x="235" y="74" text-anchor="middle" font-weight="700">WAL</text>
+  <line x1="235" y1="92" x2="235" y2="108" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="175" y="110" width="120" height="44" rx="8" fill="#e8f5e9" stroke="#2e7d32"/><text x="235" y="130" text-anchor="middle" font-weight="700">walsender</text><text x="235" y="146" text-anchor="middle" font-size="11">+ Slot</text>
+  <rect x="25" y="110" width="125" height="44" rx="8" fill="#fff" stroke="#555"/><text x="87" y="130" text-anchor="middle" font-size="13">Archiv</text><text x="87" y="146" text-anchor="middle" font-size="11">archive_command</text>
+  <line x1="295" y1="132" x2="408" y2="70" stroke="#555" stroke-width="2" marker-end="url(#a)"/><text x="350" y="88" font-size="12">physisch</text>
+  <line x1="295" y1="140" x2="408" y2="210" stroke="#555" stroke-width="2" marker-end="url(#a)"/><text x="335" y="200" font-size="12">logisch</text>
+  <rect x="410" y="20" width="300" height="100" rx="10" fill="#fff" stroke="#555"/><text x="560" y="42" text-anchor="middle" font-weight="700">Physischer Standby</text><text x="560" y="62" text-anchor="middle" font-size="12">walreceiver → Startup-Prozess (Replay)</text><text x="560" y="80" text-anchor="middle" font-size="12">Kopie Byte für Byte, nur Lesen</text><text x="560" y="98" text-anchor="middle" font-size="12">Failover-Ziel</text>
+  <rect x="410" y="150" width="300" height="90" rx="10" fill="#fff" stroke="#555"/><text x="560" y="172" text-anchor="middle" font-weight="700">Logischer Subscriber</text><text x="560" y="192" text-anchor="middle" font-size="12">Publication → Subscription</text><text x="560" y="210" text-anchor="middle" font-size="12">Zeilen-Änderungen, eigene Schreibrechte</text><text x="560" y="228" text-anchor="middle" font-size="12">andere Version möglich</text>
+  <rect x="10" y="255" width="700" height="48" rx="8" fill="#fff4f2" stroke="#c62828"/><text x="360" y="276" text-anchor="middle" font-weight="700">HA-Manager (z. B. Patroni + etcd) oder Cloud-Dienst</text><text x="360" y="294" text-anchor="middle" font-size="12">Health Check · Leader-Wahl · Promote · Fencing · Endpunkt umschalten</text>
+</svg>
+<ol>
+  <li><b>WAL:</b> Jede Änderung steht zuerst im <b>Write-Ahead Log</b>. Replikation schickt genau dieses Log weiter (Seite ACID).</li>
+  <li><b>walsender:</b> Ein Prozess auf dem Primary pro Standby. Er liest WAL und streamt es. Höchstzahl: <code>max_wal_senders</code>, Standard 10.</li>
+  <li><b>walreceiver und Replay:</b> Auf dem Standby schreibt der <b>walreceiver</b> das WAL auf Platte, der <b>Startup-Prozess</b> spielt es ein. Der Standby ist eine exakte Kopie.</li>
+  <li><b>Hot Standby:</b> Während des Replays erlaubt der Standby Lese-Abfragen (<code>hot_standby = on</code>, Standard).</li>
+  <li><b>Replication Slot:</b> Ein <b>Slot</b> merkt sich, bis wohin ein Empfänger WAL bekommen hat. Der Primary löscht älteres WAL nicht.</li>
+  <li><b>Archiv:</b> <code>archive_command</code> oder <code>archive_library</code> kopiert fertige WAL-Segmente weg. Ein Standby kann daraus nachholen (Seite Backup und PITR).</li>
+  <li><b>Logische Replikation:</b> Sie dekodiert das WAL in Zeilen-Änderungen pro Tabelle. Der Subscriber ist eine eigene, beschreibbare Datenbank.</li>
+  <li><b>HA-Manager:</b> PostgreSQL selbst hat kein automatisches Failover. Das macht ein Werkzeug wie <b>Patroni</b> oder der Cloud-Anbieter.</li>
+</ol>
+
+<h2>3. Details, die Interviewer fragen</h2>
+<ol>
+  <li><b>Streaming vs Log Shipping:</b> <b>Streaming</b> schickt WAL-Records sofort über eine Verbindung. <b>Log Shipping</b> schickt fertige 16-MB-Segmente aus dem Archiv. Meist kombiniert man beides: Streaming plus Archiv als Rückfall.</li>
+  <li><b>synchronous_commit:</b> <code>off</code>: nicht einmal lokal warten. <code>local</code>: nur lokal. <code>remote_write</code>: Standby hat geschrieben. <code>on</code>: Standby hat geflusht. <code>remote_apply</code>: Standby hat eingespielt, Lesen dort sieht den Commit.</li>
+  <li><b>synchronous_standby_names:</b> <code>FIRST 1 (s1, s2)</code> wartet auf den ersten verfügbaren nach Priorität. <code>ANY 1 (s1, s2)</code> ist ein <b>Quorum</b>: irgendeiner reicht. Leer heisst asynchron.</li>
+  <li><b>Sync-Falle:</b> Fällt der einzige synchrone Standby aus, hängen alle Commits. Darum mindestens zwei Kandidaten oder ein Quorum.</li>
+  <li><b>Replication Slots:</b> Ohne Slot kann der Primary WAL löschen, das ein langsamer Standby noch braucht. Mit Slot kann er die Platte füllen. Schutz: <code>max_slot_wal_keep_size</code> (Standard -1 = unbegrenzt) und seit 18 <code>idle_replication_slot_timeout</code> (Release Notes 18, Replication). Er erklärt inaktive Slots nach der Zeit für ungültig, geprüft beim Checkpoint. Standard 0 = aus.</li>
+  <li><b>wal_keep_size:</b> Hält eine feste Menge WAL vor, ohne Slot. Einfacher, aber ohne Garantie für einen Standby.</li>
+  <li><b>Recovery-Konflikt:</b> Der Replay will Zeilen entfernen, die eine Lese-Abfrage auf dem Standby noch sieht. Nach <code>max_standby_streaming_delay</code> (Standard 30 s) bricht PostgreSQL die Abfrage ab.</li>
+  <li><b>hot_standby_feedback:</b> Der Standby meldet seinen ältesten Snapshot. Weniger Abbrüche, aber VACUUM auf dem Primary kann dann weniger aufräumen (Bloat, Seite VACUUM).</li>
+  <li><b>Replication Lag:</b> Lesen vom Standby sieht eventuell alte Daten. Seit 19 kann ein Client mit <code>WAIT FOR LSN '…'</code> auf dem Standby warten, bis sein eigener Commit da ist: <b>Read-your-writes</b> (Release Notes 19, Streaming Replication). Standard-Modus ist <code>standby_replay</code>. Ohne <code>TIMEOUT</code> wartet der Befehl unbegrenzt; mit <code>NO_THROW</code> liefert er <code>timeout</code> als Status statt Fehler.</li>
+  <li><b>Logische Replikation:</b> <code>CREATE PUBLICATION</code> auf der Quelle, <code>CREATE SUBSCRIPTION</code> auf dem Ziel. DDL und Large Objects werden nicht repliziert. UPDATE und DELETE brauchen eine <b>Replica Identity</b>, meist den PK.</li>
+  <li><b>Sequenzen logisch:</b> Bis 18 werden Sequenzen nicht repliziert. Seit 19 gibt es <code>FOR ALL SEQUENCES</code> und <code>ALTER SUBSCRIPTION … REFRESH SEQUENCES</code> (Release Notes 19, Logical Replication); laufende Änderungen fliessen trotzdem nicht automatisch. Vor dem Umschalten bei einem Upgrade also <code>REFRESH SEQUENCES</code> ausführen.</li>
+  <li><b>Failover-Slots (seit 17):</b> Logische Slots können auf den physischen Standby synchronisiert werden (<code>sync_replication_slots</code>). Nach einem Failover kann ein Subscriber dann weiterlesen.</li>
+  <li><b>pg_rewind:</b> Es spult einen alten Primary auf den Abzweigpunkt der neuen Timeline zurück. Dann kann er als Standby folgen, ohne neues Basis-Backup. Voraussetzung: <code>wal_log_hints</code> oder Data Checksums. Checksums sind seit 18 Standard bei <code>initdb</code> (Release Notes 18, Migration).</li>
+  <li><b>Split Brain:</b> Zwei Server halten sich für Primary und schreiben beide. Daten laufen auseinander. Schutz: Konsens im DCS, Fencing, Watchdog.</li>
+  <li><b>Kaskadierung:</b> Ein Standby kann selbst WAL an weitere Standbys senden. Das entlastet den Primary.</li>
+</ol>
+
+<h2>4. Fallen</h2>
+<div class="trap">
+<ul>
+  <li>„Mit einem Standby habe ich ein Backup.“ → <b>Falsch.</b> Ein <code>DELETE</code> ohne WHERE ist Sekunden später auch auf dem Standby.</li>
+  <li>„PostgreSQL macht Failover automatisch.“ → <b>Falsch.</b> Es braucht ein externes Werkzeug oder einen Cloud-Dienst.</li>
+  <li>„synchronous_commit = on heisst, der Standby zeigt die Daten sofort.“ → <b>Falsch.</b> <code>on</code> wartet auf Flush, nicht auf Replay. Dafür gibt es <code>remote_apply</code>.</li>
+  <li>„Replication Slots sind immer sicher.“ → <b>Falsch.</b> Ein inaktiver Slot hält unbegrenzt WAL fest.</li>
+  <li>„Logische Replikation kopiert alles.“ → <b>Falsch.</b> Kein DDL, keine Large Objects; Sequenzen erst seit 19 und nur per Refresh (Release Notes 19).</li>
+  <li>„Ein synchroner Standby macht das System verfügbarer.“ → <b>Falsch.</b> Ohne zweiten Kandidaten blockiert sein Ausfall alle Commits.</li>
+  <li>„Physische Replikation geht zwischen Hauptversionen.“ → <b>Falsch.</b> Nur gleiche Hauptversion. Zwischen Versionen: logische Replikation.</li>
+</ul>
+</div>
+
+<h2>5. Selbsttest</h2>
+<h3>Warum?</h3>
+<details><summary>Was sind RPO und RTO?</summary><p>RPO: maximal erlaubter Datenverlust. RTO: maximal erlaubte Ausfallzeit. Sie bestimmen die Architektur.</p></details>
+<details><summary>Ersetzt Replikation ein Backup?</summary><p>Nein. Fehler und Löschungen werden mit repliziert. Nur ein Backup mit PITR stellt einen früheren Zustand her.</p></details>
+<details><summary>Warum reicht ein Standby ohne HA-Werkzeug nicht für Hochverfügbarkeit?</summary><p>PostgreSQL erkennt den Ausfall nicht selbst und befördert keinen Standby. Jemand muss Ausfall erkennen, einen Leader wählen, promoten, den alten Primary abschotten und Clients umleiten.</p></details>
+<h3>Wie innen?</h3>
+<details><summary>Wie funktioniert Streaming Replication?</summary><p>Ein walsender auf dem Primary streamt WAL an den walreceiver des Standbys. Der Startup-Prozess spielt es ein.</p></details>
+<details><summary>Was ist ein Hot Standby?</summary><p>Ein Standby, der während des Replays Lese-Abfragen annimmt. Standard ist hot_standby = on.</p></details>
+<details><summary>Was ist eine LSN?</summary><p>Die Log Sequence Number, eine Byte-Position im WAL. Mit pg_wal_lsn_diff misst man Abstände.</p></details>
+<details><summary>Was ist ein Replication Slot?</summary><p>Ein Merker auf dem Primary, bis wohin ein Empfänger WAL hat. Der Primary hält ab dort alles WAL fest.</p></details>
+<details><summary>Was ist eine Timeline?</summary><p>Ein Zweig der WAL-Geschichte. Jeder Promote startet eine neue Timeline.</p></details>
+<details><summary>Was ist eine Replica Identity?</summary><p>Die Spalten, mit denen der Subscriber eine Zeile für UPDATE und DELETE findet. Meist der Primärschlüssel.</p></details>
+<details><summary>Was macht pg_rewind?</summary><p>Es spult einen alten Primary auf den Abzweigpunkt zurück, damit er als Standby folgen kann. Es braucht wal_log_hints oder Checksums.</p></details>
+<h3>Zahlen</h3>
+<details><summary>Was ist ein Recovery-Konflikt?</summary><p>Der Replay muss etwas entfernen, das eine Abfrage auf dem Standby noch braucht. Nach max_standby_streaming_delay wird die Abfrage abgebrochen.</p></details>
+<details><summary>Welche Standardwerte zählen bei der Replikation?</summary><p>max_wal_senders 10, max_standby_streaming_delay 30 s, max_slot_wal_keep_size -1 (unbegrenzt), idle_replication_slot_timeout 0 (aus). WAL-Segmente sind standardmässig 16 MB.</p></details>
+<details><summary>Warum hielt der Slot im Beispiel 175 MB fest, obwohl die Tabelle nur 46 MB WAL erzeugte?</summary><p>Ein Slot hält alles WAL des ganzen Servers fest, auch das anderer Sessions. Mit max_slot_wal_keep_size = -1 gibt es keine Grenze.</p></details>
+<h3>Vergleich</h3>
+<details><summary>Welche Werte hat synchronous_commit?</summary><p>off, local, remote_write, on und remote_apply. Sie bestimmen, worauf der Commit wartet.</p></details>
+<details><summary>Was ist der Unterschied zwischen on und remote_apply?</summary><p>on wartet, bis der Standby das WAL geflusht hat. remote_apply wartet, bis er es eingespielt hat und Abfragen es sehen.</p></details>
+<details><summary>FIRST oder ANY in synchronous_standby_names?</summary><p>FIRST wartet auf die Standbys mit höchster Priorität. ANY ist ein Quorum: irgendwelche n reichen.</p></details>
+<details><summary>Was ist logische Replikation?</summary><p>Zeilen-Änderungen ausgewählter Tabellen über Publication und Subscription. Ziel ist beschreibbar, auch eine andere Hauptversion.</p></details>
+<details><summary>Was repliziert logische Replikation nicht?</summary><p>DDL und Large Objects. Sequenzen nur seit 19 per Refresh, nicht laufend (Release Notes 19).</p></details>
+<details><summary>Was macht Patroni?</summary><p>Es überwacht PostgreSQL, hält den Leader-Key in etcd oder Consul und befördert bei Ausfall automatisch einen Standby.</p></details>
+<h3>Produktion</h3>
+<details><summary>Welches Risiko haben Slots?</summary><p>Ein inaktiver Slot hält WAL unbegrenzt fest und füllt die Platte. Schutz: max_slot_wal_keep_size, idle_replication_slot_timeout, Monitoring.</p></details>
+<details><summary>Was passiert, wenn der synchrone Standby ausfällt?</summary><p>Commits warten, bis ein synchroner Standby da ist. Darum mehrere Kandidaten einplanen.</p></details>
+<details><summary>Was macht hot_standby_feedback?</summary><p>Der Standby meldet seinen ältesten Snapshot an den Primary. Weniger Abbrüche, aber mehr Bloat auf dem Primary.</p></details>
+<details><summary>Was ist Split Brain?</summary><p>Zwei Primaries schreiben gleichzeitig. Daten laufen auseinander. Schutz: Konsens, Fencing, Watchdog.</p></details>
+<details><summary>Was geht kaputt, wenn der alte Primary nach einem Failover einfach wieder startet?</summary><p>Er hält sich für Primary und nimmt Schreibzugriffe an: Split Brain. Darum Fencing, dann kommt er mit pg_rewind als Standby der neuen Timeline zurück.</p></details>
+<details><summary>Was ist ein Failover-Slot?</summary><p>Seit 17: ein logischer Slot, der auf den Standby synchronisiert wird. Nach Failover kann der Subscriber weitermachen.</p></details>
+<details><summary>Szenario: Die Platte des Primary ist fast voll, pg_wal wächst stündlich. Was prüfen Sie?</summary><p>pg_replication_slots: ein inaktiver Slot mit grossem Rückstand. Danach Archivierung (failed_count in pg_stat_archiver). Slot löschen oder Empfänger reparieren, max_slot_wal_keep_size setzen.</p></details>
+<details><summary>Szenario: Nach einem Failover fehlen die Bestellungen der letzten Sekunden. Warum?</summary><p>Die Replikation war asynchron; die letzten Commits waren noch nicht auf dem Standby. Wenn das nicht passieren darf: synchrone Replikation mit Quorum.</p></details>
+<details><summary>Szenario: Lange Reports auf dem Read Replica brechen mit „conflict with recovery“ ab. Was tun Sie?</summary><p>hot_standby_feedback einschalten und Bloat auf dem Primary beobachten, oder einen eigenen Reporting-Standby mit höherem max_standby_streaming_delay.</p></details>
+<h3>Design</h3>
+<details><summary>Wie erreiche ich Read-your-writes mit Replicas?</summary><p>Lesen nach Schreiben vom Primary. Seit 19 (Release Notes 19): LSN nach dem Commit merken und auf dem Standby WAIT FOR LSN ausführen.</p></details>
+<details><summary>Wie mache ich ein Major-Upgrade mit wenig Downtime?</summary><p>Mit logischer Replikation auf einen Server mit neuer Version, dann Umschalten. Alternativ pg_upgrade mit Link-Modus.</p></details>
+<details><summary>Warum ein Quorum (ANY 1) statt eines einzigen synchronen Standbys?</summary><p>Mit einem einzigen synchronen Standby hängen alle Commits, wenn er ausfällt. Mit ANY 1 (s1, s2) reicht die Bestätigung von irgendeinem; ein Ausfall blockiert nichts.</p></details>
+
+<details class="mehr"><summary>Mehr</summary>
+<h3>Gerüst</h3>
+<ul>
+  <li><b>Warum?</b> Server-Ausfall überleben und Leselast verteilen. Kein Backup: Ein <code>DROP TABLE</code> wird sofort mitkopiert.</li>
+  <li><b>Wie innen?</b> walsender streamt WAL → walreceiver schreibt → Startup-Prozess spielt ein. Ein Slot hält WAL fest, bis der Empfänger es hat.</li>
+  <li><b>Zahlen</b> <code>max_wal_senders</code> 10, <code>max_standby_streaming_delay</code> 30 s, <code>max_slot_wal_keep_size</code> -1 (unbegrenzt), WAL-Segment 16 MB.</li>
+  <li><b>Vergleich</b> Physisch: ganzer Cluster, gleiche Hauptversion, HA. Logisch: Tabellen, über Versionen, Upgrades. Async: RPO &gt; 0. Sync: + 1 Rundreise pro Commit.</li>
+  <li><b>Produktion</b> Vergessener Slot → Platte voll. Einziger Sync-Standby weg → alle Commits hängen. Report auf Standby → „conflict with recovery“.</li>
+  <li><b>Design</b> Erst RPO/RTO klären. Failover mit Patroni oder Operator plus Fencing, nie selbst skripten. Read-your-writes: Primary oder <code>WAIT FOR LSN</code>.</li>
+</ul>
+<h3>Beispiel: Slot hält WAL fest, logisches Decoding braucht wal_level</h3>
 <pre>CREATE SCHEMA demo_replication_ha; SET search_path = demo_replication_ha;
 -- 1) Rolle und Status
 SELECT pg_is_in_recovery() AS ist_standby, current_setting('wal_level') AS wal_level,
@@ -156,29 +228,9 @@ ERROR:  logical decoding requires "wal_level" &gt;= "logical"</pre>
   <li><b>Slot:</b> Der Slot reserviert WAL ab LSN <code>0/57CA71F8</code>. Eine <b>LSN</b> (Log Sequence Number) ist eine Byte-Position im WAL.</li>
   <li><b>WAL-Menge:</b> 500 000 kleine Zeilen erzeugen 46 MB WAL. Das muss ein Standby alles empfangen.</li>
   <li><b>Festgehalten:</b> Der inaktive Slot hält 175 MB fest, mehr als die eigenen 46 MB. Ein Slot hält <b>alles</b> WAL des Servers zurück, auch das anderer Sessions. <code>safe_wal_size</code> ist leer, weil <code>max_slot_wal_keep_size = -1</code> (unbegrenzt) gilt. Ein vergessener Slot füllt so die Platte.</li>
-  <li><b>wal_level:</b> In 17 braucht logische Replikation <code>wal_level = logical</code> und damit einen Neustart. Seit 19 schaltet PostgreSQL bei <code>replica</code> das logische Decoding bei Bedarf selbst zu, ohne Neustart; <code>effective_wal_level</code> zeigt den wirksamen Wert (<a href="https://www.postgresql.org/docs/release/19.0/#RELEASE-19-LOGICAL">Release Notes 19, Logical Replication</a>).</li>
+  <li><b>wal_level:</b> In 17 braucht logische Replikation <code>wal_level = logical</code> und damit einen Neustart. Seit 19 schaltet PostgreSQL bei <code>replica</code> das logische Decoding bei Bedarf selbst zu, ohne Neustart; <code>effective_wal_level</code> zeigt den wirksamen Wert (Release Notes 19, Logical Replication).</li>
 </ol>
-
-<h2>4. Details, die Interviewer fragen</h2>
-<ol>
-  <li><b>Streaming vs Log Shipping:</b> <b>Streaming</b> schickt WAL-Records sofort über eine Verbindung. <b>Log Shipping</b> schickt fertige 16-MB-Segmente aus dem Archiv. Meist kombiniert man beides: Streaming plus Archiv als Rückfall.</li>
-  <li><b>synchronous_commit:</b> <code>off</code>: nicht einmal lokal warten. <code>local</code>: nur lokal. <code>remote_write</code>: Standby hat geschrieben. <code>on</code>: Standby hat geflusht. <code>remote_apply</code>: Standby hat eingespielt, Lesen dort sieht den Commit.</li>
-  <li><b>synchronous_standby_names:</b> <code>FIRST 1 (s1, s2)</code> wartet auf den ersten verfügbaren nach Priorität. <code>ANY 1 (s1, s2)</code> ist ein <b>Quorum</b>: irgendeiner reicht. Leer heisst asynchron.</li>
-  <li><b>Sync-Falle:</b> Fällt der einzige synchrone Standby aus, hängen alle Commits. Darum mindestens zwei Kandidaten oder ein Quorum.</li>
-  <li><b>Replication Slots:</b> Ohne Slot kann der Primary WAL löschen, das ein langsamer Standby noch braucht. Mit Slot kann er die Platte füllen. Schutz: <code>max_slot_wal_keep_size</code> (Standard -1 = unbegrenzt) und seit 18 <code>idle_replication_slot_timeout</code> (<a href="https://www.postgresql.org/docs/release/18.0/#RELEASE-18-REPLICATION">Release Notes 18, Replication</a>). Er erklärt inaktive Slots nach der Zeit für ungültig, geprüft beim Checkpoint. Standard 0 = aus.</li>
-  <li><b>wal_keep_size:</b> Hält eine feste Menge WAL vor, ohne Slot. Einfacher, aber ohne Garantie für einen Standby.</li>
-  <li><b>Recovery-Konflikt:</b> Der Replay will Zeilen entfernen, die eine Lese-Abfrage auf dem Standby noch sieht. Nach <code>max_standby_streaming_delay</code> (Standard 30 s) bricht PostgreSQL die Abfrage ab.</li>
-  <li><b>hot_standby_feedback:</b> Der Standby meldet seinen ältesten Snapshot. Weniger Abbrüche, aber VACUUM auf dem Primary kann dann weniger aufräumen (Bloat, Seite VACUUM).</li>
-  <li><b>Replication Lag:</b> Lesen vom Standby sieht eventuell alte Daten. Seit 19 kann ein Client mit <code>WAIT FOR LSN '…'</code> auf dem Standby warten, bis sein eigener Commit da ist: <b>Read-your-writes</b> (<a href="https://www.postgresql.org/docs/release/19.0/#RELEASE-19-REPLICATION">Release Notes 19, Streaming Replication</a>). Standard-Modus ist <code>standby_replay</code>. Ohne <code>TIMEOUT</code> wartet der Befehl unbegrenzt; mit <code>NO_THROW</code> liefert er <code>timeout</code> als Status statt Fehler.</li>
-  <li><b>Logische Replikation:</b> <code>CREATE PUBLICATION</code> auf der Quelle, <code>CREATE SUBSCRIPTION</code> auf dem Ziel. DDL und Large Objects werden nicht repliziert. UPDATE und DELETE brauchen eine <b>Replica Identity</b>, meist den PK.</li>
-  <li><b>Sequenzen logisch:</b> Bis 18 werden Sequenzen nicht repliziert. Seit 19 gibt es <code>FOR ALL SEQUENCES</code> und <code>ALTER SUBSCRIPTION … REFRESH SEQUENCES</code> (<a href="https://www.postgresql.org/docs/release/19.0/#RELEASE-19-LOGICAL">Release Notes 19, Logical Replication</a>); laufende Änderungen fliessen trotzdem nicht automatisch. Vor dem Umschalten bei einem Upgrade also <code>REFRESH SEQUENCES</code> ausführen.</li>
-  <li><b>Failover-Slots (seit 17):</b> Logische Slots können auf den physischen Standby synchronisiert werden (<code>sync_replication_slots</code>). Nach einem Failover kann ein Subscriber dann weiterlesen.</li>
-  <li><b>pg_rewind:</b> Es spult einen alten Primary auf den Abzweigpunkt der neuen Timeline zurück. Dann kann er als Standby folgen, ohne neues Basis-Backup. Voraussetzung: <code>wal_log_hints</code> oder Data Checksums. Checksums sind seit 18 Standard bei <code>initdb</code> (<a href="https://www.postgresql.org/docs/release/18.0/#RELEASE-18-MIGRATION">Release Notes 18, Migration</a>).</li>
-  <li><b>Split Brain:</b> Zwei Server halten sich für Primary und schreiben beide. Daten laufen auseinander. Schutz: Konsens im DCS, Fencing, Watchdog.</li>
-  <li><b>Kaskadierung:</b> Ein Standby kann selbst WAL an weitere Standbys senden. Das entlastet den Primary.</li>
-</ol>
-
-<h2>5. Vergleich</h2>
+<h3>Vergleich</h3>
 <ul>
   <li><b>Physisch vs logisch:</b> Physisch kopiert den ganzen Cluster, gleiche Hauptversion, nur lesbar, ideal für HA. Logisch kopiert ausgewählte Tabellen, auch zwischen Versionen, Ziel beschreibbar, ideal für Upgrades und Integration.</li>
   <li><b>Asynchron vs synchron:</b> Asynchron ist schnell, kann aber beim Failover die letzten Commits verlieren (<b>RPO</b> &gt; 0). Synchron verliert nichts, kostet aber eine Netzwerk-Rundreise pro Commit.</li>
@@ -187,30 +239,27 @@ ERROR:  logical decoding requires "wal_level" &gt;= "logical"</pre>
   <li><b>PostgreSQL vs Oracle Data Guard:</b> Ähnliches Prinzip mit Redo-Log. Oracle hat einen eingebauten Broker für Failover, PostgreSQL braucht ein externes Werkzeug.</li>
   <li><b>Read Replica vs Pooler-Routing:</b> Replicas verteilen Leselast. Die App oder ein Proxy muss entscheiden, welche Abfrage wohin geht (Seite Connection Pooling).</li>
 </ul>
-
-<h2>6. In der Produktion</h2>
+<h3>In der Produktion</h3>
 <ol>
   <li><b>Platte voll auf dem Primary:</b> Ein Standby oder Subscriber ist weg, sein Slot hält WAL fest. Lösung: Slot löschen, <code>max_slot_wal_keep_size</code> setzen, <code>pg_replication_slots</code> überwachen.</li>
   <li><b>Alle Schreibzugriffe hängen:</b> Der einzige synchrone Standby ist ausgefallen. Lösung: Quorum mit <code>ANY 1 (s1, s2)</code> oder kurzfristig <code>synchronous_standby_names</code> leeren.</li>
   <li><b>Reports auf dem Standby brechen ab:</b> „canceling statement due to conflict with recovery“. Lösung: <code>hot_standby_feedback = on</code> mit Bloat-Kontrolle, oder einen eigenen Reporting-Standby mit grösserem Delay.</li>
   <li><b>Daten nach Failover weg:</b> Asynchrone Replikation, Commits fehlten noch auf dem Standby. Lösung: RPO bewusst festlegen; für RPO = 0 synchron.</li>
-  <li><b>„Gerade gespeichert, aber nicht da“:</b> Die App liest direkt nach dem Schreiben vom Standby. Lösung: Lesen nach Schreiben vom Primary, oder seit 19 <code>WAIT FOR LSN</code> (<a href="https://www.postgresql.org/docs/release/19.0/#RELEASE-19-REPLICATION">Release Notes 19</a>).</li>
+  <li><b>„Gerade gespeichert, aber nicht da“:</b> Die App liest direkt nach dem Schreiben vom Standby. Lösung: Lesen nach Schreiben vom Primary, oder seit 19 <code>WAIT FOR LSN</code> (Release Notes 19).</li>
   <li><b>Logische Replikation stoppt:</b> Eine neue Spalte existiert nur auf der Quelle. Lösung: Schema-Änderungen zuerst auf dem Subscriber, dann auf der Quelle.</li>
   <li><b>Split Brain nach Netzwerk-Trennung:</b> Der alte Primary schreibt weiter. Lösung: HA-Werkzeug mit Konsens und Fencing, nie selbstgebaute Skripte mit einem Ping.</li>
 </ol>
-
-<h2>7. Diagnose: Werkzeuge und Abfragen</h2>
+<h3>Diagnose: Werkzeuge und Abfragen</h3>
 <ul>
   <li><b>Auf dem Primary:</b> <code>SELECT application_name, state, sync_state, write_lag, flush_lag, replay_lag FROM pg_stat_replication;</code></li>
   <li><b>Lag in Bytes:</b> <code>pg_wal_lsn_diff(pg_current_wal_lsn(), replay_lsn)</code> aus <code>pg_stat_replication</code>.</li>
   <li><b>Slots:</b> <code>SELECT slot_name, active, wal_status, safe_wal_size, inactive_since, invalidation_reason FROM pg_replication_slots;</code> <code>wal_status = lost</code> heisst: Slot unbrauchbar.</li>
-  <li><b>Auf dem Standby:</b> <code>pg_is_in_recovery()</code>, <code>pg_last_wal_replay_lsn()</code>, <code>pg_last_xact_replay_timestamp()</code>, <code>pg_stat_wal_receiver</code>. Seit 19 zusätzlich <code>pg_stat_recovery</code> (<a href="https://www.postgresql.org/docs/release/19.0/#RELEASE-19-SYSTEM-VIEWS">Release Notes 19, System Views</a>).</li>
+  <li><b>Auf dem Standby:</b> <code>pg_is_in_recovery()</code>, <code>pg_last_wal_replay_lsn()</code>, <code>pg_last_xact_replay_timestamp()</code>, <code>pg_stat_wal_receiver</code>. Seit 19 zusätzlich <code>pg_stat_recovery</code> (Release Notes 19, System Views).</li>
   <li><b>Recovery-Konflikte:</b> <code>pg_stat_database_conflicts</code> zählt abgebrochene Abfragen nach Grund.</li>
-  <li><b>Logische Replikation:</b> <code>pg_stat_subscription</code>, <code>pg_stat_subscription_stats</code> (Fehler und Konflikte). Achtung bei Monitoring-Abfragen: Seit 19 heisst <code>sync_error_count</code> dort <code>sync_table_error_count</code> (<a href="https://www.postgresql.org/docs/release/19.0/#RELEASE-19-MIGRATION">Release Notes 19, Migration</a>).</li>
+  <li><b>Logische Replikation:</b> <code>pg_stat_subscription</code>, <code>pg_stat_subscription_stats</code> (Fehler und Konflikte). Achtung bei Monitoring-Abfragen: Seit 19 heisst <code>sync_error_count</code> dort <code>sync_table_error_count</code> (Release Notes 19, Migration).</li>
   <li><b>Patroni:</b> <code>patronictl list</code> zeigt Leader, Replicas, Lag und Timeline.</li>
 </ul>
-
-<h2>8. Senior-Punkte</h2>
+<h3>Senior-Punkte</h3>
 <div class="senior">
 <ol>
   <li><b>Zuerst RPO und RTO klären.</b> RPO = wie viele Daten dürfen verloren gehen, RTO = wie lange darf es dauern. Daraus folgen synchron oder asynchron und automatisch oder manuell.</li>
@@ -222,61 +271,8 @@ ERROR:  logical decoding requires "wal_level" &gt;= "logical"</pre>
   <li><b>Logische Replikation für Upgrades:</b> Neue Hauptversion als Subscriber aufbauen, synchron halten, dann umschalten. Downtime: Minuten statt Stunden.</li>
 </ol>
 </div>
-
-<h2>9. Aus dem Projekt</h2>
-<p>„Bei MATCH lief der Nessie-Katalog zuerst auf eingebettetem RocksDB; bei einem Pod-Reschedule konnte sein Zustand verloren gehen. Ich habe Nessie auf ein PostgreSQL-Backend umgestellt, weil der Katalog der wertvollste Teil eines Lakehouse ist. Für echte HA bräuchte dieses PostgreSQL dann Replikation und Backups.“ <span class="small">(Prüfen und durch dein echtes Beispiel ersetzen. Wie das Nessie-PostgreSQL betrieben wurde (Replikation, Managed Service), steht nicht im Profil; eigene Replikations-Erfahrung nicht behaupten.)</span></p>
-
-<h2>10. Fallen</h2>
-<div class="trap">
-<ul>
-  <li>„Mit einem Standby habe ich ein Backup.“ → <b>Falsch.</b> Ein <code>DELETE</code> ohne WHERE ist Sekunden später auch auf dem Standby.</li>
-  <li>„PostgreSQL macht Failover automatisch.“ → <b>Falsch.</b> Es braucht ein externes Werkzeug oder einen Cloud-Dienst.</li>
-  <li>„synchronous_commit = on heisst, der Standby zeigt die Daten sofort.“ → <b>Falsch.</b> <code>on</code> wartet auf Flush, nicht auf Replay. Dafür gibt es <code>remote_apply</code>.</li>
-  <li>„Replication Slots sind immer sicher.“ → <b>Falsch.</b> Ein inaktiver Slot hält unbegrenzt WAL fest.</li>
-  <li>„Logische Replikation kopiert alles.“ → <b>Falsch.</b> Kein DDL, keine Large Objects; Sequenzen erst seit 19 und nur per Refresh (<a href="https://www.postgresql.org/docs/release/19.0/#RELEASE-19-LOGICAL">Release Notes 19</a>).</li>
-  <li>„Ein synchroner Standby macht das System verfügbarer.“ → <b>Falsch.</b> Ohne zweiten Kandidaten blockiert sein Ausfall alle Commits.</li>
-  <li>„Physische Replikation geht zwischen Hauptversionen.“ → <b>Falsch.</b> Nur gleiche Hauptversion. Zwischen Versionen: logische Replikation.</li>
-</ul>
-</div>
-
-<h2>11. Selbsttest</h2>
-<h3>Warum?</h3>
-<details><summary>Was sind RPO und RTO?</summary><p>RPO: maximal erlaubter Datenverlust. RTO: maximal erlaubte Ausfallzeit. Sie bestimmen die Architektur.</p></details>
-<details><summary>Ersetzt Replikation ein Backup?</summary><p>Nein. Fehler und Löschungen werden mit repliziert. Nur ein Backup mit PITR stellt einen früheren Zustand her.</p></details>
-<details><summary>Warum reicht ein Standby ohne HA-Werkzeug nicht für Hochverfügbarkeit?</summary><p>PostgreSQL erkennt den Ausfall nicht selbst und befördert keinen Standby. Jemand muss Ausfall erkennen, einen Leader wählen, promoten, den alten Primary abschotten und Clients umleiten.</p></details>
-<h3>Wie innen?</h3>
-<details><summary>Wie funktioniert Streaming Replication?</summary><p>Ein walsender auf dem Primary streamt WAL an den walreceiver des Standbys. Der Startup-Prozess spielt es ein.</p></details>
-<details><summary>Was ist ein Hot Standby?</summary><p>Ein Standby, der während des Replays Lese-Abfragen annimmt. Standard ist hot_standby = on.</p></details>
-<details><summary>Was ist eine LSN?</summary><p>Die Log Sequence Number, eine Byte-Position im WAL. Mit pg_wal_lsn_diff misst man Abstände.</p></details>
-<details><summary>Was ist ein Replication Slot?</summary><p>Ein Merker auf dem Primary, bis wohin ein Empfänger WAL hat. Der Primary hält ab dort alles WAL fest.</p></details>
-<details><summary>Was ist eine Timeline?</summary><p>Ein Zweig der WAL-Geschichte. Jeder Promote startet eine neue Timeline.</p></details>
-<details><summary>Was ist eine Replica Identity?</summary><p>Die Spalten, mit denen der Subscriber eine Zeile für UPDATE und DELETE findet. Meist der Primärschlüssel.</p></details>
-<details><summary>Was macht pg_rewind?</summary><p>Es spult einen alten Primary auf den Abzweigpunkt zurück, damit er als Standby folgen kann. Es braucht wal_log_hints oder Checksums.</p></details>
-<h3>Zahlen</h3>
-<details><summary>Was ist ein Recovery-Konflikt?</summary><p>Der Replay muss etwas entfernen, das eine Abfrage auf dem Standby noch braucht. Nach max_standby_streaming_delay wird die Abfrage abgebrochen.</p></details>
-<details><summary>Welche Standardwerte zählen bei der Replikation?</summary><p>max_wal_senders 10, max_standby_streaming_delay 30 s, max_slot_wal_keep_size -1 (unbegrenzt), idle_replication_slot_timeout 0 (aus). WAL-Segmente sind standardmässig 16 MB.</p></details>
-<details><summary>Warum hielt der Slot im Beispiel 175 MB fest, obwohl die Tabelle nur 46 MB WAL erzeugte?</summary><p>Ein Slot hält alles WAL des ganzen Servers fest, auch das anderer Sessions. Mit max_slot_wal_keep_size = -1 gibt es keine Grenze.</p></details>
-<h3>Vergleich</h3>
-<details><summary>Welche Werte hat synchronous_commit?</summary><p>off, local, remote_write, on und remote_apply. Sie bestimmen, worauf der Commit wartet.</p></details>
-<details><summary>Was ist der Unterschied zwischen on und remote_apply?</summary><p>on wartet, bis der Standby das WAL geflusht hat. remote_apply wartet, bis er es eingespielt hat und Abfragen es sehen.</p></details>
-<details><summary>FIRST oder ANY in synchronous_standby_names?</summary><p>FIRST wartet auf die Standbys mit höchster Priorität. ANY ist ein Quorum: irgendwelche n reichen.</p></details>
-<details><summary>Was ist logische Replikation?</summary><p>Zeilen-Änderungen ausgewählter Tabellen über Publication und Subscription. Ziel ist beschreibbar, auch eine andere Hauptversion.</p></details>
-<details><summary>Was repliziert logische Replikation nicht?</summary><p>DDL und Large Objects. Sequenzen nur seit 19 per Refresh, nicht laufend (<a href="https://www.postgresql.org/docs/release/19.0/#RELEASE-19-LOGICAL">Release Notes 19</a>).</p></details>
-<details><summary>Was macht Patroni?</summary><p>Es überwacht PostgreSQL, hält den Leader-Key in etcd oder Consul und befördert bei Ausfall automatisch einen Standby.</p></details>
-<h3>Produktion</h3>
-<details><summary>Welches Risiko haben Slots?</summary><p>Ein inaktiver Slot hält WAL unbegrenzt fest und füllt die Platte. Schutz: max_slot_wal_keep_size, idle_replication_slot_timeout, Monitoring.</p></details>
-<details><summary>Was passiert, wenn der synchrone Standby ausfällt?</summary><p>Commits warten, bis ein synchroner Standby da ist. Darum mehrere Kandidaten einplanen.</p></details>
-<details><summary>Was macht hot_standby_feedback?</summary><p>Der Standby meldet seinen ältesten Snapshot an den Primary. Weniger Abbrüche, aber mehr Bloat auf dem Primary.</p></details>
-<details><summary>Was ist Split Brain?</summary><p>Zwei Primaries schreiben gleichzeitig. Daten laufen auseinander. Schutz: Konsens, Fencing, Watchdog.</p></details>
-<details><summary>Was geht kaputt, wenn der alte Primary nach einem Failover einfach wieder startet?</summary><p>Er hält sich für Primary und nimmt Schreibzugriffe an: Split Brain. Darum Fencing, dann kommt er mit pg_rewind als Standby der neuen Timeline zurück.</p></details>
-<details><summary>Was ist ein Failover-Slot?</summary><p>Seit 17: ein logischer Slot, der auf den Standby synchronisiert wird. Nach Failover kann der Subscriber weitermachen.</p></details>
-<details><summary>Szenario: Die Platte des Primary ist fast voll, pg_wal wächst stündlich. Was prüfen Sie?</summary><p>pg_replication_slots: ein inaktiver Slot mit grossem Rückstand. Danach Archivierung (failed_count in pg_stat_archiver). Slot löschen oder Empfänger reparieren, max_slot_wal_keep_size setzen.</p></details>
-<details><summary>Szenario: Nach einem Failover fehlen die Bestellungen der letzten Sekunden. Warum?</summary><p>Die Replikation war asynchron; die letzten Commits waren noch nicht auf dem Standby. Wenn das nicht passieren darf: synchrone Replikation mit Quorum.</p></details>
-<details><summary>Szenario: Lange Reports auf dem Read Replica brechen mit „conflict with recovery“ ab. Was tun Sie?</summary><p>hot_standby_feedback einschalten und Bloat auf dem Primary beobachten, oder einen eigenen Reporting-Standby mit höherem max_standby_streaming_delay.</p></details>
-<h3>Design</h3>
-<details><summary>Wie erreiche ich Read-your-writes mit Replicas?</summary><p>Lesen nach Schreiben vom Primary. Seit 19 (<a href="https://www.postgresql.org/docs/release/19.0/#RELEASE-19-REPLICATION">Release Notes 19</a>): LSN nach dem Commit merken und auf dem Standby WAIT FOR LSN ausführen.</p></details>
-<details><summary>Wie mache ich ein Major-Upgrade mit wenig Downtime?</summary><p>Mit logischer Replikation auf einen Server mit neuer Version, dann Umschalten. Alternativ pg_upgrade mit Link-Modus.</p></details>
-<details><summary>Warum ein Quorum (ANY 1) statt eines einzigen synchronen Standbys?</summary><p>Mit einem einzigen synchronen Standby hängen alle Commits, wenn er ausfällt. Mit ANY 1 (s1, s2) reicht die Bestätigung von irgendeinem; ein Ausfall blockiert nichts.</p></details>
+<h3>Dein Beispiel</h3>
+</details>
 
 </body>
 </html>
