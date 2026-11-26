@@ -2,7 +2,7 @@
 
 Generated from content/syllabus.json. Priority 1 = asked in almost every interview. Mark: **Projekt** = shown in CV/Gmail · **— kein Projekt** = no project experience · **? prüfen** = unclear, you decide.
 
-437 topics · P1 267 · P2 132 · P3 38 · written 330
+437 topics · P1 267 · P2 132 · P3 38 · written 332
 
 ## Java 21 (core + advanced) (42)
 Sources: Java SE 21/25 docs (docs.oracle.com) · JVM Specification · OpenJDK source + JEPs (openjdk.org) · Oracle Java SE 21 Developer exam 1Z0-830 topics
@@ -335,7 +335,7 @@ Sources: Designing Data-Intensive Applications (Kleppmann) · Fundamentals of Da
 
 | P | Topic | Project | Written |
 |---|---|---|---|
-| 1 | Top 30 Fragen mit Kurzantworten | — kein Projekt |  |
+| 1 | Lakehouse: Top 30 Fragen mit Kurzantworten | — kein Projekt | ✓ |
 | 1 | Data Lake vs Warehouse vs Lakehouse | Projekt | ✓ |
 | 1 | Medallion-Architektur | Projekt | ✓ |
 | 1 | ETL vs ELT | Projekt | ✓ |
@@ -633,7 +633,7 @@ Sources: Designing Data-Intensive Applications (Kleppmann) · System Design Inte
 
 | P | Topic | Project | Written |
 |---|---|---|---|
-| 1 | Top 30 Fragen mit Kurzantworten | — kein Projekt |  |
+| 1 | Systemdesign: Top 30 Fragen mit Kurzantworten | — kein Projekt | ✓ |
 | 1 | Back-of-the-Envelope-Schätzung | — kein Projekt | ✓ |
 | 1 | Load Balancing | — kein Projekt | ✓ |
 | 1 | Caching: Strategien, Redis, Invalidierung | — kein Projekt | ✓ |
