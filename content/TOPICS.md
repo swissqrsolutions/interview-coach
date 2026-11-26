@@ -2,7 +2,7 @@
 
 Generated from content/syllabus.json. Priority 1 = asked in almost every interview. Mark: **Projekt** = shown in CV/Gmail · **— kein Projekt** = no project experience · **? prüfen** = unclear, you decide.
 
-413 topics · P1 243 · P2 132 · P3 38 · written 309
+414 topics · P1 244 · P2 132 · P3 38 · written 310
 
 ## Java 21 (core + advanced) (40)
 Sources: Java SE 21/25 docs (docs.oracle.com) · JVM Specification · OpenJDK source + JEPs (openjdk.org) · Oracle Java SE 21 Developer exam 1Z0-830 topics
@@ -612,7 +612,7 @@ Sources: vendor docs (GitHub Copilot, Claude Code) · company AI usage policies
 |---|---|---|---|
 | 1 | KI-gestützte Entwicklung | Projekt | ✓ |
 
-## System-Design-Grundlagen (20)
+## System-Design-Grundlagen (21)
 Sources: Designing Data-Intensive Applications (Kleppmann) · System Design Interview vol. 1+2 (Alex Xu)
 
 | P | Topic | Project | Written |
@@ -631,6 +631,7 @@ Sources: Designing Data-Intensive Applications (Kleppmann) · System Design Inte
 | 1 | Fall: Bild-Upload mit Erkennung und Suche | — kein Projekt | ✓ |
 | 1 | Fall: URL-Shortener | — kein Projekt | ✓ |
 | 1 | Fall: Benachrichtigungs-System | — kein Projekt | ✓ |
+| 1 | Übung: Schwache Designs erklären und verbessern | — kein Projekt | ✓ |
 | 2 | Consistent Hashing | — kein Projekt | ✓ |
 | 2 | Fall: News-Feed | — kein Projekt | ✓ |
 | 2 | Fall: Verteilter Job-Scheduler | — kein Projekt | ✓ |
