@@ -19,12 +19,37 @@
   summary { font-weight: 600; cursor: pointer; }
   details p { margin: 6px 0 2px; }
   .small { color: #6e6e73; font-size: 14px; }
+  h3 { font-size: 17px; margin: 20px 0 6px; }
+  .geruest { border: 2px solid #1d1d1f; border-radius: 6px; padding: 10px 14px; margin: 14px 0; font-size: 15px; line-height: 1.4; }
+  .geruest h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; margin: 0 0 8px; padding: 0; border: 0; }
+  .geruest dl { display: grid; grid-template-columns: 6.6em 1fr; gap: 6px 10px; margin: 0; }
+  .geruest dt { font-weight: 700; font-size: 12px; text-transform: uppercase; letter-spacing: .05em; padding-top: 1px; }
+  .geruest dd { margin: 0; }
+  .muster { border: 1px solid #e5e5ea; border-left: 4px solid #1d1d1f; border-radius: 6px; padding: 10px 14px; margin: 14px 0; }
+  .muster h3 { margin: 0 0 6px; font-size: 13px; text-transform: uppercase; letter-spacing: .06em; }
+  .muster .mq { margin: 0 0 6px; }
 </style>
 </head>
 <body>
 
 <h1>Consistent Hashing</h1>
 <!-- sources: System-Design-Grundlagen · Tier 2 · Quellen: Karger et al. 1997 (Consistent Hashing and Random Trees), DeCandia et al. 2007 (Dynamo, SOSP), Lamping & Veach 2014 (A Fast, Minimal Memory, Consistent Hash Algorithm), Thaler & Ravishankar 1998 (Rendezvous/HRW Hashing), Mirrokni, Thorup, Zadimoghaddam 2018 (Consistent Hashing with Bounded Loads), Apache Cassandra 5.0 Docs (cassandra.yaml: num_tokens), Envoy Docs (Cluster: RingHashLbConfig, MaglevLbConfig), Redis Cluster Specification, Kleppmann DDIA Kap. 6 -->
+
+<div class="geruest"><h2>Gerüst</h2><dl>
+  <dt>Warum?</dt><dd>Schlüssel so verteilen, dass bei einem Knoten mehr oder weniger nur ca. 1/N umzieht. Mit <code>hash % N</code> ziehen ca. 80 % um → Cache-Sturm.</dd>
+  <dt>Wie innen?</dt><dd>Hash-Ring 0…2⁶⁴−1: Ein Schlüssel gehört zum nächsten Token im Uhrzeigersinn, Binärsuche O(log T). Virtuelle Knoten glätten die Verteilung.</dd>
+  <dt>Zahlen</dt><dd>4 → 5 Knoten: mod N bewegt 80 %, Ring ca. 20 %. 1 vnode: Spitze 1,66×; 256 vnodes: 1,14×. Cassandra 5.0: <code>num_tokens</code> 16.</dd>
+  <dt>Vergleich</dt><dd>Jump Hash: kein Speicher, nur am Ende ändern. Rendezvous: O(N). Maglev: O(1)-Tabelle (65 537). Redis Cluster: 16 384 feste Slots, kein Ring.</dd>
+  <dt>Produktion</dt><dd>Scale-out mit % N → Miss-Sturm, DB bricht ein. Zu wenige vnodes → heisser Knoten. Flapping → Hysterese bei Health Checks.</dd>
+  <dt>Design</dt><dd>Verteilt Schlüssel, nicht Last: Hot Keys brauchen Splitting oder Caches. Für Datenbanken oft feste Partitionen mit Metadaten.</dd>
+</dl></div>
+
+<div class="muster"><h3>Antwort-Muster</h3><p class="mq"><b>Frage:</b> Warum Consistent Hashing statt hash % N?</p><ol>
+  <li>Mechanismus: Knoten und Schlüssel liegen auf einem Ring, ein Schlüssel gehört zum nächsten Token im Uhrzeigersinn.</li>
+  <li>Zahl: Beim Schritt von 4 auf 5 Knoten ziehen ca. 20 % der Schlüssel um, mit hash % N ca. 80 %.</li>
+  <li>Trade-off: Ein Token pro Server verteilt ungleich, darum virtuelle Knoten, z. B. 256 pro Server.</li>
+  <li>Produktion: In Cache-Pools verhindert das einen Miss-Sturm auf die Datenbank beim Scale-out.</li>
+</ol></div>
 
 <div class="kern">
 <b>Kern:</b> <b>Consistent Hashing</b> ist ein Verfahren, das Schlüssel so auf Knoten verteilt, dass bei einem neuen oder fehlenden Knoten nur ca. <b>1/N der Schlüssel umziehen</b>. Mit <code>hash % N</code> ziehen fast alle um. Darum nutzen verteilte Caches, Datenbanken und Load Balancer mit Affinität Consistent Hashing oder eine Variante davon.
@@ -196,28 +221,39 @@ vnodes 256: max/avg 1.11</pre>
 </ul>
 </div>
 
-<h2>11. Fragen</h2>
+<h2>11. Selbsttest</h2>
+<h3>Warum?</h3>
 <details><summary>Was ist Consistent Hashing?</summary><p>Ein Verfahren, das Schlüssel so auf Knoten verteilt, dass bei Änderung der Knotenzahl nur ca. 1/N der Schlüssel umzieht. Knoten und Schlüssel liegen dafür auf einem Hash-Ring.</p></details>
 <details><summary>Warum nicht einfach hash % N?</summary><p>Ändert sich N, ändert sich die Zuordnung fast jedes Schlüssels. In der Simulation zogen beim Schritt 4 → 5 rund 80 % um.</p></details>
+<h3>Wie innen?</h3>
 <details><summary>Wie findet man den Knoten für einen Schlüssel?</summary><p>Hash des Schlüssels berechnen, dann per Binärsuche das nächste Token im Uhrzeigersinn finden. Das Token gehört zu einem Server.</p></details>
 <details><summary>Was sind virtuelle Knoten?</summary><p>Jeder Server steht mehrfach auf dem Ring. Das glättet die Verteilung und verteilt die Last eines Ausfalls auf viele Server.</p></details>
-<details><summary>Wie viele Schlüssel ziehen bei einem neuen Knoten um?</summary><p>Im Mittel ca. 1/(N+1) aller Schlüssel. Bei 4 → 5 Knoten also ca. 20 %.</p></details>
 <details><summary>Was passiert, wenn ein Knoten ausfällt?</summary><p>Seine Bereiche gehen an die Nachfolger auf dem Ring. Mit vnodes sind das viele verschiedene Server. Kein anderer Schlüssel bewegt sich.</p></details>
 <details><summary>Wie gewichtet man starke Server?</summary><p>Sie bekommen mehr Tokens auf dem Ring. So gehört ihnen ein grösserer Anteil.</p></details>
 <details><summary>Wie funktioniert Replikation auf dem Ring?</summary><p>Die Kopien liegen auf den nächsten RF−1 verschiedenen Servern im Uhrzeigersinn. Tokens desselben Servers werden übersprungen, oft auch dieselbe Zone.</p></details>
+<details><summary>Was geht kaputt, wenn der Ring nur ein Token pro Server hat?</summary><p>Die Abschnitte sind zufällig ungleich: In der Simulation trug ein Server das 1,66-Fache des Durchschnitts. Und ein Ausfall trifft genau einen Nachbarn.</p></details>
+<h3>Zahlen</h3>
+<details><summary>Wie viele Schlüssel ziehen bei einem neuen Knoten um?</summary><p>Im Mittel ca. 1/(N+1) aller Schlüssel. Bei 4 → 5 Knoten also ca. 20 %.</p></details>
+<details><summary>Wie viele Tokens nutzt Cassandra?</summary><p>In Cassandra 5.0 standardmässig 16 pro Knoten, mit einem Allocator für gute Balance. Früher waren 256 üblich.</p></details>
+<details><summary>Warum sind es bei Cassandra heute 16 statt 256 Tokens?</summary><p>Der Token-Allocator verteilt auch mit wenigen Tokens gut. Weniger Tokens heisst weniger Metadaten und weniger Reparatur-Aufwand.</p></details>
+<h3>Vergleich</h3>
 <details><summary>Was ist Jump Consistent Hash?</summary><p>Eine kurze Funktion, die Schlüssel und Bucket-Anzahl auf einen Bucket abbildet. Kein Speicher, perfekt gleichmässig. Buckets darf man nur am Ende ändern.</p></details>
 <details><summary>Was ist Rendezvous Hashing?</summary><p>Für jeden Server einen Score aus Server und Schlüssel berechnen, der höchste gewinnt. Kein Ring nötig, Lookup kostet O(N).</p></details>
 <details><summary>Was ist Maglev Hashing?</summary><p>Ein Verfahren, das eine feste Lookup-Tabelle baut. Lookup O(1), sehr gleichmässig. Envoy nutzt standardmässig 65 537 Einträge.</p></details>
 <details><summary>Nutzt Redis Cluster Consistent Hashing?</summary><p>Nein. Er nutzt 16 384 feste Hash Slots mit CRC16. Slots werden als Ganzes zwischen Knoten verschoben.</p></details>
 <details><summary>Feste Partitionen oder Ring?</summary><p>Feste Partitionen geben kontrollierte Umzüge über Metadaten. Ein Ring braucht keinen Koordinator. Datenbanken nutzen oft Partitionen, Client-Caches oft einen Ring.</p></details>
-<details><summary>Löst Consistent Hashing Hot Keys?</summary><p>Nein. Ein Schlüssel landet immer auf einem Server. Dagegen helfen lokale Caches, Lese-Replikate oder Key-Splitting.</p></details>
-<details><summary>Was ist Consistent Hashing with Bounded Loads?</summary><p>Jeder Knoten hat eine Obergrenze von (1+ε) mal dem Durchschnitt. Ist er voll, geht der Schlüssel weiter zum nächsten Knoten.</p></details>
-<details><summary>Wie viele Tokens nutzt Cassandra?</summary><p>In Cassandra 5.0 standardmässig 16 pro Knoten, mit einem Allocator für gute Balance. Früher waren 256 üblich.</p></details>
-<details><summary>Welche Hash-Funktion nehmen Sie?</summary><p>Eine schnelle, gleichmässige wie MurmurHash3 oder xxHash. Alle Clients müssen exakt dieselbe nutzen.</p></details>
-<details><summary>Wo nutzt ein Load Balancer Consistent Hashing?</summary><p>Für Affinität: Requests eines Nutzers oder Keys sollen am selben Backend landen, z. B. für lokale Caches. Envoy bietet RING_HASH und MAGLEV.</p></details>
+<details><summary>Was geht kaputt, wenn man Jump Hash für zufällig ausfallende Server nutzt?</summary><p>Jump Hash kann Buckets nur am Ende entfernen. Fällt ein Server in der Mitte aus, bricht die Zuordnung. Dann besser Ring oder Rendezvous.</p></details>
+<h3>Produktion</h3>
 <details><summary>Szenario: Nach dem Hinzufügen eines Memcached-Knotens bricht die Datenbank ein. Warum?</summary><p>Die Clients nutzen hash % N. Fast alle Keys landen auf einem anderen Knoten und sind Misses. Lösung: Consistent Hashing in allen Clients, Scale-out ausserhalb der Spitze.</p></details>
 <details><summary>Szenario: Ein Knoten im Cluster hat doppelt so viel Last wie die anderen. Was prüfen Sie?</summary><p>Zuerst die Verteilung der Keys: zu wenige vnodes oder falsche Gewichte. Dann einen Hot Key mit Requests pro Key. Lösung: mehr Tokens, Rebalancing oder Hot-Key-Caching.</p></details>
 <details><summary>Szenario: Zwei Services lesen denselben Cache, aber Invalidierungen wirken nicht. Woran denken Sie?</summary><p>Die Services berechnen den Knoten verschieden, z. B. andere Hash-Funktion oder Server-Reihenfolge. Lösung: eine gemeinsame Client-Bibliothek und stabile Server-Namen.</p></details>
+<details><summary>Was geht kaputt, wenn ein Knoten flappt?</summary><p>Bei jedem Weg und Zurück wandern Schlüssel hin und her, der Cache wird kalt. Lösung: Ausfall erst nach mehreren Health-Check-Fehlern melden, Hysterese.</p></details>
+<h3>Design</h3>
+<details><summary>Löst Consistent Hashing Hot Keys?</summary><p>Nein. Ein Schlüssel landet immer auf einem Server. Dagegen helfen lokale Caches, Lese-Replikate oder Key-Splitting.</p></details>
+<details><summary>Was ist Consistent Hashing with Bounded Loads?</summary><p>Jeder Knoten hat eine Obergrenze von (1+ε) mal dem Durchschnitt. Ist er voll, geht der Schlüssel weiter zum nächsten Knoten.</p></details>
+<details><summary>Welche Hash-Funktion nehmen Sie?</summary><p>Eine schnelle, gleichmässige wie MurmurHash3 oder xxHash. Alle Clients müssen exakt dieselbe nutzen.</p></details>
+<details><summary>Wo nutzt ein Load Balancer Consistent Hashing?</summary><p>Für Affinität: Requests eines Nutzers oder Keys sollen am selben Backend landen, z. B. für lokale Caches. Envoy bietet RING_HASH und MAGLEV.</p></details>
+<details><summary>Warum wähle ich für Datenbanken oft feste Partitionen statt eines Rings?</summary><p>Umzüge sind dann explizit, beobachtbar und drosselbar: Ganze Partitionen wandern über Metadaten. Redis Cluster und Kafka arbeiten so.</p></details>
 
 </body>
 </html>

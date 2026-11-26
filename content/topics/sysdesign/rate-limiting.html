@@ -19,12 +19,37 @@
   summary { font-weight: 600; cursor: pointer; }
   details p { margin: 6px 0 2px; }
   .small { color: #6e6e73; font-size: 14px; }
+  h3 { font-size: 17px; margin: 20px 0 6px; }
+  .geruest { border: 2px solid #1d1d1f; border-radius: 6px; padding: 10px 14px; margin: 14px 0; font-size: 15px; line-height: 1.4; }
+  .geruest h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; margin: 0 0 8px; padding: 0; border: 0; }
+  .geruest dl { display: grid; grid-template-columns: 6.6em 1fr; gap: 6px 10px; margin: 0; }
+  .geruest dt { font-weight: 700; font-size: 12px; text-transform: uppercase; letter-spacing: .05em; padding-top: 1px; }
+  .geruest dd { margin: 0; }
+  .muster { border: 1px solid #e5e5ea; border-left: 4px solid #1d1d1f; border-radius: 6px; padding: 10px 14px; margin: 14px 0; }
+  .muster h3 { margin: 0 0 6px; font-size: 13px; text-transform: uppercase; letter-spacing: .06em; }
+  .muster .mq { margin: 0 0 6px; }
 </style>
 </head>
 <body>
 
 <h1>Rate Limiting: Algorithmen</h1>
 <!-- sources: System Design · Tier 1 · Quellen: RFC 6585 §4 (429 Too Many Requests), RFC 9110 §10.2.3 (Retry-After), IETF draft-ietf-httpapi-ratelimit-headers-12 (Entwurf, kein RFC), Microsoft Learn: API Management Policies rate-limit, rate-limit-by-key, quota-by-key und „Advanced request throttling“, Azure Architecture Center: Rate Limiting Pattern und Throttling Pattern, Redis-Doku (INCR, EXPIRE, Sorted Sets, Lua-Skripte), NGINX ngx_http_limit_req_module -->
+
+<div class="geruest"><h2>Gerüst</h2><dl>
+  <dt>Warum?</dt><dd>Schützt das Backend vor Überlast, Missbrauch und Noisy Neighbors. Über dem Limit: 429 Too Many Requests mit Retry-After.</dd>
+  <dt>Wie innen?</dt><dd>Key bestimmen (Subscription, User, IP) → Zähler atomar prüfen (Redis <code>INCR</code> oder Lua) → Entscheid. Token Bucket: Rate r, Burst b, zwei Zahlen pro Key.</dd>
+  <dt>Zahlen</dt><dd>Fixed Window: bis 2× Limit an der Fenstergrenze (Simulation: 9 statt 5 in 10 s). Race ohne INCR: 6 statt 5. APIM <code>rate-limit-by-key</code>: renewal-period max. 300 s.</dd>
+  <dt>Vergleich</dt><dd>Token Bucket = Leaky Meter (Bursts ok) vs Leaky Queue (glättet) vs Fixed Window (billig) vs Sliding Log (exakt) vs Sliding Counter (Näherung).</dd>
+  <dt>Produktion</dt><dd>Limit pro Pod wächst mit den Replicas. Firmen-NAT: ein Kunde blockiert alle. 429 ohne Retry-After → Retry-Sturm.</dd>
+  <dt>Design</dt><dd>Der Key ist wichtiger als der Algorithmus. Fail-open oder fail-closed bewusst wählen. Limits in Schichten: Edge, Gateway, Service.</dd>
+</dl></div>
+
+<div class="muster"><h3>Antwort-Muster</h3><p class="mq"><b>Frage:</b> Wie funktioniert ein Token Bucket?</p><ol>
+  <li>Mechanismus: Ein Eimer hält höchstens b Tokens und füllt sich mit r pro Sekunde, jeder Request kostet eines.</li>
+  <li>Zahl: Bei Kapazität 5 und 0,5 Token/s kommen Bursts bis 5 sofort durch, der Durchschnitt bleibt 0,5/s.</li>
+  <li>Trade-off: Kurzfristig kommt mehr als Rate mal Fenster durch, das ist gewollt.</li>
+  <li>Produktion: Der Zähler liegt atomar in Redis (Lua-Skript), sonst zählt jede Instanz für sich.</li>
+</ol></div>
 
 <div class="kern">
 <b>Kern:</b> <b>Rate Limiting</b> ist eine Grenze, wie viele Requests ein Client pro Zeitfenster schicken darf. Es schützt das Backend vor <b>Überlast</b>, Missbrauch und einem lauten Mandanten (<b>Noisy Neighbor</b>). Wer die Grenze überschreitet, bekommt <b>429 Too Many Requests</b> mit <b>Retry-After</b>. Der Algorithmus bestimmt, wie viele <b>Bursts</b> (kurze Spitzen) durchkommen.
@@ -229,34 +254,45 @@ Leaky bucket as queue (size 5, 1 out every 2 s), arrivals 9.0-10.5:
 </ul>
 </div>
 
-<h2>11. Fragen</h2>
+<h2>11. Selbsttest</h2>
+<h3>Warum?</h3>
 <details><summary>Was ist Rate Limiting und welches Problem löst es?</summary><p>Eine Grenze für Requests pro Zeitfenster und Client. Es schützt das Backend vor Überlast, Missbrauch und lauten Mandanten.</p></details>
+<details><summary>Warum bekommt ein Client über dem Limit 429 und nicht 503?</summary><p>429 heisst: Der Client schickt zu viel. 503 heisst: Der Server selbst kann nicht. Caches dürfen 429 nicht speichern.</p></details>
+<h3>Wie innen?</h3>
 <details><summary>Wie funktioniert ein Token Bucket?</summary><p>Ein Eimer hält max. b Tokens und füllt sich mit r pro Sekunde. Jeder Request nimmt ein Token. Kein Token: 429.</p></details>
-<details><summary>Welche zwei Parameter hat ein Token Bucket?</summary><p>Die Rate (Tokens pro Sekunde) und die Kapazität (maximaler Burst).</p></details>
 <details><summary>Wie funktioniert ein Leaky Bucket?</summary><p>Requests fliessen in einen Eimer mit fester Abflussrate. Ist er voll, wird abgelehnt. Als Queue glättet er den Ausgang.</p></details>
-<details><summary>Token Bucket vs Leaky Bucket?</summary><p>Als Meter entscheiden beide gleich. Der Leaky Bucket als Queue puffert und gibt gleichmässig weiter. Der Token Bucket lässt Bursts sofort durch.</p></details>
-<details><summary>Was ist das Problem beim Fixed Window?</summary><p>An der Fenstergrenze passen zwei volle Fenster direkt hintereinander. So kommt bis zum doppelten Limit in einem Fensterzeitraum durch.</p></details>
-<details><summary>Sliding Log vs Sliding Counter?</summary><p>Der Log speichert jeden Zeitstempel und ist exakt. Der Counter nutzt zwei Zähler mit Gewichtung und ist eine billige Näherung.</p></details>
-<details><summary>Wie rechnet der Sliding Window Counter?</summary><p>Vorheriges Fenster × Überlappung + aktuelles Fenster. Bei 30 % im neuen Fenster zählt das alte zu 70 %.</p></details>
 <details><summary>Wie bauen Sie einen verteilten Rate Limiter mit Redis?</summary><p>Zähler pro Key in Redis. Fixed Window: INCR plus EXPIRE. Sliding Log: Sorted Set. Token Bucket: Lua-Skript, damit alles atomar ist.</p></details>
 <details><summary>Warum muss die Prüfung atomar sein?</summary><p>Sonst lesen zwei Instanzen denselben Stand und lassen beide durch. Das Limit wird überschritten.</p></details>
-<details><summary>Was passiert, wenn Redis ausfällt?</summary><p>Der Limiter muss fail-open oder fail-closed sein. Fail-open schützt die Verfügbarkeit, fail-closed das Backend. Oft: fail-open mit lokalem Notfall-Limit.</p></details>
-<details><summary>Welchen Statuscode und welche Header schicken Sie?</summary><p>429 Too Many Requests (RFC 6585) mit Retry-After (RFC 9110). Optional Restkontingent in X-RateLimit-* oder den RateLimit-Headern des IETF-Entwurfs.</p></details>
+<h3>Zahlen</h3>
+<details><summary>Welche zwei Parameter hat ein Token Bucket?</summary><p>Die Rate (Tokens pro Sekunde) und die Kapazität (maximaler Burst).</p></details>
+<details><summary>Was ist das Problem beim Fixed Window?</summary><p>An der Fenstergrenze passen zwei volle Fenster direkt hintereinander. So kommt bis zum doppelten Limit in einem Fensterzeitraum durch.</p></details>
+<details><summary>Wie rechnet der Sliding Window Counter?</summary><p>Vorheriges Fenster × Überlappung + aktuelles Fenster. Bei 30 % im neuen Fenster zählt das alte zu 70 %.</p></details>
 <details><summary>Welche Formen hat Retry-After?</summary><p>Sekunden, z. B. Retry-After: 4, oder ein HTTP-Datum.</p></details>
-<details><summary>Sind die RateLimit-Header ein Standard?</summary><p>Nein. Sie sind ein IETF-Entwurf (draft-ietf-httpapi-ratelimit-headers). Er definiert RateLimit-Policy und RateLimit.</p></details>
-<details><summary>Wo setzen Sie Rate Limiting durch?</summary><p>Edge (WAF) gegen Flut pro IP, Gateway (APIM) für API-Verträge pro Key, Service für Geschäftsregeln. Je früher, desto billiger.</p></details>
+<details><summary>Was geht kaputt, wenn zwei Instanzen mit GET und SET zählen?</summary><p>Beide lesen denselben Stand und lassen beide durch: In der Simulation 6 statt 5 Requests. Atomares INCR oder ein Lua-Skript verhindert das.</p></details>
+<h3>Vergleich</h3>
+<details><summary>Token Bucket vs Leaky Bucket?</summary><p>Als Meter entscheiden beide gleich. Der Leaky Bucket als Queue puffert und gibt gleichmässig weiter. Der Token Bucket lässt Bursts sofort durch.</p></details>
+<details><summary>Sliding Log vs Sliding Counter?</summary><p>Der Log speichert jeden Zeitstempel und ist exakt. Der Counter nutzt zwei Zähler mit Gewichtung und ist eine billige Näherung.</p></details>
 <details><summary>Gateway oder Service?</summary><p>Gateway für einheitliche Limits ohne Code. Service, wenn die Regel Geschäftswissen braucht, z. B. pro Konto und Aktion.</p></details>
 <details><summary>Welche Rate-Limit-Policies hat Azure API Management?</summary><p>rate-limit (pro Subscription), rate-limit-by-key (pro beliebigem Key), quota und quota-by-key (Volumen über lange Zeit). Dazu Token-Limits für LLM-APIs.</p></details>
 <details><summary>Welchen Status liefert eine APIM-Quota?</summary><p>403 Forbidden mit Retry-After. Das Rate Limit liefert 429.</p></details>
-<details><summary>Ist das APIM-Rate-Limit exakt?</summary><p>Nein. Microsoft sagt, es ist wegen der verteilten Architektur nie ganz genau. Jede Region zählt für sich.</p></details>
 <details><summary>Rate Limit vs Quota?</summary><p>Rate Limit schützt vor Spitzen in kurzen Fenstern. Quota begrenzt das Gesamtvolumen, z. B. pro Monat.</p></details>
-<details><summary>Welchen Key wählen Sie?</summary><p>Am besten eine stabile Identität: Subscription-Key, Client-ID oder User-ID. IP nur für anonyme Endpunkte, wegen NAT.</p></details>
+<details><summary>Warum erlaubt ein Token Bucket mehr als Rate × Fenster?</summary><p>Er begrenzt den Durchschnitt, nicht jedes Fenster. Bursts bis zur Kapazität sind gewollt, z. B. für Partner-APIs.</p></details>
+<h3>Produktion</h3>
+<details><summary>Ist das APIM-Rate-Limit exakt?</summary><p>Nein. Microsoft sagt, es ist wegen der verteilten Architektur nie ganz genau. Jede Region zählt für sich.</p></details>
 <details><summary>Was soll ein Client bei 429 tun?</summary><p>Retry-After beachten. Ohne Header: exponentielles Backoff mit Jitter und eine Obergrenze an Versuchen.</p></details>
-<details><summary>Was ist das Rate Limiting Pattern im Azure Architecture Center?</summary><p>Die eigenen Aufrufe an einen gedrosselten Dienst steuern, z. B. per Queue und fester Verarbeitungsrate. So vermeidet man 429 vom Dienst.</p></details>
 <details><summary>Wie testen Sie einen Rate Limiter?</summary><p>Unit-Tests mit simulierter Uhr. Lasttest mit k6 oder Azure Load Testing. Prüfen: 429-Anteil, Retry-After, Verhalten an der Fenstergrenze.</p></details>
 <details><summary>Szenario: Nach dem Hochskalieren von 2 auf 10 Pods kommt viel mehr Last zur Datenbank. Warum?</summary><p>Das Limit ist pro Pod im Speicher. Mit 10 Pods ist das echte Limit fünfmal höher. Lösung: zentraler Zähler in Redis oder Limit im Gateway.</p></details>
 <details><summary>Szenario: Ein grosser Kunde meldet ständig 429, obwohl seine Benutzer wenig tun. Woran denken Sie?</summary><p>Das Limit läuft pro IP, und alle Benutzer sitzen hinter einem Firmen-NAT. Lösung: pro Subscription-Key oder User-ID limitieren.</p></details>
 <details><summary>Szenario: Nach einem kurzen Ausfall kommt eine Lastwelle, und das System fällt erneut. Was tun Sie?</summary><p>Ein Retry Storm. Lösung: Retry-After senden, Clients mit Backoff und Jitter, Limit am Gateway, eventuell Load Shedding. Mit 429-Metriken prüfen.</p></details>
+<details><summary>Was geht kaputt, wenn 429 ohne Retry-After gesendet wird?</summary><p>Clients wiederholen sofort: ein Retry Storm, der die Last erhöht. Retry-After plus Backoff mit Jitter im Client verhindern das.</p></details>
+<h3>Design</h3>
+<details><summary>Was passiert, wenn Redis ausfällt?</summary><p>Der Limiter muss fail-open oder fail-closed sein. Fail-open schützt die Verfügbarkeit, fail-closed das Backend. Oft: fail-open mit lokalem Notfall-Limit.</p></details>
+<details><summary>Welchen Statuscode und welche Header schicken Sie?</summary><p>429 Too Many Requests (RFC 6585) mit Retry-After (RFC 9110). Optional Restkontingent in X-RateLimit-* oder den RateLimit-Headern des IETF-Entwurfs.</p></details>
+<details><summary>Sind die RateLimit-Header ein Standard?</summary><p>Nein. Sie sind ein IETF-Entwurf (draft-ietf-httpapi-ratelimit-headers). Er definiert RateLimit-Policy und RateLimit.</p></details>
+<details><summary>Wo setzen Sie Rate Limiting durch?</summary><p>Edge (WAF) gegen Flut pro IP, Gateway (APIM) für API-Verträge pro Key, Service für Geschäftsregeln. Je früher, desto billiger.</p></details>
+<details><summary>Welchen Key wählen Sie?</summary><p>Am besten eine stabile Identität: Subscription-Key, Client-ID oder User-ID. IP nur für anonyme Endpunkte, wegen NAT.</p></details>
+<details><summary>Was ist das Rate Limiting Pattern im Azure Architecture Center?</summary><p>Die eigenen Aufrufe an einen gedrosselten Dienst steuern, z. B. per Queue und fester Verarbeitungsrate. So vermeidet man 429 vom Dienst.</p></details>
+<details><summary>Warum ist der Key wichtiger als der Algorithmus?</summary><p>Der Key entscheidet über Fairness. Ein Limit pro IP trifft alle Benutzer hinter einem Firmen-NAT gemeinsam. Besser Subscription-Key oder User-ID.</p></details>
 
 </body>
 </html>

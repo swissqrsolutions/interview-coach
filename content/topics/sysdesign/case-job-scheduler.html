@@ -19,12 +19,37 @@
   summary { font-weight: 600; cursor: pointer; }
   details p { margin: 6px 0 2px; }
   .small { color: #6e6e73; font-size: 14px; }
+  h3 { font-size: 17px; margin: 20px 0 6px; }
+  .geruest { border: 2px solid #1d1d1f; border-radius: 6px; padding: 10px 14px; margin: 14px 0; font-size: 15px; line-height: 1.4; }
+  .geruest h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; margin: 0 0 8px; padding: 0; border: 0; }
+  .geruest dl { display: grid; grid-template-columns: 6.6em 1fr; gap: 6px 10px; margin: 0; }
+  .geruest dt { font-weight: 700; font-size: 12px; text-transform: uppercase; letter-spacing: .05em; padding-top: 1px; }
+  .geruest dd { margin: 0; }
+  .muster { border: 1px solid #e5e5ea; border-left: 4px solid #1d1d1f; border-radius: 6px; padding: 10px 14px; margin: 14px 0; }
+  .muster h3 { margin: 0 0 6px; font-size: 13px; text-transform: uppercase; letter-spacing: .06em; }
+  .muster .mq { margin: 0 0 6px; }
 </style>
 </head>
 <body>
 
 <h1>Fall: Verteilter Job-Scheduler</h1>
 <!-- sources: System-Design-Fall · Tier 2 · Quellen: Kubernetes Docs (CronJob: concurrencyPolicy, startingDeadlineSeconds, Time zones, Job creation, History limits), PostgreSQL 17 Docs (SELECT … FOR UPDATE SKIP LOCKED, Advisory Locks, INSERT … ON CONFLICT), Kleppmann DDIA Kap. 8 (Leases, Fencing Tokens), Quartz Scheduler Docs (Clustering, Misfire Instructions) -->
+
+<div class="geruest"><h2>Gerüst</h2><dl>
+  <dt>Warum?</dt><dd>Aufgaben zur richtigen Zeit starten, genau einmal pro Termin, auch wenn Knoten sterben. Ausführung ist at-least-once → Jobs idempotent.</dd>
+  <dt>Wie innen?</dt><dd>Scheduler legt Runs mit Unique-Key <code>(job_id, scheduled_for)</code> an. Worker claimen mit <code>FOR UPDATE SKIP LOCKED</code> und halten eine Lease per Heartbeat. Reaper setzt tote Runs zurück.</dd>
+  <dt>Zahlen</dt><dd>100 000 stündliche Jobs ≈ 28 Runs/s. Heartbeat alle 30 s, Reaper nach 5 min. DB-Queue trägt einige hundert bis tausend Claims/s.</dd>
+  <dt>Vergleich</dt><dd>K8s CronJob: einfach, aber zwei Jobs oder keiner möglich. DB-Scheduler: Kontrolle, DB-Grenze. Airflow/Temporal: DAGs, eigener Betrieb.</dd>
+  <dt>Produktion</dt><dd>Timeout kürzer als echte Laufzeit → lebender Worker verliert den Run. xx:00-Spitze → Jitter. Misfire-Policy bewusst wählen.</dd>
+  <dt>Design</dt><dd>Idempotent: Ergebnis ersetzen statt addieren. Fencing Token gegen Zombie-Worker. In UTC planen oder Sommerzeit-Regel testen.</dd>
+</dl></div>
+
+<div class="muster"><h3>Antwort-Muster</h3><p class="mq"><b>Frage:</b> Wie stellt ein verteilter Scheduler sicher, dass ein Job nicht doppelt läuft?</p><ol>
+  <li>Mechanismus: Ein Unique-Key auf Job und Termin blockt doppelte Runs, Worker claimen atomar mit <code>SKIP LOCKED</code>.</li>
+  <li>Zahl: Worker senden alle 30 s einen Heartbeat, nach 5 Minuten ohne gibt der Reaper den Run frei.</li>
+  <li>Trade-off: Ganz verhindern geht nicht, ein Worker kann nach der Arbeit vor dem done sterben, also at-least-once.</li>
+  <li>Produktion: Darum baue ich Jobs idempotent und ersetze das Ergebnis, statt zu addieren.</li>
+</ol></div>
 
 <div class="kern">
 <b>Kern (die 1-Minuten-Antwort):</b> Ein <b>Job-Scheduler</b> startet Aufgaben zur richtigen Zeit genau einmal pro geplantem Termin, auch wenn Knoten abstürzen. Ein <b>Scheduler</b> erzeugt fällige <b>Runs</b> mit Unique-Key <code>(job_id, scheduled_for)</code>; <b>Worker</b> holen Runs atomar mit einer <b>Lease</b> und senden <b>Heartbeats</b>; ein <b>Reaper</b> gibt Runs abgestürzter Worker frei. Ausführung ist <b>at-least-once</b>, darum müssen Jobs <b>idempotent</b> sein.
@@ -237,24 +262,38 @@ FROM job_runs r JOIN jobs j ON j.id = r.job_id ORDER BY r.id;
 </ul>
 </div>
 
-<h2>11. Fragen</h2>
+<h2>11. Selbsttest</h2>
+<h3>Warum?</h3>
+<details><summary>Warum gibt es keine Exactly-once-Ausführung?</summary><p>Ein Worker kann die Arbeit fertig haben und vor dem done sterben. Dann läuft sie nochmals. Darum at-least-once plus idempotente Jobs.</p></details>
+<details><summary>Warum müssen Jobs idempotent sein?</summary><p>Weil jeder Run wiederholt werden kann: Reaper, Retry, zweiter Scheduler. Idempotent heisst: Das Ergebnis wird ersetzt, nicht addiert.</p></details>
+<h3>Wie innen?</h3>
 <details><summary>Skizzieren Sie den Job-Scheduler in einer Minute.</summary><p>Jobs in einer DB, ein Scheduler legt fällige Runs mit Unique-Key an, Worker claimen mit Lease und Heartbeat, ein Reaper gibt verwaiste Runs frei. Jobs sind idempotent, weil die Ausführung at-least-once ist.</p></details>
 <details><summary>Wie verhindern Sie doppelte Ausführung?</summary><p>Unique-Key auf Job und Termin beim Anlegen, atomarer Claim beim Holen. Gegen Zombie-Worker Fencing Tokens. Ganz ausschliessen kann man es nicht, darum idempotente Jobs.</p></details>
 <details><summary>Was ist eine Lease?</summary><p>Ein zeitlich begrenztes Recht auf einen Run. Der Worker verlängert sie per Heartbeat. Läuft sie ab, darf ein anderer übernehmen.</p></details>
 <details><summary>Was ist ein Fencing Token?</summary><p>Eine steigende Nummer pro Claim. Das Ziel-System lehnt Writes mit älterer Nummer ab. So kann ein Zombie-Worker nichts überschreiben.</p></details>
+<details><summary>Was geht kaputt, wenn zwei Scheduler gleichzeitig ticken?</summary><p>Ohne Unique-Key entstehen zwei Runs für denselben Termin. Mit Unique-Key auf (job_id, scheduled_for) blockt die DB den zweiten Insert.</p></details>
+<h3>Zahlen</h3>
+<details><summary>Wie skaliert die DB-Queue?</summary><p>Mit SKIP LOCKED und Partial Index bis einige hundert bis tausend Claims pro Sekunde. Darüber Partitionierung oder ein Broker.</p></details>
+<details><summary>Wie viele Runs pro Sekunde erzeugen 100 000 stündliche Jobs?</summary><p>Etwa 28 Runs pro Sekunde im Schnitt. Die Spitze zur vollen Stunde liegt viel höher, darum Jitter.</p></details>
+<details><summary>Was geht kaputt, wenn tausende Jobs auf xx:00 geplant sind?</summary><p>Alle werden in derselben Sekunde fällig. Die Welle überlastet Worker und Ziel-Systeme. Lösung: Jitter über die Minute, Kapazitätsgrenzen pro Job-Typ.</p></details>
+<h3>Vergleich</h3>
+<details><summary>Kubernetes CronJob oder eigener Scheduler?</summary><p>CronJob für wenige, einfache Jobs. Eigener oder Bibliotheks-Scheduler für Historie, Retries, Abhängigkeiten und viele Jobs.</p></details>
+<details><summary>Was ist der Unterschied zwischen zeit- und bedarfsgesteuert?</summary><p>Zeitgesteuert startet zur Uhrzeit, auch ohne Arbeit. Bedarfsgesteuert startet nur, wenn Arbeit pending ist. Das spart Ressourcen bei unregelmässigen Daten.</p></details>
+<details><summary>Warum reicht ein Kubernetes CronJob oft nicht?</summary><p>Er bietet wenig Sicht über viele Jobs, keine Historie und keine Abhängigkeiten. Laut Doku können zudem zwei Jobs oder keiner entstehen.</p></details>
+<h3>Produktion</h3>
+<details><summary>Welche Metriken alarmieren Sie?</summary><p>Alter des ältesten pending Runs, hängende running Runs, fehlende erwartete Runs, Fehlerrate und Laufzeit pro Job.</p></details>
+<details><summary>Szenario: Ein täglicher Job lief heute zweimal. Wie untersuchen Sie das?</summary><p>job_runs für den Tag ansehen: zwei Runs mit anderem scheduled_for oder ein Retry nach Reaper? Ursachen: kein Unique-Key, Sommerzeit, zu kurzer Timeout. Dann Job idempotent machen.</p></details>
+<details><summary>Szenario: Nach einem Deployment hängen viele Runs in running. Was tun Sie?</summary><p>Die alten Pods wurden beendet, ohne Runs freizugeben. Reaper prüfen, Heartbeat-Timeout, graceful Shutdown, der Runs zurückgibt.</p></details>
+<details><summary>Szenario: Der Scheduler war 4 Stunden down. Was passiert beim Start?</summary><p>Die Misfire-Policy entscheidet. Bei „alle nachholen“ kommt eine Welle von Runs, darum Parallelität begrenzen. Fachlich klären, ob alte Termine überhaupt Sinn ergeben.</p></details>
+<details><summary>Was geht kaputt, wenn der Heartbeat-Timeout kürzer ist als die echte Laufzeit?</summary><p>Der Reaper gibt einen Run frei, obwohl der Worker noch lebt. Zwei Worker arbeiten parallel. Schutz: Heartbeat statt fester Laufzeit und Fencing Tokens.</p></details>
+<h3>Design</h3>
 <details><summary>Brauchen Sie Leader Election?</summary><p>Nicht für die Korrektheit, wenn der Unique-Key Duplikate blockt. Für Effizienz kann ein Leader sinnvoll sein, z. B. mit Kubernetes Lease oder Advisory Lock.</p></details>
 <details><summary>Was ist eine Misfire-Policy?</summary><p>Die Regel für verpasste Termine nach einem Ausfall: alle nachholen, einmal nachholen oder überspringen.</p></details>
 <details><summary>Wie gehen Sie mit Sommerzeit um?</summary><p>In UTC planen oder die Regel der Cron-Bibliothek kennen und testen. 02:30 fehlt im März und kommt im Oktober zweimal.</p></details>
 <details><summary>Was passiert, wenn ein Run länger dauert als das Intervall?</summary><p>Eine Concurrency-Policy entscheidet: parallel erlauben, neuen Run überspringen oder alten ersetzen.</p></details>
 <details><summary>Wie machen Sie einen Job idempotent?</summary><p>Ergebnis pro Termin ersetzen statt addieren, Upserts, Schlüssel aus Job und scheduled_for.</p></details>
 <details><summary>Wie bauen Sie Abhängigkeiten?</summary><p>B wird erst claimbar, wenn A done ist. Bei vielen Schritten eine Workflow-Engine.</p></details>
-<details><summary>Kubernetes CronJob oder eigener Scheduler?</summary><p>CronJob für wenige, einfache Jobs. Eigener oder Bibliotheks-Scheduler für Historie, Retries, Abhängigkeiten und viele Jobs.</p></details>
-<details><summary>Wie skaliert die DB-Queue?</summary><p>Mit SKIP LOCKED und Partial Index bis einige hundert bis tausend Claims pro Sekunde. Darüber Partitionierung oder ein Broker.</p></details>
-<details><summary>Was ist der Unterschied zwischen zeit- und bedarfsgesteuert?</summary><p>Zeitgesteuert startet zur Uhrzeit, auch ohne Arbeit. Bedarfsgesteuert startet nur, wenn Arbeit pending ist. Das spart Ressourcen bei unregelmässigen Daten.</p></details>
-<details><summary>Welche Metriken alarmieren Sie?</summary><p>Alter des ältesten pending Runs, hängende running Runs, fehlende erwartete Runs, Fehlerrate und Laufzeit pro Job.</p></details>
-<details><summary>Szenario: Ein täglicher Job lief heute zweimal. Wie untersuchen Sie das?</summary><p>job_runs für den Tag ansehen: zwei Runs mit anderem scheduled_for oder ein Retry nach Reaper? Ursachen: kein Unique-Key, Sommerzeit, zu kurzer Timeout. Dann Job idempotent machen.</p></details>
-<details><summary>Szenario: Nach einem Deployment hängen viele Runs in running. Was tun Sie?</summary><p>Die alten Pods wurden beendet, ohne Runs freizugeben. Reaper prüfen, Heartbeat-Timeout, graceful Shutdown, der Runs zurückgibt.</p></details>
-<details><summary>Szenario: Der Scheduler war 4 Stunden down. Was passiert beim Start?</summary><p>Die Misfire-Policy entscheidet. Bei „alle nachholen“ kommt eine Welle von Runs, darum Parallelität begrenzen. Fachlich klären, ob alte Termine überhaupt Sinn ergeben.</p></details>
+<details><summary>Was geht kaputt, wenn ein Retry das Ergebnis addiert statt ersetzt?</summary><p>Jeder zweite Versuch verdoppelt Werte, z. B. in einer Statistik. Darum pro Termin überschreiben, mit einem Schlüssel aus job_id und scheduled_for.</p></details>
 
 </body>
 </html>

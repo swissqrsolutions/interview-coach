@@ -19,12 +19,37 @@
   summary { font-weight: 600; cursor: pointer; }
   details p { margin: 6px 0 2px; }
   .small { color: #6e6e73; font-size: 14px; }
+  h3 { font-size: 17px; margin: 20px 0 6px; }
+  .geruest { border: 2px solid #1d1d1f; border-radius: 6px; padding: 10px 14px; margin: 14px 0; font-size: 15px; line-height: 1.4; }
+  .geruest h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; margin: 0 0 8px; padding: 0; border: 0; }
+  .geruest dl { display: grid; grid-template-columns: 6.6em 1fr; gap: 6px 10px; margin: 0; }
+  .geruest dt { font-weight: 700; font-size: 12px; text-transform: uppercase; letter-spacing: .05em; padding-top: 1px; }
+  .geruest dd { margin: 0; }
+  .muster { border: 1px solid #e5e5ea; border-left: 4px solid #1d1d1f; border-radius: 6px; padding: 10px 14px; margin: 14px 0; }
+  .muster h3 { margin: 0 0 6px; font-size: 13px; text-transform: uppercase; letter-spacing: .06em; }
+  .muster .mq { margin: 0 0 6px; }
 </style>
 </head>
 <body>
 
 <h1>Queues und asynchrone Verarbeitung</h1>
 <!-- sources: System Design · Tier 1 · Quellen: Microsoft Learn (Service Bus: Queues, topics and subscriptions; Message transfers, locks and settlement; Dead-letter queues; Duplicate detection; Message sessions), Microsoft Learn (Event Hubs: Features and terminology), Azure Architecture Center (Competing Consumers, Queue-Based Load Leveling, Claim-Check, Asynchronous messaging options), Apache Kafka Doku (Design: Message Delivery Semantics), RabbitMQ Doku (Consumer Acknowledgements, Dead Letter Exchanges), Kleppmann, DDIA (Kap. 11) -->
+
+<div class="geruest"><h2>Gerüst</h2><dl>
+  <dt>Warum?</dt><dd>Entkopplung, Lastspitzen puffern, mit mehreren Consumern skalieren. Preis: at-least-once → der Consumer muss Duplikate vertragen.</dd>
+  <dt>Wie innen?</dt><dd>Broker speichert dauerhaft. Peek-Lock sperrt, Complete löscht, Abandon oder Lock-Ablauf stellt neu zu. DeliveryCount zählt, die DLQ fängt Hoffnungslose.</dd>
+  <dt>Zahlen</dt><dd>Service-Bus-Lock: 1 min Standard, max. 5 min. MaxDeliveryCount 10. Duplicate Detection: 10 min Fenster. Nachricht 256 KB (Standard-Tier), Storage Queue 64 KB.</dd>
+  <dt>Vergleich</dt><dd>Service Bus (Befehle: Lock, DLQ, Sessions) vs Event Hubs/Kafka (Log: Offsets, Replay) vs RabbitMQ (Exchanges) vs DB-Tabelle mit <code>SKIP LOCKED</code>.</dd>
+  <dt>Produktion</dt><dd>Lock läuft bei langer Arbeit ab → Doppelverarbeitung. DLQ wächst still → Alarm und Replay. Downstream-Ausfall → Retry-Sturm ohne Backoff.</dd>
+  <dt>Design</dt><dd>Inbox- und Outbox-Pattern, Ordnung nur pro Entität (Session, Partition Key). Command → Queue, Event → Topic oder Log.</dd>
+</dl></div>
+
+<div class="muster"><h3>Antwort-Muster</h3><p class="mq"><b>Frage:</b> Warum setzen Sie eine Queue zwischen zwei Services?</p><ol>
+  <li>Mechanismus: Der Broker speichert die Nachricht dauerhaft, der Consumer sperrt sie, arbeitet und bestätigt erst danach.</li>
+  <li>Zahl: In Service Bus ist der Lock standardmässig 1 Minute, nach 10 Zustellungen geht die Nachricht in die DLQ.</li>
+  <li>Trade-off: Das ist at-least-once: Bei einem Absturz vor dem Complete kommt die Nachricht doppelt.</li>
+  <li>Produktion: Darum speichert mein Consumer die MessageId in derselben DB-Transaktion wie den Write.</li>
+</ol></div>
 
 <div class="kern">
 <b>Kern:</b> Eine <b>Queue</b> ist ein Puffer zwischen einem <b>Producer</b>, der Nachrichten schickt, und einem <b>Consumer</b>, der sie später verarbeitet. Sie löst drei Probleme: <b>Entkopplung</b> (beide müssen nicht gleichzeitig laufen), <b>Lastspitzen</b> (die Queue puffert) und <b>Skalierung</b> (mehr Consumer arbeiten parallel). Der Preis: Nachrichten kommen <b>mindestens einmal</b>, also muss der Consumer Duplikate vertragen.
@@ -200,32 +225,44 @@ q.complete(m)                            # bei Fehler: q.abandon(m) -&gt; erneut
 </ul>
 </div>
 
-<h2>11. Fragen</h2>
+<h2>11. Selbsttest</h2>
+<h3>Warum?</h3>
 <details><summary>Welche Probleme löst eine Queue?</summary><p>Entkopplung von Producer und Consumer, Pufferung von Lastspitzen und Skalierung durch mehrere Consumer.</p></details>
-<details><summary>Point-to-Point vs Pub/Sub?</summary><p>Point-to-Point: Jede Nachricht geht an genau einen Consumer. Pub/Sub: Jede Subscription bekommt eine eigene Kopie.</p></details>
-<details><summary>Was sind Competing Consumers?</summary><p>Mehrere Worker lesen aus derselben Queue. Jede Nachricht verarbeitet nur einer. So skaliert die Verarbeitung.</p></details>
-<details><summary>At-most-once vs at-least-once?</summary><p>At-most-once: erst bestätigen, dann arbeiten, Verlust möglich. At-least-once: erst arbeiten, dann bestätigen, Duplikate möglich.</p></details>
 <details><summary>Gibt es exactly-once?</summary><p>Nicht als Zustellung über ein Netz. Exactly-once-Effekt entsteht durch at-least-once plus idempotenten Consumer. Kafka bietet exactly-once nur innerhalb von Kafka per Transaktionen.</p></details>
+<details><summary>Warum muss jeder Consumer idempotent sein?</summary><p>At-least-once ist bei jedem Broker der Normalfall: Absturz vor dem Complete heisst erneute Zustellung. Exactly-once ist ein Effekt im Consumer, keine Broker-Einstellung.</p></details>
+<h3>Wie innen?</h3>
+<details><summary>Was sind Competing Consumers?</summary><p>Mehrere Worker lesen aus derselben Queue. Jede Nachricht verarbeitet nur einer. So skaliert die Verarbeitung.</p></details>
 <details><summary>Was ist Peek-Lock?</summary><p>Service Bus sperrt die Nachricht beim Abholen. Der Consumer bestätigt mit Complete oder gibt sie mit Abandon zurück. Läuft der Lock ab, wird sie neu zugestellt.</p></details>
-<details><summary>Was passiert, wenn die Verarbeitung länger als der Lock dauert?</summary><p>Die Nachricht wird erneut zugestellt, eventuell parallel an einen zweiten Worker. Lösung: Lock erneuern oder die Arbeit aufteilen.</p></details>
-<details><summary>Wie bauen Sie einen idempotenten Consumer?</summary><p>MessageId in eine Tabelle mit Unique Constraint, in derselben Transaktion wie der Geschäfts-Write. Duplikat: Insert scheitert, nur bestätigen.</p></details>
 <details><summary>Was ist eine Dead-Letter Queue?</summary><p>Eine Neben-Queue für Nachrichten, die zu oft scheitern, ablaufen oder bewusst abgelehnt werden. Sie braucht Alarm und Replay.</p></details>
-<details><summary>Wann landet eine Nachricht in Service Bus in der DLQ?</summary><p>Wenn der DeliveryCount MaxDeliveryCount erreicht (Standard 10), bei TTL-Ablauf mit aktivierter Option, oder wenn der Consumer sie dead-lettert.</p></details>
-<details><summary>Was ist eine Poison Message?</summary><p>Eine Nachricht, die immer scheitert, z. B. ungültiges Format. Sofort dead-lettern, nicht endlos neu versuchen.</p></details>
-<details><summary>Was macht Duplicate Detection in Service Bus?</summary><p>Sie verwirft Sends mit gleicher MessageId im Zeitfenster (Standard 10 Minuten). Sie schützt nicht vor erneuter Zustellung an den Consumer.</p></details>
-<details><summary>Was ist das Transactional Outbox Pattern?</summary><p>Die Nachricht wird in derselben DB-Transaktion in eine Outbox-Tabelle geschrieben. Ein Relay sendet sie danach. So gehen DB-Write und Nachricht nicht auseinander.</p></details>
-<details><summary>Wie garantieren Sie Reihenfolge?</summary><p>Pro Entität: Service Bus Sessions mit SessionId, Kafka oder Event Hubs mit Partition Key. Global nur mit einem einzigen Consumer.</p></details>
 <details><summary>Was ist Backpressure?</summary><p>Ein überlasteter Consumer bremst den Zufluss. Mittel: begrenzter Prefetch, Pull-Modell, begrenzte Queue, Producer abweisen.</p></details>
-<details><summary>Wie skalieren Sie Consumer automatisch?</summary><p>Nach Queue-Länge oder Alter der ältesten Nachricht, z. B. mit KEDA in Kubernetes.</p></details>
-<details><summary>Was ist das Claim-Check Pattern?</summary><p>Grosse Daten in Blob Storage, in der Nachricht nur der Verweis. Hält Nachrichten klein und billig.</p></details>
+<details><summary>Was geht kaputt, wenn der Consumer zuerst bestätigt und dann arbeitet?</summary><p>Das ist at-most-once: Stürzt er nach dem Ack ab, ist die Nachricht weg. Darum erst arbeiten, dann bestätigen.</p></details>
+<h3>Zahlen</h3>
+<details><summary>Was passiert, wenn die Verarbeitung länger als der Lock dauert?</summary><p>Die Nachricht wird erneut zugestellt, eventuell parallel an einen zweiten Worker. Lösung: Lock erneuern oder die Arbeit aufteilen.</p></details>
+<details><summary>Wann landet eine Nachricht in Service Bus in der DLQ?</summary><p>Wenn der DeliveryCount MaxDeliveryCount erreicht (Standard 10), bei TTL-Ablauf mit aktivierter Option, oder wenn der Consumer sie dead-lettert.</p></details>
+<details><summary>Was macht Duplicate Detection in Service Bus?</summary><p>Sie verwirft Sends mit gleicher MessageId im Zeitfenster (Standard 10 Minuten). Sie schützt nicht vor erneuter Zustellung an den Consumer.</p></details>
+<details><summary>Was geht kaputt, wenn eine Poison Message die vollen 10 Zustellungen durchläuft?</summary><p>Zehn nutzlose Versuche blockieren Worker und verzögern andere Nachrichten. Besser: erkennbare Fehler sofort dead-lettern.</p></details>
+<h3>Vergleich</h3>
+<details><summary>Point-to-Point vs Pub/Sub?</summary><p>Point-to-Point: Jede Nachricht geht an genau einen Consumer. Pub/Sub: Jede Subscription bekommt eine eigene Kopie.</p></details>
+<details><summary>At-most-once vs at-least-once?</summary><p>At-most-once: erst bestätigen, dann arbeiten, Verlust möglich. At-least-once: erst arbeiten, dann bestätigen, Duplikate möglich.</p></details>
 <details><summary>Queue vs Log?</summary><p>Queue löscht nach Bestätigung, Ack pro Nachricht. Log behält Nachrichten für die Retention, Consumer merken sich den Offset und können zurückspulen.</p></details>
 <details><summary>Service Bus vs Event Hubs?</summary><p>Service Bus für Befehle und Geschäftsvorgänge: Lock, DLQ, Sessions, Transaktionen. Event Hubs für Event-Streams mit hohem Durchsatz: Partitionen, Consumer Groups, Checkpoints.</p></details>
 <details><summary>Kafka vs RabbitMQ?</summary><p>Kafka ist ein Log mit Replay und hohem Durchsatz, Ordnung pro Partition. RabbitMQ ist ein Broker mit flexiblem Routing über Exchanges und Ack pro Nachricht.</p></details>
 <details><summary>Command vs Event?</summary><p>Command: Auftrag an einen Empfänger, über eine Queue. Event: Tatsache für viele Interessenten, über Topic oder Log.</p></details>
-<details><summary>Wann nutzen Sie eine Datenbank-Tabelle als Queue?</summary><p>Bei moderater Last und wenn Job und Daten in einer Transaktion bleiben sollen. Claim mit FOR UPDATE SKIP LOCKED.</p></details>
+<details><summary>Warum ist Event Hubs keine Queue?</summary><p>Es ist ein Log: kein Ack pro Nachricht, keine DLQ. Consumer verwalten nur ihre Position (Checkpoint) und können zurückspulen.</p></details>
+<h3>Produktion</h3>
+<details><summary>Was ist eine Poison Message?</summary><p>Eine Nachricht, die immer scheitert, z. B. ungültiges Format. Sofort dead-lettern, nicht endlos neu versuchen.</p></details>
+<details><summary>Wie skalieren Sie Consumer automatisch?</summary><p>Nach Queue-Länge oder Alter der ältesten Nachricht, z. B. mit KEDA in Kubernetes.</p></details>
 <details><summary>Szenario: Kunden bekommen manchmal zwei Bestätigungs-E-Mails. Warum, und was tun Sie?</summary><p>At-least-once: Der Consumer hat gesendet und ist vor Complete abgestürzt, oder der Lock lief ab. Lösung: idempotenter Consumer mit gespeicherter MessageId, Lock erneuern bei langer Arbeit.</p></details>
 <details><summary>Szenario: Die Queue-Länge steigt seit einer Stunde stetig. Wie gehen Sie vor?</summary><p>Alter der ältesten Nachricht und Fehlerrate prüfen. Hängen Consumer oder scheitert ein Downstream? Dann skalieren, Backoff und Circuit Breaker prüfen, DLQ ansehen.</p></details>
 <details><summary>Szenario: Ein Service speichert eine Bestellung und sendet ein Event. Manchmal fehlt das Event. Warum?</summary><p>DB-Commit und Send sind nicht atomar. Absturz dazwischen verliert das Event. Lösung: Transactional Outbox mit Relay.</p></details>
+<details><summary>Was geht kaputt, wenn niemand die DLQ beobachtet?</summary><p>Aufträge verschwinden still: Nachrichten liegen dort ohne Alarm und ohne Replay. Die DLQ braucht Alarm, Besitzer und ein Runbook.</p></details>
+<h3>Design</h3>
+<details><summary>Wie bauen Sie einen idempotenten Consumer?</summary><p>MessageId in eine Tabelle mit Unique Constraint, in derselben Transaktion wie der Geschäfts-Write. Duplikat: Insert scheitert, nur bestätigen.</p></details>
+<details><summary>Was ist das Transactional Outbox Pattern?</summary><p>Die Nachricht wird in derselben DB-Transaktion in eine Outbox-Tabelle geschrieben. Ein Relay sendet sie danach. So gehen DB-Write und Nachricht nicht auseinander.</p></details>
+<details><summary>Wie garantieren Sie Reihenfolge?</summary><p>Pro Entität: Service Bus Sessions mit SessionId, Kafka oder Event Hubs mit Partition Key. Global nur mit einem einzigen Consumer.</p></details>
+<details><summary>Was ist das Claim-Check Pattern?</summary><p>Grosse Daten in Blob Storage, in der Nachricht nur der Verweis. Hält Nachrichten klein und billig.</p></details>
+<details><summary>Wann nutzen Sie eine Datenbank-Tabelle als Queue?</summary><p>Bei moderater Last und wenn Job und Daten in einer Transaktion bleiben sollen. Claim mit FOR UPDATE SKIP LOCKED.</p></details>
+<details><summary>Warum ändert asynchrone Verarbeitung die API?</summary><p>Der Client bekommt 202 Accepted und einen Status-Endpunkt statt des Ergebnisses. Das Ergebnis kommt später, per Polling oder Callback.</p></details>
 
 </body>
 </html>

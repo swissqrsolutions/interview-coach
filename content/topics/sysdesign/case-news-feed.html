@@ -19,12 +19,37 @@
   summary { font-weight: 600; cursor: pointer; }
   details p { margin: 6px 0 2px; }
   .small { color: #6e6e73; font-size: 14px; }
+  h3 { font-size: 17px; margin: 20px 0 6px; }
+  .geruest { border: 2px solid #1d1d1f; border-radius: 6px; padding: 10px 14px; margin: 14px 0; font-size: 15px; line-height: 1.4; }
+  .geruest h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; margin: 0 0 8px; padding: 0; border: 0; }
+  .geruest dl { display: grid; grid-template-columns: 6.6em 1fr; gap: 6px 10px; margin: 0; }
+  .geruest dt { font-weight: 700; font-size: 12px; text-transform: uppercase; letter-spacing: .05em; padding-top: 1px; }
+  .geruest dd { margin: 0; }
+  .muster { border: 1px solid #e5e5ea; border-left: 4px solid #1d1d1f; border-radius: 6px; padding: 10px 14px; margin: 14px 0; }
+  .muster h3 { margin: 0 0 6px; font-size: 13px; text-transform: uppercase; letter-spacing: .06em; }
+  .muster .mq { margin: 0 0 6px; }
 </style>
 </head>
 <body>
 
 <h1>Fall: News-Feed</h1>
 <!-- sources: System-Design-Fall · Tier 2 · Quellen: PostgreSQL 17 Docs (LATERAL, Row-Wise Comparison für Keyset-Pagination, Index-Only Scans, EXPLAIN), Redis Docs (Lists, Sorted Sets), Alex Xu „System Design Interview“ Vol. 1 Kap. 11, Kleppmann DDIA Kap. 1 (Twitter-Beispiel: Fan-out) -->
+
+<div class="geruest"><h2>Gerüst</h2><dl>
+  <dt>Warum?</dt><dd>Der Feed zeigt die neuesten Posts der Follows. Kernfrage ist Fan-out: beim Schreiben kopieren (Push) oder beim Lesen sammeln (Pull).</dd>
+  <dt>Wie innen?</dt><dd>Outbox → Queue → Fan-out-Worker schreibt Post-IDs in Follower-Timelines (Redis). Feed-Service mischt Promi-Posts per Pull dazu und lädt Inhalte per Batch.</dd>
+  <dt>Zahlen</dt><dd>10 Mio. DAU ≈ 1150 Feed-Reads/s, Spitze 5000/s. 1 Mio. Posts × 200 Follower ≈ 2300 Timeline-Writes/s. Promi-Schwelle z. B. 100 000 Follower.</dd>
+  <dt>Vergleich</dt><dd>Pull: Schreiben billig, Lesen wächst mit den Follows. Push: Lesen ist ein Range-Scan, ein Promi kostet Millionen Writes. Hybrid gewinnt.</dd>
+  <dt>Produktion</dt><dd>Promi-Post staut die Queue → eigene Queue. Redis-Ausfall → Fallback auf Pull. OFFSET-Paging → doppelte Einträge.</dd>
+  <dt>Design</dt><dd>Timeline ist ein Cache mit IDs, neu baubar aus Posts und Follows. Keyset-Cursor <code>(created_at, id)</code>. Read-your-writes für eigene Posts.</dd>
+</dl></div>
+
+<div class="muster"><h3>Antwort-Muster</h3><p class="mq"><b>Frage:</b> Wie bauen Sie einen News-Feed: Push oder Pull?</p><ol>
+  <li>Mechanismus: Push kopiert die Post-ID beim Schreiben in jede Follower-Timeline, Pull sammelt erst beim Lesen.</li>
+  <li>Zahl: Ein Promi mit 10 Mio. Followern erzeugt beim Push 10 Mio. Writes pro Post.</li>
+  <li>Trade-off: Darum hybrid: Push für normale Accounts, Pull nur für Promis.</li>
+  <li>Produktion: Timelines liegen als ID-Listen im Cache und sind aus Posts und Follows neu baubar.</li>
+</ol></div>
 
 <div class="kern">
 <b>Kern (die 1-Minuten-Antwort):</b> Ein <b>News-Feed</b> zeigt jedem Nutzer die neuesten Beiträge der Accounts, denen er folgt. Die Kernfrage ist <b>Fan-out</b>: beim Schreiben in jede Follower-Timeline kopieren (<b>Push</b>) oder beim Lesen zusammensuchen (<b>Pull</b>). Die übliche Antwort ist <b>hybrid</b>: Push für normale Accounts, Pull für <b>Prominente</b> mit Millionen Followern. Timelines liegen als ID-Listen im <b>Cache</b>, Inhalte werden separat geladen, Paging läuft über einen <b>Cursor</b>.
@@ -228,25 +253,37 @@ ORDER BY created_at DESC, post_id DESC LIMIT 20;
 </ul>
 </div>
 
-<h2>11. Fragen</h2>
-<details><summary>Skizzieren Sie den News-Feed in einer Minute.</summary><p>Post-Service speichert und erzeugt ein Event. Fan-out-Worker schreiben IDs in Follower-Timelines, ausser bei Promis. Der Feed-Service liest Timeline, mischt Promi-Posts per Pull, lädt Inhalte per Batch und gibt eine Seite mit Cursor zurück.</p></details>
-<details><summary>Push oder Pull?</summary><p>Push macht Lesen billig, Pull macht Schreiben billig. Ich nehme hybrid: Push für normale Accounts, Pull für Promis.</p></details>
+<h2>11. Selbsttest</h2>
+<h3>Warum?</h3>
 <details><summary>Was ist das Promi-Problem?</summary><p>Ein Account mit Millionen Followern erzeugt beim Push Millionen Writes pro Post. Die Fan-out-Queue staut sich.</p></details>
-<details><summary>Wie schätzen Sie die Last?</summary><p>10 Mio. DAU mit 10 Aufrufen sind ca. 1150 Feed-Reads/s. 1 Mio. Posts mit 200 Followern sind ca. 2300 Timeline-Writes/s.</p></details>
+<details><summary>Warum speichern Timelines nur Post-IDs und keine Inhalte?</summary><p>Inhalte würden x-fach kopiert. Bearbeiten und Löschen müssten alle Kopien nachziehen. IDs plus Batch-Hydration halten alles aktuell.</p></details>
+<h3>Wie innen?</h3>
+<details><summary>Skizzieren Sie den News-Feed in einer Minute.</summary><p>Post-Service speichert und erzeugt ein Event. Fan-out-Worker schreiben IDs in Follower-Timelines, ausser bei Promis. Der Feed-Service liest Timeline, mischt Promi-Posts per Pull, lädt Inhalte per Batch und gibt eine Seite mit Cursor zurück.</p></details>
 <details><summary>Was speichern Sie in einer Timeline?</summary><p>Nur Post-IDs mit Zeitstempel, gekappt auf einige hundert. Inhalte werden beim Lesen geladen.</p></details>
+<details><summary>Wo liegt die Timeline?</summary><p>In einem Cache wie Redis, als Liste oder Sorted Set pro Nutzer. Sie ist neu baubar aus Posts und Follows.</p></details>
+<details><summary>Wie machen Sie den Fan-out robust?</summary><p>Über Outbox und Queue, in Blöcken, mit idempotenten Writes. Ein Absturz wiederholt nur einen Block.</p></details>
+<details><summary>Was geht kaputt, wenn der Fan-out-Worker mitten im Block abstürzt?</summary><p>Der Retry schreibt einen Teil doppelt. Darum idempotente Timeline-Writes: Set oder Primary Key auf (user_id, post_id).</p></details>
+<h3>Zahlen</h3>
+<details><summary>Wie schätzen Sie die Last?</summary><p>10 Mio. DAU mit 10 Aufrufen sind ca. 1150 Feed-Reads/s. 1 Mio. Posts mit 200 Followern sind ca. 2300 Timeline-Writes/s.</p></details>
+<details><summary>Wie teuer ist Pull in Ihrer Messung?</summary><p>51 Follows ergaben 1010 gelesene Zeilen und 6 ms. Das wächst linear mit der Zahl der Follows.</p></details>
+<details><summary>Was geht kaputt, wenn ein Account mit 10 Mio. Followern per Push bedient wird?</summary><p>Ein Post erzeugt 10 Mio. Timeline-Writes. Die Queue staut sich, normale Posts warten. Darum Pull ab der Promi-Schwelle.</p></details>
+<h3>Vergleich</h3>
+<details><summary>Push oder Pull?</summary><p>Push macht Lesen billig, Pull macht Schreiben billig. Ich nehme hybrid: Push für normale Accounts, Pull für Promis.</p></details>
+<details><summary>Warum ist Hybrid die übliche Antwort?</summary><p>Push macht Lesen billig für die vielen normalen Accounts. Pull vermeidet die Millionen Writes der Promis. Zusammen bleiben beide Pfade bezahlbar.</p></details>
+<h3>Produktion</h3>
+<details><summary>Szenario: Ein Promi postet und normale Posts erscheinen minutenlang nicht. Warum?</summary><p>Sein Fan-out blockiert die gemeinsame Queue. Fix: Promi-Schwelle mit Pull, eigene Queue für grosse Fan-outs.</p></details>
+<details><summary>Szenario: Nach einem Redis-Failover sehen Nutzer leere Feeds. Was tun Sie?</summary><p>Fallback auf Pull, Timeline beim ersten Aufruf neu bauen, Rate Limit für den Rebuild. Langfristig Replikate und Persistenz.</p></details>
+<details><summary>Szenario: Nutzer melden doppelte Einträge beim Scrollen. Woran denken Sie?</summary><p>OFFSET-Paging bei neuen Posts oder doppelte Fan-out-Writes. Fix: Keyset-Cursor und idempotente Timeline-Writes.</p></details>
+<details><summary>Was geht kaputt, wenn gelöschte Posts beim Hydrate nicht gefiltert werden?</summary><p>Die ID steht noch in fremden Timelines, der gelöschte Post erscheint wieder. Lösung: Filter beim Hydrate und ein Tombstone-Cache.</p></details>
+<h3>Design</h3>
 <details><summary>Wie paginieren Sie?</summary><p>Mit einem Keyset-Cursor aus created_at und id. Das ist schnell und stabil bei neuen Posts.</p></details>
 <details><summary>Wie sieht der Autor seinen eigenen Post sofort?</summary><p>Read-your-writes: Der Feed-Service mischt die eigenen neuesten Posts direkt aus der Posts-DB dazu.</p></details>
 <details><summary>Was passiert beim Löschen eines Posts?</summary><p>Die Wahrheit wird gelöscht oder markiert. Beim Hydrate fällt die ID heraus. Ein Job räumt Timelines später auf.</p></details>
 <details><summary>Was passiert beim Entfolgen?</summary><p>Neue Posts kommen nicht mehr. Alte IDs filtert der Feed-Service beim Lesen oder ein Job entfernt sie.</p></details>
 <details><summary>Wie bauen Sie Ranking ein?</summary><p>Ein Ranking-Service bewertet Kandidaten aus Timeline und Pull. Der Cursor zeigt dann auf eine gespeicherte, gerankte Liste.</p></details>
-<details><summary>Wo liegt die Timeline?</summary><p>In einem Cache wie Redis, als Liste oder Sorted Set pro Nutzer. Sie ist neu baubar aus Posts und Follows.</p></details>
 <details><summary>Wie sharden Sie?</summary><p>Timelines nach user_id, Posts nach Autor oder ID. Follows doppelt, nach Follower und nach Followee.</p></details>
-<details><summary>Wie teuer ist Pull in Ihrer Messung?</summary><p>51 Follows ergaben 1010 gelesene Zeilen und 6 ms. Das wächst linear mit der Zahl der Follows.</p></details>
-<details><summary>Wie machen Sie den Fan-out robust?</summary><p>Über Outbox und Queue, in Blöcken, mit idempotenten Writes. Ein Absturz wiederholt nur einen Block.</p></details>
 <details><summary>Brauchen inaktive Nutzer eine Timeline?</summary><p>Nein. Man spart viele Writes und baut die Timeline beim nächsten Login per Pull.</p></details>
-<details><summary>Szenario: Ein Promi postet und normale Posts erscheinen minutenlang nicht. Warum?</summary><p>Sein Fan-out blockiert die gemeinsame Queue. Fix: Promi-Schwelle mit Pull, eigene Queue für grosse Fan-outs.</p></details>
-<details><summary>Szenario: Nach einem Redis-Failover sehen Nutzer leere Feeds. Was tun Sie?</summary><p>Fallback auf Pull, Timeline beim ersten Aufruf neu bauen, Rate Limit für den Rebuild. Langfristig Replikate und Persistenz.</p></details>
-<details><summary>Szenario: Nutzer melden doppelte Einträge beim Scrollen. Woran denken Sie?</summary><p>OFFSET-Paging bei neuen Posts oder doppelte Fan-out-Writes. Fix: Keyset-Cursor und idempotente Timeline-Writes.</p></details>
+<details><summary>Warum ist die Timeline nur ein Cache und nicht die Wahrheit?</summary><p>Die Wahrheit sind Posts und Follows. Jede Timeline lässt sich daraus per Pull neu bauen, z. B. nach einem Redis-Ausfall.</p></details>
 
 </body>
 </html>

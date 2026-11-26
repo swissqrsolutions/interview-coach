@@ -19,12 +19,37 @@
   summary { font-weight: 600; cursor: pointer; }
   details p { margin: 6px 0 2px; }
   .small { color: #6e6e73; font-size: 14px; }
+  h3 { font-size: 17px; margin: 20px 0 6px; }
+  .geruest { border: 2px solid #1d1d1f; border-radius: 6px; padding: 10px 14px; margin: 14px 0; font-size: 15px; line-height: 1.4; }
+  .geruest h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; margin: 0 0 8px; padding: 0; border: 0; }
+  .geruest dl { display: grid; grid-template-columns: 6.6em 1fr; gap: 6px 10px; margin: 0; }
+  .geruest dt { font-weight: 700; font-size: 12px; text-transform: uppercase; letter-spacing: .05em; padding-top: 1px; }
+  .geruest dd { margin: 0; }
+  .muster { border: 1px solid #e5e5ea; border-left: 4px solid #1d1d1f; border-radius: 6px; padding: 10px 14px; margin: 14px 0; }
+  .muster h3 { margin: 0 0 6px; font-size: 13px; text-transform: uppercase; letter-spacing: .06em; }
+  .muster .mq { margin: 0 0 6px; }
 </style>
 </head>
 <body>
 
 <h1>Fall: URL-Shortener</h1>
 <!-- sources: System-Design-Fall · Tier 1 · Quellen: RFC 9110 (HTTP Semantics: 301, 302, 307, 308, heuristische Cachebarkeit), PostgreSQL 17 Docs (CREATE SEQUENCE, INSERT … ON CONFLICT, EXPLAIN), Alex Xu „System Design Interview“ Vol. 1 Kap. 8, Kleppmann DDIA Kap. 6 -->
+
+<div class="geruest"><h2>Gerüst</h2><dl>
+  <dt>Warum?</dt><dd>Kurzer Code → lange URL, extrem leselastig (100:1). Der Redirect-Pfad bleibt minimal, Klicks werden asynchron gezählt.</dd>
+  <dt>Wie innen?</dt><dd>Sequenz-ID → Base62-Code, <code>code → long_url</code> als PK-Lookup. Redirect: CDN → Redis → DB, Antwort 302 mit Location. Klick-Event in die Queue, Upsert pro Tag.</dd>
+  <dt>Zahlen</dt><dd>62⁷ ≈ 3,5 Billionen Codes. Ca. 40 Writes/s, 4000 Redirects/s, Spitze 20 000/s. PK-Lookup 0,07 ms; 500 000 Links ≈ 58 MB.</dd>
+  <dt>Vergleich</dt><dd>Zähler + Base62: eindeutig, aber ratbar. Hash der URL: deterministisch, Kollisionen prüfen. Zufall/Key Generation Service: nicht ratbar, mehr Betrieb.</dd>
+  <dt>Produktion</dt><dd>Viraler Link = Hot Key → CDN plus lokaler Cache. Bot-Scans → Format prüfen, Negative Caching, Rate Limit pro IP.</dd>
+  <dt>Design</dt><dd>302 statt 301, wenn Klicks und Zieländerung zählen. Statistik nie synchron im Redirect-Pfad. Ratbarkeit ist eine Anforderung.</dd>
+</dl></div>
+
+<div class="muster"><h3>Antwort-Muster</h3><p class="mq"><b>Frage:</b> Wie funktioniert ein URL-Shortener?</p><ol>
+  <li>Mechanismus: Eine eindeutige ID wird in Base62 kodiert, der Redirect ist ein Key-Value-Lookup mit 302.</li>
+  <li>Zahl: 7 Base62-Zeichen geben 3,5 Billionen Codes, die Last ist etwa 100:1 leselastig.</li>
+  <li>Trade-off: 301 spart Last, aber der Browser cached ihn: keine Klickzählung, kein Zielwechsel.</li>
+  <li>Produktion: Heisse Links kommen aus CDN und Redis, Klicks zählt ein asynchroner Aggregator.</li>
+</ol></div>
 
 <div class="kern">
 <b>Kern (die 1-Minuten-Antwort):</b> Ein <b>URL-Shortener</b> bildet einen kurzen Code auf eine lange URL ab und leitet per HTTP-Redirect weiter. Codes entstehen aus einer <b>eindeutigen ID in Base62</b>, 7 Zeichen reichen für 3,5 Billionen Links. Das System ist extrem <b>lese-lastig</b>: Redirects kommen aus <b>Cache und CDN</b>, die Datenbank ist ein einfacher Key-Value-Lookup. Klicks werden <b>asynchron</b> gezählt, damit der Redirect schnell bleibt.
@@ -236,26 +261,37 @@ SELECT pg_size_pretty(pg_total_relation_size('links')) AS groesse, count(*) FROM
 </ul>
 </div>
 
-<h2>11. Fragen</h2>
+<h2>11. Selbsttest</h2>
+<h3>Warum?</h3>
+<details><summary>Was ist der Engpass?</summary><p>Die Redirect-Requests, nicht die Daten. Darum Caching auf jeder Stufe und zustandslose Services.</p></details>
+<details><summary>Warum trennen Sie Create-API und Redirect-Service?</summary><p>Die Redirect-Last ist etwa 100-mal grösser. Der Redirect-Pfad bleibt minimal und zustandslos, die Create-API darf komplexer sein.</p></details>
+<h3>Wie innen?</h3>
 <details><summary>Skizzieren Sie den URL-Shortener in einer Minute.</summary><p>Create-API erzeugt eindeutige ID, kodiert sie in Base62 und speichert code → URL. Der Redirect-Service liest über CDN, Redis und DB und antwortet mit 302. Klicks gehen async in eine Queue.</p></details>
-<details><summary>Wie lang muss der Code sein?</summary><p>Base62 mit 7 Zeichen gibt 3,5 Billionen Codes. Bei 100 Mio. Links pro Monat reicht das sehr lange.</p></details>
 <details><summary>Wie erzeugen Sie eindeutige Codes in einem verteilten System?</summary><p>ID-Blöcke aus einer zentralen Sequenz pro Instanz, oder Zufallscodes mit Kollisionsprüfung, oder ein Key Generation Service.</p></details>
-<details><summary>Warum nicht ein Hash der URL?</summary><p>Gekürzte Hashes kollidieren. Man muss prüfen und neu würfeln. Ausserdem bekommen alle Nutzer für dieselbe URL denselben Code.</p></details>
-<details><summary>301 oder 302?</summary><p>302, wenn man Klicks zählen und Ziele ändern will. 301 ist cachebar und spart Last, aber der Service sieht spätere Klicks nicht.</p></details>
+<details><summary>Wo cachen Sie?</summary><p>Am CDN, in Redis und optional In-Process. Links ändern sich selten, also lange TTL und Invalidierung beim Löschen.</p></details>
+<details><summary>Wie zählen Sie Klicks?</summary><p>Jeder Redirect schickt ein Event in eine Queue. Ein Aggregator schreibt Summen pro Code und Tag mit einem Upsert.</p></details>
+<details><summary>Was geht kaputt, wenn jeder Klick ein UPDATE clicks = clicks + 1 macht?</summary><p>Eine heisse Zeile: Jeder Klick wartet auf die Sperre, der Redirect wird langsam. Darum Events in eine Queue und gebündelte Upserts.</p></details>
+<h3>Zahlen</h3>
+<details><summary>Wie lang muss der Code sein?</summary><p>Base62 mit 7 Zeichen gibt 3,5 Billionen Codes. Bei 100 Mio. Links pro Monat reicht das sehr lange.</p></details>
 <details><summary>Wie schätzen Sie die Last?</summary><p>100 Mio. Links pro Monat sind ca. 40 Writes/s. Bei 100:1 Lesen ca. 4000 Redirects/s, Spitze ca. 20 000/s.</p></details>
 <details><summary>Wie viel Speicher brauchen Sie?</summary><p>6 Mrd. Links in 5 Jahren mal ca. 500 Bytes sind ca. 3 TB. Gemessen: 500 000 kurze Links brauchen 58 MB.</p></details>
-<details><summary>Wo cachen Sie?</summary><p>Am CDN, in Redis und optional In-Process. Links ändern sich selten, also lange TTL und Invalidierung beim Löschen.</p></details>
-<details><summary>Was tun Sie gegen Hot Keys?</summary><p>CDN-Caching und ein kleiner lokaler Cache vor Redis. So trifft ein viraler Link nicht einen einzelnen Knoten.</p></details>
-<details><summary>Wie zählen Sie Klicks?</summary><p>Jeder Redirect schickt ein Event in eine Queue. Ein Aggregator schreibt Summen pro Code und Tag mit einem Upsert.</p></details>
-<details><summary>Wie gehen Sie mit eigenen Aliasen um?</summary><p>Insert mit ON CONFLICT DO NOTHING. Null Zeilen heisst vergeben, die API antwortet 409.</p></details>
-<details><summary>Wie sharden Sie die Daten?</summary><p>Nach Hash des Codes. Jeder Redirect trifft einen Shard. Statistik pro Besitzer liegt separat.</p></details>
-<details><summary>Wie verhindern Sie Missbrauch?</summary><p>Ziel-URL gegen Reputationsliste prüfen, Rate Limit beim Erstellen, Sperr-Status für gemeldete Links, Negative Caching gegen Scans.</p></details>
-<details><summary>Wie behandeln Sie abgelaufene Links?</summary><p>expires_at im Lookup filtern und 410 Gone antworten. Ein Job löscht oder archiviert alte Zeilen.</p></details>
+<details><summary>Warum reichen 7 Base62-Zeichen?</summary><p>62 hoch 7 sind rund 3,5 Billionen Codes. Bei 100 Mio. neuen Links pro Monat reicht das für Jahrzehnte.</p></details>
+<h3>Vergleich</h3>
+<details><summary>Warum nicht ein Hash der URL?</summary><p>Gekürzte Hashes kollidieren. Man muss prüfen und neu würfeln. Ausserdem bekommen alle Nutzer für dieselbe URL denselben Code.</p></details>
+<details><summary>301 oder 302?</summary><p>302, wenn man Klicks zählen und Ziele ändern will. 301 ist cachebar und spart Last, aber der Service sieht spätere Klicks nicht.</p></details>
 <details><summary>SQL oder NoSQL?</summary><p>Beides geht, es ist ein Key-Value-Zugriff. PostgreSQL reicht mit Sharding; ein Key-Value-Store spart Betrieb bei sehr grossen Mengen.</p></details>
-<details><summary>Was ist der Engpass?</summary><p>Die Redirect-Requests, nicht die Daten. Darum Caching auf jeder Stufe und zustandslose Services.</p></details>
+<h3>Produktion</h3>
+<details><summary>Was tun Sie gegen Hot Keys?</summary><p>CDN-Caching und ein kleiner lokaler Cache vor Redis. So trifft ein viraler Link nicht einen einzelnen Knoten.</p></details>
+<details><summary>Wie verhindern Sie Missbrauch?</summary><p>Ziel-URL gegen Reputationsliste prüfen, Rate Limit beim Erstellen, Sperr-Status für gemeldete Links, Negative Caching gegen Scans.</p></details>
 <details><summary>Szenario: Ein Link wird viral und Redis-Latenz steigt. Was tun Sie?</summary><p>Hot Key: CDN-TTL setzen, lokalen In-Process-Cache aktivieren. Danach prüfen, ob der Key auf einem überlasteten Shard liegt.</p></details>
 <details><summary>Szenario: Ein Kunde ändert das Ziel, aber Nutzer landen noch auf der alten Seite. Warum?</summary><p>Wahrscheinlich 301 im Browser-Cache oder alter Wert im CDN. Fix: 302 nutzen, beim Ändern Redis-DEL und CDN-Purge.</p></details>
 <details><summary>Szenario: Plötzlich viele 404 und hohe DB-Last. Was passiert?</summary><p>Ein Bot rät Codes. Fix: Format früh prüfen, 404 negativ cachen, Rate Limit pro IP, eventuell Codes nicht mehr sequenziell vergeben.</p></details>
+<details><summary>Was geht kaputt, wenn Sie 301 statt 302 senden?</summary><p>Der Browser cached den Redirect. Spätere Klicks erreichen den Service nie: keine Zählung, und ein geändertes Ziel kommt nicht mehr an.</p></details>
+<h3>Design</h3>
+<details><summary>Wie gehen Sie mit eigenen Aliasen um?</summary><p>Insert mit ON CONFLICT DO NOTHING. Null Zeilen heisst vergeben, die API antwortet 409.</p></details>
+<details><summary>Wie sharden Sie die Daten?</summary><p>Nach Hash des Codes. Jeder Redirect trifft einen Shard. Statistik pro Besitzer liegt separat.</p></details>
+<details><summary>Wie behandeln Sie abgelaufene Links?</summary><p>expires_at im Lookup filtern und 410 Gone antworten. Ein Job löscht oder archiviert alte Zeilen.</p></details>
+<details><summary>Warum ist Ratbarkeit eine Design-Anforderung?</summary><p>Sequenz-Codes sind durchprobierbar: Nach 15HZKM kommt 15HZKN. Für private Links braucht es Zufall oder eine umkehrbare Permutation.</p></details>
 
 </body>
 </html>

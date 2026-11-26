@@ -19,12 +19,37 @@
   summary { font-weight: 600; cursor: pointer; }
   details p { margin: 6px 0 2px; }
   .small { color: #6e6e73; font-size: 14px; }
+  h3 { font-size: 17px; margin: 20px 0 6px; }
+  .geruest { border: 2px solid #1d1d1f; border-radius: 6px; padding: 10px 14px; margin: 14px 0; font-size: 15px; line-height: 1.4; }
+  .geruest h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; margin: 0 0 8px; padding: 0; border: 0; }
+  .geruest dl { display: grid; grid-template-columns: 6.6em 1fr; gap: 6px 10px; margin: 0; }
+  .geruest dt { font-weight: 700; font-size: 12px; text-transform: uppercase; letter-spacing: .05em; padding-top: 1px; }
+  .geruest dd { margin: 0; }
+  .muster { border: 1px solid #e5e5ea; border-left: 4px solid #1d1d1f; border-radius: 6px; padding: 10px 14px; margin: 14px 0; }
+  .muster h3 { margin: 0 0 6px; font-size: 13px; text-transform: uppercase; letter-spacing: .06em; }
+  .muster .mq { margin: 0 0 6px; }
 </style>
 </head>
 <body>
 
 <h1>Replikation und Sharding</h1>
 <!-- sources: System Design · Tier 1 · Quellen: Kleppmann, Designing Data-Intensive Applications (Kap. 5 Replication, Kap. 6 Partitioning), PostgreSQL 17 Doku (High Availability, Log-Shipping Standby Servers, Hot Standby, synchronous_commit, pg_stat_replication), Azure Architecture Center (Data partitioning guidance, Sharding pattern), Microsoft Learn (Azure Database for PostgreSQL: Read replicas) -->
+
+<div class="geruest"><h2>Gerüst</h2><dl>
+  <dt>Warum?</dt><dd>Replikation = Kopien: Ausfallsicherheit und Read-Skalierung. Sharding = Aufteilen: Write-Skalierung und Datenmenge. Kombiniert: Jeder Shard ist repliziert.</dd>
+  <dt>Wie innen?</dt><dd>Leader schreibt das WAL, der WAL-Sender streamt, der Follower flusht und spielt ein. <code>synchronous_commit</code>: remote_write / on / remote_apply. Router + Shard Map (Range, Hash, Directory).</dd>
+  <dt>Zahlen</dt><dd>Async-Lag: ms bis Minuten; Simulation: 640 von 1000 Reads direkt nach dem Write veraltet. hash % N bei 4 → 5: 80 % ziehen um, 64 feste Partitionen: 19 %.</dd>
+  <dt>Vergleich</dt><dd>Sync (kein Verlust, mehr Latenz) vs async (schnell, RPO > 0). Range (Bereichs-Queries, Hot Shard) vs Hash (gleichmässig) vs Directory (flexibel).</dd>
+  <dt>Produktion</dt><dd>Nutzer sieht seinen Write nicht → Read-your-writes. Replication Slot hält WAL → Disk voll. Failover bei async → Datenverlust.</dd>
+  <dt>Design</dt><dd>Sharding ist der letzte Schritt. Der Shard Key ist die wichtigste Entscheidung (oft tenant_id). Mehr Partitionen als Knoten von Anfang an.</dd>
+</dl></div>
+
+<div class="muster"><h3>Antwort-Muster</h3><p class="mq"><b>Frage:</b> Was ist der Unterschied zwischen Replikation und Sharding?</p><ol>
+  <li>Mechanismus: Replikation kopiert dieselben Daten auf mehrere Knoten, Sharding verteilt verschiedene Daten.</li>
+  <li>Zahl: Async-Replikation hat Lag: In der Simulation waren 640 von 1000 Reads direkt nach dem Write veraltet.</li>
+  <li>Trade-off: Replikation skaliert nur Reads, Sharding auch Writes, macht aber Joins und Transaktionen über Shards teuer.</li>
+  <li>Produktion: Darum sharde ich zuletzt und wähle den Shard Key so, dass Transaktionen in einem Shard bleiben.</li>
+</ol></div>
 
 <div class="kern">
 <b>Kern:</b> <b>Replikation</b> ist eine Kopie derselben Daten auf mehreren Knoten. Sie löst <b>Ausfallsicherheit</b> und <b>Read-Skalierung</b>. <b>Sharding</b> ist das Aufteilen der Daten auf mehrere Knoten, jeder hält nur einen Teil. Es löst <b>Write-Skalierung</b> und Datenmengen über einen Knoten hinaus. In der Praxis kombiniert man beides: Jeder Shard ist repliziert.
@@ -208,32 +233,43 @@ t=+2000  leader=anna@new.ch (lsn 2)  follower-1=anna@new.ch (lsn 2)  follower-2=
 </ul>
 </div>
 
-<h2>11. Fragen</h2>
+<h2>11. Selbsttest</h2>
+<h3>Warum?</h3>
 <details><summary>Was ist Replikation und welche Probleme löst sie?</summary><p>Kopien derselben Daten auf mehreren Knoten. Sie löst Ausfallsicherheit, Read-Skalierung und geringere Latenz durch Nähe zum Nutzer.</p></details>
 <details><summary>Was ist Sharding und welche Probleme löst es?</summary><p>Daten werden auf Knoten aufgeteilt, jeder hält einen Teil. Es löst Write-Skalierung und Datenmengen über einen Knoten hinaus.</p></details>
+<details><summary>Warum skaliert Replikation keine Writes?</summary><p>Jeder Write läuft über den Leader und wird auf jede Replica kopiert. Mehr Replicas heisst mehr Kopierarbeit, nicht mehr Write-Kapazität.</p></details>
+<h3>Wie innen?</h3>
 <details><summary>Wie funktioniert Leader-Follower-Replikation?</summary><p>Der Leader nimmt alle Writes an und schreibt sie ins WAL. Follower bekommen den Stream und spielen ihn ein. Reads können auf Follower gehen.</p></details>
-<details><summary>Synchrone vs asynchrone Replikation?</summary><p>Synchron: Commit erst nach Bestätigung eines Followers, kein Verlust, mehr Latenz. Asynchron: Commit sofort, schnell, aber Verlust beim Failover möglich.</p></details>
-<details><summary>Was ist Replication Lag?</summary><p>Die Zeit, bis ein Follower einen Commit des Leaders eingespielt hat. Normal sind Millisekunden, unter Last auch Minuten.</p></details>
 <details><summary>Was ist Read-your-writes und wie erreichen Sie es?</summary><p>Ein Nutzer sieht seine eigenen Writes sofort. Lösung: eigene Daten vom Leader lesen, oder die Write-LSN mitführen und nur Replicas nutzen, die so weit sind.</p></details>
 <details><summary>Was sind Monotonic Reads?</summary><p>Ein Nutzer sieht nie einen älteren Stand als vorher. Lösung: Nutzer immer an dieselbe Replica binden.</p></details>
 <details><summary>Was passiert beim Failover?</summary><p>Ausfall erkennen (Timeout), Follower mit dem neuesten Stand promoten, Clients umleiten, alten Leader abschotten.</p></details>
-<details><summary>Was ist Split Brain und wie verhindern Sie es?</summary><p>Zwei Leader gleichzeitig. Schutz: Fencing des alten Leaders und Leader-Wahl über einen Konsens-Store wie etcd.</p></details>
-<details><summary>Was ist der Unterschied zwischen physischer und logischer Replikation?</summary><p>Physisch kopiert WAL-Bytes des ganzen Clusters, gleiche Version. Logisch kopiert Zeilenänderungen pro Tabelle, auch über Versionen.</p></details>
 <details><summary>Was macht synchronous_commit = remote_apply?</summary><p>Der Commit wartet, bis der sync Follower die Änderung eingespielt hat. Reads dort sehen sie danach sicher.</p></details>
+<details><summary>Wie laufen Queries über mehrere Shards?</summary><p>Scatter-Gather: an alle Shards senden, Ergebnisse zusammenführen. Teuer und so langsam wie der langsamste Shard.</p></details>
+<details><summary>Was geht kaputt, wenn der einzige synchrone Follower ausfällt?</summary><p>Der Leader wartet auf seine Bestätigung: Writes blockieren. Darum Quorum-Commit, z. B. ANY 1 aus zwei Standbys.</p></details>
+<h3>Zahlen</h3>
+<details><summary>Was ist Replication Lag?</summary><p>Die Zeit, bis ein Follower einen Commit des Leaders eingespielt hat. Normal sind Millisekunden, unter Last auch Minuten.</p></details>
+<details><summary>Warum ist hash % N schlecht für Resharding?</summary><p>Ändert sich N, ändert sich der Shard fast jedes Keys. Von 4 auf 5 ziehen ca. 80 % um.</p></details>
+<h3>Vergleich</h3>
+<details><summary>Synchrone vs asynchrone Replikation?</summary><p>Synchron: Commit erst nach Bestätigung eines Followers, kein Verlust, mehr Latenz. Asynchron: Commit sofort, schnell, aber Verlust beim Failover möglich.</p></details>
+<details><summary>Was ist der Unterschied zwischen physischer und logischer Replikation?</summary><p>Physisch kopiert WAL-Bytes des ganzen Clusters, gleiche Version. Logisch kopiert Zeilenänderungen pro Tabelle, auch über Versionen.</p></details>
 <details><summary>Multi-Leader: wann und welches Problem?</summary><p>Bei mehreren Regionen mit lokalen Writes oder Offline-Clients. Problem: Write-Konflikte, die man auflösen muss.</p></details>
 <details><summary>Range- vs Hash-Sharding?</summary><p>Range hält Bereiche zusammen, gut für Range Queries, Gefahr Hot Shard. Hash verteilt gleichmässig, Range Queries gehen an alle Shards.</p></details>
 <details><summary>Was ist Directory-Sharding?</summary><p>Eine Lookup-Tabelle bildet Schlüssel auf Shards ab. Flexibel, aber ein zusätzlicher Lookup und ein kritischer Dienst.</p></details>
-<details><summary>Was ist ein Hot Shard und wie lösen Sie ihn?</summary><p>Ein Shard mit viel mehr Last. Lösungen: besserer Shard Key, Key Salting, Shard splitten, Caching für heisse Reads.</p></details>
-<details><summary>Warum ist hash % N schlecht für Resharding?</summary><p>Ändert sich N, ändert sich der Shard fast jedes Keys. Von 4 auf 5 ziehen ca. 80 % um.</p></details>
-<details><summary>Wie macht man Resharding besser?</summary><p>Viele feste Partitionen, die als Ganzes umziehen. Oder Consistent Hashing. Oder Range-Splits.</p></details>
-<details><summary>Wie laufen Queries über mehrere Shards?</summary><p>Scatter-Gather: an alle Shards senden, Ergebnisse zusammenführen. Teuer und so langsam wie der langsamste Shard.</p></details>
-<details><summary>Wie machen Sie Transaktionen über Shards?</summary><p>Am besten vermeiden durch den Shard Key. Sonst Two-Phase Commit oder Saga mit Kompensation.</p></details>
 <details><summary>Lokaler vs globaler Sekundärindex?</summary><p>Lokal: pro Shard, Writes billig, Reads Scatter-Gather. Global: selbst geshardet, Reads gezielt, Writes teurer und oft asynchron.</p></details>
+<details><summary>Warum ist Last-Write-Wins gefährlich?</summary><p>Bei Multi-Leader-Konflikten gewinnt der spätere Zeitstempel, der andere Write verschwindet still. Das ist Datenverlust ohne Fehlermeldung.</p></details>
+<h3>Produktion</h3>
+<details><summary>Was ist Split Brain und wie verhindern Sie es?</summary><p>Zwei Leader gleichzeitig. Schutz: Fencing des alten Leaders und Leader-Wahl über einen Konsens-Store wie etcd.</p></details>
+<details><summary>Was ist ein Hot Shard und wie lösen Sie ihn?</summary><p>Ein Shard mit viel mehr Last. Lösungen: besserer Shard Key, Key Salting, Shard splitten, Caching für heisse Reads.</p></details>
 <details><summary>Ersetzt Replikation ein Backup?</summary><p>Nein. Fehler und Löschungen werden mitrepliziert. Point-in-Time-Recovery braucht Backups plus WAL-Archiv.</p></details>
 <details><summary>Was ist ein Replication Slot und welches Risiko hat er?</summary><p>Er garantiert, dass der Leader WAL hält, bis der Follower es hat. Ist der Follower weg, wächst das WAL bis die Disk voll ist.</p></details>
 <details><summary>Szenario: Nutzer ändern ihr Profil und sehen danach den alten Stand. Was ist los?</summary><p>Reads gehen an eine async Replica mit Lag. Lösung: Read-your-writes, z. B. eigenes Profil vom Leader lesen oder LSN-Vergleich. Lag in pg_stat_replication prüfen.</p></details>
-<details><summary>Szenario: Eine Multi-Tenant-Datenbank wird zu gross für einen Knoten. Wie sharden Sie?</summary><p>Shard Key = tenant_id. Directory-Mapping Tenant → Shard, grosse Tenants auf eigene Shards. Transaktionen bleiben im Tenant. Globale Reports über ein Analytics-System statt Scatter-Gather.</p></details>
 <details><summary>Szenario: Nach einem Failover fehlen die letzten Bestellungen. Warum, und was ändern Sie?</summary><p>Async Replikation: Bestätigte Commits waren noch nicht auf dem neuen Leader. Lösung: Quorum-Commit (ANY 1 von 2 Standbys) für kritische Daten, RPO festlegen, Failover üben.</p></details>
+<details><summary>Was geht kaputt, wenn fortlaufende IDs der Shard Key beim Range-Sharding sind?</summary><p>Alle neuen Writes treffen den letzten Shard: In der Simulation landeten 10 000 neue Bestellungen komplett auf Shard 3. Lösung: Hash-Sharding oder Präfix.</p></details>
+<h3>Design</h3>
+<details><summary>Wie macht man Resharding besser?</summary><p>Viele feste Partitionen, die als Ganzes umziehen. Oder Consistent Hashing. Oder Range-Splits.</p></details>
+<details><summary>Wie machen Sie Transaktionen über Shards?</summary><p>Am besten vermeiden durch den Shard Key. Sonst Two-Phase Commit oder Saga mit Kompensation.</p></details>
+<details><summary>Szenario: Eine Multi-Tenant-Datenbank wird zu gross für einen Knoten. Wie sharden Sie?</summary><p>Shard Key = tenant_id. Directory-Mapping Tenant → Shard, grosse Tenants auf eigene Shards. Transaktionen bleiben im Tenant. Globale Reports über ein Analytics-System statt Scatter-Gather.</p></details>
+<details><summary>Warum ist der Shard Key die wichtigste Entscheidung?</summary><p>Er bestimmt Lastverteilung, Transaktionsgrenzen und welche Queries billig sind. Ihn später zu ändern heisst Resharding mit Datenumzug.</p></details>
 
 </body>
 </html>

@@ -19,12 +19,37 @@
   summary { font-weight: 600; cursor: pointer; }
   details p { margin: 6px 0 2px; }
   .small { color: #6e6e73; font-size: 14px; }
+  h3 { font-size: 17px; margin: 20px 0 6px; }
+  .geruest { border: 2px solid #1d1d1f; border-radius: 6px; padding: 10px 14px; margin: 14px 0; font-size: 15px; line-height: 1.4; }
+  .geruest h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; margin: 0 0 8px; padding: 0; border: 0; }
+  .geruest dl { display: grid; grid-template-columns: 6.6em 1fr; gap: 6px 10px; margin: 0; }
+  .geruest dt { font-weight: 700; font-size: 12px; text-transform: uppercase; letter-spacing: .05em; padding-top: 1px; }
+  .geruest dd { margin: 0; }
+  .muster { border: 1px solid #e5e5ea; border-left: 4px solid #1d1d1f; border-radius: 6px; padding: 10px 14px; margin: 14px 0; }
+  .muster h3 { margin: 0 0 6px; font-size: 13px; text-transform: uppercase; letter-spacing: .06em; }
+  .muster .mq { margin: 0 0 6px; }
 </style>
 </head>
 <body>
 
 <h1>Fall: Benachrichtigungs-System</h1>
 <!-- sources: System-Design-Fall · Tier 1 · Quellen: Firebase Cloud Messaging Docs (Send messages, Multicast bis 500 Tokens, Error Codes), Apple Developer Docs (Sending notification requests to APNs), PostgreSQL 17 Docs (INSERT … ON CONFLICT, FOR UPDATE SKIP LOCKED, Partial Indexes), AWS Architecture Blog „Exponential Backoff and Jitter“, Alex Xu „System Design Interview“ Vol. 1 Kap. 10 -->
+
+<div class="geruest"><h2>Gerüst</h2><dl>
+  <dt>Warum?</dt><dd>Viele Services, ein Versand: Präferenzen, Idempotenz und Rate Limits an einer Stelle. Zustellung ist at-least-once → Dedupe über Schlüssel.</dd>
+  <dt>Wie innen?</dt><dd>API prüft Idempotenz-Schlüssel und Präferenzen, eine Zeile pro Kanal (Unique-Key). Worker claimen mit <code>SKIP LOCKED</code>, rufen den Provider, Retry mit Backoff, DLQ.</dd>
+  <dt>Zahlen</dt><dd>50 Mio. Nachrichten/Tag ≈ 580/s; Broadcast an 10 Mio. in 10 min ≈ 17 000/s. Backoff 4 s bis 1 h Deckel, nach 5 Versuchen dead. FCM Multicast: 500 Tokens.</dd>
+  <dt>Vergleich</dt><dd>Jeder Service sendet selbst: alles dupliziert. DB-Queue: einfach, bis einige tausend/s. Broker: Durchsatz und Replay, mehr Betrieb.</dd>
+  <dt>Produktion</dt><dd>Newsletter verstopft Login-Codes → Prioritäts-Queues. Provider-Ausfall → Circuit Breaker, Jitter gegen den Retry-Sturm.</dd>
+  <dt>Design</dt><dd>Transaktional und Marketing nie in derselben Queue. Dauerhafte Fehler nie wiederholen (Token löschen). Keine sensiblen Daten im Push.</dd>
+</dl></div>
+
+<div class="muster"><h3>Antwort-Muster</h3><p class="mq"><b>Frage:</b> Wie designen Sie ein Benachrichtigungs-System für Push, E-Mail und SMS?</p><ol>
+  <li>Mechanismus: Eine zentrale API prüft Idempotenz und Präferenzen und legt pro Kanal eine Nachricht in eine eigene Queue.</li>
+  <li>Zahl: 50 Mio. Nachrichten pro Tag sind rund 580 pro Sekunde, ein Broadcast braucht 17 000 pro Sekunde.</li>
+  <li>Trade-off: Zustellung ist at-least-once, Duplikate verhindert nur der Idempotenz-Schlüssel.</li>
+  <li>Produktion: Transaktionale Nachrichten bekommen eine eigene Queue, damit kein Newsletter einen Login-Code verzögert.</li>
+</ol></div>
 
 <div class="kern">
 <b>Kern (die 1-Minuten-Antwort):</b> Ein <b>Benachrichtigungs-System</b> nimmt Ereignisse von vielen Services an und stellt sie über <b>Push, E-Mail, SMS und In-App</b> zu. Eine zentrale API prüft <b>Präferenzen, Idempotenz und Rate Limits</b> und legt pro Kanal eine Nachricht in eine <b>eigene Queue</b>. Kanal-Worker sprechen mit externen Providern, wiederholen mit <b>Backoff</b> und verschieben Hoffnungslose in eine <b>DLQ</b>. Zustellung ist <b>at-least-once</b>; Duplikate verhindert ein Idempotenz-Schlüssel.
@@ -254,26 +279,37 @@ FROM notifications WHERE user_id = 42 AND channel = 'inapp';
 </ul>
 </div>
 
-<h2>11. Fragen</h2>
-<details><summary>Skizzieren Sie das System in einer Minute.</summary><p>Services senden Ereignisse an eine zentrale API. Sie prüft Idempotenz, Präferenzen und Limits und reiht pro Kanal ein. Kanal-Worker rufen Provider, wiederholen mit Backoff und schieben Tote in eine DLQ.</p></details>
+<h2>11. Selbsttest</h2>
+<h3>Warum?</h3>
 <details><summary>Welche Fragen stellen Sie zuerst?</summary><p>Welche Kanäle, wie viele Nutzer und Nachrichten, wie schnell (Login-Code vs Newsletter), Präferenzen und Opt-out, Sprachen, Broadcasts.</p></details>
-<details><summary>Wie gross ist die Last?</summary><p>50 Mio. Nachrichten pro Tag sind ca. 580/s. Ein Broadcast an 10 Mio. in 10 Minuten braucht ca. 17 000/s.</p></details>
 <details><summary>Warum eine Queue pro Kanal?</summary><p>Kanäle haben andere Latenz, Limits und Ausfälle. Ein langsamer SMS-Provider darf Push nicht bremsen.</p></details>
-<details><summary>Wie verhindern Sie Duplikate?</summary><p>Idempotenz-Schlüssel vom Producer, Unique-Key auf Schlüssel und Kanal. Beim Provider Collapse-IDs.</p></details>
 <details><summary>Welche Zustellgarantie geben Sie?</summary><p>At-least-once intern. Exactly-once bis zum Gerät ist nicht möglich.</p></details>
+<h3>Wie innen?</h3>
+<details><summary>Skizzieren Sie das System in einer Minute.</summary><p>Services senden Ereignisse an eine zentrale API. Sie prüft Idempotenz, Präferenzen und Limits und reiht pro Kanal ein. Kanal-Worker rufen Provider, wiederholen mit Backoff und schieben Tote in eine DLQ.</p></details>
+<details><summary>Wie verhindern Sie Duplikate?</summary><p>Idempotenz-Schlüssel vom Producer, Unique-Key auf Schlüssel und Kanal. Beim Provider Collapse-IDs.</p></details>
 <details><summary>Wie bauen Sie Retries?</summary><p>Nur bei vorübergehenden Fehlern. Exponentieller Backoff mit Deckel und Jitter, max. N Versuche, dann DLQ.</p></details>
 <details><summary>Was ist eine DLQ?</summary><p>Eine Dead Letter Queue für Nachrichten, die nach allen Versuchen scheitern. Man beobachtet sie, analysiert Gründe und spielt nach dem Fix neu ein.</p></details>
-<details><summary>Wie verhindern Sie, dass ein Newsletter Login-Codes verzögert?</summary><p>Getrennte Queues und Worker-Pools pro Priorität.</p></details>
-<details><summary>Wie senden Sie an 10 Mio. Nutzer?</summary><p>Ein Job teilt die Nutzer in Blöcke und reiht sie ein. Bei Push Multicast oder Topics. Rate Limits pro Provider beachten.</p></details>
-<details><summary>Wie gehen Sie mit ungültigen Geräte-Tokens um?</summary><p>Meldet der Provider das Token als nicht registriert, löschen. Die App registriert beim Start neu.</p></details>
-<details><summary>Wie setzen Sie Quiet Hours um?</summary><p>next_attempt_at in die nächste erlaubte Zeit in der Zeitzone des Nutzers schieben. Sicherheitsnachrichten sind ausgenommen.</p></details>
 <details><summary>Wie geht kein Ereignis beim Producer verloren?</summary><p>Transactional Outbox: Ereignis in derselben Transaktion wie die Fachdaten schreiben, ein Relay sendet es danach.</p></details>
-<details><summary>Wie machen Sie die In-App-Inbox?</summary><p>Eine Tabelle pro Nutzer mit Index auf Nutzer und Zeit, Ungelesen-Zähler, Live-Updates per WebSocket oder SSE.</p></details>
-<details><summary>Was gehört nicht in eine Push-Nachricht?</summary><p>Sensible Inhalte wie Gesundheits- oder Finanzdaten. Der Text ist auf dem Sperrbildschirm sichtbar.</p></details>
+<details><summary>Was geht kaputt, wenn der Worker nach dem Provider-Call und vor dem Status-Update abstürzt?</summary><p>Die Nachricht bleibt queued und wird erneut gesendet: ein Duplikat beim Nutzer. Abhilfe: Status sending vor dem Call, Collapse-ID beim Provider.</p></details>
+<h3>Zahlen</h3>
+<details><summary>Wie gross ist die Last?</summary><p>50 Mio. Nachrichten pro Tag sind ca. 580/s. Ein Broadcast an 10 Mio. in 10 Minuten braucht ca. 17 000/s.</p></details>
+<details><summary>Wie senden Sie an 10 Mio. Nutzer?</summary><p>Ein Job teilt die Nutzer in Blöcke und reiht sie ein. Bei Push Multicast oder Topics. Rate Limits pro Provider beachten.</p></details>
+<details><summary>Was geht kaputt, wenn ein Broadcast an 10 Mio. Nutzer in einer Transaktion eingereiht wird?</summary><p>Eine riesige Transaktion sperrt die Tabelle und frisst Speicher. Darum Blöcke von z. B. 10 000 Nutzern, bei Push alternativ FCM-Topics.</p></details>
+<h3>Vergleich</h3>
 <details><summary>DB-Queue oder Kafka?</summary><p>DB-Queue ist einfach und transaktional bis einige tausend pro Sekunde. Kafka für hohen Durchsatz, Partitionierung und Replay.</p></details>
+<details><summary>Warum zuerst eine DB-Queue und erst später ein Broker?</summary><p>Die DB-Queue ist transaktional, einfach und gut beobachtbar. Erst bei einigen tausend Nachrichten pro Sekunde oder Replay-Bedarf lohnt ein Broker.</p></details>
+<h3>Produktion</h3>
+<details><summary>Wie gehen Sie mit ungültigen Geräte-Tokens um?</summary><p>Meldet der Provider das Token als nicht registriert, löschen. Die App registriert beim Start neu.</p></details>
 <details><summary>Szenario: Nutzer bekommen jede Nachricht doppelt. Wo suchen Sie?</summary><p>Producer-Retries ohne Schlüssel oder Worker, die nach dem Provider-Call abstürzen und neu senden. Fix: Idempotenz-Schlüssel, Status-Übergänge prüfen, Collapse-ID.</p></details>
 <details><summary>Szenario: FCM ist 20 Minuten gestört. Was passiert in Ihrem System?</summary><p>Circuit Breaker öffnet, Nachrichten bleiben queued, Backoff mit Jitter. Danach langsam hochfahren, damit kein Retry-Sturm entsteht. Optional Fallback auf E-Mail für kritische Nachrichten.</p></details>
 <details><summary>Szenario: Die SMS-Rechnung ist zehnmal höher als sonst. Was prüfen Sie?</summary><p>Retry-Schleifen, Bot-Registrierungen mit SMS-Verifikation, fehlende Limits pro Nummer. Fix: Limits, Captcha, Budget-Alarm.</p></details>
+<details><summary>Was geht kaputt, wenn auch dauerhafte Fehler wiederholt werden?</summary><p>Ungültige Tokens und Adressen scheitern bei jedem Versuch. Retries verbrennen Kontingent und Geld (SMS). Dauerhafte Fehler: sofort stoppen und Daten bereinigen.</p></details>
+<h3>Design</h3>
+<details><summary>Wie verhindern Sie, dass ein Newsletter Login-Codes verzögert?</summary><p>Getrennte Queues und Worker-Pools pro Priorität.</p></details>
+<details><summary>Wie setzen Sie Quiet Hours um?</summary><p>next_attempt_at in die nächste erlaubte Zeit in der Zeitzone des Nutzers schieben. Sicherheitsnachrichten sind ausgenommen.</p></details>
+<details><summary>Wie machen Sie die In-App-Inbox?</summary><p>Eine Tabelle pro Nutzer mit Index auf Nutzer und Zeit, Ungelesen-Zähler, Live-Updates per WebSocket oder SSE.</p></details>
+<details><summary>Was gehört nicht in eine Push-Nachricht?</summary><p>Sensible Inhalte wie Gesundheits- oder Finanzdaten. Der Text ist auf dem Sperrbildschirm sichtbar.</p></details>
+<details><summary>Warum rendern Sie das Template vor dem Einreihen?</summary><p>Retries senden dann exakt denselben Text. Sprache und Template-Version sind beim Fan-out fixiert.</p></details>
 
 </body>
 </html>

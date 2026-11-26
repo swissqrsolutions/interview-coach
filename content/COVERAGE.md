@@ -447,3 +447,168 @@ Selbsttest: 18 bestehende Fragen verteilt, 7 neue (Warum Verlust ok, mod N kaput
 - cap-consistency.html: PACELC-Einordnungen nach Abadi (PA/EL, PC/EC, PC/EL) nicht neu geprüft (Paper-Stand, unverändert).
 - case-authority-documents.html / case-checkout.html / case-distributed-cache.html: bestehende „Echte Ausgabe, PostgreSQL 17.12“ nicht neu ausgeführt, unverändert; ISG-Stufen und Facebook-Memcache-Angaben (Leases, Gutter) nicht neu geprüft.
 - Alle zehn Seiten: keine neuen Beispiele ausgeführt; bestehende Ausgaben und SVGs unverändert.
+
+## sysdesign/case-job-scheduler.html
+
+| Winkel | vorher (Anzahl Fakten) | was ergänzt wurde |
+|---|---|---|
+| Warum? | 3 (at-least-once, Idempotenz, genau einmal pro Termin) | nichts |
+| Wie innen? | 8+ (Unique-Key, SKIP LOCKED, Lease/Heartbeat, Reaper, Fencing) | nichts |
+| Zahlen | 5 (28 Runs/s, 30 s Heartbeat, 5 min Reaper, 1000 Claims/s, 100 verpasste Termine) | nichts |
+| Vergleich | 3 Varianten (CronJob, DB-Scheduler, Workflow-Engine) | nichts |
+| Produktion | 6 | nichts |
+| Design | 6 (Senior-Punkte) | nichts |
+
+Selbsttest: 17 bestehende Fragen verteilt, 8 neue (Warum kein exactly-once, Warum idempotent, 2 Scheduler kaputt, 28 Runs/s, xx:00-Spitze kaputt, Warum CronJob nicht reicht, Heartbeat-Timeout kaputt, addieren statt ersetzen kaputt), gesamt 25.
+
+## sysdesign/case-news-feed.html
+
+| Winkel | vorher (Anzahl Fakten) | was ergänzt wurde |
+|---|---|---|
+| Warum? | 3 (Fan-out-Kernfrage, Follower-Verteilung, Promi-Problem) | nichts |
+| Wie innen? | 8+ (Outbox, Fan-out-Worker, Timeline-Cache, Hydration, Keyset) | nichts |
+| Zahlen | 6 (1150/s, 2300 Writes/s, 64 GB, 100 000-Schwelle, 6 ms Pull, 96 ms Promi-Push) | nichts |
+| Vergleich | 3 Varianten (Pull, Push, Hybrid) | nichts |
+| Produktion | 5 | nichts |
+| Design | 5 (Senior-Punkte) | nichts |
+
+Selbsttest: 18 bestehende Fragen verteilt, 6 neue (Warum nur IDs, Block-Absturz kaputt, 10-Mio-Push kaputt, Warum Hybrid, gelöschte Posts kaputt, Warum Timeline nur Cache), gesamt 24.
+
+## sysdesign/case-notifications.html
+
+| Winkel | vorher (Anzahl Fakten) | was ergänzt wurde |
+|---|---|---|
+| Warum? | 3 (zentrale API, at-least-once, Kanal-Entkopplung) | nichts |
+| Wie innen? | 8+ (Idempotenz-Schlüssel, Unique-Key, SKIP LOCKED, Backoff, DLQ) | nichts |
+| Zahlen | 6 (580/s, 17 000/s, Backoff 4 s–1 h, 5 Versuche, 500 Tokens Multicast) | nichts |
+| Vergleich | 3 Varianten (dezentral, DB-Queue, Broker) | nichts |
+| Produktion | 6 | nichts |
+| Design | 6 (Senior-Punkte) | nichts |
+
+Selbsttest: 19 bestehende Fragen verteilt, 5 neue (Absturz nach Provider-Call kaputt, Broadcast in einer Transaktion kaputt, Warum erst DB-Queue, dauerhafte Fehler kaputt, Warum Template vorher rendern), gesamt 24.
+
+## sysdesign/case-url-shortener.html
+
+| Winkel | vorher (Anzahl Fakten) | was ergänzt wurde |
+|---|---|---|
+| Warum? | 3 (leselastig 100:1, async zählen, Redirect-Pfad minimal) | nichts |
+| Wie innen? | 8+ (Base62, PK-Lookup, 302, Klick-Stream, Negative Caching) | nichts |
+| Zahlen | 7 (62⁷, 40/s, 4000/s, 20 000/s Spitze, 0,07 ms, 58 MB, 3 TB) | nichts |
+| Vergleich | 3 Varianten Code-Erzeugung + 301/302/307/308 | nichts |
+| Produktion | 6 | nichts |
+| Design | 5 (Senior-Punkte) | nichts |
+
+Selbsttest: 19 bestehende Fragen verteilt, 5 neue (Warum Create/Redirect trennen, UPDATE pro Klick kaputt, Warum 7 Zeichen, 301 statt 302 kaputt, Warum Ratbarkeit Anforderung), gesamt 24.
+
+## sysdesign/cdn-object-storage.html
+
+| Winkel | vorher (Anzahl Fakten) | was ergänzt wurde |
+|---|---|---|
+| Warum? | 4 (billig/unbegrenzt, Latenz/Egress/Origin, Bytes nicht durch API) | nichts |
+| Wie innen? | 10+ (HMAC-Signatur, Blocks/Parts, Commit, ETag/304, Cache Key) | nichts |
+| Zahlen | 6 (7 Tage SAS, 5 MiB–5 GiB, 10 000 Parts, 50 000 Blöcke, 30/90/180 Tage, 50 TB) – S3-50-TB-Claim mit Link auf AWS What's New Dez. 2025 versehen (Regel 8) | Link ergänzt |
+| Vergleich | 6 (Object/Block/File, SAS-Arten, CDN-Produkte, Tabelle) | nichts |
+| Produktion | 7 | nichts |
+| Design | 6 (Senior-Punkte) | nichts |
+
+Selbsttest: 25 bestehende Fragen verteilt, 6 neue (SAS geleakt kaputt, 7-Tage-Maximum, Archive sofort gebraucht kaputt, Warum User Delegation SAS, personalisierte Antwort im CDN kaputt, Warum Versionsnamen statt Purge), gesamt 31.
+
+## sysdesign/consistent-hashing.html
+
+| Winkel | vorher (Anzahl Fakten) | was ergänzt wurde |
+|---|---|---|
+| Warum? | 3 (1/N-Umzug, 80 % bei mod N, Monotonie) | nichts |
+| Wie innen? | 8+ (Ring, Binärsuche, vnodes, Preference List) | nichts |
+| Zahlen | 7 (80 %/20 %, 1,66×/1,14×, 16 Tokens, 65 537, 1024, 16 384 Slots) – num_tokens 16 und Allocator-Default 3 gegen Cassandra-Doku geprüft, Envoy 1024/8M/65 537 gegen Envoy-Doku geprüft | nichts |
+| Vergleich | 6 (mod N, Ring, Jump, HRW, Maglev, feste Partitionen) | nichts |
+| Produktion | 6 | nichts |
+| Design | 6 (Senior-Punkte) | nichts |
+
+Selbsttest: 21 bestehende Fragen verteilt, 5 neue (1 Token kaputt, Warum 16 statt 256, Jump Hash bei Ausfällen kaputt, Flapping kaputt, Warum feste Partitionen für DBs), gesamt 26.
+
+## sysdesign/estimation.html
+
+| Winkel | vorher (Anzahl Fakten) | was ergänzt wurde |
+|---|---|---|
+| Warum? | 3 (Zahlen begründen Design, 3–5 min, Grössenordnung) | nichts |
+| Wie innen? | 6 (QPS-Formel, Speicher-Formel, Bandbreite ×8, Little's Law) | nichts |
+| Zahlen | 8+ (10⁵ s, 12/s, Latenz-Leiter, 125 MB/s, 80/20) | nichts |
+| Vergleich | 6 (Engpass pro Systemtyp in Abschnitt 5) | nichts |
+| Produktion | 6 | nichts |
+| Design | 5 (Senior-Punkte: Headroom, p99, Engpass benennen) | nichts |
+
+Selbsttest: 21 bestehende Fragen verteilt, 5 neue (Replikation/Indexe vergessen kaputt, Engpass pro System, Warum CDN vs Kafka, Durchschnitt statt Spitze kaputt, Warum 30–50 % Headroom), gesamt 26. Vergleich-Winkel hatte vorher 0 Fragen.
+
+## sysdesign/load-balancing.html
+
+| Winkel | vorher (Anzahl Fakten) | was ergänzt wurde |
+|---|---|---|
+| Warum? | 3 (Skalierung, Verfügbarkeit, L4/L7) | nichts |
+| Wie innen? | 8+ (Algorithmen, Health Probes, 5-Tupel, kube-proxy, X-Forwarded-For) | nichts |
+| Zahlen | 5 (p99 36 s vs 112 ms, 80 %/22 % moved, 4 min Idle-Timeout) | nichts |
+| Vergleich | 6 (LB/AppGW/Front Door/Traffic Manager, L4/L7-Tabelle) | nichts |
+| Produktion | 7 | nichts |
+| Design | 6 (Senior-Punkte) | nichts |
+
+Selbsttest: 24 bestehende Fragen verteilt, 4 neue (Round-Robin-Zahlen, Idle-Timeout kaputt, Warum Gateway API statt Ingress, Sessions im Pod-Speicher kaputt), gesamt 28. Zahlen-Winkel hatte vorher 0 Fragen. „Ingress NGINX im März 2026 eingestellt" mit Link auf den Kubernetes-Blog (Nov. 2025) versehen (Regel 8).
+
+## sysdesign/queues.html
+
+| Winkel | vorher (Anzahl Fakten) | was ergänzt wurde |
+|---|---|---|
+| Warum? | 3 (Entkopplung, Puffer, Skalierung) | nichts |
+| Wie innen? | 8+ (Peek-Lock, DeliveryCount, DLQ, Inbox/Outbox, Backpressure) | nichts |
+| Zahlen | 6 (1 min Lock, MaxDeliveryCount 10, 10 min Dedupe-Fenster, 256 KB, 64 KB) – MaxDeliveryCount 10 und 256 KB Standard-Tier gegen Microsoft Learn geprüft | nichts |
+| Vergleich | 6 (Service Bus, Event Hubs, Kafka, RabbitMQ, Storage Queues, DB) | nichts |
+| Produktion | 6 | nichts |
+| Design | 6 (Senior-Punkte) | nichts |
+
+Selbsttest: 25 bestehende Fragen verteilt, 6 neue (Warum idempotent, erst bestätigen kaputt, Poison über 10 Zustellungen kaputt, Warum Event Hubs keine Queue, DLQ unbeobachtet kaputt, Warum 202 Accepted), gesamt 31.
+
+## sysdesign/rate-limiting.html
+
+| Winkel | vorher (Anzahl Fakten) | was ergänzt wurde |
+|---|---|---|
+| Warum? | 3 (Überlast, Noisy Neighbor, 429/Retry-After) | nichts |
+| Wie innen? | 8+ (5 Algorithmen, INCR/Lua, Key-Wahl) | nichts |
+| Zahlen | 6 (9 statt 5, 2× an der Grenze, 6 statt 5 Race, 300 s renewal-period) – RateLimit-Header-Draft (draft-12, Nov. 2026, weiterhin Entwurf) gegen IETF Datatracker geprüft | nichts |
+| Vergleich | 6 (Algorithmen-Tabelle + Einsatzfälle) | nichts |
+| Produktion | 7 | nichts |
+| Design | 6 (Senior-Punkte) | nichts |
+
+Selbsttest: 27 bestehende Fragen verteilt, 5 neue (Warum 429 statt 503, GET+SET kaputt, Warum Bursts gewollt, 429 ohne Retry-After kaputt, Warum Key wichtiger als Algorithmus), gesamt 32.
+
+## sysdesign/replication-sharding.html
+
+| Winkel | vorher (Anzahl Fakten) | was ergänzt wurde |
+|---|---|---|
+| Warum? | 3 (Ausfallsicherheit/Read-Skalierung, Write-Skalierung, Kombination) | nichts |
+| Wie innen? | 8+ (WAL/LSN, synchronous_commit-Stufen, Shard Map, Scatter-Gather) | nichts |
+| Zahlen | 5 (640/1000 stale, 80 % vs 19 %, 100 ms/2000 ms Lag) | nichts |
+| Vergleich | 6 (sync/async, physisch/logisch, Range/Hash/Directory, Indizes) | nichts |
+| Produktion | 6 | nichts |
+| Design | 6 (Senior-Punkte) | nichts |
+
+Selbsttest: 25 bestehende Fragen verteilt, 5 neue (Warum keine Write-Skalierung, einziger sync Follower kaputt, Warum LWW gefährlich, fortlaufende IDs als Shard Key kaputt, Warum Shard Key wichtigste Entscheidung), gesamt 30.
+
+## sysdesign/sql-vs-nosql.html
+
+| Winkel | vorher (Anzahl Fakten) | was ergänzt wurde |
+|---|---|---|
+| Warum? | 3 (Zugriffsmuster, ACID vs Skalierung, Standardwahl) | nichts |
+| Wie innen? | 8+ (ACID, Schema-on-Write/Read, LSM/B-Tree, JSONB/GIN) | nichts |
+| Zahlen | 3 (16 MB MongoDB, Read Committed Default, Partition-Transaktionen) | nichts |
+| Vergleich | 7 (5 Modelle + JSONB-Mittelweg + NewSQL) | nichts |
+| Produktion | 6 | nichts |
+| Design | 6 (Senior-Punkte) | nichts |
+
+Selbsttest: 25 bestehende Fragen verteilt, 7 neue (Warum PostgreSQL Standard, JSONB ohne Index kaputt, Dokument-Grenzen, wachsendes Array kaputt, Warum Tabelle pro Query, Schema-Drift kaputt, Warum Spalten für WHERE), gesamt 32. Zahlen-Winkel hatte vorher 0 Fragen.
+
+## Rollout-Writer Batch 2 (sysdesign/case-job-scheduler, case-news-feed, case-notifications, case-url-shortener, cdn-object-storage, consistent-hashing, estimation, load-balancing, queues, rate-limiting, replication-sharding, sql-vs-nosql): nicht verifiziert
+
+- Geprüft mit WebFetch: S3 50 TB (AWS What's New Dez. 2025, verlinkt), Ingress-NGINX-Retirement März 2026 (Kubernetes-Blog, verlinkt), Cassandra num_tokens 16 / Allocator 3, Envoy 1024/8M/65 537, Service Bus MaxDeliveryCount 10 und 256 KB Standard-Tier, ratelimit-headers draft-12 (Nov. 2026), CronJob timeZone stabil 1.27 / nur letzter von >100 verpassten Terminen / concurrencyPolicy Allow.
+- queues.html: Service-Bus-Lock-Dauer (Standard 1 min, max. 5 min) und Duplicate-Detection-Fenster (Standard 10 min, 20 s–7 Tage) nicht neu geprüft (unverändert übernommen).
+- case-notifications.html: FCM Multicast 500 Tokens nicht neu geprüft (unverändert).
+- cdn-object-storage.html: „Azure löscht unbestätigte Blöcke nach einer Woche" und Front-Door-/Storage-Metriknamen nicht neu geprüft (unverändert).
+- load-balancing.html: Azure-LB-Idle-Timeout 4 min nicht neu geprüft (unverändert; auch im Gerüst/Selbsttest zitiert).
+- estimation.html / alle Seiten: bestehende „Echte Ausgabe"-Blöcke (PostgreSQL 17.12, Python 3) nicht neu ausgeführt; SVGs unverändert.
