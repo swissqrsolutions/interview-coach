@@ -1,0 +1,324 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Drill 5: IoT-Telemetrie (Kafka, Zeitreihen, Alarme)</title>
+<style>
+  body { font: 17px/1.55 -apple-system, system-ui, sans-serif; max-width: 760px; margin: 0 auto; padding: 16px; color: #1d1d1f; }
+  h1 { font-size: 28px; margin: 8px 0 4px; }
+  h2 { font-size: 21px; margin: 32px 0 8px; padding-top: 12px; border-top: 2px solid #e5e5ea; }
+  h3 { font-size: 17px; margin: 20px 0 6px; }
+  .kern { background: #eef6ff; border-left: 4px solid #0a66c2; padding: 10px 14px; border-radius: 6px; }
+  .senior { background: #f0faf0; border-left: 4px solid #2e7d32; padding: 10px 14px; border-radius: 6px; }
+  .trap { background: #fff4f2; border-left: 4px solid #c62828; padding: 10px 14px; border-radius: 6px; }
+  code { background: #f2f2f7; padding: 1px 5px; border-radius: 4px; font-size: 15px; }
+  pre { background: #1e1e1e; color: #e6e6e6; padding: 12px; border-radius: 8px; overflow-x: auto; font-size: 13.5px; line-height: 1.45; }
+  svg { width: 100%; height: auto; display: block; margin: 10px 0; }
+  ol li, ul li { margin: 4px 0; }
+  details { border: 1px solid #e5e5ea; border-radius: 8px; padding: 8px 12px; margin: 6px 0; }
+  summary { font-weight: 600; cursor: pointer; }
+  details p { margin: 6px 0 2px; }
+  .small { color: #6e6e73; font-size: 14px; }
+  .auftrag { border: 2px dashed #0a66c2; border-radius: 8px; padding: 10px 14px; margin: 10px 0; background: #fbfdff; }
+</style>
+</head>
+<body>
+<h1>Drill 5: IoT-Telemetrie (Kafka, Zeitreihen, Alarme)</h1>
+<!-- sources: Apache Kafka Doku (Partitionierung, Consumer Groups, Offsets), PostgreSQL Doku (Deklarative Partitionierung, COPY/Batch-Insert, BRIN), allgemeine Durchsatz- und Speicherrechnung -->
+
+<h2>1. Die Aufgabe</h2>
+<p><b>So stellt sie der Interviewer:</b> „Eine Kühllogistik-Flotte hat <b>20'000 Fahrzeuge</b>. Jedes sendet <b>alle 10 Sekunden</b> Position und Kühlraum-Temperatur — zusammen also rund <b>2'000 Nachrichten pro Sekunde</b>, rund um die Uhr. Die Disposition will jedes Fahrzeug live auf der Karte sehen, Temperaturkurven der letzten Tage anschauen, und wenn die Temperatur <b>länger als 5 Minuten über −18 °C</b> liegt, muss ein Alarm raus. Rohdaten sollen <b>90 Tage</b> aufbewahrt werden."</p>
+<div class="auftrag"><b>20 Minuten:</b> Stell die Uhr. Löse laut: Rückfragen, Datenvolumen, Ingest-Pfad, Speicher-Schema, Alarm-Logik, ein Diagramm. Dann erst vergleichen.</div>
+
+<h2>2. Schritt 1: Verstehen</h2>
+<div class="kern">
+<p><b>Die Rückfragen — mit plausiblen Antworten:</b></p>
+<ol>
+<li>„Darf eine einzelne Nachricht verloren gehen?" → <i>„Einzelne ja, aber keine Lücken von Minuten — und kein verpasster Alarm."</i> ⇒ at-least-once reicht, Alarm-Pfad ist der kritische.</li>
+<li>„Wie schnell muss der Alarm nach der Grenzverletzung kommen?" → <i>„Innerhalb ~1 Minute nach Ablauf der 5 Minuten."</i> ⇒ Stream-Verarbeitung, kein 15-min-Batch.</li>
+<li>„Kommen Nachrichten verspätet oder unsortiert an (Funkloch, Tunnel)?" → <i>„Ja, Fahrzeuge puffern bis 1 h und senden nach."</i> ⇒ Event-Zeit vom Gerät mitführen, nicht Empfangszeit; Alarm auf Event-Zeit rechnen.</li>
+<li>„Wer liest wie? Live-Karte vs Kurven vs Reports?" → <i>„Karte: letzter Punkt je Fahrzeug. Kurven: 1 Fahrzeug, Zeitraum. Reports: Tages-Aggregate je Flotte."</i> Drei Lesemuster ⇒ drei Datenformen.</li>
+<li>„Wie viele Alarme erwarten wir?" → <i>„Ein paar Dutzend pro Tag."</i> ⇒ Alarm-Ausgang ist winzig, der Eingang ist das Volumenproblem.</li>
+<li>„Wächst die Flotte?" → <i>„Ziel 100'000 Fahrzeuge in 3 Jahren."</i> ⇒ Partitionierung heute so wählen, dass ×5 ohne Umbau geht.</li>
+</ol>
+<p><b>Zahlenschätzung (laut rechnen):</b> 20'000 / 10 s = <b>2'000 msg/s</b>. Nachricht ~100 Bytes (id, ts, lat, lon, temp) ⇒ <b>200 KB/s</b> ≈ 17 GB/Tag Rohdaten. 90 Tage ≈ <b>1,5 TB</b> — gut für eine partitionierte PostgreSQL, zu viel für „eine grosse Tabelle mit B-Tree-Index über alles". Zeilen: 2'000 × 86'400 = <b>173 Mio Zeilen/Tag</b> ⇒ Einzel-INSERTs verbieten sich, Batch-Insert ist Pflicht.</p>
+</div>
+
+<h2>3. Anforderungen</h2>
+<p><b>Muss:</b></p>
+<ul>
+<li>2'000 msg/s dauerhaft aufnehmen, Spitzen (Nachsenden nach Funkloch) ×5 abfedern.</li>
+<li>Reihenfolge <b>pro Fahrzeug</b> erhalten (für Alarm-Fenster und Kurven).</li>
+<li>Alarm: Temperatur &gt; −18 °C über 5 min ⇒ Meldung &lt; 1 min danach, kein Duplikat-Spam.</li>
+<li>Live-Position je Fahrzeug &lt; 30 s alt; Kurvenabfrage 1 Fahrzeug/7 Tage &lt; 2 s.</li>
+<li>Rohdaten 90 Tage, dann automatisch weg; Aggregate länger.</li>
+</ul>
+<p><b>Kann:</b></p>
+<ul>
+<li>Geofencing (Fahrzeug verlässt Route).</li>
+<li>Export für Audits (Kühlkette nachweisen).</li>
+<li>Vorhersage „Aggregat defekt" aus Temperaturtrend.</li>
+<li>Replay: Alarm-Logik rückwirkend auf Rohdaten neu rechnen.</li>
+</ul>
+
+<h2>4. DB-Design</h2>
+<pre>
+-- Rohdaten: partitioniert NACH TAG — loeschen = Partition droppen
+CREATE TABLE messung (
+  fahrzeug_id  int NOT NULL,
+  ts           timestamptz NOT NULL,   -- Event-Zeit vom Geraet
+  lat          double precision NOT NULL,
+  lon          double precision NOT NULL,
+  temp_c       real NOT NULL,
+  PRIMARY KEY (fahrzeug_id, ts)
+) PARTITION BY RANGE (ts);
+CREATE TABLE messung_2026_11_26 PARTITION OF messung
+  FOR VALUES FROM ('2026-11-26') TO ('2026-11-27');
+-- Der PK (fahrzeug_id, ts) traegt die Kurven-Query:
+--   WHERE fahrzeug_id = ? AND ts BETWEEN ? AND ?
+-- Partition-Pruning auf ts haelt die Query auf wenigen Tages-Partitionen.
+
+-- Live-Karte: EIN Datensatz je Fahrzeug, per UPSERT ueberschrieben
+CREATE TABLE fahrzeug_zuletzt (
+  fahrzeug_id int PRIMARY KEY,
+  ts timestamptz NOT NULL, lat double precision, lon double precision,
+  temp_c real
+);
+
+-- Downsampling: 5-min-Aggregate, Faktor 30 kleiner, lange aufbewahrt
+CREATE TABLE messung_5min (
+  fahrzeug_id int NOT NULL,
+  zeitfenster timestamptz NOT NULL,    -- auf 5 min gerundet
+  temp_min real, temp_max real, temp_avg real, anzahl int,
+  PRIMARY KEY (fahrzeug_id, zeitfenster)
+) PARTITION BY RANGE (zeitfenster);    -- monatliche Partitionen
+
+CREATE TABLE alarm (
+  alarm_id    bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  fahrzeug_id int NOT NULL,
+  beginn      timestamptz NOT NULL,
+  ende        timestamptz,             -- NULL = noch aktiv
+  max_temp    real,
+  UNIQUE (fahrzeug_id, beginn)         -- Replay erzeugt keine Duplikate
+);
+</pre>
+<ul>
+<li><b>messung:</b> append-only Zeitreihe; die Tages-Partitionierung ist DIE Entscheidung — Retention heisst <code>DROP TABLE messung_2026_08_28</code> statt <code>DELETE</code> über 173 Mio Zeilen. (Gleiches Modell bieten Zeitreihen-Erweiterungen für PostgreSQL fertig an — nennen, nicht dran hängen.)</li>
+<li><b>fahrzeug_zuletzt:</b> 20'000 Zeilen, beantwortet die Karte ohne Scan über die Zeitreihe.</li>
+<li><b>messung_5min:</b> bedient Kurven über Wochen und Reports; Rohdaten braucht nur, wer in Minuten zoomt.</li>
+<li><b>alarm:</b> Zustand mit <code>beginn/ende</code> statt Einzelevents — „noch aktiv" ist eine Query, und der Unique-Constraint macht Replays harmlos.</li>
+</ul>
+
+<h2>5. Topics und API</h2>
+<ul>
+<li>Kafka-Topic <code>telemetrie</code> — 48 Partitionen, <b>Key = fahrzeug_id</b> ⇒ alle Nachrichten eines Fahrzeugs in einer Partition, dort in Reihenfolge; Retention z. B. 7 Tage als Wiederanlauf-/Replay-Puffer.</li>
+<li>Kafka-Topic <code>alarme</code> — klein; entkoppelt Alarm-Erkennung von Zustellung (Mail/SMS/Push).</li>
+<li><code>GET /fahrzeuge/zuletzt</code> — alle letzten Positionen für die Karte (eine 20'000-Zeilen-Tabelle).</li>
+<li><code>GET /fahrzeuge/{id}/messungen?von=…&amp;bis=…&amp;aufloesung=roh|5min</code> — Kurven.</li>
+<li><code>GET /alarme?aktiv=true</code> — offene Alarme für das Dashboard.</li>
+<li>Ingest: Fahrzeuge → MQTT/HTTPS-Gateway (TLS, Geräte-Auth) → Producer schreibt nach Kafka. Geräte reden <b>nie</b> direkt mit Kafka.</li>
+</ul>
+
+<h2>6. Pseudo-Code an der Tafel</h2>
+<pre>
+// Consumer (Gruppe "persistenz+alarm") — pro Partition ein Faden,
+// dadurch Reihenfolge pro Fahrzeug garantiert
+zustand = map fahrzeug_id -> {ueberGrenzeSeit, alarmAktiv}  // im RAM
+
+schleife:
+  batch = kafka.poll(max 5000 nachrichten, 1 s)   // 1) Batches, nie einzeln
+
+  // 2) Rohdaten als EIN Batch-Insert (COPY/multi-row), nicht 5000 INSERTs
+  db.batchInsert("messung", batch)
+  db.upsertZuletzt(letzteNachrichtJeFahrzeug(batch))
+
+  // 3) Alarm-Fenster pro Fahrzeug, auf EVENT-Zeit gerechnet
+  fuer n in batch:                                 // pro Fahrzeug geordnet
+    z = zustand[n.fahrzeug_id]
+    wenn n.temp_c > -18:
+      wenn z.ueberGrenzeSeit == null: z.ueberGrenzeSeit = n.ts
+      wenn n.ts - z.ueberGrenzeSeit >= 5 min und nicht z.alarmAktiv:
+        INSERT INTO alarm (fahrzeug_id, beginn) VALUES (…)
+          ON CONFLICT DO NOTHING                   // Replay-sicher
+        kafka.sende("alarme", n.fahrzeug_id, …)
+        z.alarmAktiv = true                        // kein Duplikat-Spam
+    sonst:                                         // wieder unter Grenze
+      wenn z.alarmAktiv: UPDATE alarm SET ende = n.ts WHERE …
+      z = zuruecksetzen
+
+  kafka.commitOffsets()   // 4) NACH dem Schreiben: at-least-once,
+                          //    Crash wiederholt den Batch — Inserts sind
+                          //    idempotent (PK/ON CONFLICT faengt Duplikate)
+
+// Separater Aggregat-Job (alle 5 min): INSERT INTO messung_5min
+//   SELECT fahrzeug_id, runde(ts, 5 min), min/max/avg(temp_c), count(*)
+//   FROM messung WHERE ts im letzten Fenster GROUP BY 1,2
+//   ON CONFLICT … DO UPDATE   -- Nachzuegler aktualisieren das Fenster
+</pre>
+
+<h2>7. Architektur</h2>
+<svg viewBox="0 0 740 340" role="img" aria-label="Architektur IoT-Telemetrie">
+  <defs><marker id="arr1" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10z" fill="#1d1d1f"/></marker></defs>
+  <rect x="10" y="30" width="135" height="64" rx="10" fill="#fff" stroke="#1d1d1f" stroke-width="2"/>
+  <text x="77" y="56" text-anchor="middle" font-size="14" font-weight="700">20'000 Fzg</text>
+  <text x="77" y="76" text-anchor="middle" font-size="12.5" fill="#6e6e73">alle 10 s, TLS</text>
+  <line x1="145" y1="62" x2="195" y2="62" stroke="#1d1d1f" stroke-width="2" marker-end="url(#arr1)"/>
+  <rect x="200" y="30" width="140" height="64" rx="10" fill="#fff" stroke="#1d1d1f" stroke-width="2"/>
+  <text x="270" y="56" text-anchor="middle" font-size="14" font-weight="700">Ingest-GW</text>
+  <text x="270" y="76" text-anchor="middle" font-size="12.5" fill="#6e6e73">Auth, validieren</text>
+  <line x1="340" y1="62" x2="390" y2="62" stroke="#1d1d1f" stroke-width="2" marker-end="url(#arr1)"/>
+  <rect x="395" y="20" width="330" height="84" rx="10" fill="#fbfbfd" stroke="#1d1d1f" stroke-width="2.5"/>
+  <text x="560" y="46" text-anchor="middle" font-size="15" font-weight="700">Kafka: telemetrie</text>
+  <text x="560" y="66" text-anchor="middle" font-size="12.5" fill="#6e6e73">48 Partitionen, Key = fahrzeug_id</text>
+  <text x="560" y="84" text-anchor="middle" font-size="12.5" fill="#6e6e73">Puffer bei Spitzen, Retention 7 Tage</text>
+  <line x1="560" y1="104" x2="560" y2="145" stroke="#1d1d1f" stroke-width="2" marker-end="url(#arr1)"/>
+  <rect x="395" y="150" width="330" height="70" rx="10" fill="#fff" stroke="#1d1d1f" stroke-width="2"/>
+  <text x="560" y="176" text-anchor="middle" font-size="14" font-weight="700">Consumer-Gruppe (N Instanzen)</text>
+  <text x="560" y="196" text-anchor="middle" font-size="12.5" fill="#6e6e73">Batch-Insert + Upsert + Alarm-Fenster</text>
+  <line x1="470" y1="220" x2="330" y2="265" stroke="#1d1d1f" stroke-width="2" marker-end="url(#arr1)"/>
+  <rect x="130" y="260" width="230" height="70" rx="10" fill="#fff" stroke="#1d1d1f" stroke-width="2"/>
+  <text x="245" y="286" text-anchor="middle" font-size="14" font-weight="700">PostgreSQL (partitioniert)</text>
+  <text x="245" y="306" text-anchor="middle" font-size="12.5" fill="#6e6e73">messung, _5min, zuletzt, alarm</text>
+  <line x1="620" y1="220" x2="620" y2="258" stroke="#1d1d1f" stroke-width="2" marker-end="url(#arr1)"/>
+  <rect x="520" y="262" width="205" height="66" rx="10" fill="#fff" stroke="#1d1d1f" stroke-width="2"/>
+  <text x="622" y="288" text-anchor="middle" font-size="14" font-weight="700">Topic: alarme</text>
+  <text x="622" y="308" text-anchor="middle" font-size="12.5" fill="#6e6e73">→ Notifier (Mail/SMS)</text>
+  <rect x="10" y="150" width="150" height="70" rx="10" fill="#fff" stroke="#1d1d1f" stroke-width="2"/>
+  <text x="85" y="176" text-anchor="middle" font-size="14" font-weight="700">API + Karte</text>
+  <text x="85" y="196" text-anchor="middle" font-size="12.5" fill="#6e6e73">liest nur DB</text>
+  <line x1="130" y1="258" x2="98" y2="224" stroke="#1d1d1f" stroke-width="2" stroke-dasharray="6 4" marker-end="url(#arr1)"/>
+</svg>
+<p>Sprich das Bild so: „Kafka ist der Stossdämpfer: Geräte-Spitzen und Nachsende-Fluten treffen den Broker, nicht die DB. Die Consumer-Gruppe zieht in Batches und schreibt drei Formen: Rohdaten (Tag-Partitionen), letzter Stand (Upsert), Aggregate. Der Alarm läuft im selben Consumer auf dem geordneten Strom pro Fahrzeug."</p>
+
+<h2>8. Der schwierige Teil als Bild</h2>
+<svg viewBox="0 0 740 310" role="img" aria-label="Partition zu Consumer zu Aggregat">
+  <defs><marker id="arr2" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10z" fill="#1d1d1f"/></marker></defs>
+  <text x="15" y="30" font-size="14" font-weight="700">hash(fahrzeug_id) % 48 waehlt die Partition:</text>
+  <rect x="15" y="45" width="200" height="46" rx="8" fill="#fff" stroke="#1d1d1f" stroke-width="2"/>
+  <text x="115" y="64" text-anchor="middle" font-size="13">Partition 0</text>
+  <text x="115" y="82" text-anchor="middle" font-size="12.5" fill="#6e6e73">Fzg 7: t1→t2→t3 geordnet</text>
+  <rect x="15" y="105" width="200" height="46" rx="8" fill="#fff" stroke="#1d1d1f" stroke-width="2"/>
+  <text x="115" y="124" text-anchor="middle" font-size="13">Partition 1</text>
+  <text x="115" y="142" text-anchor="middle" font-size="12.5" fill="#6e6e73">Fzg 9, Fzg 13, …</text>
+  <rect x="15" y="165" width="200" height="46" rx="8" fill="#fff" stroke="#1d1d1f" stroke-width="2"/>
+  <text x="115" y="184" text-anchor="middle" font-size="13">Partition 2 … 47</text>
+  <text x="115" y="202" text-anchor="middle" font-size="12.5" fill="#6e6e73">je Fzg fest zugeordnet</text>
+  <line x1="215" y1="68" x2="290" y2="105" stroke="#1d1d1f" stroke-width="2" marker-end="url(#arr2)"/>
+  <line x1="215" y1="128" x2="290" y2="125" stroke="#1d1d1f" stroke-width="2" marker-end="url(#arr2)"/>
+  <line x1="215" y1="188" x2="290" y2="160" stroke="#1d1d1f" stroke-width="2" marker-end="url(#arr2)"/>
+  <rect x="295" y="85" width="190" height="90" rx="10" fill="#fff" stroke="#1d1d1f" stroke-width="2.5"/>
+  <text x="390" y="112" text-anchor="middle" font-size="14" font-weight="700">Consumer A</text>
+  <text x="390" y="132" text-anchor="middle" font-size="12.5" fill="#6e6e73">bekommt P0–P15 exklusiv</text>
+  <text x="390" y="150" text-anchor="middle" font-size="12.5" fill="#6e6e73">Fensterzustand je Fzg im RAM</text>
+  <text x="390" y="168" text-anchor="middle" font-size="12.5" fill="#6e6e73">(B: P16–31, C: P32–47)</text>
+  <line x1="485" y1="110" x2="555" y2="85" stroke="#1d1d1f" stroke-width="2" marker-end="url(#arr2)"/>
+  <rect x="560" y="55" width="165" height="56" rx="8" fill="#fff" stroke="#1d1d1f" stroke-width="2"/>
+  <text x="642" y="78" text-anchor="middle" font-size="13">messung (roh)</text>
+  <text x="642" y="96" text-anchor="middle" font-size="12.5" fill="#6e6e73">Tag-Partitionen, 90 d</text>
+  <line x1="485" y1="135" x2="555" y2="150" stroke="#1d1d1f" stroke-width="2" marker-end="url(#arr2)"/>
+  <rect x="560" y="125" width="165" height="56" rx="8" fill="#fff" stroke="#1d1d1f" stroke-width="2"/>
+  <text x="642" y="148" text-anchor="middle" font-size="13">messung_5min</text>
+  <text x="642" y="166" text-anchor="middle" font-size="12.5" fill="#6e6e73">Faktor 30 kleiner</text>
+  <line x1="485" y1="160" x2="555" y2="215" stroke="#c62828" stroke-width="2" marker-end="url(#arr2)"/>
+  <rect x="560" y="195" width="165" height="56" rx="8" fill="#fff4f2" stroke="#c62828" stroke-width="2"/>
+  <text x="642" y="218" text-anchor="middle" font-size="13" fill="#c62828">alarm + Topic</text>
+  <text x="642" y="236" text-anchor="middle" font-size="12.5" fill="#6e6e73">&gt; −18 °C ueber 5 min</text>
+  <text x="15" y="250" font-size="13" font-weight="700">Warum das traegt:</text>
+  <text x="15" y="272" font-size="12.5" fill="#6e6e73">1 Fahrzeug = 1 Partition = 1 Consumer ⇒ Reihenfolge und Fensterzustand</text>
+  <text x="15" y="290" font-size="12.5" fill="#6e6e73">bleiben lokal. Mehr Last ⇒ mehr Consumer, bis max 48 (= Partitionszahl).</text>
+</svg>
+<p>Der Mechanismus in einem Satz: Kafka garantiert Reihenfolge <b>nur innerhalb einer Partition</b> — weil der Key <code>fahrzeug_id</code> jedes Fahrzeug fest auf eine Partition hasht und jede Partition in der Gruppe genau <b>einem</b> Consumer gehört, sieht genau ein Prozess alle Messungen eines Fahrzeugs in Reihenfolge und kann das 5-min-Fenster im lokalen Zustand rechnen.</p>
+
+<h2>9. Frontend kurz</h2>
+<ul>
+<li>Komponenten: <code>FlottenKarteComponent</code> (Leaflet/MapLibre, 20'000 Marker geclustert), <code>TemperaturKurveComponent</code>, <code>AlarmListeComponent</code>.</li>
+<li>State: <code>TelemetrieService</code> pollt <code>/fahrzeuge/zuletzt</code> alle 15 s; Alarme optional per SSE pushen.</li>
+<li>Kurven: FE fragt <code>aufloesung=5min</code> an, Rohauflösung nur beim Zoomen unter 1 h — nie 173 Mio Punkte in den Browser.</li>
+</ul>
+
+<h2>10. Cloud (Azure)</h2>
+<div class="senior">
+<ul>
+<li><b>Event Hubs</b> statt selbst betriebenem Kafka: gleiches Modell (Partitionen, Keys, Consumer Groups, Kafka-kompatibler Endpunkt), kein Broker-Betrieb. Service Bus wäre falsch: 2'000 msg/s Dauerstrom mit Replay ist Streaming, keine Auftrags-Queue.</li>
+<li><b>AKS oder Container Apps</b> für Gateway + Consumer: Consumer sind langlaufende Prozesse mit RAM-Zustand — kein Fall für kurzlebige Functions.</li>
+<li><b>Azure Functions</b> passt dagegen gut für den <b>Notifier</b> (Trigger auf <code>alarme</code>, wenige Events/Tag) und den 5-min-Aggregat-Job (Timer).</li>
+<li><b>Azure Database for PostgreSQL</b> mit Tages-Partitionen; Alternative benennen: spezialisierte Zeitreihen-Angebote (Timescale-artig) oder <b>Azure Data Explorer</b>, wenn Ad-hoc-Analytik über die ganze Flotte dominiert.</li>
+<li><b>Blob Storage</b>: Rohdaten älter 90 Tage als Parquet exportieren, bevor die Partition gedroppt wird — Audit-Nachweis Kühlkette, Cent-Kosten.</li>
+<li><b>Monitor</b>: Alarm auf <b>Consumer-Lag</b> (wichtigste Metrik des Systems) und DB-Insert-Latenz; <b>Key Vault</b> für Geräte-Zertifikate und Connection Strings.</li>
+</ul>
+</div>
+
+<h2>11. Trade-offs</h2>
+<ul>
+<li><b>Kafka/Event Hubs vs Service Bus:</b> gewählt Kafka-Modell, weil Dauerstrom + Reihenfolge pro Key + Replay (Offsets zurücksetzen) gebraucht werden. Preis: Partitionszahl ist eine frühe Festlegung (Parallelität ≤ Partitionen), und Consumer-Gruppen-Betrieb (Lag, Rebalancing) will überwacht sein.</li>
+<li><b>Roh + Aggregat vs nur Aggregat:</b> gewählt beides, weil Audits und Alarm-Replays die Rohdaten brauchen und Dashboards die Aggregate. Preis: doppelte Schreiblast und 1,5 TB statt 50 GB — bewusst bezahlt, Rohdaten sind hier der Produktwert (Kühlketten-Nachweis).</li>
+<li><b>Alarm im Persistenz-Consumer vs eigener Stream-Job:</b> gewählt im Consumer, weil der geordnete Strom dort schon vorliegt und die Logik 20 Zeilen ist. Preis: Alarm und Persistenz teilen Deployment und Ausfall — wächst die Regel-Menge (mehrere Regeln, Konfiguration pro Kunde), auslagern in eigene Consumer-Gruppe auf demselben Topic.</li>
+<li><b>Fensterzustand im RAM vs in der DB:</b> gewählt RAM, weil pro Nachricht ein DB-Roundtrip für den Zustand 2'000 extra Queries/s hiesse. Preis: nach Crash/Rebalancing ist der Zustand weg — Recovery: letzte 5 min aus der DB nachlesen oder schlicht neu aufbauen (max. 5 min verspäteter Alarm, dokumentiert und akzeptiert).</li>
+<li><b>Tages-Partitionen vs eine grosse Tabelle:</b> gewählt Partitionen, weil Retention sonst <code>DELETE</code> + Vacuum über Milliarden Zeilen wäre und Queries über <code>ts</code> ganze Partitionen überspringen (Pruning). Preis: Partition-Verwaltung (anlegen/droppen) muss automatisiert und überwacht sein — fehlende Morgen-Partition = Insert-Fehler.</li>
+<li><b>Upsert-Tabelle für „zuletzt" vs <code>max(ts)</code>-Query:</b> gewählt Upsert, weil die Karte sonst alle 15 s ein Top-1-per-Fahrzeug über die Zeitreihe rechnet. Preis: 2'000 Upserts/s zusätzlich — gebündelt pro Batch (nur letzter Wert je Fahrzeug) real ~einige hundert/s.</li>
+</ul>
+
+<h2>12. Selbsttest</h2>
+<div class="trap">
+<p><b>Typische Fehler genau bei dieser Aufgabe:</b></p>
+<ul>
+<li><b>Geräte schreiben direkt in die DB:</b> 20'000 offene Verbindungen, keine Pufferung, kein Backpressure — das Gateway + Kafka sind genau dafür da.</li>
+<li><b>Einzel-INSERT pro Nachricht:</b> 2'000 Transaktionen/s dauerhaft quälen die DB grundlos; Batch/COPY reduziert das auf ~2–20 Writes/s.</li>
+<li><b>Key weglassen oder Key = Timestamp:</b> dann verteilt Kafka round-robin, Messungen eines Fahrzeugs landen überall — kein geordnetes Fenster, Alarm-Logik kaputt.</li>
+<li><b>Alarm auf Empfangszeit statt Event-Zeit:</b> Nachgesendete Tunnel-Daten lösen Fehlalarme aus oder verschlucken echte.</li>
+<li><b>„Mehr Consumer als Partitionen" als Skalierungsplan:</b> die überzähligen bekommen nichts — Parallelität ist durch die Partitionszahl gedeckelt.</li>
+</ul>
+</div>
+<details><summary>Warum garantiert der Partition-Key die Reihenfolge — Mechanismus, nicht Behauptung?</summary>
+<p>Der Producer berechnet <code>hash(key) % partitionen</code> — gleicher Key, gleiche Partition, immer. Eine Partition ist ein append-only Log: Nachrichten bekommen aufsteigende Offsets und werden in Offset-Reihenfolge konsumiert. Über <b>verschiedene</b> Partitionen gibt es keine Ordnung — brauchen wir auch nicht, Fahrzeuge sind unabhängig.</p>
+</details>
+<details><summary>Warum 48 Partitionen und nicht 4 oder 1'000?</summary>
+<p>Partitionen = maximale Consumer-Parallelität. Heute reichen 3–6 Consumer (je ~400–700 msg/s), aber bei 100'000 Fahrzeugen (10'000 msg/s) will ich auf 20–40 hochskalieren können, <b>ohne</b> Partitionen nachträglich zu erhöhen — denn das ändert die Hash-Zuordnung und bricht die Reihenfolgegarantie im Übergang. 1'000 wäre Overhead (Dateien, Rebalancing-Dauer) ohne Nutzen.</p>
+</details>
+<details><summary>Ein Consumer crasht. Was passiert mit seinen 16 Partitionen und dem Alarm-Zustand?</summary>
+<p>Die Gruppe rebalanciert: die 16 Partitionen gehen an die übrigen Consumer, die ab dem letzten committeten Offset weiterlesen — Nachrichten gehen nicht verloren, einige werden doppelt verarbeitet (at-least-once). Der RAM-Fensterzustand ist weg; der Übernehmer baut ihn aus den nächsten Messungen bzw. per Nachlesen der letzten 5 min auf. Schlimmster Fall: ein Alarm kommt Minuten später.</p>
+</details>
+<details><summary>Offsets werden NACH dem DB-Schreiben committet. Was folgt daraus — und warum knallt es nicht?</summary>
+<p>Crash zwischen Schreiben und Commit ⇒ der Batch wird nochmal konsumiert und nochmal geschrieben. Deshalb ist jeder Schreibpfad idempotent: <code>messung</code> hat PK <code>(fahrzeug_id, ts)</code> (Duplikat ⇒ <code>ON CONFLICT DO NOTHING</code>), der Upsert überschreibt mit demselben Wert, <code>alarm</code> hat <code>UNIQUE(fahrzeug_id, beginn)</code>. At-least-once + idempotente Writes = praktisch exactly-once-Wirkung.</p>
+</details>
+<details><summary>Rechne: Wie gross wird die Rohtabelle, und warum ist Partitionieren Pflicht?</summary>
+<p>173 Mio Zeilen/Tag × 90 Tage ≈ 15,6 Mrd Zeilen, ~1,5 TB mit Indexen. Löschen per <code>DELETE WHERE ts &lt; …</code> müsste täglich 173 Mio Zeilen entfernen und hinterlässt Bloat, den Vacuum abtragen muss. <code>DROP</code> einer Tages-Partition ist eine Metadaten-Operation in Millisekunden — und Queries mit <code>ts</code>-Filter lesen per Pruning nur die betroffenen Tage.</p>
+</details>
+<details><summary>Montagmorgen verlassen 5'000 Fahrzeuge gleichzeitig ein Funkloch-Depot und senden je 1 h Puffer nach. Was passiert?</summary>
+<p>Kurzzeitig ×5–×10 Eingangsrate. Kafka nimmt das auf (Broker schreiben sequentiell, das ist ihr Normalfall); der Consumer-Lag steigt und baut sich über Minuten ab — die DB sieht weiter gleichmässige Batches. Wichtig: Alarm rechnet auf Event-Zeit, sonst würden die nachgesendeten „alten" Messwerte als frische 5-min-Verletzung gelesen.</p>
+</details>
+<details><summary>Wie verhinderst du, dass ein aktiver Alarm alle 10 s eine neue SMS auslöst?</summary>
+<p>Der Alarm ist ein <b>Zustand</b>, kein Event: beim Überschreiten wird einmal eine <code>alarm</code>-Zeile mit <code>beginn</code> angelegt und <code>alarmAktiv=true</code> gemerkt; weitere heisse Messungen ändern höchstens <code>max_temp</code>. Erst wenn die Temperatur zurückfällt, wird <code>ende</code> gesetzt und der Zustand gelöscht — die nächste Verletzung ist ein neuer Alarm.</p>
+</details>
+<details><summary>Ein Fahrzeug sendet gar nichts mehr — Sensor tot. Merkt das jemand?</summary>
+<p>Nicht über den Stream: wo keine Nachricht ist, feuert keine Regel. Das braucht einen <b>Absenz-Check</b>: ein Timer-Job (z. B. jede Minute) fragt <code>fahrzeug_zuletzt</code> nach <code>ts &lt; now() − 10 min</code> ⇒ Alarm „Fahrzeug stumm". Im Interview aktiv nennen — das Fehlen von Daten ist bei Kühlketten selbst ein Alarmfall.</p>
+</details>
+<details><summary>Skalierung ×10: 200'000 Fahrzeuge, 20'000 msg/s. Was änderst du wo?</summary>
+<p>Kafka: Partitionen waren dafür geplant (48 ⇒ ggf. neues Topic mit 96 und Umzug), mehr Consumer. DB: 170 GB/Tag Rohdaten — jetzt kippt die Entscheidung: Rohdaten nach Blob/Parquet (billig, append-only), in PostgreSQL nur noch Aggregate + zuletzt + Alarme; oder ein dediziertes Zeitreihen-/Analytik-System. Der Alarm-Pfad bleibt unverändert — er hängt nur an Kafka, nicht an der DB. Genau diese Umbau-Reihenfolge nennen.</p>
+</details>
+<details><summary>Was geht kaputt, wenn die DB 10 Minuten down ist?</summary>
+<p>Consumer bekommen Insert-Fehler, committen keine Offsets und pausieren (Backoff). Kafka puffert weiter — bei 7 Tagen Retention sind 10 min nichts. Danach arbeiten die Consumer den Lag ab. Verloren geht nichts; Live-Karte und Alarme sind um die Ausfallzeit verspätet. Das ist der Satz: „Kafka entkoppelt Verfügbarkeit des Ingest von Verfügbarkeit der DB."</p>
+</details>
+<details><summary>Warum reicht <code>PRIMARY KEY (fahrzeug_id, ts)</code> als einziger Index auf den Rohdaten?</summary>
+<p>Die einzige Rohdaten-Query ist „ein Fahrzeug, ein Zeitfenster" — exakt die führenden Spalten des PK, plus Partition-Pruning über <code>ts</code>. Jeder weitere Index kostet bei 2'000 Inserts/s dauerhaft Schreibarbeit. Flotten-weite Fragen („alle Fahrzeuge über −18° gestern") beantwortet <code>messung_5min</code>, nicht die Rohtabelle.</p>
+</details>
+<details><summary>Nachrichten eines Fahrzeugs kommen aus dem Puffer unsortiert an. Bricht das Fenster?</summary>
+<p>Innerhalb der Verbindung sendet das Gerät chronologisch, und die Partition erhält die Producer-Reihenfolge — der Normalfall ist also geordnet. Gegen Restfälle (Reconnect, doppelte Sendung) hilft: Fenster-Logik ignoriert Messungen älter als der letzte verarbeitete <code>ts</code> des Fahrzeugs, und der PK verwirft Duplikate. Das erwähne ich als bewusste Vereinfachung.</p>
+</details>
+<details><summary>Sicherheits-Punkt: Was ist der wichtigste Schutz am Ingest?</summary>
+<p>Geräte-Identität: jedes Fahrzeug authentifiziert sich mit eigenem Zertifikat/Token (pro Gerät widerrufbar), Gateway validiert Schema und Wertebereiche (−40…+40 °C, plausible Koordinaten) und wirft Müll weg, Rate-Limit pro Gerät gegen Amok-Sender. Positionsdaten sind zudem Personenbezug (Fahrer!) — Zugriff rollenbasiert, Export protokolliert.</p>
+</details>
+<details><summary>Interviewer: „Warum nicht einfach alle 10 s in Redis und fertig?"</summary>
+<p>Redis beantwortet nur die Live-Karte (letzter Wert). Die Aufgabe verlangt 90 Tage Historie (1,5 TB — nicht RAM-tauglich), Kurvenabfragen und ein zeitliches Alarm-Fenster über geordnete Messungen. Antwortmuster: anerkennen, wofür es passt („zuletzt"-Cache wäre legitim), dann mit den Zahlen zeigen, was fehlt.</p>
+</details>
+<details><summary>Wie testest du die Alarm-Logik, bevor sie live geht?</summary>
+<p>Replay: Rohdaten eines echten Tages in ein Test-Topic einspielen (Offsets ab 0) und die Alarm-Ausgabe gegen bekannte Vorfälle vergleichen — das geht, <b>weil</b> Kafka Nachrichten behält und Consumer-Offsets frei setzbar sind. Dazu Unit-Tests der Fensterlogik mit synthetischen Serien: genau 4:50 über Grenze (kein Alarm), 5:10 (Alarm), Lücke im Funkloch, Nachsende-Batch.</p>
+</details>
+<details><summary>Szenario: Disposition meldet „Karte hängt 20 Minuten hinterher". Diagnose-Reihenfolge?</summary>
+<p>1) Consumer-Lag im Monitoring — steigt er? Dann ist der Consumer zu langsam oder tot (Rebalancing-Schleife, DB-Latenz). 2) Lag normal ⇒ DB prüfen: blockiert der Upsert (Lock, Autovacuum, fehlende Morgen-Partition)? 3) Beides normal ⇒ FE/API: pollt die Karte noch, cached der Browser? Die eine Metrik, die zuerst zählt, ist der Lag — darum steht sie im Monitor-Alarm.</p>
+</details>
+
+<p class="small">Übe den Drill, bis du Partition-Key, Consumer-Gruppe, Batch-Insert und das 5-min-Fenster in einem Zug an die Tafel zeichnest — mit den Zahlen 2'000 msg/s, 173 Mio Zeilen/Tag, 1,5 TB.</p>
+</body>
+</html>

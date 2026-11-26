@@ -2,7 +2,7 @@
 
 Generated from content/syllabus.json. Priority 1 = asked in almost every interview. Mark: **Projekt** = shown in CV/Gmail · **— kein Projekt** = no project experience · **? prüfen** = unclear, you decide.
 
-437 topics · P1 267 · P2 132 · P3 38 · written 325
+437 topics · P1 267 · P2 132 · P3 38 · written 330
 
 ## Java 21 (core + advanced) (42)
 Sources: Java SE 21/25 docs (docs.oracle.com) · JVM Specification · OpenJDK source + JEPs (openjdk.org) · Oracle Java SE 21 Developer exam 1Z0-830 topics
@@ -105,7 +105,7 @@ Sources: microservices.io patterns (Chris Richardson) · Azure Architecture Cent
 
 | P | Topic | Project | Written |
 |---|---|---|---|
-| 1 | Top 30 Fragen mit Kurzantworten | — kein Projekt |  |
+| 1 | Top 30 Fragen mit Kurzantworten | — kein Projekt | ✓ |
 | 1 | Monolith vs Modulith vs Microservices | Projekt | ✓ |
 | 1 | Service-Schnitt mit DDD und Bounded Contexts | ? prüfen | ✓ |
 | 1 | Synchrone vs asynchrone Kommunikation | Projekt | ✓ |
@@ -294,7 +294,7 @@ Sources: Apache Spark 3.5/4 documentation · Databricks Spark developer exam top
 
 | P | Topic | Project | Written |
 |---|---|---|---|
-| 1 | Top 30 Fragen mit Kurzantworten | — kein Projekt |  |
+| 1 | Spark: Top 30 Fragen mit Kurzantworten | — kein Projekt | ✓ |
 | 1 | Spark-Architektur: Driver, Executor, Cluster Manager | Projekt | ✓ |
 | 1 | RDD vs DataFrame vs Dataset | Projekt | ✓ |
 | 1 | Lazy Evaluation, DAG, Jobs, Stages, Tasks | Projekt | ✓ |
@@ -317,7 +317,7 @@ Sources: Apache Iceberg spec and docs (iceberg.apache.org)
 
 | P | Topic | Project | Written |
 |---|---|---|---|
-| 1 | Top 30 Fragen mit Kurzantworten | — kein Projekt |  |
+| 1 | Iceberg: Top 30 Fragen mit Kurzantworten | — kein Projekt | ✓ |
 | 1 | Was ist ein Table Format? Iceberg-Grundlagen | Projekt | ✓ |
 | 1 | Metadaten: metadata.json, Manifest List, Manifests | ? prüfen | ✓ |
 | 1 | Snapshots und Time Travel | ? prüfen | ✓ |
@@ -407,7 +407,7 @@ Sources: Microsoft Learn: AZ-204 and AZ-305 skills outlines · Azure Architectur
 
 | P | Topic | Project | Written |
 |---|---|---|---|
-| 1 | Top 30 Fragen mit Kurzantworten | — kein Projekt |  |
+| 1 | Azure: Top 30 Fragen mit Kurzantworten | — kein Projekt | ✓ |
 | 1 | Grundlagen: Tenant, Subscription, Resource Group, Regionen (Schweiz) | ? prüfen | ✓ |
 | 1 | Compute: Functions vs Container Apps vs App Service vs AKS | Projekt | ✓ |
 | 1 | Azure Functions: Trigger, Bindings, Pläne, Durable Functions | Projekt | ✓ |
@@ -428,7 +428,7 @@ Sources: kubernetes.io documentation · CKA and CKAD curricula (CNCF)
 
 | P | Topic | Project | Written |
 |---|---|---|---|
-| 1 | Top 30 Fragen mit Kurzantworten | — kein Projekt |  |
+| 1 | Kubernetes: Top 30 Fragen mit Kurzantworten | — kein Projekt | ✓ |
 | 1 | Kubernetes-Architektur | Projekt | ✓ |
 | 1 | Pods und Sidecars | Projekt | ✓ |
 | 1 | Deployments und Rollouts | Projekt | ✓ |

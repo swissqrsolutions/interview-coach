@@ -1,0 +1,305 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Drill 4: Monats-Rechnungen (Batch, Worker, idempotent)</title>
+<style>
+  body { font: 17px/1.55 -apple-system, system-ui, sans-serif; max-width: 760px; margin: 0 auto; padding: 16px; color: #1d1d1f; }
+  h1 { font-size: 28px; margin: 8px 0 4px; }
+  h2 { font-size: 21px; margin: 32px 0 8px; padding-top: 12px; border-top: 2px solid #e5e5ea; }
+  h3 { font-size: 17px; margin: 20px 0 6px; }
+  .kern { background: #eef6ff; border-left: 4px solid #0a66c2; padding: 10px 14px; border-radius: 6px; }
+  .senior { background: #f0faf0; border-left: 4px solid #2e7d32; padding: 10px 14px; border-radius: 6px; }
+  .trap { background: #fff4f2; border-left: 4px solid #c62828; padding: 10px 14px; border-radius: 6px; }
+  code { background: #f2f2f7; padding: 1px 5px; border-radius: 4px; font-size: 15px; }
+  pre { background: #1e1e1e; color: #e6e6e6; padding: 12px; border-radius: 8px; overflow-x: auto; font-size: 13.5px; line-height: 1.45; }
+  svg { width: 100%; height: auto; display: block; margin: 10px 0; }
+  ol li, ul li { margin: 4px 0; }
+  details { border: 1px solid #e5e5ea; border-radius: 8px; padding: 8px 12px; margin: 6px 0; }
+  summary { font-weight: 600; cursor: pointer; }
+  details p { margin: 6px 0 2px; }
+  .small { color: #6e6e73; font-size: 14px; }
+  .auftrag { border: 2px dashed #0a66c2; border-radius: 8px; padding: 10px 14px; margin: 10px 0; background: #fbfdff; }
+</style>
+</head>
+<body>
+<h1>Drill 4: Monats-Rechnungen (Batch, Worker, idempotent)</h1>
+<!-- sources: PostgreSQL Doku (SELECT FOR UPDATE SKIP LOCKED, Indexe), Azure Blob Storage Doku, allgemeine Batch- und Durchsatzrechnung -->
+
+<h2>1. Die Aufgabe</h2>
+<p><b>So stellt sie der Interviewer:</b> „Ein Telekom-Anbieter hat <b>200'000 Kunden</b>. Am <b>1. jedes Monats</b> müssen für alle Kunden PDF-Rechnungen erzeugt und per E-Mail verschickt werden. Eine Rechnung braucht etwa <b>500 ms</b> Rechenzeit (Positionen laden, PDF rendern). Der Mail-Provider erlaubt <b>100 Mails/s</b>. Der Lauf muss bis <b>6:00 Uhr morgens</b> fertig sein — und wenn um 3 Uhr ein Server abstürzt, darf keine Rechnung fehlen und keine doppelt verschickt werden."</p>
+<div class="auftrag"><b>20 Minuten:</b> Stell die Uhr. Löse laut: Rückfragen, Durchsatzrechnung, Job-Tabelle, Worker-Schleife, Wiederanlauf. Dann erst vergleichen.</div>
+
+<h2>2. Schritt 1: Verstehen</h2>
+<div class="kern">
+<p><b>Die Rückfragen — mit plausiblen Antworten:</b></p>
+<ol>
+<li>„Start 0:00, fertig 6:00 — sind die 6 Stunden hart?" → <i>„Ja, um 6:00 schauen die ersten Kunden ins Postfach."</i> Also plane ich mit Reserve: Ziel 2–3 h.</li>
+<li>„Doppelt schlimmer als fehlend, oder umgekehrt?" → <i>„Doppelte Mail ist peinlich, doppelte <b>Rechnung mit neuer Nummer</b> ist ein Buchhaltungsfehler."</i> ⇒ Rechnungsnummer muss deterministisch sein, Versand at-least-once mit Dedup.</li>
+<li>„Ändern sich Rechnungsdaten während des Laufs?" → <i>„Nein, Abrechnungsperiode ist beim Start abgeschlossen."</i> Gut: der Lauf arbeitet auf einem festen Schnappschuss.</li>
+<li>„Müssen die PDFs aufbewahrt werden?" → <i>„Ja, 10 Jahre, Kunde kann sie im Portal abrufen."</i> ⇒ Object Storage, nicht DB.</li>
+<li>„Gibt es Kunden ohne E-Mail?" → <i>„5 % bekommen Brief."</i> ⇒ Kanal ist ein Feld, Briefdruck ist ein zweiter Konsument desselben Laufs.</li>
+<li>„Was darf eine fehlerhafte Rechnung blockieren?" → <i>„Nur sich selbst."</i> ⇒ Fehler isolieren, Lauf läuft weiter, Fehlerliste am Ende.</li>
+</ol>
+<p><b>Zahlenschätzung (laut rechnen):</b> 200'000 × 0,5 s = <b>100'000 s Rechenzeit</b> ≈ 28 h sequentiell ⇒ parallelisieren ist Pflicht. Mit <b>20 Workern</b>: 100'000/20 = 5'000 s ≈ <b>84 min</b> — passt ins Fenster. Mail-Limit: 200'000 / 100 pro s = 2'000 s ≈ <b>34 min</b> reine Sendezeit, läuft parallel zum Erzeugen. Speicher: 200'000 PDFs × 100 KB = <b>20 GB/Monat</b>, 10 Jahre ≈ 2,4 TB ⇒ Blob mit Lifecycle in kalte Stufe.</p>
+</div>
+
+<h2>3. Anforderungen</h2>
+<p><b>Muss:</b></p>
+<ul>
+<li>Jeder Kunde genau eine Rechnung pro Monat — auch nach Crash und Neustart.</li>
+<li>Keine doppelte Rechnungsnummer, kein doppelter Versand.</li>
+<li>Fertig bis 6:00; Fortschritt jederzeit abfragbar („wie viele offen/fertig/fehler?").</li>
+<li>Einzelfehler (kaputte Stammdaten) stoppen den Lauf nicht.</li>
+<li>PDFs 10 Jahre abrufbar, unveränderlich.</li>
+</ul>
+<p><b>Kann:</b></p>
+<ul>
+<li>Wiederholungslauf nur für Fehler-Fälle per Knopfdruck.</li>
+<li>Vorschau-Lauf („dry run") ohne Versand.</li>
+<li>Verteilen des Versands über den Vormittag (Lastglättung beim Support).</li>
+<li>Briefdruck-Export als zweiter Kanal.</li>
+</ul>
+
+<h2>4. DB-Design</h2>
+<pre>
+CREATE TABLE rechnungslauf (
+  lauf_id     bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  periode     date NOT NULL UNIQUE,     -- '2026-11-01': ein Lauf pro Monat
+  gestartet   timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE rechnungsjob (
+  lauf_id      bigint NOT NULL REFERENCES rechnungslauf,
+  kunde_id     bigint NOT NULL,
+  status       text NOT NULL DEFAULT 'offen'
+               CHECK (status IN ('offen','in_arbeit','fertig','fehler')),
+  versuche     int NOT NULL DEFAULT 0,
+  gestartet_am timestamptz,             -- fuer haengende Jobs (Timeout)
+  fehler_text  text,
+  pdf_url      text,
+  PRIMARY KEY (lauf_id, kunde_id)       -- Idempotenz: 1 Job pro Kunde+Monat
+);
+-- DER Index der Aufgabe: Worker greifen sich offene Jobs
+CREATE INDEX idx_job_offen ON rechnungsjob (lauf_id, status)
+  WHERE status IN ('offen','in_arbeit');
+
+CREATE TABLE rechnung (
+  rechnung_id  text PRIMARY KEY,        -- deterministisch: 'R-2026-11-<kunde>'
+  kunde_id     bigint NOT NULL,
+  periode      date NOT NULL,
+  betrag       numeric(12,2) NOT NULL,
+  pdf_url      text NOT NULL,
+  versendet_am timestamptz,
+  UNIQUE (kunde_id, periode)            -- zweites Netz gegen Doppel-Rechnung
+);
+</pre>
+<ul>
+<li><b>rechnungslauf:</b> Klammer um einen Monat; <code>UNIQUE(periode)</code> macht den Start-Knopf idempotent — zweimal drücken erzeugt keinen zweiten Lauf.</li>
+<li><b>rechnungsjob:</b> die Status-Maschine, eine Zeile pro Kunde; der Primärschlüssel <code>(lauf_id, kunde_id)</code> erzwingt „genau ein Job pro Kunde und Monat". Die Status-Spalte plus <code>idx_job_offen</code> ist die Arbeitsvorrat-Queue.</li>
+<li><b>rechnung:</b> das Ergebnis; die <b>deterministische</b> <code>rechnung_id</code> aus Periode + Kunde macht Wiederholungen harmlos — derselbe Kunde kann im selben Monat keine zweite Nummer bekommen.</li>
+</ul>
+
+<h2>5. API</h2>
+<ul>
+<li><code>POST /laeufe</code> — Body <code>{periode}</code>; legt Lauf + 200'000 Jobs an (ein <code>INSERT … SELECT</code> aus der Kundentabelle); 409 bei existierender Periode.</li>
+<li><code>GET /laeufe/{id}</code> — Fortschritt: <code>{offen, in_arbeit, fertig, fehler}</code> (ein <code>GROUP BY status</code>).</li>
+<li><code>GET /laeufe/{id}/fehler</code> — Fehlerliste mit <code>fehler_text</code> für den Fachbereich.</li>
+<li><code>POST /laeufe/{id}/retry</code> — setzt alle <code>fehler</code>-Jobs zurück auf <code>offen</code>.</li>
+<li><code>GET /kunden/{id}/rechnungen</code> — Portal-Abruf; liefert kurzlebige signierte Blob-URL.</li>
+<li>Kein öffentlicher Endpunkt für Worker: sie reden direkt mit der DB.</li>
+</ul>
+
+<h2>6. Pseudo-Code an der Tafel</h2>
+<pre>
+// Worker-Schleife — laeuft identisch auf 20 Instanzen
+solange lauf nicht fertig:
+
+  BEGIN TRANSACTION
+    // 1) Batch greifen: SKIP LOCKED = jeder Worker bekommt ANDERE Zeilen,
+    //    niemand wartet auf fremde Locks
+    jobs = SELECT * FROM rechnungsjob
+           WHERE lauf_id = :lauf AND status = 'offen'
+           LIMIT 100
+           FOR UPDATE SKIP LOCKED
+    wenn jobs leer: pause(5s); weiter      // fertig oder alles vergriffen
+
+    UPDATE … SET status='in_arbeit', gestartet_am=now(),
+                 versuche=versuche+1  WHERE (lauf_id,kunde_id) IN jobs
+  COMMIT                                   // Claim sichtbar, Locks frei
+
+  fuer job in jobs:
+    versuche:
+      rid = "R-" + periode + "-" + job.kunde_id   // 2) deterministisch!
+      pdf = renderePdf(job.kunde_id, periode)
+      blob.schreibe("rechnungen/" + rid + ".pdf", pdf)  // Overwrite = ok
+      INSERT INTO rechnung (rechnung_id, …) VALUES (rid, …)
+        ON CONFLICT (rechnung_id) DO NOTHING          // Retry = harmlos
+      mailQueue.sende(rid)                 // Versand entkoppelt, 100/s
+      UPDATE rechnungsjob SET status='fertig' WHERE …
+    bei fehler e:
+      // 3) Fehler isolieren: nur dieser Job, Lauf laeuft weiter
+      UPDATE rechnungsjob SET status='fehler', fehler_text=e WHERE …
+
+// Aufraeumer (alle 5 min): Crash-Opfer zurueck in den Vorrat
+UPDATE rechnungsjob SET status='offen'
+WHERE status='in_arbeit' AND gestartet_am < now() - interval '10 min';
+</pre>
+
+<h2>7. Architektur</h2>
+<svg viewBox="0 0 740 330" role="img" aria-label="Architektur Rechnungslauf">
+  <defs><marker id="arr1" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10z" fill="#1d1d1f"/></marker></defs>
+  <rect x="15" y="30" width="165" height="60" rx="10" fill="#fff" stroke="#1d1d1f" stroke-width="2"/>
+  <text x="97" y="55" text-anchor="middle" font-size="14.5" font-weight="700">Scheduler</text>
+  <text x="97" y="74" text-anchor="middle" font-size="12.5" fill="#6e6e73">1. des Monats, 0:00</text>
+  <line x1="180" y1="60" x2="245" y2="60" stroke="#1d1d1f" stroke-width="2" marker-end="url(#arr1)"/>
+  <text x="212" y="50" text-anchor="middle" font-size="12.5" fill="#6e6e73">Lauf anlegen</text>
+  <rect x="250" y="20" width="230" height="90" rx="10" fill="#fbfbfd" stroke="#1d1d1f" stroke-width="2.5"/>
+  <text x="365" y="48" text-anchor="middle" font-size="15" font-weight="700">PostgreSQL</text>
+  <text x="365" y="68" text-anchor="middle" font-size="12.5" fill="#6e6e73">rechnungsjob = Arbeitsvorrat</text>
+  <text x="365" y="86" text-anchor="middle" font-size="12.5" fill="#6e6e73">FOR UPDATE SKIP LOCKED</text>
+  <rect x="540" y="20" width="185" height="90" rx="10" fill="#fff" stroke="#1d1d1f" stroke-width="2"/>
+  <text x="632" y="48" text-anchor="middle" font-size="14.5" font-weight="700">Worker × 20</text>
+  <text x="632" y="68" text-anchor="middle" font-size="12.5" fill="#6e6e73">Batch 100 ziehen,</text>
+  <text x="632" y="86" text-anchor="middle" font-size="12.5" fill="#6e6e73">PDF rendern</text>
+  <line x1="540" y1="55" x2="485" y2="55" stroke="#1d1d1f" stroke-width="2" marker-end="url(#arr1)"/>
+  <line x1="485" y1="80" x2="540" y2="80" stroke="#1d1d1f" stroke-width="2" marker-end="url(#arr1)"/>
+  <line x1="610" y1="110" x2="530" y2="180" stroke="#1d1d1f" stroke-width="2" marker-end="url(#arr1)"/>
+  <rect x="390" y="185" width="200" height="60" rx="10" fill="#fff" stroke="#1d1d1f" stroke-width="2"/>
+  <text x="490" y="210" text-anchor="middle" font-size="14.5" font-weight="700">Blob Storage</text>
+  <text x="490" y="229" text-anchor="middle" font-size="12.5" fill="#6e6e73">rechnungen/R-….pdf</text>
+  <line x1="660" y1="110" x2="660" y2="180" stroke="#1d1d1f" stroke-width="2" marker-end="url(#arr1)"/>
+  <rect x="610" y="185" width="115" height="60" rx="10" fill="#fff" stroke="#1d1d1f" stroke-width="2"/>
+  <text x="667" y="210" text-anchor="middle" font-size="14.5" font-weight="700">Mail-Queue</text>
+  <text x="667" y="229" text-anchor="middle" font-size="12.5" fill="#6e6e73">entkoppelt</text>
+  <line x1="667" y1="245" x2="667" y2="275" stroke="#1d1d1f" stroke-width="2" marker-end="url(#arr1)"/>
+  <rect x="540" y="280" width="185" height="44" rx="10" fill="#fff" stroke="#1d1d1f" stroke-width="2"/>
+  <text x="632" y="300" text-anchor="middle" font-size="13.5">Mail-Sender, max 100/s</text>
+  <text x="632" y="316" text-anchor="middle" font-size="12.5" fill="#6e6e73">Rate-Limit Provider</text>
+  <rect x="15" y="185" width="165" height="60" rx="10" fill="#fff" stroke="#1d1d1f" stroke-width="2"/>
+  <text x="97" y="210" text-anchor="middle" font-size="14.5" font-weight="700">Admin-UI</text>
+  <text x="97" y="229" text-anchor="middle" font-size="12.5" fill="#6e6e73">Fortschritt, Retry</text>
+  <line x1="180" y1="210" x2="290" y2="113" stroke="#1d1d1f" stroke-width="2" stroke-dasharray="6 4" marker-end="url(#arr1)"/>
+</svg>
+<p>Sprich das Bild so: „Die DB <b>ist</b> die Queue: die Job-Tabelle ist der Arbeitsvorrat, SKIP LOCKED verteilt ihn kollisionsfrei auf 20 Worker. PDFs gehen in Blob, der Versand ist eine echte Queue mit Rate-Limit — damit der Mail-Provider das Tempo bestimmt, nicht wir."</p>
+
+<h2>8. Der schwierige Teil als Bild</h2>
+<svg viewBox="0 0 740 300" role="img" aria-label="Status-Maschine eines Rechnungsjobs">
+  <defs><marker id="arr2" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10z" fill="#1d1d1f"/></marker></defs>
+  <rect x="30" y="110" width="150" height="64" rx="10" fill="#fff" stroke="#1d1d1f" stroke-width="2.5"/>
+  <text x="105" y="137" text-anchor="middle" font-size="15" font-weight="700">offen</text>
+  <text x="105" y="157" text-anchor="middle" font-size="12.5" fill="#6e6e73">im Arbeitsvorrat</text>
+  <rect x="290" y="110" width="160" height="64" rx="10" fill="#fff" stroke="#1d1d1f" stroke-width="2.5"/>
+  <text x="370" y="137" text-anchor="middle" font-size="15" font-weight="700">in_arbeit</text>
+  <text x="370" y="157" text-anchor="middle" font-size="12.5" fill="#6e6e73">Worker claimt, now()</text>
+  <rect x="560" y="30" width="150" height="60" rx="10" fill="#f0faf0" stroke="#2e7d32" stroke-width="2.5"/>
+  <text x="635" y="56" text-anchor="middle" font-size="15" font-weight="700" fill="#2e7d32">fertig</text>
+  <text x="635" y="76" text-anchor="middle" font-size="12.5" fill="#6e6e73">PDF + Mail-Queue</text>
+  <rect x="560" y="200" width="150" height="60" rx="10" fill="#fff4f2" stroke="#c62828" stroke-width="2.5"/>
+  <text x="635" y="226" text-anchor="middle" font-size="15" font-weight="700" fill="#c62828">fehler</text>
+  <text x="635" y="246" text-anchor="middle" font-size="12.5" fill="#6e6e73">fehler_text gefuellt</text>
+  <line x1="180" y1="142" x2="285" y2="142" stroke="#1d1d1f" stroke-width="2" marker-end="url(#arr2)"/>
+  <text x="232" y="132" text-anchor="middle" font-size="12.5">SKIP LOCKED</text>
+  <line x1="450" y1="125" x2="555" y2="70" stroke="#2e7d32" stroke-width="2" marker-end="url(#arr2)"/>
+  <text x="505" y="85" text-anchor="middle" font-size="12.5" fill="#2e7d32">ok</text>
+  <line x1="450" y1="160" x2="555" y2="218" stroke="#c62828" stroke-width="2" marker-end="url(#arr2)"/>
+  <text x="512" y="180" text-anchor="middle" font-size="12.5" fill="#c62828">Exception</text>
+  <path d="M 370 110 C 340 40, 160 40, 112 108" fill="none" stroke="#0a66c2" stroke-width="2" marker-end="url(#arr2)"/>
+  <text x="235" y="52" text-anchor="middle" font-size="12.5" fill="#0a66c2">Timeout 10 min (Crash) zurueck auf offen</text>
+  <path d="M 560 245 C 420 290, 200 285, 100 178" fill="none" stroke="#1d1d1f" stroke-width="2" stroke-dasharray="6 4" marker-end="url(#arr2)"/>
+  <text x="330" y="292" text-anchor="middle" font-size="12.5" fill="#6e6e73">manueller Retry (max versuche beachten)</text>
+</svg>
+<p>Der Mechanismus in einem Satz: Jeder Job ist <b>immer</b> in genau einem Zustand, jeder Übergang ist ein atomares UPDATE — darum kann der Lauf nach jedem Crash einfach weitermachen: <code>offen</code> wird gearbeitet, hängendes <code>in_arbeit</code> fällt per Timeout zurück, <code>fertig</code> wird nie wieder angefasst.</p>
+
+<h2>9. Frontend kurz</h2>
+<ul>
+<li>Komponenten: <code>LaufUebersichtComponent</code> (Fortschrittsbalken aus <code>GROUP BY status</code>), <code>FehlerListeComponent</code>, <code>RetryButtonComponent</code>.</li>
+<li>State: <code>LaufService</code> pollt <code>GET /laeufe/{id}</code> alle 10 s — kein WebSocket nötig für ein Admin-Tool.</li>
+<li>Kundenportal: <code>RechnungslisteComponent</code> lädt signierte Blob-URLs, PDF öffnet direkt aus Blob.</li>
+</ul>
+
+<h2>10. Cloud (Azure)</h2>
+<div class="senior">
+<ul>
+<li><b>Azure Functions (Timer-Trigger)</b> als Scheduler: eine Funktion am 1. um 0:00, legt Lauf + Jobs an — kein eigener Cron-Server.</li>
+<li><b>Container Apps oder AKS-Jobs</b> für die 20 Worker: laufen 1–2 h pro Monat, danach auf 0 skaliert — Functions wären wegen 500 ms CPU-Rendering × 10'000 Stück pro Worker teurer und Timeout-anfälliger als ein Container, der Batches zieht.</li>
+<li><b>Azure Database for PostgreSQL</b>: trägt Jobs + Rechnungen; die Job-Tabelle mit SKIP LOCKED ersetzt hier einen Message-Broker.</li>
+<li><b>Service Bus</b> nur für den Mail-Versand: dort will ich Retry, DLQ und kontrollierten Abfluss mit 100/s — Event Hubs wäre falsch, es ist kein Stream, sondern einzelne Aufträge.</li>
+<li><b>Blob Storage</b> für PDFs: Lifecycle-Policy nach 90 Tagen in Cool/Archive; Immutability-Policy, weil Rechnungen unveränderlich sein müssen.</li>
+<li><b>Monitor</b>: Alarm „um 4:00 noch &gt; 20 % offen" und auf die Fehler-Quote; <b>Key Vault</b> für DB- und Mail-Secrets.</li>
+</ul>
+</div>
+
+<h2>11. Trade-offs</h2>
+<ul>
+<li><b>Message-Queue vs DB-als-Queue (SKIP LOCKED):</b> gewählt DB, weil Job-Status, Ergebnis und Fortschritt sowieso in der DB liegen — eine Queue daneben hiesse zwei Wahrheiten (Queue sagt „weg", DB sagt „offen"). Preis: Worker pollen die DB, und ab ~Millionen Jobs/Tag mit vielen Workern wird die Job-Tabelle zum Hotspot — dann echte Queue.</li>
+<li><b>Alles um 0:00 vs über Stunden verteilt:</b> gewählt sofort erzeugen (Deadline 6:00), aber Versand über die Queue glätten. Preis: Lastspitze auf DB und Blob um 0:00–2:00 — akzeptiert, weil nachts sonst nichts läuft.</li>
+<li><b>Deterministische Rechnungsnummer vs Sequenz:</b> gewählt deterministisch (<code>R-periode-kunde</code>), weil Wiederholung dann per Konstruktion keine zweite Nummer erzeugen kann. Preis: Nummern sind nicht lückenlos aufsteigend über alle Kunden — wenn Buchhaltung das fordert, Sequenz + <code>UNIQUE(kunde_id, periode)</code> als Netz.</li>
+<li><b>Batch 100 vs einzeln ziehen:</b> gewählt Batch, weil 200'000 Einzel-Claims = 200'000 Transaktionen nur fürs Verteilen. Preis: stürzt ein Worker ab, hängen bis zu 100 Jobs 10 min im Timeout statt 1 — bei 84 min Gesamtlauf egal.</li>
+<li><b>Timeout-Resurrection vs „in_arbeit manuell prüfen":</b> gewählt automatischer Rückfall nach 10 min, weil ein 3-Uhr-Crash sonst Handarbeit um 3 Uhr heisst. Preis: ein nur <i>langsamer</i> Job kann doppelt laufen — genau dafür sind PDF-Overwrite und <code>ON CONFLICT DO NOTHING</code> da: doppelt ausführen ist harmlos, weil idempotent.</li>
+</ul>
+
+<h2>12. Selbsttest</h2>
+<div class="trap">
+<p><b>Typische Fehler genau bei dieser Aufgabe:</b></p>
+<ul>
+<li><b>„Eine Schleife über alle Kunden"</b> ohne Zustand: Crash bei Kunde 120'000 ⇒ niemand weiss, wer schon dran war. Erst die Job-Tabelle macht den Lauf wiederanlauffähig.</li>
+<li><b><code>FOR UPDATE</code> ohne <code>SKIP LOCKED</code>:</b> 20 Worker serialisieren sich auf denselben ersten 100 Zeilen — 19 warten, einer arbeitet.</li>
+<li><b>Mail direkt im Worker senden:</b> Provider drosselt bei 100/s ⇒ Worker blockieren beim Senden statt zu rendern; Rate-Limit gehört an eine eigene Stelle.</li>
+<li><b>PDF in die DB (bytea):</b> 20 GB/Monat blähen Backups und Vacuum; Blob ist dafür gebaut.</li>
+<li><b>Status-Update und Arbeit in EINER langen Transaktion:</b> Locks leben dann 50 s pro Batch; claimen und arbeiten gehören getrennt.</li>
+</ul>
+</div>
+<details><summary>Warum genau <code>FOR UPDATE SKIP LOCKED</code> — was macht jedes der drei Wörter?</summary>
+<p><code>FOR UPDATE</code> sperrt die selektierten Zeilen bis zum Commit, damit kein zweiter Worker sie gleichzeitig claimt. <code>SKIP LOCKED</code> überspringt Zeilen, die schon gesperrt sind, statt zu warten — jeder Worker bekommt sofort einen <b>disjunkten</b> Batch. Ohne SKIP LOCKED würden alle Worker auf die Locks des ersten warten.</p>
+</details>
+<details><summary>Worker crasht um 3:00 mit 100 geclaimten Jobs. Was passiert, Schritt für Schritt?</summary>
+<p>Seine Transaktion war schon committet, die Jobs stehen auf <code>in_arbeit</code> mit <code>gestartet_am=3:00</code>. Um 3:10 setzt der Aufräumer sie zurück auf <code>offen</code>, andere Worker ziehen sie. Teilweise erledigte darunter: PDF wird überschrieben (gleicher Blob-Name), <code>INSERT … ON CONFLICT DO NOTHING</code> greift — keine doppelte Rechnung, keine Lücke.</p>
+</details>
+<details><summary>Kann durch den 10-min-Timeout eine Rechnung doppelt <b>gemailt</b> werden?</summary>
+<p>Ja, im Randfall: Worker A hängt 11 min, hat aber schon in die Mail-Queue geschrieben; Worker B wiederholt den Job und schreibt nochmal. Darum dedupliziert der Mail-Sender auf <code>rechnung_id</code>: <code>UPDATE rechnung SET versendet_am=now() WHERE rechnung_id=? AND versendet_am IS NULL</code> — nur wer 1 Zeile trifft, sendet. At-least-once in der Queue, exactly-once-Wirkung über die DB.</p>
+</details>
+<details><summary>Warum ist die deterministische <code>rechnung_id</code> der wichtigste Idempotenz-Baustein?</summary>
+<p>Weil jede Wiederholung — Timeout, Retry, manueller Neustart — dann auf <b>denselben</b> Schlüssel schreibt: gleicher Blob-Pfad (Overwrite), gleicher DB-Konflikt (DO NOTHING), gleiche Dedup-Zeile beim Versand. Mit einer Zufalls- oder Sequenz-ID müsste jede dieser Stellen eigene Duplikat-Erkennung bauen.</p>
+</details>
+<details><summary>Jemand drückt den Start-Knopf zweimal. Was verhindert 400'000 Mails?</summary>
+<p><code>UNIQUE(periode)</code> auf <code>rechnungslauf</code>: der zweite <code>POST /laeufe</code> läuft in den Constraint und bekommt 409. Selbst wenn jemand die Jobs doppelt anlegen wollte, blockt der Primärschlüssel <code>(lauf_id, kunde_id)</code> — und notfalls <code>UNIQUE(kunde_id, periode)</code> auf <code>rechnung</code>. Drei Schichten, alle in der DB.</p>
+</details>
+<details><summary>Rechne: reichen 20 Worker wirklich bis 6:00?</summary>
+<p>200'000 × 0,5 s = 100'000 s CPU; / 20 Worker = 5'000 s ≈ 84 min reine Arbeit, plus Claim-Overhead (2'000 Batches × ~20 ms ≈ 40 s, vernachlässigbar). Start 0:00 ⇒ fertig ~1:30, Puffer 4,5 h für Retries und einen kompletten Wiederanlauf. Versand: 34 min bei 100/s, läuft parallel.</p>
+</details>
+<details><summary>Skalierung ×10: 2 Mio Kunden. Was kippt zuerst?</summary>
+<p>Rechenzeit: 1 Mio s / 6 h Fenster ⇒ ~50 Worker nötig — noch problemlos, SKIP LOCKED verteilt auch auf 50. Danach der Versand: 2 Mio / 100 pro s = 5,5 h — jetzt wird das Mail-Limit die kritische Ressource ⇒ mit dem Provider höheres Limit verhandeln oder zweiten Provider sharden. Die Job-Tabelle (2 Mio Zeilen) bleibt klein.</p>
+</details>
+<details><summary>Was geht kaputt, wenn der Blob-Storage während des Laufs 20 min ausfällt?</summary>
+<p>Die betroffenen Jobs werfen Exceptions und landen auf <code>fehler</code> (oder bleiben nach Timeout offen). Nichts geht verloren: nach dem Ausfall <code>POST /laeufe/{id}/retry</code>, die Fehler-Jobs laufen idempotent nochmal. Wichtig im Interview: der Lauf <b>stoppt nicht</b>, er degradiert — und Monitor alarmiert bei Fehler-Quote &gt; x %.</p>
+</details>
+<details><summary>Warum eine Zeile pro Kunde statt „Offset 0–9999 für Worker 1, 10000–19999 für Worker 2"?</summary>
+<p>Feste Bereiche sind Scheduling von Hand: stirbt Worker 7, bleibt sein Bereich liegen; ist ein Bereich voller teurer Kunden, wird er zum Nachzügler. Die Job-Tabelle ist Work-Stealing: schnelle Worker ziehen automatisch mehr — Lastausgleich ohne Koordinator.</p>
+</details>
+<details><summary>Wie hältst du das Rate-Limit von 100 Mails/s technisch ein?</summary>
+<p>Ein Sender-Prozess (oder wenige) konsumiert die Mail-Queue mit Token Bucket: 100 Tokens/s, jede Mail verbraucht eins; bei 429/Throttle-Antwort des Providers Backoff und Nachricht zurück in die Queue. Die Render-Worker bleiben davon unberührt — genau dafür ist der Versand entkoppelt.</p>
+</details>
+<details><summary>Fachbereich: „Rechnung von Kunde 4711 war falsch, bitte neu erzeugen und senden."</summary>
+<p>Einzelfall-Pfad: Job auf <code>offen</code> zurücksetzen und <code>versendet_am</code> auf NULL — der normale Mechanismus erledigt Rendern + Senden. Wichtig: fachlich <i>korrigierte</i> Rechnungen brauchen buchhalterisch eine <b>Storno- und Neurechnung</b> (neue ID), kein stilles Überschreiben — das sage ich aktiv, das ist Senior-Punkt.</p>
+</details>
+<details><summary>Was geht kaputt, wenn zwei Aufräumer-Instanzen gleichzeitig laufen?</summary>
+<p>Nichts: beide führen dasselbe idempotente UPDATE aus (<code>status='offen' WHERE status='in_arbeit' AND gestartet_am &lt; …</code>); die Zeilen landen höchstens einmal auf offen. Das ist das Muster der ganzen Seite: jeden Schritt so bauen, dass Doppel-Ausführung keine Doppel-Wirkung hat.</p>
+</details>
+<details><summary>Sicherheits-/PII-Punkt: Was ist an 200'000 PDFs heikel?</summary>
+<p>Jedes PDF enthält Name, Adresse, Verbindungsdaten. Konkret: Blob-Container privat, Portal-Zugriff nur über kurzlebige signierte URLs (Minuten, nicht Tage), Autorisierung „Kunde sieht nur eigene <code>kunde_id</code>" serverseitig prüfen — eine erratbare URL wie <code>/rechnungen/R-2026-11-4711.pdf</code> ohne Auth wäre ein meldepflichtiger Vorfall.</p>
+</details>
+<details><summary>Warum kein Spring Batch / fertiges Batch-Framework?</summary>
+<p>Darf man nennen: Spring Batch liefert genau diese Job-/Step-Status-Tabellen fertig. An der Tafel erkläre ich trotzdem den Mechanismus darunter — Status-Maschine + SKIP LOCKED — denn der Interviewer prüft, ob ich weiss, <i>was</i> das Framework für mich tut. Preis des Frameworks: eigenes Schema, eigene Lernkurve, weniger Kontrolle über das Claiming.</p>
+</details>
+<details><summary>Wie merkt das System, dass der Lauf „fertig" ist?</summary>
+<p>Es gibt keinen expliziten Fertig-Moment nötig: <code>GET /laeufe/{id}</code> zählt per <code>GROUP BY status</code>; offen + in_arbeit = 0 heisst fertig. Für den Abschluss-Report reicht ein Check im Scheduler um 5:00: wenn nicht fertig oder fehler &gt; Schwelle ⇒ Alarm an Bereitschaft.</p>
+</details>
+<details><summary>Szenario: Um 2:00 ist die Hälfte der Jobs <code>fehler</code> mit „connection timeout" zur Kundendatenbank. Was tust du?</summary>
+<p>Nicht blind retryen: erst Ursache — die Positionsabfrage hat die Kunden-DB überlastet (20 Worker × parallele Queries). Sofort: Worker auf 5 drosseln, <code>retry</code> für die Fehler-Jobs; die Rechnung dazu: 100'000 s / 5 = längere Laufzeit, reicht es noch bis 6:00? Wenn nein: Eskalation + Teilversand priorisieren. Danach: Connection-Pool-Limit pro Worker und Lasttest gegen die Kunden-DB.</p>
+</details>
+
+<p class="small">Übe den Drill, bis du Status-Maschine, SKIP-LOCKED-Schleife und die drei Idempotenz-Schichten ohne Vorlage an die Tafel schreibst.</p>
+</body>
+</html>
