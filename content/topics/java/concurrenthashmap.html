@@ -19,6 +19,14 @@
   summary { font-weight: 600; cursor: pointer; }
   details p { margin: 6px 0 2px; }
   .small { color: #6e6e73; font-size: 14px; }
+  h3 { font-size: 17px; margin: 20px 0 6px; }
+  .geruest { border: 2px solid #1d1d1f; border-radius: 6px; padding: 10px 14px; margin: 14px 0; font-size: 15px; line-height: 1.4; }
+  .geruest h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; margin: 0 0 8px; padding: 0; border: 0; }
+  .geruest dl { display: grid; grid-template-columns: 6.6em 1fr; gap: 6px 10px; margin: 0; }
+  .geruest dt { font-weight: 700; font-size: 12px; text-transform: uppercase; letter-spacing: .05em; padding-top: 1px; }
+  .geruest dd { margin: 0; }
+  .muster { border: 1px solid #e5e5ea; border-left: 4px solid #1d1d1f; border-radius: 6px; padding: 10px 14px; margin: 14px 0; }
+  .muster .mq { margin: 0 0 6px; }
 </style>
 </head>
 <body>
@@ -27,10 +35,45 @@
 <!-- sources: Java · Tier 1 · Quellen: OpenJDK java.util.concurrent.ConcurrentHashMap (Quellcode JDK 17/21), Java SE 21 API-Doku (ConcurrentHashMap, ConcurrentMap, Hashtable, Collections.synchronizedMap), JLS 17 Kapitel 17.4 (Memory Model), JDK-8062841 (rekursives computeIfAbsent) -->
 
 <div class="kern">
-<b>Kern:</b> Eine <b>ConcurrentHashMap</b> ist eine thread-sichere Hash-Map für viele Threads gleichzeitig. Sie löst das Problem, dass eine <b>HashMap</b> bei parallelen Schreibzugriffen Daten verliert. Lesen braucht <b>keinen Lock</b>, Schreiben nutzt <b>CAS</b> oder einen <b>Lock pro Bucket</b>. Sie erlaubt kein <code>null</code>.
+<b>Kern:</b> Eine <b>ConcurrentHashMap</b> ist eine thread-sichere Hash-Map für viele Threads gleichzeitig. Eine <b>HashMap</b> verliert bei parallelen Schreibzugriffen Daten, die CHM nicht. Lesen braucht <b>keinen Lock</b>, Schreiben nutzt <b>CAS</b> oder einen <b>Lock pro Bucket</b>, und <code>null</code> ist verboten.
 </div>
 
-<h2>1. Wo sitzt die ConcurrentHashMap?</h2>
+<div class="muster"><h3>Antwort-Muster</h3><p class="mq"><b>Frage:</b> Wie funktioniert eine ConcurrentHashMap intern?</p><ol>
+  <li>Mechanismus: Sie hat ein Array von Buckets wie die HashMap. Ein leerer Bucket wird per CAS gefüllt. Ein voller Bucket wird mit <code>synchronized</code> auf dem ersten Node gesperrt. <code>get</code> braucht keinen Lock.</li>
+  <li>Zahl: Bis Java 7 gab es 16 Segments mit je einem Lock. Seit Java 8 sperrt sie nur noch einen einzelnen Bucket.</li>
+  <li>Trade-off: Das ist schneller als ein Lock für die ganze Map. Dafür sind <code>size()</code> ein Schätzwert und <code>null</code> verboten.</li>
+  <li>Produktion: Für Zähler nutze ich <code>merge</code> statt <code>get</code> und <code>put</code>, sonst gehen Updates verloren.</li>
+</ol></div>
+
+<h2>1. Die Reise eines put() in ConcurrentHashMap</h2>
+<svg viewBox="0 0 720 350" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="b" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="10" y="20" width="150" height="60" rx="10" fill="#eee" stroke="#777"/><text x="85" y="44" text-anchor="middle" font-weight="700">1. Hash</text><text x="85" y="64" text-anchor="middle" font-size="12">spread(h) ≥ 0</text>
+  <line x1="160" y1="50" x2="198" y2="50" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="200" y="20" width="150" height="60" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="275" y="44" text-anchor="middle" font-weight="700">2. Bucket leer?</text><text x="275" y="64" text-anchor="middle" font-size="12">ja: CAS, fertig</text>
+  <line x1="350" y1="50" x2="388" y2="50" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="390" y="20" width="150" height="60" rx="10" fill="#fff4f2" stroke="#c62828"/><text x="465" y="44" text-anchor="middle" font-weight="700">3. Hash −1?</text><text x="465" y="64" text-anchor="middle" font-size="12">Resize: mithelfen</text>
+  <line x1="540" y1="50" x2="578" y2="50" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="580" y="20" width="130" height="60" rx="10" fill="#0a66c2" stroke="#0a66c2"/><text x="645" y="44" text-anchor="middle" fill="#fff" font-weight="700">4. Lock</text><text x="645" y="64" text-anchor="middle" fill="#fff" font-size="12">synchronized(f)</text>
+  <line x1="645" y1="80" x2="645" y2="128" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="440" y="130" width="270" height="70" rx="10" fill="#fff" stroke="#555"/><text x="575" y="152" text-anchor="middle" font-weight="700">5. Kopf noch gleich?</text><text x="575" y="172" text-anchor="middle" font-size="12">ja: Liste/Baum durchsuchen,</text><text x="575" y="190" text-anchor="middle" font-size="12">ersetzen oder anhängen</text>
+  <line x1="440" y1="165" x2="378" y2="165" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="190" y="130" width="186" height="70" rx="10" fill="#e8f5e9" stroke="#2e7d32"/><text x="283" y="152" text-anchor="middle" font-weight="700">6. Treeify?</text><text x="283" y="172" text-anchor="middle" font-size="12">Kette ≥ 9 Nodes</text><text x="283" y="190" text-anchor="middle" font-size="12">und table ≥ 64</text>
+  <line x1="283" y1="200" x2="283" y2="248" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="100" y="250" width="380" height="80" rx="10" fill="#0a66c2" stroke="#0a66c2"/><text x="290" y="274" text-anchor="middle" fill="#fff" font-weight="700">7. addCount</text><text x="290" y="294" text-anchor="middle" fill="#fff" font-size="12">CAS baseCount, sonst CounterCell</text><text x="290" y="312" text-anchor="middle" fill="#fff" font-size="12">Summe ≥ sizeCtl → Resize starten</text>
+</svg>
+<ol>
+  <li><b>Hash berechnen:</b> <code>put("Bern", 1)</code> ruft <code>"Bern".hashCode()</code> auf. <code>spread</code> mischt die Bits wie die HashMap und macht das Ergebnis <b>positiv</b>. Negative Hashes sind für Spezial-Nodes reserviert.</li>
+  <li><b>Leerer Bucket:</b> Thread T1 findet Bucket 0 leer. Er setzt den neuen Node per <b>CAS</b>. Schreibt T2 gleichzeitig dorthin, verliert einer den CAS und versucht es neu. Kein Lock nötig.</li>
+  <li><b>Resize läuft:</b> Steht dort eine <b>ForwardingNode</b> (Hash −1), läuft gerade ein Resize. T1 wartet nicht, sondern <b>hilft</b> beim Umkopieren (<code>helpTransfer</code>). Danach versucht er es in der neuen Tabelle.</li>
+  <li><b>Bucket sperren:</b> Ist der Bucket voll, sperrt T1 nur den <b>ersten Node</b> dieses Buckets mit <code>synchronized</code>. Alle anderen Buckets bleiben frei.</li>
+  <li><b>Nachprüfen:</b> Mit dem Lock prüft T1, ob der Kopf noch derselbe ist. Ein anderer Thread könnte ihn inzwischen geändert haben. Dann sucht T1 mit <code>hash</code> und <code>equals</code>: gefunden heisst ersetzen, sonst anhängen.</li>
+  <li><b>Treeify prüfen:</b> Wächst die Kette über 8 Nodes, wird sie ein Baum. Ist das Array kleiner als 64, gibt es stattdessen ein Resize.</li>
+  <li><b>Zählen und Resize:</b> <code>addCount</code> erhöht den Zähler per CAS. Bei Konkurrenz nutzt T1 eine eigene <b>CounterCell</b>. Erreicht die Grösse <code>sizeCtl</code>, startet ein Resize. Mehrere Threads teilen sich die Arbeit in Blöcken von mindestens 16 Buckets.</li>
+</ol>
+<p><b>get()</b> nimmt nie einen Lock. Es liest das Array und die Nodes über <code>volatile</code>-Zugriffe. Darum sieht es immer einen fertig geschriebenen Eintrag. Läuft ein Resize, folgt <code>get</code> der ForwardingNode in die neue Tabelle.</p>
+
+<h2>2. Aufbau</h2>
 <svg viewBox="0 0 720 320" font-family="-apple-system, system-ui, sans-serif" font-size="14">
   <defs><marker id="a" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
   <rect x="10" y="20" width="190" height="112" rx="8" fill="#fff" stroke="#555"/><text x="105" y="42" text-anchor="middle" font-weight="700">CHM-Objekt</text>
@@ -60,35 +103,87 @@
 </ol>
 <p>Hashing, Buckets, Treeify und Resize kennst du von der <b>HashMap</b>. Hier geht es nur darum, was ConcurrentHashMap für Threads anders macht.</p>
 
-<h2>2. Die Reise eines put() in ConcurrentHashMap (die Geschichte zum Merken)</h2>
-<svg viewBox="0 0 720 350" font-family="-apple-system, system-ui, sans-serif" font-size="14">
-  <defs><marker id="b" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
-  <rect x="10" y="20" width="150" height="60" rx="10" fill="#eee" stroke="#777"/><text x="85" y="44" text-anchor="middle" font-weight="700">1. Hash</text><text x="85" y="64" text-anchor="middle" font-size="12">spread(h) ≥ 0</text>
-  <line x1="160" y1="50" x2="198" y2="50" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
-  <rect x="200" y="20" width="150" height="60" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="275" y="44" text-anchor="middle" font-weight="700">2. Bucket leer?</text><text x="275" y="64" text-anchor="middle" font-size="12">ja: CAS, fertig</text>
-  <line x1="350" y1="50" x2="388" y2="50" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
-  <rect x="390" y="20" width="150" height="60" rx="10" fill="#fff4f2" stroke="#c62828"/><text x="465" y="44" text-anchor="middle" font-weight="700">3. Hash −1?</text><text x="465" y="64" text-anchor="middle" font-size="12">Resize: mithelfen</text>
-  <line x1="540" y1="50" x2="578" y2="50" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
-  <rect x="580" y="20" width="130" height="60" rx="10" fill="#0a66c2" stroke="#0a66c2"/><text x="645" y="44" text-anchor="middle" fill="#fff" font-weight="700">4. Lock</text><text x="645" y="64" text-anchor="middle" fill="#fff" font-size="12">synchronized(f)</text>
-  <line x1="645" y1="80" x2="645" y2="128" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
-  <rect x="440" y="130" width="270" height="70" rx="10" fill="#fff" stroke="#555"/><text x="575" y="152" text-anchor="middle" font-weight="700">5. Kopf noch gleich?</text><text x="575" y="172" text-anchor="middle" font-size="12">ja: Liste/Baum durchsuchen,</text><text x="575" y="190" text-anchor="middle" font-size="12">ersetzen oder anhängen</text>
-  <line x1="440" y1="165" x2="378" y2="165" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
-  <rect x="190" y="130" width="186" height="70" rx="10" fill="#e8f5e9" stroke="#2e7d32"/><text x="283" y="152" text-anchor="middle" font-weight="700">6. Treeify?</text><text x="283" y="172" text-anchor="middle" font-size="12">Kette ≥ 9 Nodes</text><text x="283" y="190" text-anchor="middle" font-size="12">und table ≥ 64</text>
-  <line x1="283" y1="200" x2="283" y2="248" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
-  <rect x="100" y="250" width="380" height="80" rx="10" fill="#0a66c2" stroke="#0a66c2"/><text x="290" y="274" text-anchor="middle" fill="#fff" font-weight="700">7. addCount</text><text x="290" y="294" text-anchor="middle" fill="#fff" font-size="12">CAS baseCount, sonst CounterCell</text><text x="290" y="312" text-anchor="middle" fill="#fff" font-size="12">Summe ≥ sizeCtl → Resize starten</text>
-</svg>
+<h2>3. Details, die Interviewer fragen</h2>
 <ol>
-  <li><b>Hash berechnen:</b> <code>put("Bern", 1)</code> ruft <code>"Bern".hashCode()</code> auf. <code>spread</code> mischt die Bits wie die HashMap und macht das Ergebnis <b>positiv</b>. Negative Hashes sind für Spezial-Nodes reserviert.</li>
-  <li><b>Leerer Bucket:</b> Thread T1 findet Bucket 0 leer. Er setzt den neuen Node per <b>CAS</b>. Schreibt T2 gleichzeitig dorthin, verliert einer den CAS und versucht es neu. Kein Lock nötig.</li>
-  <li><b>Resize läuft:</b> Steht dort eine <b>ForwardingNode</b> (Hash −1), läuft gerade ein Resize. T1 wartet nicht, sondern <b>hilft</b> beim Umkopieren (<code>helpTransfer</code>). Danach versucht er es in der neuen Tabelle.</li>
-  <li><b>Bucket sperren:</b> Ist der Bucket voll, sperrt T1 nur den <b>ersten Node</b> dieses Buckets mit <code>synchronized</code>. Alle anderen Buckets bleiben frei.</li>
-  <li><b>Nachprüfen:</b> Mit dem Lock prüft T1, ob der Kopf noch derselbe ist. Ein anderer Thread könnte ihn inzwischen geändert haben. Dann sucht T1 mit <code>hash</code> und <code>equals</code>: gefunden heisst ersetzen, sonst anhängen.</li>
-  <li><b>Treeify prüfen:</b> Wächst die Kette über 8 Nodes, wird sie ein Baum. Ist das Array kleiner als 64, gibt es stattdessen ein Resize.</li>
-  <li><b>Zählen und Resize:</b> <code>addCount</code> erhöht den Zähler per CAS. Bei Konkurrenz nutzt T1 eine eigene <b>CounterCell</b>. Erreicht die Grösse <code>sizeCtl</code>, startet ein Resize. Mehrere Threads teilen sich die Arbeit in Blöcken von mindestens 16 Buckets.</li>
+  <li><b>Keine Segments mehr:</b> Bis Java 7 bestand CHM aus 16 <b>Segments</b>. Das waren 16 kleine Hash-Tabellen mit je einem <code>ReentrantLock</code>. Seit Java 8 gibt es nur noch ein Array mit CAS und einem Lock pro Bucket. Die Klasse <code>Segment</code> existiert nur noch für die Serialisierung.</li>
+  <li><b>concurrencyLevel:</b> Der dritte Konstruktor-Parameter ist seit Java 8 nur noch ein <b>Grössenhinweis</b>. Er legt keine Lock-Anzahl mehr fest.</li>
+  <li><b>CAS:</b> Compare-and-Swap setzt einen Wert nur, wenn der alte Wert noch stimmt. CHM nutzt CAS für leere Buckets, für <code>sizeCtl</code> und für den Zähler.</li>
+  <li><b>Bucket-Lock:</b> Der Lock ist ein <code>synchronized</code> auf dem ersten Node des Buckets. Es gibt kein eigenes Lock-Objekt. Bei guter Hash-Verteilung kollidieren zwei Schreiber fast nie.</li>
+  <li><b>Lock-freies Lesen:</b> <code>get</code>, <code>containsKey</code> und Iteratoren sperren nie. <code>val</code> und <code>next</code> im Node sind <code>volatile</code>. Ein Lesen kann parallel zu einem Schreiben laufen. Es sieht den alten oder den neuen Wert.</li>
+  <li><b>Happens-before:</b> Laut API-Doku <b>happens-before</b> ein <code>put</code> jedem <code>get</code>, das diesen Wert liest. Der Leser sieht also auch, was der Thread vor dem <code>put</code> geschrieben hat.</li>
+  <li><b>Paralleles Resize:</b> Ein Resize verdoppelt das Array. Jeder schreibende Thread kann helfen. Er nimmt sich einen Block von Buckets (mindestens 16) und kopiert sie. Dort setzt er ForwardingNodes.</li>
+  <li><b>size() und CounterCells:</b> Der Zähler ist wie ein <code>LongAdder</code> gebaut. Er besteht aus <code>baseCount</code> und einem Array von <code>CounterCell</code>s. <code>size()</code> summiert alles ohne Lock. Bei laufenden Updates ist das Ergebnis nur ein <b>Schätzwert</b>.</li>
+  <li><b>mappingCount():</b> Es gibt die Grösse als <code>long</code> zurück. Die API-Doku empfiehlt es statt <code>size()</code>. Eine CHM kann mehr als <code>Integer.MAX_VALUE</code> Einträge haben.</li>
+  <li><b>compute-Methoden:</b> <code>compute</code>, <code>computeIfAbsent</code>, <code>computeIfPresent</code> und <code>merge</code> sind pro Schlüssel <b>atomar</b>. Die Funktion läuft, während der Bucket gesperrt ist. Andere Schreiber auf denselben Bucket warten so lange.</li>
+  <li><b>Regeln für die Funktion:</b> Laut API-Doku soll sie <b>kurz und einfach</b> sein. Sie darf die Map <b>nicht ändern</b>. Seit Java 9 erkennt CHM rekursive Updates oft und wirft <code>IllegalStateException</code>. In Java 8 konnte das in einer Endlosschleife enden (JDK-8062841).</li>
+  <li><b>Atomare Einzelmethoden:</b> <code>putIfAbsent</code>, <code>remove(key, value)</code> und <code>replace(key, old, new)</code> kommen aus <code>ConcurrentMap</code>. Sie ersetzen check-then-act-Code wie <code>if (!containsKey) put</code>.</li>
+  <li><b>Weakly consistent Iteratoren:</b> Sie werfen nie <code>ConcurrentModificationException</code>. Sie zeigen den Stand zu einem Zeitpunkt bei oder nach ihrer Erstellung. Spätere Änderungen sieht man vielleicht, vielleicht nicht.</li>
+  <li><b>null-Regeln:</b> Weder Schlüssel noch Wert darf <code>null</code> sein. So heisst <code>get() == null</code> eindeutig, dass der Schlüssel fehlt. In einer geteilten Map könnte man das sonst nicht atomar von „Wert ist null“ unterscheiden.</li>
+  <li><b>Bulk-Operationen:</b> <code>forEach</code>, <code>search</code> und <code>reduce</code> mit einem <code>parallelismThreshold</code> laufen parallel im <code>ForkJoinPool.commonPool()</code>. Sie sehen ebenfalls nur einen weakly consistent Stand.</li>
+  <li><b>Set-Variante:</b> <code>ConcurrentHashMap.newKeySet()</code> gibt ein thread-sicheres <code>Set</code>. Es gibt keine eigene Klasse <code>ConcurrentHashSet</code>.</li>
 </ol>
-<p><b>get()</b> nimmt nie einen Lock. Es liest das Array und die Nodes über <code>volatile</code>-Zugriffe. Darum sieht es immer einen fertig geschriebenen Eintrag. Läuft ein Resize, folgt <code>get</code> der ForwardingNode in die neue Tabelle.</p>
 
-<h2>3. Beispiel: HashMap vs ConcurrentHashMap unter Last</h2>
+<h2>4. Fallen</h2>
+<div class="trap">
+<ul>
+  <li>„ConcurrentHashMap hat 16 Segments mit je einem Lock.“ → <b>Veraltet.</b> Das war bis Java 7. Seit Java 8: CAS plus ein Lock pro Bucket.</li>
+  <li>„Mit ConcurrentHashMap ist mein Code automatisch thread-sicher.“ → <b>Falsch.</b> Nur einzelne Methoden sind atomar. <code>get</code> plus <code>put</code> verliert Updates.</li>
+  <li>„<code>get()</code> sperrt die Map kurz.“ → <b>Falsch.</b> Lesen nimmt nie einen Lock. Es nutzt <code>volatile</code>-Zugriffe.</li>
+  <li>„<code>size()</code> ist immer genau.“ → <b>Falsch.</b> Bei laufenden Updates ist es ein Schätzwert.</li>
+  <li>„Der Iterator wirft eine ConcurrentModificationException.“ → <b>Falsch.</b> Er ist weakly consistent und wirft nie CME.</li>
+  <li>„Ein <code>null</code>-Wert ist erlaubt wie bei HashMap.“ → <b>Falsch.</b> Schlüssel und Werte dürfen nie <code>null</code> sein. Es kommt eine NullPointerException.</li>
+  <li>„Hashtable und synchronizedMap sind gleich gut.“ → <b>Falsch.</b> Beide haben einen Lock für alles, auch beim Lesen. CHM skaliert mit vielen Threads viel besser.</li>
+  <li>„In <code>computeIfAbsent</code> darf ich die Map weiter befüllen.“ → <b>Falsch.</b> Die Funktion darf die Map nicht ändern. Sonst <code>IllegalStateException: Recursive update</code> oder falsche Daten.</li>
+</ul>
+</div>
+
+<h2>5. Selbsttest</h2>
+<h3>Warum?</h3>
+<details><summary>Warum braucht get() keinen Lock?</summary><p>Die Tabelle und die Felder val und next sind volatile. Ein Leser sieht immer einen fertig geschriebenen Node, den alten oder den neuen Wert.</p></details>
+<details><summary>Warum erlaubt CHM kein null?</summary><p>Damit get() == null eindeutig „Schlüssel fehlt“ heisst. In einer geteilten Map kann man sonst nicht atomar zwischen fehlend und null unterscheiden.</p></details>
+<details><summary>Warum gibt es die ConcurrentHashMap, wenn es HashMap und Hashtable gibt?</summary><p>Eine HashMap verliert bei parallelen Schreibzugriffen Einträge. Hashtable sperrt alles und ist langsam. CHM sperrt nur einen Bucket und liest ohne Lock.</p></details>
+<h3>Wie innen?</h3>
+<details><summary>Wie funktioniert ConcurrentHashMap intern?</summary><p>Ein Array von Buckets wie bei der HashMap. Leere Buckets füllt sie per CAS, volle sperrt sie mit synchronized auf dem ersten Node. Lesen braucht keinen Lock.</p></details>
+<details><summary>Was passiert bei put()?</summary><p>Hash berechnen, Bucket finden. Leer: CAS. ForwardingNode: beim Resize helfen. Sonst Kopf-Node sperren, nachprüfen, ersetzen oder anhängen. Danach Zähler erhöhen und eventuell Resize.</p></details>
+<details><summary>Was ist CAS, und wo nutzt CHM es?</summary><p>Compare-and-Swap setzt einen Wert nur, wenn der alte Wert noch stimmt, atomar in der CPU. CHM nutzt es für leere Buckets, sizeCtl und den Zähler.</p></details>
+<details><summary>Was wird beim Schreiben genau gesperrt?</summary><p>Nur der erste Node des betroffenen Buckets, mit synchronized. Alle anderen Buckets bleiben frei.</p></details>
+<details><summary>Wie läuft ein Resize ab?</summary><p>Eine doppelt so grosse nextTable entsteht. Threads kopieren Blöcke von Buckets und setzen ForwardingNodes. Andere Schreiber helfen mit, Leser folgen der ForwardingNode.</p></details>
+<details><summary>Wie zählt CHM seine Grösse?</summary><p>Mit baseCount und einem Array von CounterCells, wie LongAdder. Bei Konkurrenz zählt jeder Thread in einer eigenen Zelle. size() summiert alles.</p></details>
+<details><summary>Was heisst weakly consistent?</summary><p>Der Iterator wirft nie ConcurrentModificationException. Er zeigt den Stand bei oder nach seiner Erstellung und sieht spätere Änderungen vielleicht.</p></details>
+<details><summary>Wird ein Bucket in CHM auch zum Baum?</summary><p>Ja, wenn die Kette über 8 Nodes wächst und die Tabelle mindestens 64 Buckets hat, wie in der HashMap. Der Kopf ist dann ein TreeBin mit Hash −2.</p></details>
+<h3>Zahlen</h3>
+<details><summary>Was sind Segments, und gibt es sie noch?</summary><p>Bis Java 7 war CHM in 16 Segments mit je einem Lock geteilt. Seit Java 8 gibt es sie nicht mehr. Die Klasse Segment ist nur noch für die Serialisierung da.</p></details>
+<details><summary>Wann macht CHM ein Resize?</summary><p>Wenn die Grösse sizeCtl erreicht, normal 0.75 × Kapazität. Bei 16 Buckets schon beim 12. Eintrag.</p></details>
+<details><summary>Ist size() genau?</summary><p>Nur ohne gleichzeitige Updates. Unter Last ist es ein Schätzwert.</p></details>
+<details><summary>size() oder mappingCount()?</summary><p>mappingCount(). Es gibt einen long zurück, weil eine CHM mehr als Integer.MAX_VALUE Einträge haben kann.</p></details>
+<details><summary>Was macht der Parameter concurrencyLevel heute?</summary><p>Nur noch ein Grössenhinweis für die Anfangskapazität. Er legt keine Anzahl Locks mehr fest.</p></details>
+<h3>Vergleich</h3>
+<details><summary>CHM vs Hashtable?</summary><p>Hashtable sperrt das ganze Objekt bei jeder Methode, auch beim Lesen. CHM sperrt nur einen Bucket und liest ohne Lock. Beide verbieten null.</p></details>
+<details><summary>CHM vs Collections.synchronizedMap?</summary><p>synchronizedMap hat einen Lock für alles und erlaubt null, wenn die innere Map es tut. Beim Iterieren muss man selbst synchronisieren.</p></details>
+<details><summary>Was ist eine sortierte Alternative für mehrere Threads?</summary><p>ConcurrentSkipListMap. Thread-sicher, sortiert, O(log n).</p></details>
+<details><summary>Wann reicht CHM nicht?</summary><p>Wenn eine Operation mehrere Schlüssel atomar ändern muss. Oder wenn ein Cache Grenze und Ablaufzeit braucht, dann Caffeine.</p></details>
+<h3>Produktion</h3>
+<details><summary>Ist map.put(k, map.get(k) + 1) auf einer CHM sicher?</summary><p>Nein. Das ist check-then-act aus zwei Aufrufen, Updates gehen verloren. Richtig: merge(k, 1, Integer::sum).</p></details>
+<details><summary>Szenario: Ein Zähler pro Kunde in einer ConcurrentHashMap zeigt unter Last zu kleine Werte. Warum?</summary><p>Der Code macht vermutlich get und dann put, das ist nicht atomar. Lösung: merge(k, 1, Long::sum) oder ein LongAdder pro Schlüssel über computeIfAbsent.</p></details>
+<details><summary>Szenario: Viele Request-Threads hängen BLOCKED in ConcurrentHashMap.computeIfAbsent. Was ist los?</summary><p>Die Ladefunktion ist langsam, z. B. ein Datenbank- oder HTTP-Call, und hält den Bucket-Lock. Lösung: Laden ausserhalb oder einen Cache wie Caffeine mit asynchronem Laden.</p></details>
+<details><summary>Szenario: Nach dem Wechsel von HashMap auf ConcurrentHashMap gibt es NullPointerExceptions. Warum?</summary><p>Der Code speichert null-Werte oder fragt mit null-Schlüsseln. CHM verbietet beides. Lösung: Eintrag weglassen, Optional oder ein Platzhalter-Objekt.</p></details>
+<h3>Design</h3>
+<details><summary>Was garantieren compute und merge?</summary><p>Sie sind pro Schlüssel atomar. Die Funktion läuft unter dem Bucket-Lock. Bei computeIfAbsent läuft sie nur, wenn der Schlüssel fehlt, und nur in einem Thread.</p></details>
+<details><summary>Welche Regeln gelten für die Funktion in computeIfAbsent?</summary><p>Kurz und einfach, kein I/O, und sie darf die Map nicht ändern. Sonst blockiert sie andere Schreiber oder wirft IllegalStateException: Recursive update.</p></details>
+<details><summary>Was machen putIfAbsent, replace und remove(key, value)?</summary><p>Atomare Bedingungs-Operationen aus ConcurrentMap. Sie ersetzen check-then-act-Code wie if (!containsKey) put.</p></details>
+<details><summary>Wie bekomme ich ein thread-sicheres Set auf CHM-Basis?</summary><p>Mit ConcurrentHashMap.newKeySet(). Eine Klasse ConcurrentHashSet gibt es nicht.</p></details>
+
+<details class="mehr"><summary>Mehr</summary>
+<h3>Gerüst</h3>
+<ul>
+  <li><b>Warum?</b> Eine HashMap verliert bei parallelen Schreibzugriffen Einträge. CHM ist thread-sicher, ohne die ganze Map zu sperren.</li>
+  <li><b>Wie innen?</b> Array von Buckets. Leerer Bucket: CAS. Voller Bucket: <code>synchronized</code> auf dem ersten Node. Lesen ohne Lock dank <code>volatile</code>.</li>
+  <li><b>Zahlen</b> Bis Java 7 gab es 16 Segments, seit Java 8 nicht mehr. Resize bei 0.75 × Kapazität, Treeify über 8 Nodes ab 64 Buckets.</li>
+  <li><b>Vergleich</b> Hashtable: ein Lock für alles. <code>synchronizedMap</code>: ein Lock für alles. CHM: ein Lock pro Bucket.</li>
+  <li><b>Produktion</b> <code>get</code> und dann <code>put</code> ist nicht atomar, richtig ist <code>merge</code>. Eine langsame Funktion in <code>computeIfAbsent</code> hält den Bucket-Lock.</li>
+  <li><b>Design</b> Funktionen in <code>compute</code> kurz halten und die Map nicht ändern. Für Cache mit Grenze und Ablauf nimmt man Caffeine.</li>
+</ul>
+<h3>Beispiel: HashMap vs ConcurrentHashMap unter Last</h3>
 <pre>// 1) 4 Threads, je 25_000 verschiedene Schlüssel
 run(4, () -&gt; { for (...) { int k = next.getAndIncrement(); m.put(k, k); } });
 
@@ -134,28 +229,7 @@ nested computeIfAbsent: IllegalStateException: Recursive update</pre>
   <li>Reflection: Das Resize kommt schon beim <b>12.</b> Eintrag (Grösse ≥ sizeCtl), bei der HashMap erst beim 13. <code>new ConcurrentHashMap&lt;&gt;(16)</code> ergibt eine Tabelle mit <b>32</b> Buckets, weil der Konstruktor 16 / 0.75 + 1 rechnet und aufrundet.</li>
   <li>Ein <code>computeIfAbsent</code> in einem anderen auf denselben Bucket wirft <code>IllegalStateException: Recursive update</code>.</li>
 </ol>
-
-<h2>4. Details, die Interviewer fragen</h2>
-<ol>
-  <li><b>Keine Segments mehr:</b> Bis Java 7 bestand CHM aus 16 <b>Segments</b>, also 16 kleinen Hash-Tabellen mit je einem <code>ReentrantLock</code>. Seit Java 8 gibt es nur noch ein Array mit CAS und einem Lock pro Bucket. Die Klasse <code>Segment</code> existiert nur noch für die Serialisierung.</li>
-  <li><b>concurrencyLevel:</b> Der dritte Konstruktor-Parameter ist seit Java 8 nur noch ein <b>Grössenhinweis</b>. Er legt keine Lock-Anzahl mehr fest.</li>
-  <li><b>CAS:</b> Compare-and-Swap setzt einen Wert nur, wenn der alte Wert noch stimmt. CHM nutzt CAS für leere Buckets, für <code>sizeCtl</code> und für den Zähler.</li>
-  <li><b>Bucket-Lock:</b> Der Lock ist ein <code>synchronized</code> auf dem ersten Node des Buckets. Es gibt kein eigenes Lock-Objekt. Bei guter Hash-Verteilung kollidieren zwei Schreiber fast nie.</li>
-  <li><b>Lock-freies Lesen:</b> <code>get</code>, <code>containsKey</code> und Iteratoren sperren nie. <code>val</code> und <code>next</code> im Node sind <code>volatile</code>. Ein Lesen kann also parallel zu einem Schreiben laufen und sieht den alten oder den neuen Wert.</li>
-  <li><b>Happens-before:</b> Laut API-Doku <b>happens-before</b> ein <code>put</code> jedem <code>get</code>, das diesen Wert liest. Was ein Thread vor dem <code>put</code> geschrieben hat, sieht der Leser also auch.</li>
-  <li><b>Paralleles Resize:</b> Ein Resize verdoppelt das Array. Jeder schreibende Thread kann helfen. Er nimmt sich einen Block von Buckets (mindestens 16), kopiert sie und setzt dort ForwardingNodes.</li>
-  <li><b>size() und CounterCells:</b> Der Zähler ist wie ein <code>LongAdder</code> aufgebaut: <code>baseCount</code> plus ein Array von <code>CounterCell</code>s. <code>size()</code> summiert alles ohne Lock. Bei laufenden Updates ist das Ergebnis nur ein <b>Schätzwert</b>.</li>
-  <li><b>mappingCount():</b> gibt die Grösse als <code>long</code> zurück. Die API-Doku empfiehlt es statt <code>size()</code>, weil eine CHM mehr als <code>Integer.MAX_VALUE</code> Einträge haben kann.</li>
-  <li><b>compute-Methoden:</b> <code>compute</code>, <code>computeIfAbsent</code>, <code>computeIfPresent</code> und <code>merge</code> sind pro Schlüssel <b>atomar</b>. Die Funktion läuft, während der Bucket gesperrt ist. Andere Schreiber auf denselben Bucket warten so lange.</li>
-  <li><b>Regeln für die Funktion:</b> Laut API-Doku soll sie <b>kurz und einfach</b> sein. Sie darf die Map <b>nicht ändern</b>. Seit Java 9 erkennt CHM rekursive Updates oft und wirft <code>IllegalStateException</code>. In Java 8 konnte das in einer Endlosschleife enden (JDK-8062841).</li>
-  <li><b>Atomare Einzelmethoden:</b> <code>putIfAbsent</code>, <code>remove(key, value)</code> und <code>replace(key, old, new)</code> kommen aus <code>ConcurrentMap</code>. Sie ersetzen check-then-act-Code wie <code>if (!containsKey) put</code>.</li>
-  <li><b>Weakly consistent Iteratoren:</b> Sie werfen nie <code>ConcurrentModificationException</code>. Sie zeigen den Stand zu einem Zeitpunkt bei oder nach ihrer Erstellung. Änderungen danach sieht man vielleicht, vielleicht nicht.</li>
-  <li><b>null-Regeln:</b> Weder Schlüssel noch Wert darf <code>null</code> sein. So ist <code>get() == null</code> eindeutig: Der Schlüssel fehlt. In einer geteilten Map könnte man das sonst nicht atomar von „Wert ist null“ unterscheiden.</li>
-  <li><b>Bulk-Operationen:</b> <code>forEach</code>, <code>search</code> und <code>reduce</code> mit einem <code>parallelismThreshold</code> laufen parallel im <code>ForkJoinPool.commonPool()</code>. Sie sehen ebenfalls nur einen weakly consistent Stand.</li>
-  <li><b>Set-Variante:</b> <code>ConcurrentHashMap.newKeySet()</code> gibt ein thread-sicheres <code>Set</code>. Es gibt keine eigene Klasse <code>ConcurrentHashSet</code>.</li>
-</ol>
-
-<h2>5. Vergleich</h2>
+<h3>Vergleich</h3>
 <ul>
   <li><b>ConcurrentHashMap:</b> CAS und ein Lock pro Bucket, Lesen ohne Lock. Kein <code>null</code>. Iteratoren weakly consistent. Erste Wahl für geteilte Maps.</li>
   <li><b>Hashtable:</b> alt (Java 1.0). Jede Methode ist <code>synchronized</code> auf dem ganzen Objekt. Auch Lesen sperrt. Kein <code>null</code>. Iteratoren fail-fast. Heute nicht mehr nutzen.</li>
@@ -164,8 +238,7 @@ nested computeIfAbsent: IllegalStateException: Recursive update</pre>
   <li><b>ConcurrentSkipListMap:</b> thread-sicher und <b>sortiert</b>, lock-frei, O(log n). Die sortierte Alternative, wie TreeMap für Threads.</li>
   <li><b>Map.copyOf / unveränderliche Map:</b> ohne Lock thread-sicher, wenn sich die Daten nie ändern. Für Konfiguration oft die beste Wahl.</li>
 </ul>
-
-<h2>6. In der Produktion</h2>
+<h3>In der Produktion</h3>
 <ol>
   <li><b>Falsche Zähler trotz CHM:</b> <code>map.put(k, map.get(k) + 1)</code> verliert Updates (im Beispiel 60 %). Lösung: <code>merge(k, 1, Integer::sum)</code> oder <code>computeIfAbsent(k, x -&gt; new LongAdder()).increment()</code>.</li>
   <li><b>Langsame oder blockierte Threads durch teure compute-Funktion:</b> Ein Remote-Call in <code>computeIfAbsent</code> hält den Bucket-Lock. Andere Schreiber auf diesen Bucket warten. Lösung: Funktion kurz halten oder einen Cache wie Caffeine nutzen, der Laden ausserhalb sperrt.</li>
@@ -174,8 +247,7 @@ nested computeIfAbsent: IllegalStateException: Recursive update</pre>
   <li><b>Memory Leak durch unbegrenzten Cache:</b> Eine statische CHM als Cache wächst ohne Grenze. Lösung: Caffeine mit Grösse und Ablaufzeit.</li>
   <li><b>Geschäftslogik über zwei Einträge:</b> CHM ist nur pro Schlüssel atomar. Eine Überweisung von Konto A nach B braucht einen eigenen Lock oder eine Transaktion.</li>
 </ol>
-
-<h2>7. Diagnose: Werkzeuge und Befehle</h2>
+<h3>Diagnose: Werkzeuge und Befehle</h3>
 <ul>
   <li><code>jcmd &lt;pid&gt; Thread.print</code>: Viele Threads <code>BLOCKED</code> in <code>ConcurrentHashMap.computeIfAbsent</code> oder <code>putVal</code> zeigen eine langsame compute-Funktion oder einen heissen Schlüssel.</li>
   <li><b>JFR</b>: Event <code>jdk.JavaMonitorEnter</code> zeigt Wartezeit auf Bucket-Locks, denn sie sind <code>synchronized</code>.</li>
@@ -184,8 +256,7 @@ nested computeIfAbsent: IllegalStateException: Recursive update</pre>
   <li><b>async-profiler</b> (<code>-e lock</code> oder CPU): zeigt Contention und heisse Methoden wie <code>transfer</code> beim Resize.</li>
   <li><b>jcstress</b>: ein OpenJDK-Werkzeug, das eigenen nebenläufigen Code auf Races testet.</li>
 </ul>
-
-<h2>8. Senior-Punkte</h2>
+<h3>Senior-Punkte</h3>
 <div class="senior">
 <ol>
   <li><b>Thread-sichere Map heisst nicht thread-sicherer Code.</b> Jede einzelne Methode ist atomar, eine Folge von Aufrufen nicht. Darum <code>merge</code>, <code>compute</code> und <code>putIfAbsent</code> statt check-then-act.</li>
@@ -196,52 +267,8 @@ nested computeIfAbsent: IllegalStateException: Recursive update</pre>
   <li><b>Grösse vorher setzen</b> spart Resizes bei bekanntem Volumen. Achtung: <code>new ConcurrentHashMap&lt;&gt;(n)</code> rechnet anders als <code>new HashMap&lt;&gt;(n)</code> und reserviert mehr.</li>
 </ol>
 </div>
-
-<h2>9. Aus dem Projekt</h2>
-<p>„Für einen Lookup-Cache, den viele Request-Threads teilen, nutze ich <code>ConcurrentHashMap.computeIfAbsent</code> mit kurzer Ladefunktion, für Zähler <code>merge</code> oder <code>LongAdder</code>.“ <span class="small">(Prüfen und durch dein echtes Beispiel ersetzen.)</span></p>
-
-<h2>10. Fallen</h2>
-<div class="trap">
-<ul>
-  <li>„ConcurrentHashMap hat 16 Segments mit je einem Lock.“ → <b>Veraltet.</b> Das war bis Java 7. Seit Java 8: CAS plus ein Lock pro Bucket.</li>
-  <li>„Mit ConcurrentHashMap ist mein Code automatisch thread-sicher.“ → <b>Falsch.</b> Nur einzelne Methoden sind atomar. <code>get</code> plus <code>put</code> verliert Updates.</li>
-  <li>„<code>get()</code> sperrt die Map kurz.“ → <b>Falsch.</b> Lesen nimmt nie einen Lock. Es nutzt <code>volatile</code>-Zugriffe.</li>
-  <li>„<code>size()</code> ist immer genau.“ → <b>Falsch.</b> Bei laufenden Updates ist es ein Schätzwert.</li>
-  <li>„Der Iterator wirft eine ConcurrentModificationException.“ → <b>Falsch.</b> Er ist weakly consistent und wirft nie CME.</li>
-  <li>„Ein <code>null</code>-Wert ist erlaubt wie bei HashMap.“ → <b>Falsch.</b> Schlüssel und Werte dürfen nie <code>null</code> sein. Es kommt eine NullPointerException.</li>
-  <li>„Hashtable und synchronizedMap sind gleich gut.“ → <b>Falsch.</b> Beide haben einen Lock für alles, auch beim Lesen. CHM skaliert mit vielen Threads viel besser.</li>
-  <li>„In <code>computeIfAbsent</code> darf ich die Map weiter befüllen.“ → <b>Falsch.</b> Die Funktion darf die Map nicht ändern. Sonst <code>IllegalStateException: Recursive update</code> oder falsche Daten.</li>
-</ul>
-</div>
-
-<h2>11. Fragen</h2>
-<details><summary>Wie funktioniert ConcurrentHashMap intern?</summary><p>Ein Array von Buckets wie bei der HashMap. Leere Buckets füllt sie per CAS, volle sperrt sie mit synchronized auf dem ersten Node. Lesen braucht keinen Lock.</p></details>
-<details><summary>Was passiert bei put()?</summary><p>Hash berechnen, Bucket finden. Leer: CAS. ForwardingNode: beim Resize helfen. Sonst Kopf-Node sperren, nachprüfen, ersetzen oder anhängen. Danach Zähler erhöhen und eventuell Resize.</p></details>
-<details><summary>Warum braucht get() keinen Lock?</summary><p>Die Tabelle und die Felder val und next sind volatile. Ein Leser sieht immer einen fertig geschriebenen Node, den alten oder den neuen Wert.</p></details>
-<details><summary>Was sind Segments, und gibt es sie noch?</summary><p>Bis Java 7 war CHM in 16 Segments mit je einem Lock geteilt. Seit Java 8 gibt es sie nicht mehr. Die Klasse Segment ist nur noch für die Serialisierung da.</p></details>
-<details><summary>Was ist CAS, und wo nutzt CHM es?</summary><p>Compare-and-Swap setzt einen Wert nur, wenn der alte Wert noch stimmt, atomar in der CPU. CHM nutzt es für leere Buckets, sizeCtl und den Zähler.</p></details>
-<details><summary>Was wird beim Schreiben genau gesperrt?</summary><p>Nur der erste Node des betroffenen Buckets, mit synchronized. Alle anderen Buckets bleiben frei.</p></details>
-<details><summary>Wie läuft ein Resize ab?</summary><p>Eine doppelt so grosse nextTable entsteht. Threads kopieren Blöcke von Buckets und setzen ForwardingNodes. Andere Schreiber helfen mit, Leser folgen der ForwardingNode.</p></details>
-<details><summary>Wann macht CHM ein Resize?</summary><p>Wenn die Grösse sizeCtl erreicht, normal 0.75 × Kapazität. Bei 16 Buckets schon beim 12. Eintrag.</p></details>
-<details><summary>Wie zählt CHM seine Grösse?</summary><p>Mit baseCount und einem Array von CounterCells, wie LongAdder. Bei Konkurrenz zählt jeder Thread in einer eigenen Zelle. size() summiert alles.</p></details>
-<details><summary>Ist size() genau?</summary><p>Nur ohne gleichzeitige Updates. Unter Last ist es ein Schätzwert.</p></details>
-<details><summary>size() oder mappingCount()?</summary><p>mappingCount(). Es gibt einen long zurück, weil eine CHM mehr als Integer.MAX_VALUE Einträge haben kann.</p></details>
-<details><summary>Warum erlaubt CHM kein null?</summary><p>Damit get() == null eindeutig „Schlüssel fehlt“ heisst. In einer geteilten Map kann man sonst nicht atomar zwischen fehlend und null unterscheiden.</p></details>
-<details><summary>Was heisst weakly consistent?</summary><p>Der Iterator wirft nie ConcurrentModificationException. Er zeigt den Stand bei oder nach seiner Erstellung und sieht spätere Änderungen vielleicht.</p></details>
-<details><summary>Ist map.put(k, map.get(k) + 1) auf einer CHM sicher?</summary><p>Nein. Das ist check-then-act aus zwei Aufrufen, Updates gehen verloren. Richtig: merge(k, 1, Integer::sum).</p></details>
-<details><summary>Was garantieren compute und merge?</summary><p>Sie sind pro Schlüssel atomar. Die Funktion läuft unter dem Bucket-Lock Bei computeIfAbsent läuft sie nur, wenn der Schlüssel fehlt, und nur in einem Thread.</p></details>
-<details><summary>Welche Regeln gelten für die Funktion in computeIfAbsent?</summary><p>Kurz und einfach, kein I/O, und sie darf die Map nicht ändern. Sonst blockiert sie andere Schreiber oder wirft IllegalStateException: Recursive update.</p></details>
-<details><summary>Was machen putIfAbsent, replace und remove(key, value)?</summary><p>Atomare Bedingungs-Operationen aus ConcurrentMap. Sie ersetzen check-then-act-Code wie if (!containsKey) put.</p></details>
-<details><summary>CHM vs Hashtable?</summary><p>Hashtable sperrt das ganze Objekt bei jeder Methode, auch beim Lesen. CHM sperrt nur einen Bucket und liest ohne Lock. Beide verbieten null.</p></details>
-<details><summary>CHM vs Collections.synchronizedMap?</summary><p>synchronizedMap hat einen Lock für alles und erlaubt null, wenn die innere Map es tut. Beim Iterieren muss man selbst synchronisieren.</p></details>
-<details><summary>Wird ein Bucket in CHM auch zum Baum?</summary><p>Ja, wenn die Kette über 8 Nodes wächst und die Tabelle mindestens 64 Buckets hat, wie in der HashMap. Der Kopf ist dann ein TreeBin mit Hash −2.</p></details>
-<details><summary>Was macht der Parameter concurrencyLevel heute?</summary><p>Nur noch ein Grössenhinweis für die Anfangskapazität. Er legt keine Anzahl Locks mehr fest.</p></details>
-<details><summary>Wie bekomme ich ein thread-sicheres Set auf CHM-Basis?</summary><p>Mit ConcurrentHashMap.newKeySet(). Eine Klasse ConcurrentHashSet gibt es nicht.</p></details>
-<details><summary>Was ist eine sortierte Alternative für mehrere Threads?</summary><p>ConcurrentSkipListMap. Thread-sicher, sortiert, O(log n).</p></details>
-<details><summary>Wann reicht CHM nicht?</summary><p>Wenn eine Operation mehrere Schlüssel atomar ändern muss. Oder wenn ein Cache Grenze und Ablaufzeit braucht, dann Caffeine.</p></details>
-<details><summary>Szenario: Ein Zähler pro Kunde in einer ConcurrentHashMap zeigt unter Last zu kleine Werte. Warum?</summary><p>Der Code macht vermutlich get und dann put, das ist nicht atomar. Lösung: merge(k, 1, Long::sum) oder ein LongAdder pro Schlüssel über computeIfAbsent.</p></details>
-<details><summary>Szenario: Viele Request-Threads hängen BLOCKED in ConcurrentHashMap.computeIfAbsent. Was ist los?</summary><p>Die Ladefunktion ist langsam, z. B. ein Datenbank- oder HTTP-Call, und hält den Bucket-Lock. Lösung: Laden ausserhalb oder einen Cache wie Caffeine mit asynchronem Laden.</p></details>
-<details><summary>Szenario: Nach dem Wechsel von HashMap auf ConcurrentHashMap gibt es NullPointerExceptions. Warum?</summary><p>Der Code speichert null-Werte oder fragt mit null-Schlüsseln. CHM verbietet beides. Lösung: Eintrag weglassen, Optional oder ein Platzhalter-Objekt.</p></details>
+<h3>Dein Beispiel</h3>
+</details>
 
 </body>
 </html>
