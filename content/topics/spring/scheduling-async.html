@@ -19,6 +19,15 @@
   summary { font-weight: 600; cursor: pointer; }
   details p { margin: 6px 0 2px; }
   .small { color: #6e6e73; font-size: 14px; }
+  h3 { font-size: 17px; margin: 20px 0 6px; }
+  .geruest { border: 2px solid #1d1d1f; border-radius: 6px; padding: 10px 14px; margin: 14px 0; font-size: 15px; line-height: 1.4; }
+  .geruest h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; margin: 0 0 8px; padding: 0; border: 0; }
+  .geruest dl { display: grid; grid-template-columns: 6.6em 1fr; gap: 6px 10px; margin: 0; }
+  .geruest dt { font-weight: 700; font-size: 12px; text-transform: uppercase; letter-spacing: .05em; padding-top: 1px; }
+  .geruest dd { margin: 0; }
+  .muster { border: 1px solid #e5e5ea; border-left: 4px solid #1d1d1f; border-radius: 6px; padding: 10px 14px; margin: 14px 0; }
+  .muster h3 { margin: 0 0 6px; font-size: 13px; text-transform: uppercase; letter-spacing: .06em; }
+  .muster .mq { margin: 0 0 6px; }
 </style>
 </head>
 <body>
@@ -27,35 +36,17 @@
 <!-- sources: Spring · Tier 2 · Quellen: Spring Framework 7.1 Reference („Task Execution and Scheduling“, „Standard and Custom Events“, „Transaction-bound Events“), Javadoc SimpleAsyncTaskScheduler, Spring Boot 4.2 Reference („Task Execution and Scheduling“), JDK 17 API ThreadPoolExecutor, PostgreSQL 17 Doku (Advisory Locks) -->
 
 <div class="kern">
-<b>Kern:</b> Spring hat drei Werkzeuge für Arbeit ausserhalb des normalen Request-Ablaufs. <b>@Scheduled</b> startet Methoden nach Zeitplan. <b>@Async</b> führt eine Methode in einem anderen Thread aus. <b>Application Events</b> entkoppeln Sender und Empfänger in derselben Anwendung. Alle drei laufen über <b>TaskExecutor</b>, <b>TaskScheduler</b> oder Proxies, und dort liegen die meisten Fallen.
+<b>Kern:</b> Spring hat drei Werkzeuge für Arbeit ausserhalb des normalen Request-Ablaufs. <b>@Scheduled</b> startet Methoden nach Zeitplan, <b>@Async</b> führt eine Methode in einem anderen Thread aus, und <b>Application Events</b> entkoppeln Sender und Empfänger in derselben Anwendung. Alle drei laufen über <b>TaskExecutor</b>, <b>TaskScheduler</b> oder Proxies, und dort liegen die meisten Fallen.
 </div>
 
-<h2>1. Wo sitzen Scheduler, Executor und Events?</h2>
-<svg viewBox="0 0 720 300" font-family="-apple-system, system-ui, sans-serif" font-size="14">
-  <defs><marker id="a" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
-  <rect x="10" y="20" width="200" height="60" rx="8" fill="#dbe9fb" stroke="#0a66c2"/><text x="110" y="44" text-anchor="middle" font-weight="700">TaskScheduler</text><text x="110" y="64" text-anchor="middle" font-size="12">Boot: 1 Thread (scheduling-1)</text>
-  <line x1="210" y1="50" x2="268" y2="50" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
-  <rect x="270" y="20" width="200" height="60" rx="8" fill="#fff" stroke="#555"/><text x="370" y="44" text-anchor="middle" font-weight="700">@Scheduled-Methode</text><text x="370" y="64" text-anchor="middle" font-size="12">cron · fixedRate · fixedDelay</text>
-  <rect x="10" y="120" width="200" height="60" rx="8" fill="#fff" stroke="#555"/><text x="110" y="144" text-anchor="middle" font-weight="700">Aufrufer (Request)</text><text x="110" y="164" text-anchor="middle" font-size="12">http-nio-8080-exec-1</text>
-  <line x1="210" y1="150" x2="268" y2="150" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
-  <rect x="270" y="120" width="200" height="60" rx="8" fill="#0a66c2"/><text x="370" y="144" text-anchor="middle" fill="#fff" font-weight="700">@Async-Proxy</text><text x="370" y="164" text-anchor="middle" fill="#fff" font-size="12">gibt Aufgabe ab</text>
-  <line x1="470" y1="150" x2="518" y2="150" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
-  <rect x="520" y="120" width="190" height="60" rx="8" fill="#dbe9fb" stroke="#0a66c2"/><text x="615" y="144" text-anchor="middle" font-weight="700">TaskExecutor</text><text x="615" y="164" text-anchor="middle" font-size="12">Boot: 8 Threads, task-1…</text>
-  <rect x="10" y="220" width="200" height="60" rx="8" fill="#fff" stroke="#555"/><text x="110" y="244" text-anchor="middle" font-weight="700">publishEvent(e)</text><text x="110" y="264" text-anchor="middle" font-size="12">ApplicationEventPublisher</text>
-  <line x1="210" y1="250" x2="268" y2="250" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
-  <rect x="270" y="220" width="200" height="60" rx="8" fill="#e8f5e9" stroke="#2e7d32"/><text x="370" y="244" text-anchor="middle" font-weight="700">Multicaster</text><text x="370" y="264" text-anchor="middle" font-size="12">synchron, gleicher Thread</text>
-  <line x1="470" y1="250" x2="518" y2="250" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
-  <rect x="520" y="220" width="190" height="60" rx="8" fill="#fff" stroke="#555"/><text x="615" y="244" text-anchor="middle" font-weight="700">@EventListener</text><text x="615" y="264" text-anchor="middle" font-size="12">@TransactionalEventListener</text>
-</svg>
-<ol>
-  <li><b>TaskScheduler:</b> Er löst Methoden nach Zeit aus. Spring Boot konfiguriert einen <code>ThreadPoolTaskScheduler</code> mit <b>einem</b> Thread. Mit Virtual Threads ist es ein <code>SimpleAsyncTaskScheduler</code>.</li>
-  <li><b>@Scheduled-Methode:</b> Sie braucht <code>@EnableScheduling</code> und darf keine Parameter haben. Beispiel: <code>@Scheduled(cron = "0 0 2 * * *")</code>.</li>
-  <li><b>@Async-Proxy:</b> Mit <code>@EnableAsync</code> bekommt die Bean einen Proxy. Der Aufruf kehrt sofort zurück, die Arbeit läuft im Executor.</li>
-  <li><b>TaskExecutor:</b> Boot konfiguriert <code>applicationTaskExecutor</code>, einen <code>ThreadPoolTaskExecutor</code> mit 8 Kern-Threads. Mit Virtual Threads ist es ein <code>SimpleAsyncTaskExecutor</code>.</li>
-  <li><b>Events:</b> <code>publishEvent</code> ruft alle passenden Listener <b>synchron</b> im gleichen Thread auf. Asynchron wird es nur mit <code>@Async</code> am Listener.</li>
-</ol>
+<div class="muster"><h3>Antwort-Muster</h3><p class="mq"><b>Frage:</b> Wie funktioniert @Async, und welche Fallen gibt es?</p><ol>
+  <li>Mechanismus: Mit <code>@EnableAsync</code> bekommt die Bean einen Proxy. Der Aufruf kehrt sofort zurück, und die Arbeit läuft im <code>applicationTaskExecutor</code>.</li>
+  <li>Zahl: Boot nutzt 8 Kern-Threads. Bei unbegrenzter Queue wächst der Pool nie darüber, weil <code>max-size</code> erst bei voller Queue wirkt.</li>
+  <li>Trade-off: <code>@Async</code> ist billig, liegt aber nur im Speicher. Bei Absturz ist die Aufgabe weg, und Transaktion, SecurityContext und MDC gehen verloren.</li>
+  <li>Produktion: Ich begrenze die Queue, gebe <code>CompletableFuture</code> zurück und nutze einen TaskDecorator für den Kontext.</li>
+</ol></div>
 
-<h2>2. Die Reise eines Bestell-Events</h2>
+<h2>1. Die Reise eines Bestell-Events</h2>
 <svg viewBox="0 0 720 300" font-family="-apple-system, system-ui, sans-serif" font-size="14">
   <defs><marker id="b" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker><marker id="r" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#c62828"/></marker></defs>
   <rect x="10" y="20" width="150" height="60" rx="10" fill="#eee" stroke="#777"/><text x="85" y="45" text-anchor="middle" font-weight="700">1. Transaktion</text><text x="85" y="65" text-anchor="middle" font-size="12">Bestellung speichern</text>
@@ -82,7 +73,110 @@
   <li><b>Risiko:</b> Bei Rollback läuft der Listener nicht. Stürzt die App nach dem Commit ab, ist das Event weg. Für wichtige Events braucht man eine <b>Outbox</b>-Tabelle.</li>
 </ol>
 
-<h2>3. Beispiel: Pool-Grösse, ein Scheduler-Thread, Lock über mehrere Pods</h2>
+<h2>2. Aufbau</h2>
+<svg viewBox="0 0 720 300" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="a" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="10" y="20" width="200" height="60" rx="8" fill="#dbe9fb" stroke="#0a66c2"/><text x="110" y="44" text-anchor="middle" font-weight="700">TaskScheduler</text><text x="110" y="64" text-anchor="middle" font-size="12">Boot: 1 Thread (scheduling-1)</text>
+  <line x1="210" y1="50" x2="268" y2="50" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="270" y="20" width="200" height="60" rx="8" fill="#fff" stroke="#555"/><text x="370" y="44" text-anchor="middle" font-weight="700">@Scheduled-Methode</text><text x="370" y="64" text-anchor="middle" font-size="12">cron · fixedRate · fixedDelay</text>
+  <rect x="10" y="120" width="200" height="60" rx="8" fill="#fff" stroke="#555"/><text x="110" y="144" text-anchor="middle" font-weight="700">Aufrufer (Request)</text><text x="110" y="164" text-anchor="middle" font-size="12">http-nio-8080-exec-1</text>
+  <line x1="210" y1="150" x2="268" y2="150" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="270" y="120" width="200" height="60" rx="8" fill="#0a66c2"/><text x="370" y="144" text-anchor="middle" fill="#fff" font-weight="700">@Async-Proxy</text><text x="370" y="164" text-anchor="middle" fill="#fff" font-size="12">gibt Aufgabe ab</text>
+  <line x1="470" y1="150" x2="518" y2="150" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="520" y="120" width="190" height="60" rx="8" fill="#dbe9fb" stroke="#0a66c2"/><text x="615" y="144" text-anchor="middle" font-weight="700">TaskExecutor</text><text x="615" y="164" text-anchor="middle" font-size="12">Boot: 8 Threads, task-1…</text>
+  <rect x="10" y="220" width="200" height="60" rx="8" fill="#fff" stroke="#555"/><text x="110" y="244" text-anchor="middle" font-weight="700">publishEvent(e)</text><text x="110" y="264" text-anchor="middle" font-size="12">ApplicationEventPublisher</text>
+  <line x1="210" y1="250" x2="268" y2="250" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="270" y="220" width="200" height="60" rx="8" fill="#e8f5e9" stroke="#2e7d32"/><text x="370" y="244" text-anchor="middle" font-weight="700">Multicaster</text><text x="370" y="264" text-anchor="middle" font-size="12">synchron, gleicher Thread</text>
+  <line x1="470" y1="250" x2="518" y2="250" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="520" y="220" width="190" height="60" rx="8" fill="#fff" stroke="#555"/><text x="615" y="244" text-anchor="middle" font-weight="700">@EventListener</text><text x="615" y="264" text-anchor="middle" font-size="12">@TransactionalEventListener</text>
+</svg>
+<ol>
+  <li><b>TaskScheduler:</b> Er löst Methoden nach Zeit aus. Spring Boot konfiguriert einen <code>ThreadPoolTaskScheduler</code> mit <b>einem</b> Thread. Mit Virtual Threads ist es ein <code>SimpleAsyncTaskScheduler</code>.</li>
+  <li><b>@Scheduled-Methode:</b> Sie braucht <code>@EnableScheduling</code> und darf keine Parameter haben. Beispiel: <code>@Scheduled(cron = "0 0 2 * * *")</code>.</li>
+  <li><b>@Async-Proxy:</b> Mit <code>@EnableAsync</code> bekommt die Bean einen Proxy. Der Aufruf kehrt sofort zurück, die Arbeit läuft im Executor.</li>
+  <li><b>TaskExecutor:</b> Boot konfiguriert <code>applicationTaskExecutor</code>, einen <code>ThreadPoolTaskExecutor</code> mit 8 Kern-Threads. Mit Virtual Threads ist es ein <code>SimpleAsyncTaskExecutor</code>.</li>
+  <li><b>Events:</b> <code>publishEvent</code> ruft alle passenden Listener <b>synchron</b> im gleichen Thread auf. Asynchron wird es nur mit <code>@Async</code> am Listener.</li>
+</ol>
+
+<h2>3. Details, die Interviewer fragen</h2>
+<ol>
+  <li><b>fixedRate vs fixedDelay:</b> <code>fixedRate</code> misst von Start zu Start. <code>fixedDelay</code> misst vom Ende eines Laufs bis zum nächsten Start. Für Jobs mit schwankender Dauer ist <code>fixedDelay</code> sicherer.</li>
+  <li><b>Cron in Spring:</b> Der Ausdruck hat sechs Felder, mit Sekunden vorne, z. B. <code>"0 0 2 * * *"</code> für 02:00:00. Unix-Cron hat fünf Felder. Makros wie <code>@daily</code> gehen auch, und <code>zone</code> setzt die Zeitzone. <code>"-"</code> schaltet einen Cron-Job aus.</li>
+  <li><b>Sommerzeit:</b> Ein Cron um 02:30 in <code>Europe/Zurich</code> fällt an einem Tag im März aus. Im Oktober kann er anders laufen als erwartet. Man legt wichtige Jobs nicht in die Umstellungsstunde.</li>
+  <li><b>Ein Scheduler-Thread:</b> Boots Standard <code>spring.task.scheduling.pool.size</code> ist 1. Alle <code>@Scheduled</code>-Methoden teilen ihn. Ein langer Job verzögert alle anderen.</li>
+  <li><b>Executor-Standard in Boot:</b> Der Pool hat 8 Kern-Threads und Keep-Alive 60 s. Mit Virtual Threads (<code>spring.threads.virtual.enabled=true</code>) ist es ein <code>SimpleAsyncTaskExecutor</code> ohne Pool.</li>
+  <li><b>Pool-Regel:</b> Ein <code>ThreadPoolTaskExecutor</code> erzeugt Threads über die Kern-Threads erst, wenn die Queue voll ist. Bei unbegrenzter Queue ignoriert er <code>max-size</code>. Mit <code>queue-capacity</code> macht man die Queue begrenzt.</li>
+  <li><b>Eigener Executor:</b> Definiert man eine eigene <code>Executor</code>-Bean, zieht sich Boots Executor zurück. MVC, WebFlux und GraphQL brauchen aber eine Bean namens <code>applicationTaskExecutor</code>.</li>
+  <li><b>Executor wählen:</b> <code>@Async("otherExecutor")</code> nutzt einen bestimmten Executor. Der Name kann ein Bean-Name oder ein Qualifier sein.</li>
+  <li><b>@Async-Rückgabe:</b> <code>void</code> oder <code>CompletableFuture&lt;T&gt;</code>. Bei <code>void</code> geht eine Exception an den <code>AsyncUncaughtExceptionHandler</code>. Der Standard loggt sie nur.</li>
+  <li><b>@Async ist ein Proxy:</b> Self-Invocation läuft synchron. <code>@Async</code> auf <code>private</code>-Methoden wirkt nicht.</li>
+  <li><b>Kontext geht verloren:</b> Im neuen Thread fehlen Transaktion, SecurityContext, Request Scope und MDC. Ein <b>TaskDecorator</b> kopiert z. B. MDC und Trace-Kontext. Boot hängt eine <code>TaskDecorator</code>-Bean automatisch an.</li>
+  <li><b>@EventListener:</b> Er läuft synchron, im gleichen Thread und in der gleichen Transaktion. Eine Exception im Listener landet beim Sender. Sie kann dessen Transaktion zurückrollen.</li>
+  <li><b>@TransactionalEventListener:</b> Die Standard-Phase ist <code>AFTER_COMMIT</code>. Weitere sind <code>BEFORE_COMMIT</code>, <code>AFTER_ROLLBACK</code> und <code>AFTER_COMPLETION</code>. Ohne laufende Transaktion wird das Event ignoriert. Mit <code>fallbackExecution = true</code> läuft es trotzdem.</li>
+  <li><b>Schreiben in AFTER_COMMIT:</b> Die alte Transaktion ist fertig. Wer im Listener speichern will, braucht <code>@Transactional(propagation = REQUIRES_NEW)</code> oder <code>@Async</code>.</li>
+  <li><b>Reihenfolge der Listener:</b> <code>@Order</code> legt sie fest. Ohne <code>@Order</code> ist sie nicht garantiert.</li>
+  <li><b>Bedingte Listener:</b> <code>@EventListener(condition = "#event.amount &gt; 1000")</code> filtert mit SpEL. Ein Listener kann auch ein neues Event zurückgeben.</li>
+  <li><b>Shutdown:</b> Laufende Aufgaben brechen beim Stoppen ab. <code>spring.task.execution.shutdown.await-termination=true</code> und eine Wartezeit lassen sie fertig laufen.</li>
+</ol>
+
+<h2>4. Fallen</h2>
+<div class="trap">
+<ul>
+  <li>„Mit <code>max-size=16</code> hat der Pool bis 16 Threads.“ → <b>Falsch</b> bei unbegrenzter Queue. Dann bleiben es die Kern-Threads.</li>
+  <li>„@Scheduled-Jobs laufen parallel.“ → <b>Falsch</b> im Standard. Boot hat einen Scheduler-Thread.</li>
+  <li>„@EventListener ist asynchron.“ → <b>Falsch.</b> Synchron, im gleichen Thread und in der gleichen Transaktion.</li>
+  <li>„Spring-Cron ist gleich wie Unix-Cron.“ → <b>Falsch.</b> Spring hat ein sechstes Feld für Sekunden, vorne.</li>
+  <li>„@Async in derselben Klasse aufrufen reicht.“ → <b>Falsch.</b> Self-Invocation umgeht den Proxy.</li>
+  <li>„@TransactionalEventListener läuft immer.“ → <b>Falsch.</b> Ohne Transaktion wird das Event ignoriert, ausser mit <code>fallbackExecution</code>.</li>
+</ul>
+</div>
+
+<h2>5. Selbsttest</h2>
+<h3>Warum?</h3>
+<details><summary>Warum wächst der Pool nicht über die Kern-Threads?</summary><p>Ein ThreadPoolExecutor erzeugt neue Threads erst, wenn die Queue voll ist. Bei unbegrenzter Queue passiert das nie.</p></details>
+<details><summary>Warum fehlt die Trace-ID im Log eines @Async-Threads?</summary><p>MDC ist ThreadLocal. Ein TaskDecorator muss den Kontext in den neuen Thread kopieren.</p></details>
+<details><summary>Gilt die Transaktion des Aufrufers in einer @Async-Methode?</summary><p>Nein. Transaktionen hängen am Thread. Die Methode braucht eine eigene Transaktion.</p></details>
+<details><summary>Warum kann ein AFTER_COMMIT-Listener nichts speichern?</summary><p>Die Transaktion ist schon beendet. Man braucht <code>REQUIRES_NEW</code> oder einen asynchronen Listener mit eigener Transaktion.</p></details>
+<h3>Wie innen?</h3>
+<details><summary>Wie aktivieren Sie @Scheduled und @Async?</summary><p>Mit <code>@EnableScheduling</code> und <code>@EnableAsync</code> an einer Konfigurationsklasse. Ohne diese Annotations passiert nichts.</p></details>
+<details><summary>Welchen Executor nutzt @Async in Spring Boot?</summary><p>Den <code>applicationTaskExecutor</code>: einen ThreadPoolTaskExecutor mit 8 Kern-Threads, mit Virtual Threads einen SimpleAsyncTaskExecutor.</p></details>
+<details><summary>Welche Rückgabetypen hat @Async?</summary><p><code>void</code> oder ein <code>Future</code>, meist <code>CompletableFuture</code>. Nur mit Future sieht der Aufrufer Ergebnis und Exception.</p></details>
+<details><summary>Was passiert mit einer Exception in @Async void?</summary><p>Sie geht an den <code>AsyncUncaughtExceptionHandler</code>. Der Standard loggt sie nur.</p></details>
+<details><summary>Ist @EventListener synchron?</summary><p>Ja. Der Listener läuft im Thread und in der Transaktion des Senders. Asynchron nur mit <code>@Async</code>.</p></details>
+<details><summary>Was macht @TransactionalEventListener?</summary><p>Es ruft den Listener erst in einer Transaktionsphase auf, standardmässig nach dem Commit. Bei Rollback läuft er nicht.</p></details>
+<details><summary>Wie sehen Sie alle geplanten Jobs?</summary><p>Mit <code>/actuator/scheduledtasks</code>. Er zeigt Cron, Intervall und Ausführungen.</p></details>
+<h3>Zahlen</h3>
+<details><summary>Wie sieht ein Spring-Cron-Ausdruck aus?</summary><p>Sechs Felder: Sekunde, Minute, Stunde, Tag, Monat, Wochentag. <code>"0 0 2 * * *"</code> ist jeden Tag um 2 Uhr.</p></details>
+<details><summary>Wie viele Threads hat der Scheduler in Spring Boot?</summary><p>Einen. Alle @Scheduled-Methoden teilen ihn, ausser man setzt <code>spring.task.scheduling.pool.size</code>.</p></details>
+<details><summary>Welche Standardwerte hat der Boot-Executor?</summary><p>8 Kern-Threads und Keep-Alive 60 s. Die Queue ist standardmässig unbegrenzt, darum wirkt <code>max-size</code> nicht.</p></details>
+<details><summary>Wie viele Aufgaben werden im Beispiel mit Queue 50 abgelehnt?</summary><p>34. Bei 100 Aufgaben laufen 16 Threads, 50 warten, und der Rest wird mit <code>RejectedExecutionException</code> abgelehnt.</p></details>
+<h3>Vergleich</h3>
+<details><summary>fixedRate vs fixedDelay?</summary><p>fixedRate: fester Abstand von Start zu Start. fixedDelay: fester Abstand vom Ende zum nächsten Start.</p></details>
+<details><summary>Können zwei Läufe desselben Jobs überlappen?</summary><p>Mit dem Pool-Scheduler nicht; er verschiebt den nächsten Lauf. Mit dem Virtual-Thread-Scheduler bekommt jeder Lauf einen eigenen Thread.</p></details>
+<details><summary>@Scheduled oder Kubernetes CronJob?</summary><p>@Scheduled für kurze, häufige Aufgaben mit Lock. CronJob für lange, seltene Jobs, die einmal pro Cluster laufen sollen.</p></details>
+<details><summary>Wie begrenzen Sie Parallelität mit Virtual Threads?</summary><p>Virtual Threads haben keinen Pool. Grenzen setzt man mit <code>@ConcurrencyLimit</code>, einem Semaphore oder der Grösse des Connection Pools.</p></details>
+<h3>Produktion</h3>
+<details><summary>Wie verhindern Sie, dass ein Job in jedem Pod läuft?</summary><p>Mit einem verteilten Lock wie ShedLock oder einem DB-Advisory-Lock. Oder als Kubernetes CronJob ausserhalb der App.</p></details>
+<details><summary>Wie testen Sie einen @Scheduled-Job?</summary><p>Die Methode direkt aufrufen und das Ergebnis prüfen. Für das Timing Awaitility. Nicht auf echte Cron-Zeiten warten.</p></details>
+<details><summary>Szenario: Kunden bekommen die Monatsrechnung dreimal. Was ist passiert?</summary><p>Der Job läuft in jedem der drei Pods. Lösung: ShedLock oder DB-Lock, und den Versand idempotent machen (z. B. Status „versendet“ pro Rechnung).</p></details>
+<details><summary>Szenario: Ein Heartbeat-Job läuft nachts manchmal 20 Minuten nicht. Woran liegt es?</summary><p>Ein langer Job blockiert den einzigen Scheduler-Thread. Pool vergrössern oder lange Arbeit an einen Executor abgeben; im Log zeigt sich das an <code>scheduling-1</code>.</p></details>
+<details><summary>Szenario: Unter Last steigt der Heap stetig, im Dump sind Millionen Runnable-Objekte. Was tun Sie?</summary><p>Die Executor-Queue ist unbegrenzt und läuft voll. Queue begrenzen, Ablehnungs-Strategie wählen (z. B. CallerRunsPolicy als Bremse) und <code>executor.queued</code> überwachen.</p></details>
+<h3>Design</h3>
+<details><summary>Was ist das Outbox-Muster?</summary><p>Das Event wird in derselben Transaktion in eine Tabelle geschrieben. Ein Job oder CDC liest die Tabelle und verschickt die Events. So geht nichts verloren.</p></details>
+<details><summary>Wie machen Sie einen Job idempotent?</summary><p>Man berechnet das Ergebnis neu, statt aufzuaddieren. So ist ein doppelter oder abgebrochener Lauf harmlos.</p></details>
+<details><summary>Wann nutzen Sie Events, wann einen Broker?</summary><p>Events entkoppeln Module im selben Prozess. Für andere Services nimmt man eine Outbox plus Broker.</p></details>
+
+<details class="mehr"><summary>Mehr</summary>
+<h3>Gerüst</h3>
+<ul>
+  <li><b>Warum?</b> Arbeit ausserhalb des Requests. Zeitplan, anderer Thread, entkoppelte Events.</li>
+  <li><b>Wie innen?</b> <code>@Scheduled</code> → <code>TaskScheduler</code>. <code>@Async</code> → Proxy → <code>TaskExecutor</code>. <code>publishEvent</code> → Listener synchron im gleichen Thread.</li>
+  <li><b>Zahlen</b> Der Scheduler hat 1 Thread. Der Executor hat 8 Kern-Threads und Keep-Alive 60 s. Spring-Cron hat 6 Felder.</li>
+  <li><b>Vergleich</b> <code>@Scheduled</code> läuft in jedem Pod, ein CronJob nur einmal, Quartz mit DB-Lock. <code>@Async</code> liegt im Speicher, eine Message Queue ist dauerhaft.</li>
+  <li><b>Produktion</b> Der Job läuft in drei Pods dreimal. Ein langer Job blockiert den Scheduler-Thread. Eine unbegrenzte Queue füllt den Speicher.</li>
+  <li><b>Design</b> Jobs idempotent, im Cluster mit Lock, Pools mit Grenzen. Für wichtige Events eine Outbox.</li>
+</ul>
+<h3>Beispiel: Pool-Grösse, ein Scheduler-Thread, Lock über mehrere Pods</h3>
 <pre>@Configuration @EnableScheduling @EnableAsync class TaskConfig {}
 
 @Service class Jobs {
@@ -128,27 +222,7 @@ Pod B nach Ende von A: select pg_try_advisory_lock(4711) → t</pre>
   <li><b>Kein Überlappen:</b> Mit dem Pool-Scheduler laufen zwei Läufe derselben Aufgabe nie gleichzeitig. Mit dem Virtual-Thread-Scheduler bekommt jeder Lauf einen eigenen Thread.</li>
   <li><b>Advisory Lock:</b> Pod B bekommt <code>f</code> und überspringt den Job. Bibliotheken wie <b>ShedLock</b> machen das mit einer Lock-Tabelle.</li>
 </ol>
-
-<h2>4. Details, die Interviewer fragen</h2>
-<ol>
-  <li><b>fixedRate vs fixedDelay:</b> <code>fixedRate</code> misst von Start zu Start. <code>fixedDelay</code> misst vom Ende eines Laufs bis zum nächsten Start. Für Jobs mit schwankender Dauer ist <code>fixedDelay</code> sicherer.</li>
-  <li><b>Cron in Spring:</b> Sechs Felder, mit Sekunden vorne: <code>"0 0 2 * * *"</code> ist 02:00:00. Unix-Cron hat fünf Felder. Makros wie <code>@daily</code> gehen auch. <code>zone</code> setzt die Zeitzone. <code>"-"</code> schaltet einen Cron-Job aus.</li>
-  <li><b>Sommerzeit:</b> Ein Cron um 02:30 in <code>Europe/Zurich</code> fällt an einem Tag im März aus und kann im Oktober anders laufen als erwartet. Wichtige Jobs nicht in die Umstellungsstunde legen.</li>
-  <li><b>Ein Scheduler-Thread:</b> Boots Standard <code>spring.task.scheduling.pool.size</code> ist 1. Alle <code>@Scheduled</code>-Methoden teilen ihn. Ein langer Job verzögert alle anderen.</li>
-  <li><b>Executor-Standard in Boot:</b> 8 Kern-Threads, Keep-Alive 60 s. Mit Virtual Threads (<code>spring.threads.virtual.enabled=true</code>) ein <code>SimpleAsyncTaskExecutor</code> ohne Pool.</li>
-  <li><b>Eigener Executor:</b> Definiert man eine eigene <code>Executor</code>-Bean, zieht sich Boots Executor zurück. MVC, WebFlux und GraphQL brauchen aber eine Bean namens <code>applicationTaskExecutor</code>.</li>
-  <li><b>@Async-Rückgabe:</b> <code>void</code> oder <code>CompletableFuture&lt;T&gt;</code>. Bei <code>void</code> geht eine Exception an den <code>AsyncUncaughtExceptionHandler</code>; der Standard loggt sie nur.</li>
-  <li><b>@Async ist ein Proxy:</b> Self-Invocation läuft synchron. <code>@Async</code> auf <code>private</code>-Methoden wirkt nicht.</li>
-  <li><b>Kontext geht verloren:</b> Im neuen Thread fehlen Transaktion, SecurityContext, Request Scope und MDC. Ein <b>TaskDecorator</b> kopiert z. B. MDC und Trace-Kontext. Boot hängt eine <code>TaskDecorator</code>-Bean automatisch an.</li>
-  <li><b>@EventListener:</b> Synchron, im gleichen Thread und in der gleichen Transaktion. Eine Exception im Listener landet beim Sender und kann dessen Transaktion zurückrollen.</li>
-  <li><b>@TransactionalEventListener:</b> Standard-Phase <code>AFTER_COMMIT</code>. Weitere: <code>BEFORE_COMMIT</code>, <code>AFTER_ROLLBACK</code>, <code>AFTER_COMPLETION</code>. Ohne laufende Transaktion wird das Event ignoriert, ausser <code>fallbackExecution = true</code>.</li>
-  <li><b>Schreiben in AFTER_COMMIT:</b> Die alte Transaktion ist fertig. Wer im Listener speichern will, braucht <code>@Transactional(propagation = REQUIRES_NEW)</code> oder <code>@Async</code>.</li>
-  <li><b>Reihenfolge der Listener:</b> <code>@Order</code> legt sie fest. Ohne <code>@Order</code> ist sie nicht garantiert.</li>
-  <li><b>Bedingte Listener:</b> <code>@EventListener(condition = "#event.amount &gt; 1000")</code> filtert mit SpEL. Ein Listener kann auch ein neues Event zurückgeben.</li>
-  <li><b>Shutdown:</b> Laufende Aufgaben brechen beim Stoppen ab. <code>spring.task.execution.shutdown.await-termination=true</code> und eine Wartezeit lassen sie fertig laufen.</li>
-</ol>
-
-<h2>5. Vergleich</h2>
+<h3>Vergleich</h3>
 <ul>
   <li><b>@Scheduled:</b> einfach, im Prozess, ohne Persistenz. Läuft in jedem Pod. Kein Nachholen nach Ausfall.</li>
   <li><b>Kubernetes CronJob:</b> eigener Pod pro Lauf, läuft einmal pro Cluster, Logs pro Lauf. Mehr Start-Zeit.</li>
@@ -158,8 +232,7 @@ Pod B nach Ende von A: select pg_try_advisory_lock(4711) → t</pre>
   <li><b>Application Events:</b> Entkopplung im selben Prozess. Für andere Services: Outbox plus Broker.</li>
   <li><b>Virtual Threads vs Pool:</b> Virtual Threads brauchen keinen Pool, aber auch keine Grenze. Eine Grenze setzt man dann mit <code>@ConcurrencyLimit</code> (Framework 7) oder einem Semaphore.</li>
 </ul>
-
-<h2>6. In der Produktion</h2>
+<h3>In der Produktion</h3>
 <ol>
   <li><b>Job läuft dreimal:</b> Drei Pods, jeder führt <code>@Scheduled</code> aus. Doppelte Mails oder Buchungen. Lösung: ShedLock, DB-Lock oder Kubernetes CronJob.</li>
   <li><b>Jobs verspäten sich:</b> Ein langer Job blockiert den einzigen Scheduler-Thread. Lösung: <code>pool.size</code> erhöhen oder lange Arbeit an einen Executor abgeben.</li>
@@ -168,8 +241,7 @@ Pod B nach Ende von A: select pg_try_advisory_lock(4711) → t</pre>
   <li><b>Mail ohne Bestellung:</b> Ein normaler <code>@EventListener</code> schickt die Mail, danach rollt die Transaktion zurück. Lösung: <code>@TransactionalEventListener</code>.</li>
   <li><b>Event verloren:</b> Absturz zwischen Commit und Listener. Lösung: Outbox-Tabelle in der gleichen Transaktion, ein Job verarbeitet sie (Spring Modulith bietet das als Event Publication Registry).</li>
 </ol>
-
-<h2>7. Diagnose</h2>
+<h3>Diagnose</h3>
 <ul>
   <li><b>Thread-Namen im Log:</b> <code>scheduling-1</code>, <code>task-1</code>. Ein einziger <code>scheduling-1</code> für alle Jobs zeigt das Pool-Problem.</li>
   <li><code>/actuator/scheduledtasks</code>: alle geplanten Aufgaben mit Cron und Intervall, mit letzter und nächster Ausführung.</li>
@@ -178,8 +250,7 @@ Pod B nach Ende von A: select pg_try_advisory_lock(4711) → t</pre>
   <li><b>Tests:</b> Für Scheduling <b>Awaitility</b>; Jobs direkt aufrufen statt auf die Uhr zu warten. Für Events <code>@RecordApplicationEvents</code> mit <code>ApplicationEvents</code>.</li>
   <li><b>PostgreSQL:</b> <code>select * from pg_locks where locktype = 'advisory'</code> zeigt, wer ein Job-Lock hält.</li>
 </ul>
-
-<h2>8. Senior-Punkte</h2>
+<h3>Senior-Punkte</h3>
 <div class="senior">
 <ol>
   <li><b>Jobs müssen idempotent sein.</b> Ein Lauf kann doppelt kommen oder abbrechen. Ergebnis neu berechnen statt aufaddieren.</li>
@@ -190,46 +261,8 @@ Pod B nach Ende von A: select pg_try_advisory_lock(4711) → t</pre>
   <li><b>Laufzeit und Erfolg messen:</b> Dauer, Fehler, letzter erfolgreicher Lauf. Alarm, wenn ein Job zu lange nicht lief.</li>
 </ol>
 </div>
-
-<h2>9. Aus dem Projekt</h2>
-<p>„Bei MATCH war der alte Ablauf ein .NET-Timer-Job mit einem Bookmark-Datum. Heute startet ein Worker Spark-Jobs nur bei offener Arbeit, holt Nachrichten mit einem atomaren Claim, setzt hängende Läufe nach Timeout zurück und berechnet Statistiken pro Tag neu statt aufzuaddieren.“ <span class="small">(Prüfen und durch dein echtes Beispiel ersetzen. Das ist .NET/Spark, nicht Spring <code>@Scheduled</code>; die Prinzipien Lock, Idempotenz und Recovery sind dieselben.)</span></p>
-
-<h2>10. Fallen</h2>
-<div class="trap">
-<ul>
-  <li>„Mit <code>max-size=16</code> hat der Pool bis 16 Threads.“ → <b>Falsch</b> bei unbegrenzter Queue. Dann bleiben es die Kern-Threads.</li>
-  <li>„@Scheduled-Jobs laufen parallel.“ → <b>Falsch</b> im Standard. Boot hat einen Scheduler-Thread.</li>
-  <li>„@EventListener ist asynchron.“ → <b>Falsch.</b> Synchron, im gleichen Thread und in der gleichen Transaktion.</li>
-  <li>„Spring-Cron ist gleich wie Unix-Cron.“ → <b>Falsch.</b> Spring hat ein sechstes Feld für Sekunden, vorne.</li>
-  <li>„@Async in derselben Klasse aufrufen reicht.“ → <b>Falsch.</b> Self-Invocation umgeht den Proxy.</li>
-  <li>„@TransactionalEventListener läuft immer.“ → <b>Falsch.</b> Ohne Transaktion wird das Event ignoriert, ausser mit <code>fallbackExecution</code>.</li>
-</ul>
-</div>
-
-<h2>11. Fragen</h2>
-<details><summary>Wie aktivieren Sie @Scheduled und @Async?</summary><p>Mit <code>@EnableScheduling</code> und <code>@EnableAsync</code> an einer Konfigurationsklasse. Ohne diese Annotations passiert nichts.</p></details>
-<details><summary>fixedRate vs fixedDelay?</summary><p>fixedRate: fester Abstand von Start zu Start. fixedDelay: fester Abstand vom Ende zum nächsten Start.</p></details>
-<details><summary>Wie sieht ein Spring-Cron-Ausdruck aus?</summary><p>Sechs Felder: Sekunde, Minute, Stunde, Tag, Monat, Wochentag. <code>"0 0 2 * * *"</code> ist jeden Tag um 2 Uhr.</p></details>
-<details><summary>Wie viele Threads hat der Scheduler in Spring Boot?</summary><p>Einen. Alle @Scheduled-Methoden teilen ihn, ausser man setzt <code>spring.task.scheduling.pool.size</code>.</p></details>
-<details><summary>Können zwei Läufe desselben Jobs überlappen?</summary><p>Mit dem Pool-Scheduler nicht; er verschiebt den nächsten Lauf. Mit dem Virtual-Thread-Scheduler bekommt jeder Lauf einen eigenen Thread.</p></details>
-<details><summary>Wie verhindern Sie, dass ein Job in jedem Pod läuft?</summary><p>Mit einem verteilten Lock wie ShedLock oder einem DB-Advisory-Lock. Oder als Kubernetes CronJob ausserhalb der App.</p></details>
-<details><summary>Welchen Executor nutzt @Async in Spring Boot?</summary><p>Den <code>applicationTaskExecutor</code>: einen ThreadPoolTaskExecutor mit 8 Kern-Threads, mit Virtual Threads einen SimpleAsyncTaskExecutor.</p></details>
-<details><summary>Warum wächst der Pool nicht über die Kern-Threads?</summary><p>Ein ThreadPoolExecutor erzeugt neue Threads erst, wenn die Queue voll ist. Bei unbegrenzter Queue passiert das nie.</p></details>
-<details><summary>Welche Rückgabetypen hat @Async?</summary><p><code>void</code> oder ein <code>Future</code>, meist <code>CompletableFuture</code>. Nur mit Future sieht der Aufrufer Ergebnis und Exception.</p></details>
-<details><summary>Was passiert mit einer Exception in @Async void?</summary><p>Sie geht an den <code>AsyncUncaughtExceptionHandler</code>. Der Standard loggt sie nur.</p></details>
-<details><summary>Warum fehlt die Trace-ID im Log eines @Async-Threads?</summary><p>MDC ist ThreadLocal. Ein TaskDecorator muss den Kontext in den neuen Thread kopieren.</p></details>
-<details><summary>Gilt die Transaktion des Aufrufers in einer @Async-Methode?</summary><p>Nein. Transaktionen hängen am Thread. Die Methode braucht eine eigene Transaktion.</p></details>
-<details><summary>Ist @EventListener synchron?</summary><p>Ja. Der Listener läuft im Thread und in der Transaktion des Senders. Asynchron nur mit <code>@Async</code>.</p></details>
-<details><summary>Was macht @TransactionalEventListener?</summary><p>Es ruft den Listener erst in einer Transaktionsphase auf, standardmässig nach dem Commit. Bei Rollback läuft er nicht.</p></details>
-<details><summary>Warum kann ein AFTER_COMMIT-Listener nichts speichern?</summary><p>Die Transaktion ist schon beendet. Man braucht <code>REQUIRES_NEW</code> oder einen asynchronen Listener mit eigener Transaktion.</p></details>
-<details><summary>Was ist das Outbox-Muster?</summary><p>Das Event wird in derselben Transaktion in eine Tabelle geschrieben. Ein Job oder CDC liest die Tabelle und verschickt die Events. So geht nichts verloren.</p></details>
-<details><summary>Wie testen Sie einen @Scheduled-Job?</summary><p>Die Methode direkt aufrufen und das Ergebnis prüfen. Für das Timing Awaitility. Nicht auf echte Cron-Zeiten warten.</p></details>
-<details><summary>Wie sehen Sie alle geplanten Jobs?</summary><p>Mit <code>/actuator/scheduledtasks</code>. Er zeigt Cron, Intervall und Ausführungen.</p></details>
-<details><summary>@Scheduled oder Kubernetes CronJob?</summary><p>@Scheduled für kurze, häufige Aufgaben mit Lock. CronJob für lange, seltene Jobs, die einmal pro Cluster laufen sollen.</p></details>
-<details><summary>Wie begrenzen Sie Parallelität mit Virtual Threads?</summary><p>Virtual Threads haben keinen Pool. Grenzen setzt man mit <code>@ConcurrencyLimit</code>, einem Semaphore oder der Grösse des Connection Pools.</p></details>
-<details><summary>Szenario: Kunden bekommen die Monatsrechnung dreimal. Was ist passiert?</summary><p>Der Job läuft in jedem der drei Pods. Lösung: ShedLock oder DB-Lock, und den Versand idempotent machen (z. B. Status „versendet“ pro Rechnung).</p></details>
-<details><summary>Szenario: Ein Heartbeat-Job läuft nachts manchmal 20 Minuten nicht. Woran liegt es?</summary><p>Ein langer Job blockiert den einzigen Scheduler-Thread. Pool vergrössern oder lange Arbeit an einen Executor abgeben; im Log zeigt sich das an <code>scheduling-1</code>.</p></details>
-<details><summary>Szenario: Unter Last steigt der Heap stetig, im Dump sind Millionen Runnable-Objekte. Was tun Sie?</summary><p>Die Executor-Queue ist unbegrenzt und läuft voll. Queue begrenzen, Ablehnungs-Strategie wählen (z. B. CallerRunsPolicy als Bremse) und <code>executor.queued</code> überwachen.</p></details>
+<h3>Dein Beispiel</h3>
+</details>
 
 </body>
 </html>
