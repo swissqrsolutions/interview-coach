@@ -2,7 +2,7 @@
 
 Generated from content/syllabus.json. Priority 1 = asked in almost every interview. Mark: **Projekt** = shown in CV/Gmail · **— kein Projekt** = no project experience · **? prüfen** = unclear, you decide.
 
-437 topics · P1 267 · P2 132 · P3 38 · written 332
+437 topics · P1 267 · P2 132 · P3 38 · written 333
 
 ## Java 21 (core + advanced) (42)
 Sources: Java SE 21/25 docs (docs.oracle.com) · JVM Specification · OpenJDK source + JEPs (openjdk.org) · Oracle Java SE 21 Developer exam 1Z0-830 topics
@@ -575,7 +575,7 @@ Sources: Elasticsearch / OpenSearch docs · Introduction to Information Retrieva
 
 | P | Topic | Project | Written |
 |---|---|---|---|
-| 1 | Top 30 Fragen mit Kurzantworten | — kein Projekt |  |
+| 1 | Search: Top 30 Fragen mit Kurzantworten | — kein Projekt | ✓ |
 | 1 | Inverted Index | — kein Projekt | ✓ |
 | 1 | Vektorsuche und Embeddings | — kein Projekt | ✓ |
 | 1 | Suchindex synchron halten | — kein Projekt | ✓ |
