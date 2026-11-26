@@ -307,3 +307,143 @@ Frage pro Winkel: Hat der Seiten-Text (nicht nur das Gerüst) mindestens 2 konkr
 - backup-pitr.html: Werkzeug-Vergleich (pgBackRest, Barman, WAL-G) nicht neu geprüft.
 - multi-tenancy.html: Flyway-API und Hibernate-6-Multitenancy-Klassen nicht neu geprüft; „Azure PITR stellt immer den ganzen Server her“ nicht neu geprüft.
 - Alle fünf Seiten: Docker (pg17) nicht genutzt; keine neuen Beispiele ausgeführt. Bestehende „Echte Ausgabe, PostgreSQL 17.12“ bzw. „Erwartetes Ergebnis“ unverändert.
+
+## search/inverted-index.html
+
+| Winkel | vorher (Anzahl Fakten) | was ergänzt wurde |
+|---|---|---|
+| Warum? | 4 (nur Postings lesen, Seq Scan bei LIKE, Relevanz, Kopie der DB) | nichts |
+| Wie innen? | 10+ (Analyzer, Term Dictionary, Postings, Segmente, Translog, query then fetch) | nichts |
+| Zahlen | 7 (Refresh 1 s, idle 30 s, 10 000 Fenster, track_total_hits, k1 1.2, b 0.75) – alle drei Kernwerte neu gegen ES-Doku geprüft | nichts |
+| Vergleich | 6 (match/term, text/keyword, GIN, pg_trgm, TF-IDF, Vektor) | nichts |
+| Produktion | 8 | nichts |
+| Design | 6 (Senior-Punkte) | nichts |
+
+Selbsttest: 26 bestehende Fragen auf 6 Winkel verteilt, 2 neue (Zahlen: „Was geht kaputt bei from + size > 10 000?“, Design: „Was geht kaputt ohne owner_id-Filter?“), gesamt 28.
+
+## search/search-sync.html
+
+| Winkel | vorher (Anzahl Fakten) | was ergänzt wurde |
+|---|---|---|
+| Warum? | 3 (Dual Write, keine gemeinsame Transaktion, Überholen) | nichts |
+| Wie innen? | 10+ (Outbox, Poller, Debezium/pgoutput, Slot, version_type=external) – Outbox-Router-Standardtopic `outbox.event.<aggregatetype>` gegen Debezium-Doku geprüft | nichts |
+| Zahlen | 1 (Refresh 1 s) | Produktion: `max_slot_wal_keep_size` Standard −1 = unbegrenzt (PG-17-Doku geprüft); 2 neue Zahlen-Fragen im Selbsttest |
+| Vergleich | 6 | nichts |
+| Produktion | 8 | nichts |
+| Design | 6 (Senior-Punkte) | nichts |
+
+Selbsttest: 24 bestehende Fragen verteilt, 5 neue (doppeltes Event, Lag-Zahl, stehender Slot, _refresh pro Dokument, Alias-Warum), gesamt 29.
+
+## search/vector-search.html
+
+| Winkel | vorher (Anzahl Fakten) | was ergänzt wurde |
+|---|---|---|
+| Warum? | 3 (Bedeutung statt Wörter, k-NN, Brute-Force-Kosten) | nichts |
+| Wie innen? | 8+ (HNSW-Ebenen, ef_search, Einfügen, Distanzmasse) | nichts |
+| Zahlen | 10+ (m 16, ef_construction 64, ef_search 40, 2000/4000/4096 Dims) – pgvector-Defaults und Grenzen gegen README geprüft | Details: `num_candidates`-Default „1.5 × k, max 10 000“ in aktueller Doku nicht belegbar → Zahlen entfernt (2 Stellen) |
+| Vergleich | 7 | nichts |
+| Produktion | 7 | nichts |
+| Design | 6 (Senior-Punkte) | Details: BBQ-Quantisierung präzisiert und verlinkt: bbq_hnsw ab 384 Dims seit 9.1, seit 9.4 bbq_disk (lizenzabhängig) – dense_vector-Referenz |
+
+Selbsttest: 25 bestehende Fragen verteilt, 3 neue (Warum „Welpe“, ef_search zu klein, Embedding im Upload-Request), gesamt 28.
+
+## sysdesign/api-design.html
+
+| Winkel | vorher (Anzahl Fakten) | was ergänzt wurde |
+|---|---|---|
+| Warum? | 3 (Vertrag stabil, Retries normal, 4 Interview-Punkte) | nichts |
+| Wie innen? | 8+ (Key + Antwort in 1 Tx, Cursor-Aufbau, 202-Ablauf, ETag) – IETF-Draft weiterhin draft-09, aktiv (Datatracker geprüft) | nichts |
+| Zahlen | 3 (Statuscodes, 230 s App Service, 24 h Keys) | nichts |
+| Vergleich | 7 (Tabelle + Offset/Cursor, Polling/Webhook) | nichts |
+| Produktion | 7 | nichts |
+| Design | 6 (Senior-Punkte) | nichts |
+
+Selbsttest: 26 bestehende Fragen verteilt, 6 neue (Warum Idempotenz, Warum Versionieren letzte Wahl, Key+Tx kaputt, Gateway-230-s kaputt, Webhook nicht idempotent, Pflichtfeld kaputt), gesamt 32.
+
+## sysdesign/availability.html
+
+| Winkel | vorher (Anzahl Fakten) | was ergänzt wurde |
+|---|---|---|
+| Warum? | 3 (Kosten pro Neun, Redundanz vs DR, Fehlerquellen) | nichts |
+| Wie innen? | 8+ (Zonen synchron, Region asynchron, Quorum, Probes) | nichts |
+| Zahlen | 10+ (Neunen-Tabelle, Formeln, VM-SLAs, PITR 7/35 Tage) – PITR-Default gegen Azure-Doku geprüft | nichts |
+| Vergleich | 7 (DR-Tabelle, LRS/ZRS/GRS, HA vs DR) | nichts |
+| Produktion | 7 | nichts |
+| Design | 6 (Senior-Punkte) | nichts |
+
+Selbsttest: 26 bestehende Fragen verteilt, 3 neue (Warum 10 × 99,9 % ≈ 99 %, DR nie geübt, Redis in einer Zone), gesamt 29.
+
+## sysdesign/caching.html
+
+| Winkel | vorher (Anzahl Fakten) | was ergänzt wurde |
+|---|---|---|
+| Warum? | 3 (Latenz, DB-Last, Veraltung) | nichts |
+| Wie innen? | 8+ (Cache-Aside, Delete statt Set, Stampede-Mechanik) | nichts |
+| Zahlen | 8 (1 ms, Hit-Ratio-Simulation, 16 384 Slots, Jitter-Zahlen) | nichts |
+| Vergleich | 8 (5 Schreib-Strategien, In-Process-Tabelle, LRU/LFU) | nichts |
+| Produktion | 6 | nichts |
+| Design | 6 (Senior-Punkte) | Details: Redis-8.6-LRM-Aussage bekommt Quellenlink (redis.io Key eviction, LRM-Abschnitt); Azure-Retirement-Daten (30.09.2028 / 31.03.2027) gegen Microsoft-FAQ geprüft, unverändert |
+
+Selbsttest: 25 bestehende Fragen verteilt, 5 neue (10 % Cache-Grösse, gleiche TTL kaputt, LFU vs Scan, App ohne Cache kaputt, erste Design-Frage), gesamt 30.
+
+## sysdesign/cap-consistency.html
+
+| Winkel | vorher (Anzahl Fakten) | was ergänzt wurde |
+|---|---|---|
+| Warum? | 3 (CAP-Satz, P keine Option, PACELC) | nichts |
+| Wie innen? | 8+ (N/R/W, Überlappung, Read Repair, Sloppy Quorum, LWW) | nichts |
+| Zahlen | 5 (Simulationstabelle R/W, 2/3 stale, R=W=2) | nichts |
+| Vergleich | 8 (Modell-Leiter, Cosmos-Stufen, CP/AP-Beispiele) – Cosmos-Default Session gegen Microsoft-Doku geprüft | nichts |
+| Produktion | 6 | nichts |
+| Design | 6 (Senior-Punkte) | nichts |
+
+Selbsttest: 26 bestehende Fragen verteilt, 4 neue (R=W=1 kaputt, Warum Strong über Regionen Latenz, Uhren kaputt, Timeout als gescheitert kaputt), gesamt 30.
+
+## sysdesign/case-authority-documents.html
+
+| Winkel | vorher (Anzahl Fakten) | was ergänzt wurde |
+|---|---|---|
+| Warum? | 3 (Last klein, Sicherheit/Audit/Langzeit, 1-Minuten-Antwort) | nichts |
+| Wie innen? | 10+ (Schema, ACL-Query, Optimistic Locking, append-only Trigger) | nichts |
+| Zahlen | 6 (2 TB/Jahr, 30 TB, 7/s, ISG-Stufen, 412, 20 000/6650 Treffer) | nichts |
+| Vergleich | 3 Varianten + Mandanten-Isolation | nichts |
+| Produktion | 6 | nichts |
+| Design | 6 (Senior-Punkte) | nichts |
+
+Selbsttest: 19 bestehende Fragen verteilt, 6 neue (Warum nicht Last, Rechte nach Suche kaputt, 20 %-Seq-Scan, harte Isolation, Batch-Export am Audit vorbei, Lifecycle-Job kaputt), gesamt 25.
+
+## sysdesign/case-checkout.html
+
+| Winkel | vorher (Anzahl Fakten) | was ergänzt wurde |
+|---|---|---|
+| Warum? | 3 (nie doppelt, nie überverkaufen, Invarianten) | nichts |
+| Wie innen? | 8+ (Unique Key, bedingtes UPDATE, CHECK, Zustandsautomat, Outbox) | nichts |
+| Zahlen | 6 (12/s, 1000/s, 15 min, 255 Zeichen, 24 h) – Stripe-Werte gegen Stripe-Doku geprüft | nichts |
+| Vergleich | 3 Varianten + Orchestrierung/Choreografie | nichts |
+| Produktion | 6 | nichts |
+| Design | 6 (Senior-Punkte) | nichts |
+
+Selbsttest: 18 bestehende Fragen verteilt, 6 neue (Warum kein 2PC, Read-then-Update kaputt, 1000/s heisse Zeile, Warum nicht synchron, Webhook vor Bestellung, Warum Preis-Snapshot), gesamt 24.
+
+## sysdesign/case-distributed-cache.html
+
+| Winkel | vorher (Anzahl Fakten) | was ergänzt wurde |
+|---|---|---|
+| Warum? | 3 (500 000 Reads/s, Cache darf verlieren, DB-Entlastung) | nichts |
+| Wie innen? | 8+ (16 384 Slots, CRC16, MOVED/ASK, Smart Client, Leases) | nichts |
+| Zahlen | 7 (550 MB/s, 2 TB, 40/80 Knoten, 75 % mod N, 14 000 Ops/s) | nichts |
+| Vergleich | 3 Varianten + Smart Client/Proxy | nichts |
+| Produktion | 6 | nichts |
+| Design | 6 (Senior-Punkte) | nichts |
+
+Selbsttest: 18 bestehende Fragen verteilt, 7 neue (Warum Verlust ok, mod N kaputt, Slot-Zahlen, 10-MB-Wert, L1 ohne TTL, Replikate in gleicher Zone, Kontostand), gesamt 25.
+
+## Rollout-Writer (search/inverted-index, search-sync, vector-search; sysdesign/api-design, availability, caching, cap-consistency, case-authority-documents, case-checkout, case-distributed-cache): nicht verifiziert
+
+- inverted-index.html: BM25-Defaults k1 = 1.2 / b = 0.75 nicht neu gegen die ES-Similarity-Doku geprüft (Lucene-Standard, unverändert); Python-Beispielausgaben unverändert übernommen.
+- vector-search.html: OpenSearch-Angaben (faiss Standard-Engine, nmslib veraltet, Standard-Distanz l2) gegen OpenSearch-Doku geprüft; HNSW-Defaults ef_construction 100 für Elasticsearch/OpenSearch nicht neu geprüft (unverändert).
+- api-design.html: Azure-App-Service-Timeout 230 s und APIM-Versionen/Revisionen nicht neu geprüft (unverändert).
+- availability.html: Azure-VM-SLA-Werte (99,99 % / 99,95 % / 99,9 %), AKS-SLA-Werte und „Switzerland West ohne Zonen, Zugang auf Antrag“ nicht neu geprüft (unverändert).
+- cap-consistency.html: PACELC-Einordnungen nach Abadi (PA/EL, PC/EC, PC/EL) nicht neu geprüft (Paper-Stand, unverändert).
+- case-authority-documents.html / case-checkout.html / case-distributed-cache.html: bestehende „Echte Ausgabe, PostgreSQL 17.12“ nicht neu ausgeführt, unverändert; ISG-Stufen und Facebook-Memcache-Angaben (Leases, Gutter) nicht neu geprüft.
+- Alle zehn Seiten: keine neuen Beispiele ausgeführt; bestehende Ausgaben und SVGs unverändert.

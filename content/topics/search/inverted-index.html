@@ -19,12 +19,37 @@
   summary { font-weight: 600; cursor: pointer; }
   details p { margin: 6px 0 2px; }
   .small { color: #6e6e73; font-size: 14px; }
+  h3 { font-size: 17px; margin: 20px 0 6px; }
+  .geruest { border: 2px solid #1d1d1f; border-radius: 6px; padding: 10px 14px; margin: 14px 0; font-size: 15px; line-height: 1.4; }
+  .geruest h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; margin: 0 0 8px; padding: 0; border: 0; }
+  .geruest dl { display: grid; grid-template-columns: 6.6em 1fr; gap: 6px 10px; margin: 0; }
+  .geruest dt { font-weight: 700; font-size: 12px; text-transform: uppercase; letter-spacing: .05em; padding-top: 1px; }
+  .geruest dd { margin: 0; }
+  .muster { border: 1px solid #e5e5ea; border-left: 4px solid #1d1d1f; border-radius: 6px; padding: 10px 14px; margin: 14px 0; }
+  .muster h3 { margin: 0 0 6px; font-size: 13px; text-transform: uppercase; letter-spacing: .06em; }
+  .muster .mq { margin: 0 0 6px; }
 </style>
 </head>
 <body>
 
 <h1>Inverted Index: wie Suche funktioniert</h1>
 <!-- sources: Search · Tier 1 · Quellen: Elasticsearch 9 Reference (Text Analysis, Similarity, Query DSL, Index Settings, Search API, Explain/Profile API), Apache Lucene 10 API-Doku (BM25Similarity, Codecs), PostgreSQL 17 Doku (Full Text Search, GIN, pg_trgm), Manning et al.: Introduction to Information Retrieval -->
+
+<div class="geruest"><h2>Gerüst</h2><dl>
+  <dt>Warum?</dt><dd>Wort → Liste der Dokumente: Suche liest nur die Listen der Anfrage-Terms statt aller Dokumente. <code>LIKE '%…%'</code> wäre ein Seq Scan.</dd>
+  <dt>Wie innen?</dt><dd>Analyzer macht Terms, Term Dictionary → Postings-Liste (Doc-IDs, Positionen). AND schneidet Listen; Segmente unveränderlich; query then fetch über Shards.</dd>
+  <dt>Zahlen</dt><dd>Refresh 1 s, search idle 30 s. <code>from + size</code> max 10 000, <code>track_total_hits</code> zählt bis 10 000. BM25: k1 1.2, b 0.75.</dd>
+  <dt>Vergleich</dt><dd><code>match</code> analysiert, <code>term</code> nicht; text vs keyword. PostgreSQL: GIN + tsvector statt zweitem System. Vektorsuche für Bedeutung.</dd>
+  <dt>Produktion</dt><dd>Dokument erst nach Refresh suchbar. Mapping Explosion bei dynamischen Keys. Tiefe Paginierung → <code>search_after</code> mit PIT.</dd>
+  <dt>Design</dt><dd>DB bleibt die Wahrheit, Index jederzeit neu baubar. <code>owner_id</code>-Filter in jede Query; Filter statt Score, wo kein Ranking nötig.</dd>
+</dl></div>
+
+<div class="muster"><h3>Antwort-Muster</h3><p class="mq"><b>Frage:</b> Wie funktioniert die Volltextsuche in Elasticsearch?</p><ol>
+  <li>Mechanismus: Der Analyzer macht aus Text Terms, und der Inverted Index zeigt pro Term auf seine Dokumente.</li>
+  <li>Zahl: Die Suche liest nur die Postings-Listen; neu Indexiertes ist nach dem Refresh suchbar, Standard 1 Sekunde.</li>
+  <li>Trade-off: BM25 sortiert nach Relevanz, versteht aber keine Bedeutung und braucht denselben Analyzer wie beim Indexieren.</li>
+  <li>Produktion: Darum setze ich den Besitzer-Filter in den Filter-Kontext und halte den Index als Kopie der Datenbank.</li>
+</ol></div>
 
 <div class="kern">
 <b>Kern:</b> Ein <b>Inverted Index</b> ist eine Tabelle von <b>Wort → Liste der Dokumente</b>, die das Wort enthalten. Er löst das Problem, dass man sonst jedes Dokument lesen müsste. Die Suche schlägt nur die Wörter der Anfrage nach und sortiert die Treffer mit <b>BM25</b> nach Relevanz.
@@ -235,33 +260,41 @@ ORDER BY rank DESC LIMIT 20;</pre>
 </ul>
 </div>
 
-<h2>11. Fragen</h2>
+<h2>11. Selbsttest</h2>
+<h3>Warum?</h3>
 <details><summary>Was ist ein Inverted Index?</summary><p>Eine Struktur von Term zu Liste der Dokumente, die den Term enthalten. Die Suche liest nur die Listen der gesuchten Terms statt aller Dokumente.</p></details>
 <details><summary>Warum heisst er „inverted“?</summary><p>Ein Dokument zeigt normal auf seine Wörter. Der Index dreht das um: Das Wort zeigt auf seine Dokumente.</p></details>
+<details><summary>Warum ist LIKE '%hund%' langsam?</summary><p>Ein B-Tree hilft nur bei festem Anfang. Mit führendem % liest die DB die ganze Tabelle. pg_trgm mit GIN hilft.</p></details>
+<h3>Wie innen?</h3>
 <details><summary>Was steht in einer Postings-Liste?</summary><p>Sortierte Doc-IDs, pro Doc die Häufigkeit des Terms und optional die Positionen und Offsets.</p></details>
 <details><summary>Was macht ein Analyzer?</summary><p>Er wandelt Text in Terms um: Character Filter, dann Tokenizer, dann Token Filter wie lowercase, Stopwörter, Stemming, Synonyme.</p></details>
 <details><summary>Warum muss der Analyzer beim Indexieren und Suchen gleich sein?</summary><p>Die Suche vergleicht Terms exakt. Wird „Hunde“ beim Indexieren zu „hund“, muss die Anfrage auch „hund“ ergeben.</p></details>
-<details><summary>Was ist der Unterschied zwischen text und keyword?</summary><p>text wird analysiert und dient der Volltextsuche. keyword bleibt ein ganzer Wert und dient Filtern, Sortieren und Aggregationen.</p></details>
-<details><summary>Warum findet eine term-Query „Hund“ nichts?</summary><p>term analysiert die Anfrage nicht. Im text-Feld steht aber „hund“ in Kleinbuchstaben. Lösung: match oder ein keyword-Feld.</p></details>
 <details><summary>Wie funktioniert BM25 grob?</summary><p>Score = Summe über die Query-Terms aus idf mal normierter tf. Seltene Terms zählen mehr, häufige Treffer sättigen, kurze Felder zählen mehr.</p></details>
-<details><summary>Was bedeuten k1 und b?</summary><p>k1 (1.2) steuert die Sättigung der Termhäufigkeit. b (0.75) steuert die Längen-Normalisierung, b = 0 schaltet sie aus.</p></details>
-<details><summary>Warum ist BM25 besser als reines TF-IDF?</summary><p>tf sättigt: Ein Wort 50-mal macht ein Dokument nicht 50-mal relevanter. Und die Feldlänge ist sauber eingerechnet.</p></details>
-<details><summary>Was ist der Unterschied zwischen Query- und Filter-Kontext?</summary><p>Query-Kontext berechnet einen Score. Filter-Kontext entscheidet nur ja oder nein, ist schneller und wird gecacht.</p></details>
 <details><summary>Was ist ein Segment?</summary><p>Ein kleiner, unveränderlicher Lucene-Index. Neue Dokumente kommen in neue Segmente. Lucene mergt sie im Hintergrund.</p></details>
 <details><summary>Wie funktionieren Update und Delete, wenn Segmente unveränderlich sind?</summary><p>Delete markiert das Dokument als gelöscht. Update ist Delete plus Neu-Indexieren. Ein Merge entfernt die alten Daten.</p></details>
 <details><summary>Was heisst Near Real-Time?</summary><p>Neue Dokumente sind erst nach einem Refresh suchbar. Standard: jede Sekunde, bei inaktiven Shards erst bei der nächsten Suche.</p></details>
 <details><summary>Wozu dient das Translog?</summary><p>Es macht Schreibvorgänge dauerhaft, bevor ein Lucene-Commit passiert. Nach einem Absturz spielt Elasticsearch es erneut ab.</p></details>
 <details><summary>Was ist query then fetch?</summary><p>Phase 1: Jeder Shard liefert IDs und Scores seiner besten Treffer. Phase 2: Der Koordinator holt nur für die Gewinner die Dokumente.</p></details>
-<details><summary>Warum sind Scores bei kleinen Indizes manchmal seltsam?</summary><p>Jeder Shard rechnet idf lokal. Bei wenigen Dokumenten pro Shard weichen die Werte ab. Lösung: dfs_query_then_fetch oder ein Shard.</p></details>
 <details><summary>Was sind Doc Values?</summary><p>Spaltenweise Speicherung pro Feld, von Doc zu Wert. Elasticsearch braucht sie zum Sortieren und Aggregieren.</p></details>
+<h3>Zahlen</h3>
+<details><summary>Was bedeuten k1 und b?</summary><p>k1 (1.2) steuert die Sättigung der Termhäufigkeit. b (0.75) steuert die Längen-Normalisierung, b = 0 schaltet sie aus.</p></details>
 <details><summary>Wie blättert man tief in Suchergebnissen?</summary><p>Nicht mit from und size über 10 000. Mit search_after und einem Point in Time.</p></details>
+<details><summary>Was geht kaputt, wenn Sie mit from + size über 10 000 hinaus blättern?</summary><p>Elasticsearch lehnt die Anfrage ab (index.max_result_window, Standard 10 000). Schon davor wird jede tiefe Seite langsam, weil jeder Shard from + size Treffer sortiert. Lösung: search_after mit PIT.</p></details>
+<h3>Vergleich</h3>
+<details><summary>Was ist der Unterschied zwischen text und keyword?</summary><p>text wird analysiert und dient der Volltextsuche. keyword bleibt ein ganzer Wert und dient Filtern, Sortieren und Aggregationen.</p></details>
+<details><summary>Warum findet eine term-Query „Hund“ nichts?</summary><p>term analysiert die Anfrage nicht. Im text-Feld steht aber „hund“ in Kleinbuchstaben. Lösung: match oder ein keyword-Feld.</p></details>
+<details><summary>Warum ist BM25 besser als reines TF-IDF?</summary><p>tf sättigt: Ein Wort 50-mal macht ein Dokument nicht 50-mal relevanter. Und die Feldlänge ist sauber eingerechnet.</p></details>
+<details><summary>Was ist der Unterschied zwischen Query- und Filter-Kontext?</summary><p>Query-Kontext berechnet einen Score. Filter-Kontext entscheidet nur ja oder nein, ist schneller und wird gecacht.</p></details>
 <details><summary>Wie macht man Volltextsuche nur mit PostgreSQL?</summary><p>tsvector-Spalte mit to_tsvector, GIN-Index darauf, Abfrage mit @@ und websearch_to_tsquery, Sortierung mit ts_rank.</p></details>
-<details><summary>Warum ist LIKE '%hund%' langsam?</summary><p>Ein B-Tree hilft nur bei festem Anfang. Mit führendem % liest die DB die ganze Tabelle. pg_trgm mit GIN hilft.</p></details>
 <details><summary>Wann reicht PostgreSQL, wann braucht man Elasticsearch?</summary><p>PostgreSQL reicht für einfache Suche und moderate Datenmengen. Elasticsearch lohnt sich für BM25-Relevanz, Facetten, Tippfehler, grosse Mengen und viele Suchanfragen.</p></details>
+<h3>Produktion</h3>
+<details><summary>Warum sind Scores bei kleinen Indizes manchmal seltsam?</summary><p>Jeder Shard rechnet idf lokal. Bei wenigen Dokumenten pro Shard weichen die Werte ab. Lösung: dfs_query_then_fetch oder ein Shard.</p></details>
 <details><summary>Wie prüfen Sie, warum ein Dokument nicht gefunden wird?</summary><p>_analyze auf Text und Anfrage, _mapping prüfen, _explain für das Dokument, prüfen ob refresht und ob ein Filter es ausschliesst.</p></details>
-<details><summary>Szenario: Erklären Sie die Suche für einen Bild-Upload mit Bilderkennung.</summary><p>Datei in S3, Metadaten und Labels in PostgreSQL, Sync per Outbox oder CDC nach Elasticsearch. Index mit caption als text, labels und owner_id als keyword, plus Embedding. Query: bool mit match auf caption, filter auf owner_id, optional kNN. Ergebnis: IDs, dann Vorschau-URLs.</p></details>
 <details><summary>Szenario: Nutzer suchen „Hunde“ und finden Bilder mit „Hund“ nicht. Was tun Sie?</summary><p>Mit _analyze prüfen: Wahrscheinlich kein Stemming. Lösung: german-Analyzer auf dem Feld, neuer Index, Reindex, Alias umschalten.</p></details>
 <details><summary>Szenario: Die Suche wird langsam, Seite 500 dauert Sekunden. Was ist los?</summary><p>Tiefe Paginierung: Jeder Shard sortiert from + size Treffer. Lösung: search_after mit PIT und eine Grenze in der UI. Mit Profile API und Slow Log bestätigen.</p></details>
+<h3>Design</h3>
+<details><summary>Szenario: Erklären Sie die Suche für einen Bild-Upload mit Bilderkennung.</summary><p>Datei in S3, Metadaten und Labels in PostgreSQL, Sync per Outbox oder CDC nach Elasticsearch. Index mit caption als text, labels und owner_id als keyword, plus Embedding. Query: bool mit match auf caption, filter auf owner_id, optional kNN. Ergebnis: IDs, dann Vorschau-URLs.</p></details>
+<details><summary>Was geht kaputt, wenn der owner_id-Filter im Index fehlt?</summary><p>Nutzer sehen fremde Treffer: Schon Titel und Snippets sind ein Datenleck. Berechtigungen gehören als Filter in jede Query.</p></details>
 
 </body>
 </html>

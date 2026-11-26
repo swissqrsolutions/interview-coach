@@ -2,13 +2,14 @@
 
 Generated from content/syllabus.json. Priority 1 = asked in almost every interview. Mark: **Projekt** = shown in CV/Gmail · **— kein Projekt** = no project experience · **? prüfen** = unclear, you decide.
 
-414 topics · P1 244 · P2 132 · P3 38 · written 310
+437 topics · P1 267 · P2 132 · P3 38 · written 313
 
-## Java 21 (core + advanced) (40)
+## Java 21 (core + advanced) (42)
 Sources: Java SE 21/25 docs (docs.oracle.com) · JVM Specification · OpenJDK source + JEPs (openjdk.org) · Oracle Java SE 21 Developer exam 1Z0-830 topics
 
 | P | Topic | Project | Written |
 |---|---|---|---|
+| 1 | Top 30 Fragen mit Kurzantworten | — kein Projekt | ✓ |
 | 1 | JVM-Architektur | Projekt | ✓ |
 | 1 | JIT-Compiler | Projekt | ✓ |
 | 1 | Speicherbereiche der JVM | Projekt | ✓ |
@@ -35,6 +36,7 @@ Sources: Java SE 21/25 docs (docs.oracle.com) · JVM Specification · OpenJDK so
 | 1 | Java-Versionen 8 bis 25 | Projekt | ✓ |
 | 1 | Thread Dumps lesen | ? prüfen | ✓ |
 | 1 | Profiling mit JFR und async-profiler | ? prüfen | ✓ |
+| 1 | Drill: Bugs finden und fixen | — kein Projekt |  |
 | 2 | Class Loading | Projekt | ✓ |
 | 2 | Atomic-Klassen und CAS | ? prüfen | ✓ |
 | 2 | CompletableFuture | ? prüfen | ✓ |
@@ -50,11 +52,12 @@ Sources: Java SE 21/25 docs (docs.oracle.com) · JVM Specification · OpenJDK so
 | 3 | IO und NIO | ? prüfen | ✓ |
 | 3 | Java-Module (JPMS) | — kein Projekt | ✓ |
 
-## Spring Boot + Spring family (23)
+## Spring Boot + Spring family (24)
 Sources: Spring Framework reference · Spring Boot 3 reference · Spring Security reference · Spring Certified Professional exam guide
 
 | P | Topic | Project | Written |
 |---|---|---|---|
+| 1 | Top 30 Fragen mit Kurzantworten | — kein Projekt |  |
 | 1 | IoC und Dependency Injection | Projekt | ✓ |
 | 1 | Bean-Lebenszyklus | Projekt | ✓ |
 | 1 | Bean Scopes | Projekt | ✓ |
@@ -79,11 +82,12 @@ Sources: Spring Framework reference · Spring Boot 3 reference · Spring Securit
 | 2 | Spring Cache | ? prüfen | ✓ |
 | 3 | Spring Batch | — kein Projekt | ✓ |
 
-## REST, JSON, OpenAPI (11)
+## REST, JSON, OpenAPI (12)
 Sources: RFC 9110 HTTP Semantics · RFC 9457 Problem Details · OpenAPI 3.1 specification
 
 | P | Topic | Project | Written |
 |---|---|---|---|
+| 1 | Top 30 Fragen mit Kurzantworten | — kein Projekt |  |
 | 1 | HTTP-Methoden | Projekt | ✓ |
 | 1 | HTTP-Statuscodes | Projekt | ✓ |
 | 1 | Ressourcen-Design | Projekt | ✓ |
@@ -96,11 +100,12 @@ Sources: RFC 9110 HTTP Semantics · RFC 9457 Problem Details · OpenAPI 3.1 spec
 | 2 | Fehlerformat: Problem Details (RFC 9457) | Projekt |  |
 | 2 | REST vs GraphQL vs gRPC | Projekt |  |
 
-## Microservices + event-driven (17)
+## Microservices + event-driven (18)
 Sources: microservices.io patterns (Chris Richardson) · Azure Architecture Center: cloud design patterns · Building Microservices (Sam Newman)
 
 | P | Topic | Project | Written |
 |---|---|---|---|
+| 1 | Top 30 Fragen mit Kurzantworten | — kein Projekt |  |
 | 1 | Monolith vs Modulith vs Microservices | Projekt | ✓ |
 | 1 | Service-Schnitt mit DDD und Bounded Contexts | ? prüfen | ✓ |
 | 1 | Synchrone vs asynchrone Kommunikation | Projekt | ✓ |
@@ -119,11 +124,12 @@ Sources: microservices.io patterns (Chris Richardson) · Azure Architecture Cent
 | 2 | Testen von Microservices: Contract Tests | ? prüfen |  |
 | 2 | 12-Factor App | ? prüfen |  |
 
-## Apache Kafka (15)
+## Apache Kafka (16)
 Sources: Apache Kafka documentation · Confluent developer docs · Confluent CCDAK exam topics
 
 | P | Topic | Project | Written |
 |---|---|---|---|
+| 1 | Top 30 Fragen mit Kurzantworten | — kein Projekt |  |
 | 1 | Kafka-Architektur: Broker, Topic, Partition, KRaft | Projekt | ✓ |
 | 1 | Producer intern: Batching, acks, Idempotenz, Partitioner | ? prüfen | ✓ |
 | 1 | Consumer Groups und Rebalancing | Projekt | ✓ |
@@ -226,11 +232,12 @@ Sources: docs.python.org · pandas and pytest docs
 | 3 | Type Hints | ? prüfen |  |
 | 3 | venv, pip, Packaging | ? prüfen |  |
 
-## PostgreSQL + SQL (20)
+## PostgreSQL + SQL (21)
 Sources: PostgreSQL 16/17 documentation · Use The Index, Luke (Markus Winand)
 
 | P | Topic | Project | Written |
 |---|---|---|---|
+| 1 | Top 30 Fragen mit Kurzantworten | — kein Projekt |  |
 | 1 | ACID und Transaktionen | Projekt | ✓ |
 | 1 | MVCC: wie PostgreSQL Versionen speichert | ? prüfen | ✓ |
 | 1 | VACUUM, Autovacuum, Bloat | ? prüfen | ✓ |
@@ -260,11 +267,12 @@ Sources: Oracle Database SQL and PL/SQL docs
 | 3 | Oracle vs PostgreSQL | — kein Projekt |  |
 | 3 | PL/SQL: Prozeduren, Packages, Cursors | — kein Projekt |  |
 
-## Hibernate / JPA + Flyway (8)
+## Hibernate / JPA + Flyway (9)
 Sources: Hibernate ORM 6 user guide · Jakarta Persistence 3 spec · Vlad Mihalcea articles · Flyway docs
 
 | P | Topic | Project | Written |
 |---|---|---|---|
+| 1 | Top 30 Fragen mit Kurzantworten | — kein Projekt |  |
 | 1 | Entity-Lebenszyklus | Projekt | ✓ |
 | 1 | Persistence Context | ? prüfen | ✓ |
 | 1 | Lazy vs Eager Loading | Projekt | ✓ |
@@ -281,11 +289,12 @@ Sources: Microsoft Learn: SQL Server T-SQL
 |---|---|---|---|
 | 3 | SQL Server für PostgreSQL-Entwickler, OUTPUT-Klausel | Projekt |  |
 
-## Apache Spark / PySpark (16)
+## Apache Spark / PySpark (17)
 Sources: Apache Spark 3.5/4 documentation · Databricks Spark developer exam topics
 
 | P | Topic | Project | Written |
 |---|---|---|---|
+| 1 | Top 30 Fragen mit Kurzantworten | — kein Projekt |  |
 | 1 | Spark-Architektur: Driver, Executor, Cluster Manager | Projekt | ✓ |
 | 1 | RDD vs DataFrame vs Dataset | Projekt | ✓ |
 | 1 | Lazy Evaluation, DAG, Jobs, Stages, Tasks | Projekt | ✓ |
@@ -303,11 +312,12 @@ Sources: Apache Spark 3.5/4 documentation · Databricks Spark developer exam top
 | 2 | Spark auf Kubernetes | Projekt |  |
 | 2 | Spark-Tuning: wichtigste Konfigurationen | ? prüfen |  |
 
-## Apache Iceberg (11)
+## Apache Iceberg (12)
 Sources: Apache Iceberg spec and docs (iceberg.apache.org)
 
 | P | Topic | Project | Written |
 |---|---|---|---|
+| 1 | Top 30 Fragen mit Kurzantworten | — kein Projekt |  |
 | 1 | Was ist ein Table Format? Iceberg-Grundlagen | Projekt | ✓ |
 | 1 | Metadaten: metadata.json, Manifest List, Manifests | ? prüfen | ✓ |
 | 1 | Snapshots und Time Travel | ? prüfen | ✓ |
@@ -320,11 +330,12 @@ Sources: Apache Iceberg spec and docs (iceberg.apache.org)
 | 2 | Gleichzeitige Writes | ? prüfen | ✓ |
 | 2 | Branches und Tags | ? prüfen | ✓ |
 
-## Lakehouse + medallion + ETL (14)
+## Lakehouse + medallion + ETL (15)
 Sources: Designing Data-Intensive Applications (Kleppmann) · Fundamentals of Data Engineering (Reis/Housley)
 
 | P | Topic | Project | Written |
 |---|---|---|---|
+| 1 | Top 30 Fragen mit Kurzantworten | — kein Projekt |  |
 | 1 | Data Lake vs Warehouse vs Lakehouse | Projekt | ✓ |
 | 1 | Medallion-Architektur | Projekt | ✓ |
 | 1 | ETL vs ELT | Projekt | ✓ |
@@ -391,11 +402,12 @@ Sources: Databricks and Delta Lake docs
 | 2 | Databricks vs eigener Stack (Spark, Iceberg, Nessie) | — kein Projekt |  |
 | 3 | Unity Catalog und Workspaces | — kein Projekt |  |
 
-## Azure (14)
+## Azure (15)
 Sources: Microsoft Learn: AZ-204 and AZ-305 skills outlines · Azure Architecture Center
 
 | P | Topic | Project | Written |
 |---|---|---|---|
+| 1 | Top 30 Fragen mit Kurzantworten | — kein Projekt |  |
 | 1 | Grundlagen: Tenant, Subscription, Resource Group, Regionen (Schweiz) | ? prüfen | ✓ |
 | 1 | Compute: Functions vs Container Apps vs App Service vs AKS | Projekt | ✓ |
 | 1 | Azure Functions: Trigger, Bindings, Pläne, Durable Functions | Projekt | ✓ |
@@ -411,11 +423,12 @@ Sources: Microsoft Learn: AZ-204 and AZ-305 skills outlines · Azure Architectur
 | 2 | Daten-Services: ADF, Synapse, Fabric, Databricks | — kein Projekt |  |
 | 2 | Kosten und Governance: Tags, Policies, Budgets | ? prüfen |  |
 
-## Kubernetes + Docker (18)
+## Kubernetes + Docker (19)
 Sources: kubernetes.io documentation · CKA and CKAD curricula (CNCF)
 
 | P | Topic | Project | Written |
 |---|---|---|---|
+| 1 | Top 30 Fragen mit Kurzantworten | — kein Projekt |  |
 | 1 | Kubernetes-Architektur | Projekt | ✓ |
 | 1 | Pods und Sidecars | Projekt | ✓ |
 | 1 | Deployments und Rollouts | Projekt | ✓ |
@@ -491,11 +504,12 @@ Sources: OWASP Top 10 (2025) · RFC 6749/9700 OAuth 2 · OpenID Connect Core · 
 | 2 | TLS und mTLS | ? prüfen |  |
 | 2 | Datenschutz: DSG und DSGVO für Entwickler | Projekt |  |
 
-## Angular (14 → modern) (13)
+## Angular (14 → modern) (14)
 Sources: angular.dev guides (v20) · RxJS docs
 
 | P | Topic | Project | Written |
 |---|---|---|---|
+| 1 | Top 30 Fragen mit Kurzantworten | — kein Projekt |  |
 | 1 | Angular-Architektur: Standalone vs NgModule | Projekt | ✓ |
 | 1 | Komponenten und Lifecycle Hooks | Projekt | ✓ |
 | 1 | Change Detection: Zone.js, OnPush, Zoneless | ? prüfen | ✓ |
@@ -539,7 +553,7 @@ Sources: JUnit 5 user guide · Mockito docs · Testcontainers docs · Playwright
 | 2 | Contract Testing | — kein Projekt |  |
 | 2 | Flaky Tests | Projekt |  |
 
-## Design patterns + architecture styles (10)
+## Design patterns + architecture styles (11)
 Sources: Design Patterns (GoF) · Hexagonal Architecture (Alistair Cockburn) · Clean Architecture (Robert C. Martin) · Domain-Driven Design (Evans)
 
 | P | Topic | Project | Written |
@@ -553,13 +567,15 @@ Sources: Design Patterns (GoF) · Hexagonal Architecture (Alistair Cockburn) · 
 | 1 | Onion und Clean Architecture | ? prüfen | ✓ |
 | 1 | DDD taktisch | ? prüfen | ✓ |
 | 1 | Anti-Patterns und Code Smells | ? prüfen | ✓ |
+| 1 | Drill: Pattern im Code erkennen | — kein Projekt |  |
 | 2 | DDD strategisch: Bounded Context, Context Map | ? prüfen |  |
 
-## Search (Elasticsearch, OpenSearch, vector search) (6)
+## Search (Elasticsearch, OpenSearch, vector search) (7)
 Sources: Elasticsearch / OpenSearch docs · Introduction to Information Retrieval (Manning et al.)
 
 | P | Topic | Project | Written |
 |---|---|---|---|
+| 1 | Top 30 Fragen mit Kurzantworten | — kein Projekt |  |
 | 1 | Inverted Index | — kein Projekt | ✓ |
 | 1 | Vektorsuche und Embeddings | — kein Projekt | ✓ |
 | 1 | Suchindex synchron halten | — kein Projekt | ✓ |
@@ -612,11 +628,12 @@ Sources: vendor docs (GitHub Copilot, Claude Code) · company AI usage policies
 |---|---|---|---|
 | 1 | KI-gestützte Entwicklung | Projekt | ✓ |
 
-## System-Design-Grundlagen (21)
+## System-Design-Grundlagen (28)
 Sources: Designing Data-Intensive Applications (Kleppmann) · System Design Interview vol. 1+2 (Alex Xu)
 
 | P | Topic | Project | Written |
 |---|---|---|---|
+| 1 | Top 30 Fragen mit Kurzantworten | — kein Projekt |  |
 | 1 | Back-of-the-Envelope-Schätzung | — kein Projekt | ✓ |
 | 1 | Load Balancing | — kein Projekt | ✓ |
 | 1 | Caching: Strategien, Redis, Invalidierung | — kein Projekt | ✓ |
@@ -631,7 +648,13 @@ Sources: Designing Data-Intensive Applications (Kleppmann) · System Design Inte
 | 1 | Fall: Bild-Upload mit Erkennung und Suche | — kein Projekt | ✓ |
 | 1 | Fall: URL-Shortener | — kein Projekt | ✓ |
 | 1 | Fall: Benachrichtigungs-System | — kein Projekt | ✓ |
-| 1 | Übung: Schwache Designs erklären und verbessern | — kein Projekt | ✓ |
+| 1 | Übung: Das kaputte Microservices-Design (8 Services) | — kein Projekt | ✓ |
+| 1 | Methode: Jede Aufgabe in 5 Minuten verstehen | — kein Projekt | ✓ |
+| 1 | Drill 1: Webhook-Dienst (Queue, Retry, DLQ) | — kein Projekt |  |
+| 1 | Drill 2: Live-Chat (WebSocket, Kafka, Fan-out) | — kein Projekt |  |
+| 1 | Drill 3: Terminbuchung (Locking, Reminder-Queue) | — kein Projekt | ✓ |
+| 1 | Drill 4: Monats-Rechnungen (Batch, Worker, idempotent) | — kein Projekt |  |
+| 1 | Drill 5: IoT-Telemetrie (Kafka, Zeitreihen, Alarme) | — kein Projekt |  |
 | 2 | Consistent Hashing | — kein Projekt | ✓ |
 | 2 | Fall: News-Feed | — kein Projekt | ✓ |
 | 2 | Fall: Verteilter Job-Scheduler | — kein Projekt | ✓ |

@@ -19,12 +19,37 @@
   summary { font-weight: 600; cursor: pointer; }
   details p { margin: 6px 0 2px; }
   .small { color: #6e6e73; font-size: 14px; }
+  h3 { font-size: 17px; margin: 20px 0 6px; }
+  .geruest { border: 2px solid #1d1d1f; border-radius: 6px; padding: 10px 14px; margin: 14px 0; font-size: 15px; line-height: 1.4; }
+  .geruest h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; margin: 0 0 8px; padding: 0; border: 0; }
+  .geruest dl { display: grid; grid-template-columns: 6.6em 1fr; gap: 6px 10px; margin: 0; }
+  .geruest dt { font-weight: 700; font-size: 12px; text-transform: uppercase; letter-spacing: .05em; padding-top: 1px; }
+  .geruest dd { margin: 0; }
+  .muster { border: 1px solid #e5e5ea; border-left: 4px solid #1d1d1f; border-radius: 6px; padding: 10px 14px; margin: 14px 0; }
+  .muster h3 { margin: 0 0 6px; font-size: 13px; text-transform: uppercase; letter-spacing: .06em; }
+  .muster .mq { margin: 0 0 6px; }
 </style>
 </head>
 <body>
 
 <h1>Fall: Verteilter Cache</h1>
 <!-- sources: System-Design-Fall · Tier 2 · Quellen: Redis Docs (Cluster Specification: 16 384 Hash Slots, MOVED/ASK, asynchrone Replikation; Key Eviction), Karger et al. 1997 (Consistent Hashing), Nishtala et al. 2013 (Scaling Memcache at Facebook, NSDI: Leases, Gutter-Pool), PostgreSQL 17 Docs (Transaktionen, FOR UPDATE SKIP LOCKED), Kleppmann DDIA Kap. 5, 6 und 11 -->
+
+<div class="geruest"><h2>Gerüst</h2><dl>
+  <dt>Warum?</dt><dd>500 000 Reads/s schafft die DB nicht: RAM über viele Knoten entlastet sie. Datenverlust ist erlaubt, es ist ein Cache.</dd>
+  <dt>Wie innen?</dt><dd>16 384 Hash Slots (CRC16), Smart Client routet direkt; <code>MOVED</code>/<code>ASK</code> bei Umzug. Replikat je Shard asynchron in anderer Zone.</dd>
+  <dt>Zahlen</dt><dd>2 TB Arbeitsmenge / 50 GB pro Knoten ≈ 40 Primär-Shards, mit Replikaten 80. <code>mod N</code> verschiebt beim Skalieren 75 % der Keys.</dd>
+  <dt>Vergleich</dt><dd>In-Process (schnell, pro Instanz) vs verteilt (geteilt, Netz-Hop) vs zwei Stufen L1 + L2. Smart Client vs Proxy.</dd>
+  <dt>Produktion</dt><dd>Hot Key macht einen Shard heiss. Kalter Start trifft die DB. Invalidierung über Outbox mit Version, DEL ist idempotent.</dd>
+  <dt>Design</dt><dd>DB bleibt die Wahrheit, TTL als Netz. Kein Cache für Werte, die nie veralten dürfen. Managed Service vor Eigenbau.</dd>
+</dl></div>
+
+<div class="muster"><h3>Antwort-Muster</h3><p class="mq"><b>Frage:</b> Entwerfen Sie einen verteilten Cache.</p><ol>
+  <li>Mechanismus: Keys liegen über Hash Slots auf Shards im RAM, jeder Shard hat ein Replikat in einer anderen Zone.</li>
+  <li>Zahl: 2 TB bei 50 GB pro Knoten sind rund 40 Primär-Shards; mod N würde beim Skalieren 75 Prozent der Keys verschieben.</li>
+  <li>Trade-off: Die Replikation ist asynchron, ein Failover kann letzte Writes verlieren; für einen Cache ist das ok.</li>
+  <li>Produktion: Invalidiert wird über eine Outbox mit Version, die TTL ist das Sicherheitsnetz.</li>
+</ol></div>
 
 <div class="kern">
 <b>Kern (die 1-Minuten-Antwort):</b> Ein <b>verteilter Cache</b> ist ein In-Memory-Key-Value-Speicher über viele Knoten, der eine langsame Datenbank entlastet. Schlüssel werden über <b>Partitionierung</b> (Consistent Hashing oder feste Hash Slots) verteilt, jede Partition hat <b>Replikate</b> für Ausfälle. Volle Knoten <b>evicten</b> mit LRU oder LFU. Die DB bleibt die Wahrheit; Änderungen <b>invalidieren</b> den Cache über eine <b>Outbox</b> mit Versionsnummer, und eine TTL begrenzt jede Veraltung.
@@ -219,25 +244,38 @@ FROM generate_series(1, 100000) g;
 </ul>
 </div>
 
-<h2>11. Fragen</h2>
-<details><summary>Skizzieren Sie den verteilten Cache in einer Minute.</summary><p>Shards im RAM über Hash Slots verteilt, je mit Replikat. Smart Client routet direkt. Cache-Aside mit TTL, Invalidierung über Outbox, Eviction mit LRU oder LFU, Failover per Gossip oder Sentinel.</p></details>
-<details><summary>Wie verteilen Sie die Keys?</summary><p>Feste Hash Slots wie Redis Cluster oder Consistent Hashing. Beides bewegt beim Skalieren nur einen Teil der Keys.</p></details>
-<details><summary>Wie viele Knoten brauchen Sie?</summary><p>2 TB Arbeitsmenge bei ca. 50 GB pro Knoten sind ca. 40 Primär-Shards, mit Replikaten 80. Der Engpass ist RAM.</p></details>
-<details><summary>Smart Client oder Proxy?</summary><p>Smart Client spart einen Hop, braucht aber Logik in jeder Sprache. Proxy hält Clients simpel und kostet Latenz.</p></details>
-<details><summary>Was passiert bei einem Knotenausfall?</summary><p>Ein Replikat wird Primär. Die letzten async Writes können fehlen. Der Cache lädt fehlende Werte bei Miss aus der DB.</p></details>
-<details><summary>Wie bleibt der Cache konsistent mit der DB?</summary><p>Gar nicht perfekt. Delete nach Commit über Outbox oder CDC, Versionen gegen Races, TTL als Sicherheitsnetz.</p></details>
+<h2>11. Selbsttest</h2>
+<h3>Warum?</h3>
 <details><summary>Warum eine Outbox für die Invalidierung?</summary><p>DB-Änderung und Invalidierungs-Auftrag sind in einer Transaktion. Ein Absturz dazwischen lässt keinen alten Wert zurück.</p></details>
-<details><summary>Was ist eine Cache Stampede und wie verhindern Sie sie?</summary><p>Viele gleichzeitige Misses auf einen Key überlasten die DB. Schutz: Single Flight, Lock oder Lease pro Key, stale-while-revalidate, TTL-Jitter.</p></details>
-<details><summary>Welche Eviction-Policy wählen Sie?</summary><p>Für reine Caches allkeys-lru oder allkeys-lfu. LFU übersteht Scans besser. noeviction nur, wenn der Speicher kein Cache ist.</p></details>
-<details><summary>Was tun Sie gegen Hot Keys?</summary><p>L1-Cache im Prozess, Key-Kopien auf mehreren Shards, Lesen von Replikaten.</p></details>
+<details><summary>Warum darf ein verteilter Cache Daten verlieren?</summary><p>Er ist eine Kopie: Die DB bleibt die Wahrheit, ein Miss lädt den Wert neu. Darum reicht asynchrone Replikation.</p></details>
+<h3>Wie innen?</h3>
+<details><summary>Wie verteilen Sie die Keys?</summary><p>Feste Hash Slots wie Redis Cluster oder Consistent Hashing. Beides bewegt beim Skalieren nur einen Teil der Keys.</p></details>
+<details><summary>Was passiert bei einem Knotenausfall?</summary><p>Ein Replikat wird Primär. Die letzten async Writes können fehlen. Der Cache lädt fehlende Werte bei Miss aus der DB.</p></details>
 <details><summary>Was sind MOVED und ASK?</summary><p>Redirects von Redis Cluster. MOVED: Slot liegt dauerhaft woanders, Karte aktualisieren. ASK: Slot zieht gerade um, nur diese Anfrage woanders stellen.</p></details>
 <details><summary>Wie machen Sie Multi-Key-Operationen im Cluster?</summary><p>Alle Keys müssen im selben Slot liegen. Hash Tags in geschweiften Klammern erzwingen das.</p></details>
-<details><summary>Was ist ein kalter Start und wie schützen Sie die DB?</summary><p>Ein leerer Cache nach Neustart schickt alle Reads an die DB. Schutz: Replikat befördern, Warm-up, Rate Limit auf Loads.</p></details>
+<details><summary>Was geht kaputt, wenn Sie Keys mit hash mod N verteilen?</summary><p>Beim Schritt von 3 auf 4 Knoten wechseln rund 75 % der Keys den Knoten: eine Miss-Welle auf die DB. Hash Slots oder Consistent Hashing bewegen nur einen Teil.</p></details>
+<h3>Zahlen</h3>
+<details><summary>Wie viele Knoten brauchen Sie?</summary><p>2 TB Arbeitsmenge bei ca. 50 GB pro Knoten sind ca. 40 Primär-Shards, mit Replikaten 80. Der Engpass ist RAM.</p></details>
+<details><summary>Wie viele Hash Slots hat Redis Cluster, und wie wird der Slot berechnet?</summary><p>16 384 Slots; der Slot ist CRC16 des Keys modulo 16 384. Slots ziehen beim Skalieren als Ganzes um.</p></details>
+<details><summary>Was geht kaputt, wenn ein einzelner Wert 10 MB gross ist?</summary><p>Redis arbeitet single-threaded: Der grosse Wert blockiert alle anderen Befehle auf dem Shard. Werte klein halten, Grosses ins Object Storage.</p></details>
+<h3>Vergleich</h3>
+<details><summary>Smart Client oder Proxy?</summary><p>Smart Client spart einen Hop, braucht aber Logik in jeder Sprache. Proxy hält Clients simpel und kostet Latenz.</p></details>
 <details><summary>In-Process, verteilt oder beides?</summary><p>Oft beides: L1 im Prozess mit kurzer TTL gegen Hot Keys, L2 verteilt als gemeinsame Kopie.</p></details>
 <details><summary>Wann cachen Sie nicht?</summary><p>Wenn Werte nie veralten dürfen, z. B. Kontostand beim Bezahlen, oder wenn die Hit Ratio zu klein ist.</p></details>
+<details><summary>Was geht kaputt, wenn der L1-Cache im Prozess keine kurze TTL hat?</summary><p>Jede Instanz behält alte Werte, obwohl L2 längst invalidiert wurde. Kurze L1-TTL oder Pub/Sub-Invalidierung begrenzen das.</p></details>
+<h3>Produktion</h3>
+<details><summary>Was ist eine Cache Stampede und wie verhindern Sie sie?</summary><p>Viele gleichzeitige Misses auf einen Key überlasten die DB. Schutz: Single Flight, Lock oder Lease pro Key, stale-while-revalidate, TTL-Jitter.</p></details>
+<details><summary>Was tun Sie gegen Hot Keys?</summary><p>L1-Cache im Prozess, Key-Kopien auf mehreren Shards, Lesen von Replikaten.</p></details>
+<details><summary>Was ist ein kalter Start und wie schützen Sie die DB?</summary><p>Ein leerer Cache nach Neustart schickt alle Reads an die DB. Schutz: Replikat befördern, Warm-up, Rate Limit auf Loads.</p></details>
 <details><summary>Szenario: Nach einem Deployment sehen Kunden alte Preise. Wo suchen Sie?</summary><p>Fehlt die Invalidierung im neuen Code-Pfad? Outbox-Lag prüfen, Race zwischen Read und Write, L1-Caches in den Instanzen. Fix: Outbox, Versionen, kurze TTL.</p></details>
 <details><summary>Szenario: Ein Cache-Knoten ist bei 100 % CPU, die anderen bei 20 %. Was tun Sie?</summary><p>Hot Key oder schlechte Slot-Verteilung. Mit --hotkeys und Metriken pro Key prüfen. Fix: L1-Cache, Key-Splitting oder Slots umverteilen.</p></details>
 <details><summary>Szenario: Nach dem Hinzufügen von Knoten bricht die DB ein. Warum?</summary><p>Viele Keys haben den Knoten gewechselt und sind Misses, typisch bei mod N. Fix: Slots oder Consistent Hashing, schrittweise skalieren, Stampede-Schutz.</p></details>
+<details><summary>Was geht kaputt, wenn alle Replikate in derselben Zone wie ihr Primär laufen?</summary><p>Ein Zonenausfall nimmt Primär und Replikat zugleich mit: kalter Shard, Miss-Welle auf die DB. Replikate gehören in eine andere Zone.</p></details>
+<h3>Design</h3>
+<details><summary>Skizzieren Sie den verteilten Cache in einer Minute.</summary><p>Shards im RAM über Hash Slots verteilt, je mit Replikat. Smart Client routet direkt. Cache-Aside mit TTL, Invalidierung über Outbox, Eviction mit LRU oder LFU, Failover per Gossip oder Sentinel.</p></details>
+<details><summary>Wie bleibt der Cache konsistent mit der DB?</summary><p>Gar nicht perfekt. Delete nach Commit über Outbox oder CDC, Versionen gegen Races, TTL als Sicherheitsnetz.</p></details>
+<details><summary>Welche Eviction-Policy wählen Sie?</summary><p>Für reine Caches allkeys-lru oder allkeys-lfu. LFU übersteht Scans besser. noeviction nur, wenn der Speicher kein Cache ist.</p></details>
+<details><summary>Warum gehört der Kontostand beim Bezahlen nicht in den Cache?</summary><p>Er darf nie veralten, ein Cache liefert aber per Definition manchmal alte Werte. Solche Reads gehen direkt an die DB.</p></details>
 
 </body>
 </html>

@@ -19,12 +19,37 @@
   summary { font-weight: 600; cursor: pointer; }
   details p { margin: 6px 0 2px; }
   .small { color: #6e6e73; font-size: 14px; }
+  h3 { font-size: 17px; margin: 20px 0 6px; }
+  .geruest { border: 2px solid #1d1d1f; border-radius: 6px; padding: 10px 14px; margin: 14px 0; font-size: 15px; line-height: 1.4; }
+  .geruest h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; margin: 0 0 8px; padding: 0; border: 0; }
+  .geruest dl { display: grid; grid-template-columns: 6.6em 1fr; gap: 6px 10px; margin: 0; }
+  .geruest dt { font-weight: 700; font-size: 12px; text-transform: uppercase; letter-spacing: .05em; padding-top: 1px; }
+  .geruest dd { margin: 0; }
+  .muster { border: 1px solid #e5e5ea; border-left: 4px solid #1d1d1f; border-radius: 6px; padding: 10px 14px; margin: 14px 0; }
+  .muster h3 { margin: 0 0 6px; font-size: 13px; text-transform: uppercase; letter-spacing: .06em; }
+  .muster .mq { margin: 0 0 6px; }
 </style>
 </head>
 <body>
 
 <h1>Suchindex synchron halten mit der Datenbank</h1>
 <!-- sources: Search · Tier 1 · Quellen: Debezium Reference (PostgreSQL Connector, Outbox Event Router), Elasticsearch 9 Reference (Aliases, Reindex API, Bulk API, Index API version_type, refresh, Index Settings), PostgreSQL 17 Doku (Logical Decoding, Replication Slots, max_slot_wal_keep_size), microservices.io: Transactional Outbox -->
+
+<div class="geruest"><h2>Gerüst</h2><dl>
+  <dt>Warum?</dt><dd>Zwei Systeme in zwei Schritten schreiben geht bei einem Fehler auseinander (<b>Dual Write</b>). Änderungen müssen aus der DB-Transaktion kommen.</dd>
+  <dt>Wie innen?</dt><dd>Outbox-Zeile im selben Commit; Poller oder Debezium (WAL über Replication Slot) gibt weiter; Indexer: Upsert mit DB-ID, <code>version_type=external</code>.</dd>
+  <dt>Zahlen</dt><dd>Lag = Pipeline + Refresh (Standard 1 s). At-least-once: Duplikate sind normal. Slot hält WAL unbegrenzt (<code>max_slot_wal_keep_size</code> Standard −1).</dd>
+  <dt>Vergleich</dt><dd>Poller: nur SQL, träger. Debezium: schnell, mehr Infrastruktur. CDC direkt auf der Tabelle koppelt ans DB-Schema. 2PC geht nicht.</dd>
+  <dt>Produktion</dt><dd>Stehender Slot füllt die Platte. Überholte Events hinterlassen alten Stand. Mapping-Wechsel = neuer Index + Alias, nie löschen.</dd>
+  <dt>Design</dt><dd>Alias vom ersten Tag. DB bleibt Wahrheit, Neuaufbau jederzeit möglich. Abgleich-Job als Netz, Lag als Metrik mit Alarm.</dd>
+</dl></div>
+
+<div class="muster"><h3>Antwort-Muster</h3><p class="mq"><b>Frage:</b> Wie halten Sie den Suchindex konsistent mit der Datenbank?</p><ol>
+  <li>Mechanismus: Ich schreibe Daten und Outbox-Event in einer DB-Transaktion; ein Relay gibt das Event weiter.</li>
+  <li>Zahl: Der Index hinkt um Pipeline-Lag plus Refresh hinterher, typisch rund eine Sekunde.</li>
+  <li>Trade-off: Die Lieferung ist at-least-once, darum schreibt der Indexer idempotent mit der DB-ID und einem Versions-Check.</li>
+  <li>Produktion: Ein Abgleich-Job vergleicht regelmässig Anzahl und Versionen und repariert Lücken.</li>
+</ol></div>
 
 <div class="kern">
 <b>Kern:</b> Der Suchindex ist eine <b>Kopie</b> der Datenbank, und jede Änderung muss dort ankommen. Das <b>Dual-Write-Problem</b> heisst: DB und Index in zwei Schritten schreiben geht bei einem Fehler auseinander. Die Lösung ist, Änderungen <b>aus der DB-Transaktion heraus</b> weiterzugeben (<b>Outbox</b> oder <b>CDC</b>), idempotent und mit <b>Eventual Consistency</b>.
@@ -168,7 +193,7 @@ POST _aliases
 <ol>
   <li><b>Bilder fehlen in der Suche:</b> Ein Dual Write ist still ausgefallen. Lösung: Outbox oder CDC, dazu ein Abgleich-Job, der fehlende IDs nachindexiert.</li>
   <li><b>Alter Stand im Index:</b> Ein altes Event hat ein neues überholt. Lösung: Kafka-Schlüssel = Bild-ID und <code>version_type=external</code> mit DB-Version.</li>
-  <li><b>PostgreSQL-Platte läuft voll:</b> Debezium steht, der Replication Slot hält das WAL fest. Lösung: Slot-Lag überwachen und alarmieren. <code>max_slot_wal_keep_size</code> begrenzt das WAL, dann ist der Slot aber ungültig und man braucht einen neuen Snapshot.</li>
+  <li><b>PostgreSQL-Platte läuft voll:</b> Debezium steht, der Replication Slot hält das WAL fest. Lösung: Slot-Lag überwachen und alarmieren. <code>max_slot_wal_keep_size</code> (Standard −1, also unbegrenzt) begrenzt das WAL, dann ist der Slot aber ungültig und man braucht einen neuen Snapshot.</li>
   <li><b>Outbox-Tabelle wächst endlos:</b> Gesendete Zeilen bleiben liegen. Lösung: regelmässig löschen oder nach Datum partitionieren. Mit Debezium darf man die Zeile direkt nach dem Insert löschen, das Event steht im WAL.</li>
   <li><b>Gelöschte Bilder tauchen in der Suche auf:</b> Delete-Events fehlen. Lösung: Delete als eigenes Event, plus Abgleich.</li>
   <li><b>Suche fällt beim Mapping-Wechsel aus:</b> Index gelöscht und neu angelegt. Lösung: Alias von Anfang an, neuer Index, atomarer Umschalt.</li>
@@ -215,31 +240,42 @@ POST _aliases
 </ul>
 </div>
 
-<h2>11. Fragen</h2>
+<h2>11. Selbsttest</h2>
+<h3>Warum?</h3>
 <details><summary>Was ist das Dual-Write-Problem?</summary><p>Eine App schreibt in zwei Systeme ohne gemeinsame Transaktion. Fällt ein Schritt aus oder überholen sich Requests, sind DB und Index inkonsistent.</p></details>
 <details><summary>Warum hilft es nicht, erst in den Index und dann in die DB zu schreiben?</summary><p>Dann gibt es bei einem DB-Fehler Dokumente im Index, die es in der DB nicht gibt. Das Problem dreht sich nur um.</p></details>
+<h3>Wie innen?</h3>
 <details><summary>Was ist das Transactional-Outbox-Pattern?</summary><p>Das Event kommt in eine Outbox-Tabelle in derselben DB-Transaktion wie die Daten. Ein separater Prozess gibt es an Kafka oder den Index weiter.</p></details>
 <details><summary>Wie kommt das Event aus der Outbox heraus?</summary><p>Per Polling (SQL auf offene Zeilen, dann als gesendet markieren) oder per CDC (Debezium liest die Inserts aus dem WAL).</p></details>
 <details><summary>Was ist CDC?</summary><p>Change Data Capture: Änderungen werden aus dem Transaktions-Log der DB gelesen, nicht aus der App. Bei PostgreSQL über Logical Decoding und einen Replication Slot.</p></details>
 <details><summary>Was ist Debezium?</summary><p>Eine Sammlung von Kafka-Connect-Connectors für CDC. Sie liest das DB-Log und schreibt jede Änderung als Event in Kafka.</p></details>
-<details><summary>Outbox oder CDC direkt auf der Tabelle?</summary><p>Outbox: eigenes, stabiles Event-Format, aber App-Code. CDC auf der Tabelle: kein App-Code, aber Events hängen am DB-Schema.</p></details>
 <details><summary>Was macht der Debezium Outbox Event Router?</summary><p>Eine SMT, die Outbox-Zeilen nach aggregatetype in Topics routet und den payload als Event-Inhalt nimmt. Die id hilft Consumern gegen Duplikate.</p></details>
-<details><summary>Was ist ein Replication Slot und welches Risiko hat er?</summary><p>Er merkt sich den Lese-Stand des Consumers. PostgreSQL behält das WAL ab dort. Steht der Consumer, wächst das WAL und kann die Platte füllen.</p></details>
 <details><summary>Welche Liefergarantie haben Outbox und CDC?</summary><p>At-least-once. Duplikate kommen vor. Darum idempotent schreiben: Dokument-ID = Primärschlüssel, Upsert.</p></details>
 <details><summary>Wie verhindern Sie, dass ein altes Event einen neuen Stand überschreibt?</summary><p>Kafka-Schlüssel = Entitäts-ID für Reihenfolge pro Entität. Zusätzlich version_type=external mit einer Version aus der DB.</p></details>
 <details><summary>Wie behandeln Sie Deletes?</summary><p>CDC liefert ein Delete-Event, die Outbox ein eigenes „deleted“-Event. Der Indexer löscht das Dokument. Ein Abgleich-Job fängt verpasste Deletes.</p></details>
+<details><summary>Was geht kaputt, wenn der Indexer ein Event zweimal bekommt?</summary><p>Ohne Idempotenz entstehen Duplikate oder ein alter Stand. Mit Dokument-ID = Primärschlüssel, Upsert und Versions-Check ist das zweite Event harmlos.</p></details>
+<h3>Zahlen</h3>
 <details><summary>Was heisst Eventual Consistency für die Suche?</summary><p>Der Index zeigt Änderungen mit Verzögerung: Pipeline-Lag plus Refresh. Für kurze Zeit sehen Suche und DB verschieden aus.</p></details>
+<details><summary>Wie schnell ist eine Änderung suchbar?</summary><p>Nach Pipeline-Lag plus Refresh, Standard 1 Sekunde Refresh-Intervall. Unter Last wird der Lag grösser, darum misst man ihn von Commit bis suchbar.</p></details>
+<details><summary>Was geht kaputt, wenn der Replication Slot tagelang steht?</summary><p>PostgreSQL behält das WAL ab dem Slot, die Platte läuft voll. max_slot_wal_keep_size (Standard −1, unbegrenzt) begrenzt das, macht den Slot dann aber ungültig: neuer Snapshot nötig.</p></details>
+<h3>Vergleich</h3>
+<details><summary>Outbox oder CDC direkt auf der Tabelle?</summary><p>Outbox: eigenes, stabiles Event-Format, aber App-Code. CDC auf der Tabelle: kein App-Code, aber Events hängen am DB-Schema.</p></details>
+<details><summary>_reindex-API oder Neuaufbau aus der DB?</summary><p>_reindex kopiert nur _source und ist schnell. Aus der DB neu bauen, wenn Daten fehlen, sich ändern oder neue Embeddings nötig sind.</p></details>
+<details><summary>Warum kein Two-Phase Commit zwischen DB und Elasticsearch?</summary><p>Elasticsearch unterstützt es nicht. 2PC koppelt ausserdem die Verfügbarkeit beider Systeme und blockiert bei Ausfällen.</p></details>
+<h3>Produktion</h3>
+<details><summary>Was ist ein Replication Slot und welches Risiko hat er?</summary><p>Er merkt sich den Lese-Stand des Consumers. PostgreSQL behält das WAL ab dort. Steht der Consumer, wächst das WAL und kann die Platte füllen.</p></details>
+<details><summary>Wie laden Sie Millionen Dokumente schnell?</summary><p>_bulk-API, refresh_interval auf -1, number_of_replicas auf 0. Danach beides zurücksetzen.</p></details>
+<details><summary>Wie merken Sie, dass Index und DB auseinanderlaufen?</summary><p>Abgleich-Job (Anzahl, Versionen, fehlende IDs), Metriken für Lag, Kafka-Consumer-Lag, Slot-Lag in PostgreSQL, Fehler in den _bulk-Antworten.</p></details>
+<details><summary>Szenario: Nach dem Upload ist ein Bild in der DB, aber nie in der Suche. Wie finden und beheben Sie das?</summary><p>Wahrscheinlich Dual Write mit stillem Fehler. Prüfen: Logs, _bulk-Fehler, Anzahl DB gegen _count. Fix: Outbox oder CDC, idempotenter Indexer, Abgleich-Job für Altlasten.</p></details>
+<details><summary>Szenario: Die PostgreSQL-Platte füllt sich nachts, obwohl kaum geschrieben wird. Woran denken Sie?</summary><p>An einen inaktiven Replication Slot von Debezium, der WAL festhält. Prüfen mit pg_replication_slots. Fix: Connector reparieren, Lag-Alarm, max_slot_wal_keep_size als Grenze.</p></details>
+<details><summary>Was geht kaputt, wenn Sie nach jedem Dokument _refresh aufrufen?</summary><p>Jeder Refresh erzeugt kleine Segmente und Merge-Last, der Cluster wird langsam. Das Intervall dem Cluster überlassen, refresh=wait_for nur wo nötig.</p></details>
+<h3>Design</h3>
 <details><summary>Wie zeigt die UI ein gerade gespeichertes Bild, obwohl die Suche es noch nicht kennt?</summary><p>Die Detail-Seite liest aus der DB, nicht aus dem Index. Oder der Write nutzt refresh=wait_for, wenn es sofort suchbar sein muss.</p></details>
 <details><summary>Wann brauchen Sie einen Reindex?</summary><p>Bei Änderung von Feldtyp oder Analyzer, bei neuem Embedding-Modell und nach Datenfehlern. Neue Felder allein brauchen keinen neuen Index, aber alte Dokumente füllen.</p></details>
 <details><summary>Wie machen Sie einen Reindex ohne Ausfall?</summary><p>Neuer Index mit neuem Mapping, Daten laden, laufende Änderungen mitschreiben, prüfen, Alias mit _aliases atomar umschalten, alten Index später löschen.</p></details>
 <details><summary>Was ist ein Index-Alias?</summary><p>Ein Zweitname, der auf einen oder mehrere Indizes zeigt. Die App sucht über den Alias, so kann man den echten Index austauschen.</p></details>
-<details><summary>_reindex-API oder Neuaufbau aus der DB?</summary><p>_reindex kopiert nur _source und ist schnell. Aus der DB neu bauen, wenn Daten fehlen, sich ändern oder neue Embeddings nötig sind.</p></details>
-<details><summary>Wie laden Sie Millionen Dokumente schnell?</summary><p>_bulk-API, refresh_interval auf -1, number_of_replicas auf 0. Danach beides zurücksetzen.</p></details>
-<details><summary>Wie merken Sie, dass Index und DB auseinanderlaufen?</summary><p>Abgleich-Job (Anzahl, Versionen, fehlende IDs), Metriken für Lag, Kafka-Consumer-Lag, Slot-Lag in PostgreSQL, Fehler in den _bulk-Antworten.</p></details>
-<details><summary>Warum kein Two-Phase Commit zwischen DB und Elasticsearch?</summary><p>Elasticsearch unterstützt es nicht. 2PC koppelt ausserdem die Verfügbarkeit beider Systeme und blockiert bei Ausfällen.</p></details>
-<details><summary>Szenario: Nach dem Upload ist ein Bild in der DB, aber nie in der Suche. Wie finden und beheben Sie das?</summary><p>Wahrscheinlich Dual Write mit stillem Fehler. Prüfen: Logs, _bulk-Fehler, Anzahl DB gegen _count. Fix: Outbox oder CDC, idempotenter Indexer, Abgleich-Job für Altlasten.</p></details>
 <details><summary>Szenario: Sie müssen den Analyzer des Caption-Feldes ändern, die Suche darf nicht ausfallen. Wie gehen Sie vor?</summary><p>images_v3 mit neuem Mapping anlegen, mit _bulk aus der DB oder per _reindex füllen, laufende Events auch in v3 schreiben, prüfen, Alias images atomar umschalten, v2 später löschen.</p></details>
-<details><summary>Szenario: Die PostgreSQL-Platte füllt sich nachts, obwohl kaum geschrieben wird. Woran denken Sie?</summary><p>An einen inaktiven Replication Slot von Debezium, der WAL festhält. Prüfen mit pg_replication_slots. Fix: Connector reparieren, Lag-Alarm, max_slot_wal_keep_size als Grenze.</p></details>
+<details><summary>Warum liest die App über einen Alias statt über den Indexnamen?</summary><p>Damit ein neuer Index mit _aliases atomar live gehen kann. Die App merkt vom Reindex nichts.</p></details>
 
 </body>
 </html>

@@ -19,12 +19,37 @@
   summary { font-weight: 600; cursor: pointer; }
   details p { margin: 6px 0 2px; }
   .small { color: #6e6e73; font-size: 14px; }
+  h3 { font-size: 17px; margin: 20px 0 6px; }
+  .geruest { border: 2px solid #1d1d1f; border-radius: 6px; padding: 10px 14px; margin: 14px 0; font-size: 15px; line-height: 1.4; }
+  .geruest h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; margin: 0 0 8px; padding: 0; border: 0; }
+  .geruest dl { display: grid; grid-template-columns: 6.6em 1fr; gap: 6px 10px; margin: 0; }
+  .geruest dt { font-weight: 700; font-size: 12px; text-transform: uppercase; letter-spacing: .05em; padding-top: 1px; }
+  .geruest dd { margin: 0; }
+  .muster { border: 1px solid #e5e5ea; border-left: 4px solid #1d1d1f; border-radius: 6px; padding: 10px 14px; margin: 14px 0; }
+  .muster h3 { margin: 0 0 6px; font-size: 13px; text-transform: uppercase; letter-spacing: .06em; }
+  .muster .mq { margin: 0 0 6px; }
 </style>
 </head>
 <body>
 
 <h1>Caching: Strategien, Redis, Invalidierung</h1>
 <!-- sources: System-Design-Grundlagen · Tier 1 · Quellen: Redis Docs (Key Eviction inkl. LRM-Policies ab Redis 8.6, EXPIRE, SET NX, Client-side Caching, Cluster Specification), Azure Architecture Center (Cache-Aside Pattern, Caching Best Practices), Microsoft Learn (Azure Cache for Redis Retirement FAQ, Azure Managed Redis), RFC 9111 (HTTP Caching), RFC 5861 (stale-while-revalidate), Kleppmann DDIA Kap. 5 und 11, Vattani et al. 2015 (Optimal Probabilistic Cache Stampede Prevention) -->
+
+<div class="geruest"><h2>Gerüst</h2><dl>
+  <dt>Warum?</dt><dd>Teure Reads aus dem RAM statt aus der DB: weniger Latenz, weniger Last. Preis: Der Cache kann alte Werte liefern.</dd>
+  <dt>Wie innen?</dt><dd>Cache-Aside: GET, bei Miss DB lesen und SET mit TTL. Beim Write: DB ändern, dann Key <b>löschen</b>, nicht überschreiben.</dd>
+  <dt>Zahlen</dt><dd>Redis-Hit ca. 1 ms. 10 % Cache-Grösse ≈ 67 % Hits bei Zipf-Last. Redis Cluster: 16 384 Hash Slots. TTL immer mit Jitter.</dd>
+  <dt>Vergleich</dt><dd>In-Process (Nanosekunden, pro Instanz) vs Redis (geteilt, ein Netz-Hop). LRU reagiert schnell, LFU übersteht Scans.</dd>
+  <dt>Produktion</dt><dd>Stampede, wenn ein Hot Key abläuft. Cold Start nach Failover trifft die DB. OOM bei <code>noeviction</code> (Standard).</dd>
+  <dt>Design</dt><dd>Zuerst fragen: Wie alt darf der Wert sein? DB bleibt die Wahrheit und muss den Cache-Ausfall gedrosselt überleben.</dd>
+</dl></div>
+
+<div class="muster"><h3>Antwort-Muster</h3><p class="mq"><b>Frage:</b> Wie bauen Sie einen Cache vor die Datenbank?</p><ol>
+  <li>Mechanismus: Cache-Aside: Die App liest zuerst Redis, bei Miss die DB, und füllt den Cache mit TTL.</li>
+  <li>Zahl: Ein Hit kostet rund 1 ms; schon 10 Prozent Cache-Grösse bringen etwa zwei Drittel Hits.</li>
+  <li>Trade-off: Beim Write lösche ich den Key statt ihn zu überschreiben; die TTL ist das Sicherheitsnetz gegen Veraltung.</li>
+  <li>Produktion: Gegen Stampedes nutze ich TTL-Jitter und einen Lock pro Key.</li>
+</ol></div>
 
 <div class="kern">
 <b>Kern:</b> Ein <b>Cache</b> ist ein schneller Zwischenspeicher für Daten, die teuer zu holen oder zu berechnen sind. Er senkt <b>Latenz</b> und entlastet die <b>Datenbank</b>. Der Preis ist <b>Veraltung</b>: Der Cache kann einen alten Wert liefern.
@@ -132,7 +157,7 @@ no jitter   max expiries in one second: 10000
   <li><b>Refresh-Ahead:</b> Der Cache lädt beliebte Keys neu, bevor die TTL abläuft. Weniger Misses, aber Arbeit für Keys, die keiner mehr braucht.</li>
   <li><b>TTL:</b> Die <b>TTL</b> ist die maximale Lebensdauer eines Eintrags. Sie ist die einfachste Invalidierung und ein Sicherheitsnetz für vergessene Deletes.</li>
   <li><b>Eviction:</b> <b>Eviction</b> entfernt Einträge, wenn der Speicher voll ist. Redis prüft dafür <code>maxmemory</code> und <code>maxmemory-policy</code>.</li>
-  <li><b>Redis-Policies:</b> <code>noeviction</code> (Writes schlagen fehl, Standard in Open-Source-Redis), <code>allkeys-lru</code>, <code>allkeys-lfu</code>, <code>allkeys-random</code>, <code>volatile-lru</code>, <code>volatile-lfu</code>, <code>volatile-random</code>, <code>volatile-ttl</code>. Seit Redis 8.6 auch <code>allkeys-lrm</code> und <code>volatile-lrm</code> (least recently modified). <code>volatile-*</code> betrifft nur Keys mit TTL.</li>
+  <li><b>Redis-Policies:</b> <code>noeviction</code> (Writes schlagen fehl, Standard in Open-Source-Redis), <code>allkeys-lru</code>, <code>allkeys-lfu</code>, <code>allkeys-random</code>, <code>volatile-lru</code>, <code>volatile-lfu</code>, <code>volatile-random</code>, <code>volatile-ttl</code>. <a href="https://redis.io/docs/latest/develop/reference/eviction/#lrm-eviction">Seit Redis 8.6</a> auch <code>allkeys-lrm</code> und <code>volatile-lrm</code> (least recently modified). <code>volatile-*</code> betrifft nur Keys mit TTL.</li>
   <li><b>LRU vs LFU:</b> <b>LRU</b> (Least Recently Used) wirft den am längsten nicht genutzten Key raus. <b>LFU</b> (Least Frequently Used) wirft den selten genutzten raus. LFU übersteht Scans besser. Redis rechnet beides <b>approximiert</b> über Stichproben (<code>maxmemory-samples</code>).</li>
   <li><b>Stampede-Schutz:</b> Lock pro Key (<code>SET lock:key 1 NX EX 10</code>), Request-Bündelung in der App (<b>Single Flight</b>), alten Wert liefern und im Hintergrund neu laden (<b>stale-while-revalidate</b>), probabilistisch früh neu laden, TTL-Jitter.</li>
   <li><b>Cache Penetration:</b> Requests für Keys, die es nicht gibt, gehen immer an die DB. Lösung: auch „nicht gefunden“ kurz cachen (<b>Negative Caching</b>) oder ein Bloom-Filter.</li>
@@ -207,32 +232,43 @@ no jitter   max expiries in one second: 10000
 </ul>
 </div>
 
-<h2>11. Fragen</h2>
+<h2>11. Selbsttest</h2>
+<h3>Warum?</h3>
 <details><summary>Was ist ein Cache und welches Problem löst er?</summary><p>Ein schneller Zwischenspeicher für teure Daten. Er senkt Latenz und entlastet die Datenbank. Preis: Werte können veraltet sein.</p></details>
-<details><summary>Wo kann man cachen?</summary><p>Browser, CDN, Reverse Proxy, In-Process in der App, verteilt in Redis und im Buffer Pool der Datenbank.</p></details>
+<details><summary>Warum den Key löschen statt aktualisieren?</summary><p>Zwei parallele Writes können den Cache in falscher Reihenfolge überschreiben. Nach dem Löschen lädt der nächste Read den aktuellen Wert.</p></details>
+<h3>Wie innen?</h3>
 <details><summary>Was ist Cache-Aside?</summary><p>Die App liest zuerst den Cache. Bei Miss liest sie die DB und schreibt den Wert mit TTL in den Cache. Beim Write ändert sie die DB und löscht den Key.</p></details>
+<details><summary>Warum zuerst DB, dann Cache löschen?</summary><p>Löscht man zuerst, kann ein Leser in der Lücke den alten DB-Wert neu cachen. Er bleibt dann bis zur TTL falsch.</p></details>
+<details><summary>Ist Redis-LRU exakt?</summary><p>Nein. Redis nimmt Stichproben von Keys und wirft den ältesten davon raus. Die Grösse steuert maxmemory-samples.</p></details>
+<details><summary>Wie verteilt Redis Cluster die Keys?</summary><p>Über 16 384 Hash Slots, berechnet mit CRC16 des Keys. Hash Tags in geschweiften Klammern legen zusammengehörige Keys in denselben Slot.</p></details>
+<h3>Zahlen</h3>
+<details><summary>Was ist eine TTL und wie wählen Sie sie?</summary><p>Die maximale Lebensdauer eines Eintrags. Sie richtet sich danach, wie alt ein Wert sein darf. Dazu etwas Zufall gegen gleichzeitiges Ablaufen.</p></details>
+<details><summary>Was bringt ein Cache von 10 % der Key-Menge?</summary><p>Bei schiefer Verteilung rund zwei Drittel Hits (Simulation: 67 %). Danach nimmt der Ertrag stark ab: 50 % Grösse bringen nur noch 89 %.</p></details>
+<details><summary>Was geht kaputt, wenn 10 000 Keys dieselbe TTL bekommen?</summary><p>Alle laufen in derselben Sekunde ab, und die DB bekommt eine Miss-Welle. TTL-Jitter von ±10 % verteilt die Spitze auf rund 200 pro Sekunde.</p></details>
+<h3>Vergleich</h3>
+<details><summary>Wo kann man cachen?</summary><p>Browser, CDN, Reverse Proxy, In-Process in der App, verteilt in Redis und im Buffer Pool der Datenbank.</p></details>
 <details><summary>Read-Through vs Cache-Aside?</summary><p>Bei Read-Through lädt der Cache selbst aus der DB. Bei Cache-Aside macht das die App. Das Verhalten ist ähnlich, der Code sitzt anders.</p></details>
 <details><summary>Write-Through vs Write-Back?</summary><p>Write-Through schreibt synchron in Cache und DB: konsistent, aber langsamer. Write-Back schreibt erst in den Cache und später gebündelt in die DB: schnell, aber Datenverlust möglich.</p></details>
 <details><summary>Was ist Write-Around?</summary><p>Writes gehen nur in die DB, nicht in den Cache. Gut für Daten, die nach dem Schreiben selten gelesen werden.</p></details>
-<details><summary>Warum den Key löschen statt aktualisieren?</summary><p>Zwei parallele Writes können den Cache in falscher Reihenfolge überschreiben. Nach dem Löschen lädt der nächste Read den aktuellen Wert.</p></details>
-<details><summary>Warum zuerst DB, dann Cache löschen?</summary><p>Löscht man zuerst, kann ein Leser in der Lücke den alten DB-Wert neu cachen. Er bleibt dann bis zur TTL falsch.</p></details>
-<details><summary>Was ist eine TTL und wie wählen Sie sie?</summary><p>Die maximale Lebensdauer eines Eintrags. Sie richtet sich danach, wie alt ein Wert sein darf. Dazu etwas Zufall gegen gleichzeitiges Ablaufen.</p></details>
 <details><summary>LRU vs LFU?</summary><p>LRU wirft den am längsten nicht genutzten Key raus. LFU wirft den selten genutzten raus. LFU ist robuster gegen Scans, LRU reagiert schneller auf neue Trends.</p></details>
-<details><summary>Welche Eviction Policies hat Redis?</summary><p>noeviction, allkeys- und volatile-Varianten von lru, lfu und random, dazu volatile-ttl. Seit Redis 8.6 auch allkeys-lrm und volatile-lrm. Standard in Open-Source-Redis: noeviction.</p></details>
-<details><summary>Ist Redis-LRU exakt?</summary><p>Nein. Redis nimmt Stichproben von Keys und wirft den ältesten davon raus. Die Grösse steuert maxmemory-samples.</p></details>
+<details><summary>In-Process-Cache oder Redis?</summary><p>In-Process ist schneller, aber pro Instanz und schwer zu invalidieren. Redis ist geteilt und einfach zu löschen, kostet aber einen Netz-Hop. Oft beides: zwei Stufen.</p></details>
+<details><summary>Welches Azure-Produkt nutzen Sie heute für Redis?</summary><p>Azure Managed Redis. Azure Cache for Redis wird abgelöst: Basic, Standard, Premium bis 30.09.2028, Enterprise bis 31.03.2027.</p></details>
+<details><summary>Warum übersteht LFU einen Scan besser als LRU?</summary><p>Ein Scan fasst jeden Key genau einmal an. Bei LRU verdrängt das die heissen Keys; LFU zählt die Häufigkeit und behält sie.</p></details>
+<h3>Produktion</h3>
 <details><summary>Was ist eine Cache Stampede?</summary><p>Ein beliebter Key läuft ab, und viele Requests laden ihn gleichzeitig aus der DB. Die DB wird überlastet.</p></details>
 <details><summary>Wie verhindern Sie eine Stampede?</summary><p>Lock pro Key mit SET NX, Single Flight in der App, alten Wert liefern und im Hintergrund neu laden, früh probabilistisch neu laden, TTL-Jitter.</p></details>
 <details><summary>Was ist Cache Penetration?</summary><p>Requests für nicht existierende Keys gehen immer an die DB. Lösung: Negative Caching mit kurzer TTL oder Bloom-Filter.</p></details>
 <details><summary>Was ist ein Hot Key und was tun Sie?</summary><p>Ein Key mit so viel Last, dass ein Redis-Knoten überlastet ist. Lösung: lokaler In-Process-Cache davor oder den Key auf mehrere Kopien verteilen.</p></details>
-<details><summary>Wie bleibt der Cache konsistent mit der DB?</summary><p>Gar nicht perfekt. Man begrenzt die Veraltung: Delete nach Commit, TTL als Netz, Invalidierung über Events oder CDC, Versionen im Wert.</p></details>
-<details><summary>In-Process-Cache oder Redis?</summary><p>In-Process ist schneller, aber pro Instanz und schwer zu invalidieren. Redis ist geteilt und einfach zu löschen, kostet aber einen Netz-Hop. Oft beides: zwei Stufen.</p></details>
-<details><summary>Wie verteilt Redis Cluster die Keys?</summary><p>Über 16 384 Hash Slots, berechnet mit CRC16 des Keys. Hash Tags in geschweiften Klammern legen zusammengehörige Keys in denselben Slot.</p></details>
 <details><summary>Kann Redis Daten verlieren?</summary><p>Ja. Replikation ist asynchron, bei Failover fehlen die letzten Writes. Persistenz mit RDB oder AOF hilft, macht Redis aber nicht zur Datenbank.</p></details>
-<details><summary>Welches Azure-Produkt nutzen Sie heute für Redis?</summary><p>Azure Managed Redis. Azure Cache for Redis wird abgelöst: Basic, Standard, Premium bis 30.09.2028, Enterprise bis 31.03.2027.</p></details>
-<details><summary>Welche Metriken beobachten Sie?</summary><p>Hit Ratio, Evicted Keys, Speicher, Latenz, Server Load und langsame Befehle. Die Hit Ratio pro Key-Bereich, nicht nur gesamt.</p></details>
 <details><summary>Szenario: Nach einem Redis-Failover ist die Datenbank 10 Minuten überlastet. Was tun Sie?</summary><p>Cold Start: Der Cache ist leer. Kurzfristig DB-Last drosseln. Langfristig: Replica mit Daten statt leerer Neustart, Cache vorwärmen, Stampede-Schutz, DB-Kapazität für Cache-Ausfall planen.</p></details>
 <details><summary>Szenario: Nutzer sehen nach einer Profiländerung minutenlang alte Daten. Warum?</summary><p>Der Key wird nicht gelöscht, oder ein Race schreibt den alten Wert zurück. Prüfen: Delete nach Commit, alle Instanzen und Stufen (auch In-Process und CDN) invalidieren, kürzere TTL.</p></details>
 <details><summary>Szenario: Redis meldet OOM, obwohl Eviction eingeschaltet ist. Warum?</summary><p>Wahrscheinlich volatile-lru ohne genug Keys mit TTL, oder noeviction. Lösung: allkeys-lru oder allkeys-lfu für reine Caches, TTL auf alle Keys, maxmemory prüfen.</p></details>
+<details><summary>Was geht kaputt, wenn die App ohne Cache nicht mehr funktioniert?</summary><p>Der Cache ist dann ein Single Point of Failure: Fällt er aus, kippt die DB. DB-Kapazität für den Cache-Ausfall planen und Lasten drosseln.</p></details>
+<h3>Design</h3>
+<details><summary>Welche Eviction Policies hat Redis?</summary><p>noeviction, allkeys- und volatile-Varianten von lru, lfu und random, dazu volatile-ttl. Seit Redis 8.6 auch allkeys-lrm und volatile-lrm. Standard in Open-Source-Redis: noeviction.</p></details>
+<details><summary>Wie bleibt der Cache konsistent mit der DB?</summary><p>Gar nicht perfekt. Man begrenzt die Veraltung: Delete nach Commit, TTL als Netz, Invalidierung über Events oder CDC, Versionen im Wert.</p></details>
+<details><summary>Welche Metriken beobachten Sie?</summary><p>Hit Ratio, Evicted Keys, Speicher, Latenz, Server Load und langsame Befehle. Die Hit Ratio pro Key-Bereich, nicht nur gesamt.</p></details>
+<details><summary>Warum lautet die erste Design-Frage: Wie alt darf der Wert sein?</summary><p>Die Antwort bestimmt TTL und Invalidierung. Ein Kontostand verträgt keine Veraltung, Referenzdaten vertragen Minuten.</p></details>
 
 </body>
 </html>

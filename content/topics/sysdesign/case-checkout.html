@@ -19,12 +19,37 @@
   summary { font-weight: 600; cursor: pointer; }
   details p { margin: 6px 0 2px; }
   .small { color: #6e6e73; font-size: 14px; }
+  h3 { font-size: 17px; margin: 20px 0 6px; }
+  .geruest { border: 2px solid #1d1d1f; border-radius: 6px; padding: 10px 14px; margin: 14px 0; font-size: 15px; line-height: 1.4; }
+  .geruest h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; margin: 0 0 8px; padding: 0; border: 0; }
+  .geruest dl { display: grid; grid-template-columns: 6.6em 1fr; gap: 6px 10px; margin: 0; }
+  .geruest dt { font-weight: 700; font-size: 12px; text-transform: uppercase; letter-spacing: .05em; padding-top: 1px; }
+  .geruest dd { margin: 0; }
+  .muster { border: 1px solid #e5e5ea; border-left: 4px solid #1d1d1f; border-radius: 6px; padding: 10px 14px; margin: 14px 0; }
+  .muster h3 { margin: 0 0 6px; font-size: 13px; text-transform: uppercase; letter-spacing: .06em; }
+  .muster .mq { margin: 0 0 6px; }
 </style>
 </head>
 <body>
 
 <h1>Fall: E-Commerce-Checkout</h1>
 <!-- sources: System-Design-Fall · Tier 2 · Quellen: Stripe API Reference (Idempotent Requests: Schlüssel bis 255 Zeichen, frühestens nach 24 h entfernt, Parameter-Vergleich), PostgreSQL 17 Docs (Transaktionen, CHECK Constraints, INSERT … ON CONFLICT, UPDATE … RETURNING), microservices.io (Saga, Transactional Outbox), Kleppmann DDIA Kap. 7 und 9 -->
+
+<div class="geruest"><h2>Gerüst</h2><dl>
+  <dt>Warum?</dt><dd>Nie doppelt belasten, nie überverkaufen, auch bei Retries und Ausfällen. Geld und Bestand sind die zwei Invarianten.</dd>
+  <dt>Wie innen?</dt><dd>Unique Idempotency-Key; bedingtes UPDATE (<code>available ≥ Menge</code>) plus CHECK; Order, Reservierung und Outbox in einer Transaktion; Webhook setzt <code>paid</code> nur aus <code>pending_payment</code>.</dd>
+  <dt>Zahlen</dt><dd>1 Mio. Bestellungen/Tag ≈ 12/s; Flash Sale: 1000/s auf eine Zeile. Reservierung verfällt nach z. B. 15 min. Stripe-Keys: 255 Zeichen, ≥ 24 h.</dd>
+  <dt>Vergleich</dt><dd>Alles synchron vs Saga + Outbox vs Reservierung schon im Warenkorb. Orchestrierung (Koordinator) vs Choreografie (Events).</dd>
+  <dt>Produktion</dt><dd>Timeout heisst „unbekannt“: Status nachfragen, nie blind neu belasten. Heisse Bestandszeile → Buckets oder Queue. Tägliche Reconciliation.</dd>
+  <dt>Design</dt><dd>Idempotenz auf jeder Grenze: Client → Checkout → Provider → Webhook. <code>numeric</code> oder Rappen statt Float. Kartendaten bleiben beim Provider (PCI).</dd>
+</dl></div>
+
+<div class="muster"><h3>Antwort-Muster</h3><p class="mq"><b>Frage:</b> Wie verhindern Sie doppelte Belastung und Überverkauf im Checkout?</p><ol>
+  <li>Mechanismus: Bestellung mit Unique Idempotency-Key und Bestand per bedingtem UPDATE, beides in einer Transaktion mit der Outbox.</li>
+  <li>Zahl: Die Zahlung läuft beim Provider mit eigenem Key; Stripe liefert bei Retries dieselbe Antwort, Keys leben mindestens 24 Stunden.</li>
+  <li>Trade-off: Statt einer verteilten Transaktion nutze ich eine Saga: Jeder Schritt hat eine Kompensation.</li>
+  <li>Produktion: Ein Timeout heisst „unbekannt“: Ich frage den Status nach, statt neu zu belasten.</li>
+</ol></div>
 
 <div class="kern">
 <b>Kern (die 1-Minuten-Antwort):</b> Der <b>Checkout</b> macht aus einem Warenkorb eine bezahlte Bestellung, ohne <b>doppelte Belastung</b> und ohne <b>Überverkauf</b>. Die Bestellung entsteht mit einem <b>Idempotenz-Schlüssel</b>; der Bestand wird mit einem <b>bedingten UPDATE</b> reserviert; Bestellung, Reservierung und ein <b>Outbox</b>-Event gehen in eine Transaktion. Die Zahlung läuft beim <b>Payment-Provider</b> mit eigenem Idempotenz-Schlüssel und wird per <b>Webhook</b> bestätigt. Fehler kompensiert eine <b>Saga</b>: Reservierung freigeben oder erstatten.
@@ -249,25 +274,37 @@ RETURNING id, status;
 </ul>
 </div>
 
-<h2>11. Fragen</h2>
-<details><summary>Skizzieren Sie den Checkout in einer Minute.</summary><p>Bestellung mit Idempotenz-Schlüssel, bedingte Reservierung, Outbox in einer Transaktion. Zahlung beim Provider mit eigenem Schlüssel, Bestätigung per Webhook, bedingter Statuswechsel. Fehler kompensiert eine Saga.</p></details>
+<h2>11. Selbsttest</h2>
+<h3>Warum?</h3>
+<details><summary>Warum eine Outbox?</summary><p>Fachdaten und Event gehen in einer Transaktion. So geht kein Event verloren, wenn der Service nach dem Commit abstürzt.</p></details>
+<details><summary>Warum keine verteilte Transaktion mit dem Payment-Provider?</summary><p>Der Provider macht kein Two-Phase Commit mit, und 2PC koppelt die Verfügbarkeit beider Systeme. Darum Saga: lokale Transaktionen plus Kompensation.</p></details>
+<h3>Wie innen?</h3>
 <details><summary>Wie verhindern Sie doppelte Belastung?</summary><p>Idempotency-Key vom Client bis zum Provider. Der Provider liefert bei Retries dieselbe Antwort. Webhooks setzen den Status nur aus dem erwarteten Vorzustand.</p></details>
 <details><summary>Wie verhindern Sie Überverkauf?</summary><p>UPDATE mit Bedingung available ≥ Menge, in einem Schritt. Dazu ein CHECK-Constraint gegen negativen Bestand.</p></details>
 <details><summary>Was ist eine Saga?</summary><p>Eine Folge lokaler Transaktionen mit je einer Kompensation. Scheitert ein Schritt, werden die vorherigen rückgängig gemacht, z. B. Reservierung freigeben oder erstatten.</p></details>
-<details><summary>Orchestrierung oder Choreografie?</summary><p>Orchestrierung hat einen Koordinator und ist übersichtlich. Choreografie koppelt lose über Events, ist aber schwerer zu verfolgen. Für Checkout meist Orchestrierung.</p></details>
-<details><summary>Warum eine Outbox?</summary><p>Fachdaten und Event gehen in einer Transaktion. So geht kein Event verloren, wenn der Service nach dem Commit abstürzt.</p></details>
-<details><summary>Was tun Sie bei einem Timeout beim Provider?</summary><p>Status beim Provider abfragen. Nur mit demselben Idempotenz-Schlüssel wiederholen. Nie neu belasten ohne Klarheit.</p></details>
-<details><summary>Wie sichern Sie Webhooks ab?</summary><p>Signatur und Zeitstempel prüfen, idempotent verarbeiten, schnell antworten und asynchron weiterarbeiten.</p></details>
-<details><summary>Wie lange bleibt Bestand reserviert?</summary><p>Eine fachlich gewählte Zeit, z. B. 15 Minuten. Ein Job gibt abgelaufene Reservierungen frei und storniert die Bestellung.</p></details>
-<details><summary>Wie überstehen Sie einen Flash Sale?</summary><p>Bestand in Buckets, Reservierungen über eine Queue, Rate Limit und Warteraum vor dem Checkout. Produktseiten aus dem Cache.</p></details>
-<details><summary>Wie speichern Sie Geldbeträge?</summary><p>Als numeric oder ganzzahlige Rappen. Preis, Rabatt und MWST als Snapshot in der Bestellung.</p></details>
-<details><summary>Was ist Reconciliation?</summary><p>Ein regelmässiger Abgleich unserer Bestellungen mit den Daten des Providers. Er findet Fälle, die Saga und Webhooks verpasst haben.</p></details>
-<details><summary>Speichern Sie Kartendaten?</summary><p>Nein. Hosted Fields oder Redirect des Providers. So bleibt der PCI-DSS-Umfang klein.</p></details>
-<details><summary>Wie lange hält Stripe Idempotenz-Schlüssel?</summary><p>Laut Doku können Schlüssel entfernt werden, wenn sie mindestens 24 Stunden alt sind. Danach erzeugt derselbe Schlüssel eine neue Anfrage.</p></details>
 <details><summary>Welche Statusübergänge erlauben Sie?</summary><p>pending_payment → paid oder cancelled, paid → shipped. Jeder Übergang als UPDATE mit Bedingung auf den alten Status.</p></details>
+<details><summary>Was geht kaputt, wenn Sie erst den Bestand lesen und dann abziehen?</summary><p>Zwei Käufer lesen beide „1 da“, und beide kaufen: Überverkauf. Das bedingte UPDATE prüft und ändert in einem Schritt, der CHECK-Constraint ist die letzte Verteidigung.</p></details>
+<h3>Zahlen</h3>
+<details><summary>Wie lange bleibt Bestand reserviert?</summary><p>Eine fachlich gewählte Zeit, z. B. 15 Minuten. Ein Job gibt abgelaufene Reservierungen frei und storniert die Bestellung.</p></details>
+<details><summary>Wie lange hält Stripe Idempotenz-Schlüssel?</summary><p>Laut Doku können Schlüssel entfernt werden, wenn sie mindestens 24 Stunden alt sind. Danach erzeugt derselbe Schlüssel eine neue Anfrage.</p></details>
+<details><summary>Was geht kaputt, wenn 1000 Bestellungen pro Sekunde denselben Artikel treffen?</summary><p>Alle UPDATEs warten auf das Lock derselben Bestandszeile, die DB staut. Lösung: Bestand in Buckets, Reservierungen über eine Queue oder Token in Redis.</p></details>
+<h3>Vergleich</h3>
+<details><summary>Orchestrierung oder Choreografie?</summary><p>Orchestrierung hat einen Koordinator und ist übersichtlich. Choreografie koppelt lose über Events, ist aber schwerer zu verfolgen. Für Checkout meist Orchestrierung.</p></details>
+<details><summary>Warum nicht alles synchron in einem Request?</summary><p>Ein langsamer Provider blockiert dann den Request, und ein Fehler mitten drin hinterlässt halbe Zustände. Die Saga kostet mehr Zustände, bleibt aber robust.</p></details>
+<h3>Produktion</h3>
+<details><summary>Was tun Sie bei einem Timeout beim Provider?</summary><p>Status beim Provider abfragen. Nur mit demselben Idempotenz-Schlüssel wiederholen. Nie neu belasten ohne Klarheit.</p></details>
+<details><summary>Wie überstehen Sie einen Flash Sale?</summary><p>Bestand in Buckets, Reservierungen über eine Queue, Rate Limit und Warteraum vor dem Checkout. Produktseiten aus dem Cache.</p></details>
+<details><summary>Was ist Reconciliation?</summary><p>Ein regelmässiger Abgleich unserer Bestellungen mit den Daten des Providers. Er findet Fälle, die Saga und Webhooks verpasst haben.</p></details>
 <details><summary>Szenario: Eine Kundin wurde doppelt belastet. Wie untersuchen Sie das?</summary><p>Zahlungen beim Provider zur Bestellung suchen, Idempotenz-Schlüssel vergleichen. Typisch: Retry ohne Schlüssel oder mit neuem Schlüssel. Sofort erstatten, dann Schlüssel-Logik korrigieren.</p></details>
 <details><summary>Szenario: Im Flash Sale meldet die DB viele Lock-Wartezeiten. Was tun Sie?</summary><p>Die Bestandszeile ist heiss. Kurzfristig Rate Limit und Warteraum. Dann Bestand in Buckets aufteilen oder Reservierungen über eine Queue serialisieren.</p></details>
 <details><summary>Szenario: Bestellungen sind bezahlt, aber der Versand bekommt nichts. Wo suchen Sie?</summary><p>Outbox-Lag und Relay prüfen, Broker und Consumer-Lag. Falls ohne Outbox gebaut: Event ging zwischen Commit und Send verloren. Fix: Outbox und Nachversand.</p></details>
+<details><summary>Was geht kaputt, wenn der Webhook ankommt, bevor die Bestellung gespeichert ist?</summary><p>Die Reihenfolge ist nicht garantiert: Der Webhook findet die Bestellung eventuell noch nicht. Event speichern und später verarbeiten oder den Status beim Provider nachfragen.</p></details>
+<h3>Design</h3>
+<details><summary>Skizzieren Sie den Checkout in einer Minute.</summary><p>Bestellung mit Idempotenz-Schlüssel, bedingte Reservierung, Outbox in einer Transaktion. Zahlung beim Provider mit eigenem Schlüssel, Bestätigung per Webhook, bedingter Statuswechsel. Fehler kompensiert eine Saga.</p></details>
+<details><summary>Wie sichern Sie Webhooks ab?</summary><p>Signatur und Zeitstempel prüfen, idempotent verarbeiten, schnell antworten und asynchron weiterarbeiten.</p></details>
+<details><summary>Wie speichern Sie Geldbeträge?</summary><p>Als numeric oder ganzzahlige Rappen. Preis, Rabatt und MWST als Snapshot in der Bestellung.</p></details>
+<details><summary>Speichern Sie Kartendaten?</summary><p>Nein. Hosted Fields oder Redirect des Providers. So bleibt der PCI-DSS-Umfang klein.</p></details>
+<details><summary>Warum speichern Sie Preis, Rabatt und MWST als Snapshot?</summary><p>Spätere Preisänderungen dürfen eine bestehende Bestellung nicht ändern. Der Snapshot friert den Stand zum Kaufzeitpunkt ein.</p></details>
 
 </body>
 </html>

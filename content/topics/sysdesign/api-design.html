@@ -19,12 +19,37 @@
   summary { font-weight: 600; cursor: pointer; }
   details p { margin: 6px 0 2px; }
   .small { color: #6e6e73; font-size: 14px; }
+  h3 { font-size: 17px; margin: 20px 0 6px; }
+  .geruest { border: 2px solid #1d1d1f; border-radius: 6px; padding: 10px 14px; margin: 14px 0; font-size: 15px; line-height: 1.4; }
+  .geruest h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; margin: 0 0 8px; padding: 0; border: 0; }
+  .geruest dl { display: grid; grid-template-columns: 6.6em 1fr; gap: 6px 10px; margin: 0; }
+  .geruest dt { font-weight: 700; font-size: 12px; text-transform: uppercase; letter-spacing: .05em; padding-top: 1px; }
+  .geruest dd { margin: 0; }
+  .muster { border: 1px solid #e5e5ea; border-left: 4px solid #1d1d1f; border-radius: 6px; padding: 10px 14px; margin: 14px 0; }
+  .muster h3 { margin: 0 0 6px; font-size: 13px; text-transform: uppercase; letter-spacing: .06em; }
+  .muster .mq { margin: 0 0 6px; }
 </style>
 </head>
 <body>
 
 <h1>API-Design im System Design</h1>
 <!-- sources: System Design · Tier 1 · Quellen: RFC 9110 (HTTP Semantics: Methoden, Idempotenz, 202, ETag/If-Match, 412), RFC 9457 (Problem Details), IETF draft-ietf-httpapi-idempotency-key-header-09 (Entwurf, kein RFC), Azure Architecture Center: „Asynchronous Request-Reply pattern“ und „Web API design best practices“, Microsoft Learn: API Management Versions und Revisions, Durable Functions HTTP API, Event Grid Webhook-Validierung, gRPC-Doku (grpc.io), GraphQL-Spezifikation, OpenAPI 3.1 -->
+
+<div class="geruest"><h2>Gerüst</h2><dl>
+  <dt>Warum?</dt><dd>Der Vertrag muss stabil bleiben und Retries überleben: Jeder Netzwerk-Call kann doppelt ankommen.</dd>
+  <dt>Wie innen?</dt><dd>Idempotency-Key + gespeicherte Antwort in einer Transaktion. Cursor = Sortierwerte der letzten Zeile, Base64, opak. Lange Jobs: 202 + Status-Ressource.</dd>
+  <dt>Zahlen</dt><dd>201 + Location, 202, 204; 400 vs 422, 409, 412, 429. Gateways brechen lange Requests ab (App Service 230 s). Keys laufen z. B. nach 24 h ab.</dd>
+  <dt>Vergleich</dt><dd>Offset springt, aber Duplikate und langsam; Cursor stabil und schnell. REST für Partner, gRPC intern, GraphQL für viele Frontends.</dd>
+  <dt>Produktion</dt><dd>Doppelte Buchung nach Timeout ohne Key. Export mit Offset verliert Zeilen. Webhooks kommen at-least-once: Signatur, Retries, idempotent.</dd>
+  <dt>Design</dt><dd>OpenAPI vor dem Code. Versionieren nur bei Breaking Changes, sonst Tolerant Reader. ETag + If-Match gegen Lost Updates.</dd>
+</dl></div>
+
+<div class="muster"><h3>Antwort-Muster</h3><p class="mq"><b>Frage:</b> Wie entwerfen Sie einen POST-Endpunkt, der Retries sicher übersteht?</p><ol>
+  <li>Mechanismus: Der Client schickt einen Idempotency-Key, der Server speichert Key und Antwort in derselben Transaktion wie die Aktion.</li>
+  <li>Zahl: Ein Retry mit gleichem Key bekommt die gespeicherte Antwort; gleicher Key mit anderem Body gibt 422.</li>
+  <li>Trade-off: Der Server muss Keys speichern und aufräumen, z. B. nach 24 Stunden.</li>
+  <li>Produktion: So erzeugt ein Doppelklick oder ein Timeout-Retry keine zweite Buchung.</li>
+</ol></div>
 
 <div class="kern">
 <b>Kern:</b> <b>API-Design</b> ist der Vertrag zwischen Client und Service: Ressourcen, Methoden, Statuscodes, Fehler. Ein guter Vertrag bleibt <b>stabil</b>, obwohl sich der Service ändert. Im System-Design-Interview zählen vier Punkte: <b>Pagination</b>, <b>Idempotenz</b> bei Retries, <b>Versionierung</b> und <b>asynchrone</b> lange Abläufe.
@@ -221,33 +246,45 @@ No key
 </ul>
 </div>
 
-<h2>11. Fragen</h2>
-<details><summary>Wie benennen Sie REST-Ressourcen?</summary><p>Nomen im Plural mit Hierarchie, z. B. /orders/981/items. Die HTTP-Methode ist das Verb.</p></details>
+<h2>11. Selbsttest</h2>
+<h3>Warum?</h3>
+<details><summary>Warum braucht jeder schreibende Endpunkt eine Idempotenz-Strategie?</summary><p>Jeder Netzwerk-Call kann doppelt ankommen: Timeouts führen zu Retries. Ohne Schlüssel bucht ein Retry doppelt.</p></details>
+<details><summary>Warum ist Versionieren die letzte Wahl?</summary><p>Jede Version muss man jahrelang parallel betreiben. Additive Änderungen und Tolerant Reader vermeiden das meist.</p></details>
+<h3>Wie innen?</h3>
 <details><summary>Welche HTTP-Methoden sind idempotent?</summary><p>GET, HEAD, PUT, DELETE (und OPTIONS, TRACE). POST und PATCH nicht automatisch.</p></details>
-<details><summary>PUT vs PATCH?</summary><p>PUT ersetzt die ganze Ressource und ist idempotent. PATCH ändert Teile und ist nicht automatisch idempotent.</p></details>
-<details><summary>Welchen Status nach einem erfolgreichen POST?</summary><p>201 Created mit Location-Header auf die neue Ressource. Bei langer Verarbeitung 202 Accepted.</p></details>
-<details><summary>Wie geben Sie Fehler zurück?</summary><p>Als Problem Details (RFC 9457): application/problem+json mit type, title, status, detail. Dazu ein passender Statuscode.</p></details>
-<details><summary>400 vs 422?</summary><p>400: Die Anfrage ist formal kaputt, z. B. ungültiges JSON. 422: formal ok, aber fachlich ungültig.</p></details>
-<details><summary>401 vs 403?</summary><p>401: nicht oder falsch angemeldet. 403: angemeldet, aber nicht berechtigt.</p></details>
-<details><summary>Offset vs Cursor-Pagination?</summary><p>Offset ist einfach und erlaubt Seitensprünge, liefert aber Duplikate und Lücken bei Änderungen und ist tief langsam. Cursor ist stabil und schnell, aber ohne Seitensprung.</p></details>
-<details><summary>Warum ist OFFSET auf tiefen Seiten langsam?</summary><p>Die Datenbank liest alle übersprungenen Zeilen und wirft sie weg. Ein Cursor springt per Index direkt hin.</p></details>
 <details><summary>Was steht in einem Cursor?</summary><p>Die Sortierwerte des letzten Eintrags, z. B. created_at und id. Base64-kodiert und opak für den Client.</p></details>
 <details><summary>Was ist ein Idempotency-Key?</summary><p>Eine eindeutige ID vom Client pro Auftrag. Der Server speichert sie mit der Antwort. Ein Retry bekommt die gespeicherte Antwort statt einer neuen Aktion.</p></details>
 <details><summary>Was speichert der Server zum Idempotency-Key?</summary><p>Key, Fingerabdruck des Body, Status und Antwort, Ablaufzeit. Alles in derselben Transaktion wie die Aktion.</p></details>
 <details><summary>Was passiert bei gleichem Key und anderem Body?</summary><p>Fehler, laut IETF-Entwurf 422. Läuft der erste Request noch: 409.</p></details>
-<details><summary>Wie versionieren Sie eine API?</summary><p>Im Pfad (/v1), als Query (api-version, wie Azure) oder im Header. Neue Version nur bei Breaking Changes.</p></details>
-<details><summary>Was ist ein Breaking Change?</summary><p>Eine Änderung, die bestehende Clients bricht: Feld entfernen oder umbenennen, Typ ändern, neues Pflichtfeld, andere Bedeutung.</p></details>
+<details><summary>Was geht kaputt, wenn Key und Buchung nicht in derselben Transaktion liegen?</summary><p>Ein Absturz dazwischen hinterlässt den Key ohne Buchung oder die Buchung ohne Key. Der nächste Retry erzeugt dann doch ein Duplikat.</p></details>
+<h3>Zahlen</h3>
+<details><summary>Welchen Status nach einem erfolgreichen POST?</summary><p>201 Created mit Location-Header auf die neue Ressource. Bei langer Verarbeitung 202 Accepted.</p></details>
+<details><summary>400 vs 422?</summary><p>400: Die Anfrage ist formal kaputt, z. B. ungültiges JSON. 422: formal ok, aber fachlich ungültig.</p></details>
+<details><summary>401 vs 403?</summary><p>401: nicht oder falsch angemeldet. 403: angemeldet, aber nicht berechtigt.</p></details>
+<details><summary>Was geht kaputt, wenn ein Request länger läuft als das Gateway erlaubt, z. B. 230 s?</summary><p>Das Gateway bricht ab, der Client sieht einen Fehler, der Job läuft eventuell trotzdem weiter. Lösung: 202 Accepted mit Status-Ressource und Retry-After.</p></details>
+<h3>Vergleich</h3>
+<details><summary>PUT vs PATCH?</summary><p>PUT ersetzt die ganze Ressource und ist idempotent. PATCH ändert Teile und ist nicht automatisch idempotent.</p></details>
+<details><summary>Offset vs Cursor-Pagination?</summary><p>Offset ist einfach und erlaubt Seitensprünge, liefert aber Duplikate und Lücken bei Änderungen und ist tief langsam. Cursor ist stabil und schnell, aber ohne Seitensprung.</p></details>
+<details><summary>Warum ist OFFSET auf tiefen Seiten langsam?</summary><p>Die Datenbank liest alle übersprungenen Zeilen und wirft sie weg. Ein Cursor springt per Index direkt hin.</p></details>
 <details><summary>Version vs Revision in API Management?</summary><p>Version: neuer, sichtbarer Vertrag für Breaking Changes. Revision: nicht-brechende Änderung, getestet und dann live geschaltet.</p></details>
-<details><summary>Wie bauen Sie eine API für lange Jobs?</summary><p>202 Accepted mit Location auf eine Status-Ressource und Retry-After. Der Status zeigt am Ende auf das Ergebnis. Optional ein Webhook.</p></details>
 <details><summary>Polling vs Webhook?</summary><p>Polling: Client fragt regelmässig, einfach, aber verschwenderisch. Webhook: Server ruft an, sofort, aber braucht sichere, erreichbare URL und Retries.</p></details>
-<details><summary>Wie sichern Sie Webhooks ab?</summary><p>HMAC-Signatur über Body und Zeitstempel, nur HTTPS, Zeitfenster gegen Replay, idempotenter Empfänger.</p></details>
-<details><summary>Wie verhindern Sie Lost Updates?</summary><p>Mit ETag und If-Match. Hat sich die Ressource geändert, antwortet der Server 412 Precondition Failed.</p></details>
 <details><summary>REST vs gRPC?</summary><p>REST: JSON, überall nutzbar, gut für Partner. gRPC: Protobuf über HTTP/2, schnell, Streaming, ideal intern. Im Browser nur über gRPC-Web.</p></details>
 <details><summary>Wann GraphQL?</summary><p>Wenn viele Frontends unterschiedliche Daten brauchen. Preis: schwieriges HTTP-Caching, N+1-Abfragen, Schutz vor teuren Queries nötig.</p></details>
+<h3>Produktion</h3>
+<details><summary>Wie sichern Sie Webhooks ab?</summary><p>HMAC-Signatur über Body und Zeitstempel, nur HTTPS, Zeitfenster gegen Replay, idempotenter Empfänger.</p></details>
+<details><summary>Wie verhindern Sie Lost Updates?</summary><p>Mit ETag und If-Match. Hat sich die Ressource geändert, antwortet der Server 412 Precondition Failed.</p></details>
 <details><summary>Was ist das N+1-Problem bei GraphQL?</summary><p>Ein Resolver lädt für jedes Element einzeln nach. Aus einer Liste werden N+1 DB-Abfragen. Lösung: Batching mit DataLoader.</p></details>
 <details><summary>Szenario: Kunden melden doppelte Belastungen, immer bei langsamen Antworten. Was tun Sie?</summary><p>Client-Retries nach Timeouts. Lösung: Idempotency-Key Pflicht für POST, Speicherung in derselben Transaktion, Replay der Antwort. Duplikate über Logs bereinigen.</p></details>
 <details><summary>Szenario: Ein nächtlicher Export über /orders?offset=… liefert Duplikate und fehlende Bestellungen. Warum?</summary><p>Während des Exports kommen neue Bestellungen dazu oder werden gelöscht. Offset verschiebt sich. Lösung: Cursor-Pagination mit stabiler Sortierung.</p></details>
 <details><summary>Szenario: Ein Report-Endpunkt läuft 5 Minuten und bricht mit Gateway-Timeout ab. Wie ändern Sie die API?</summary><p>Asynchron machen: POST gibt 202 mit Status-URL. Ein Worker erstellt den Report. Der Client fragt den Status oder bekommt einen Webhook und lädt dann das Ergebnis.</p></details>
+<details><summary>Was geht kaputt, wenn ein Webhook-Empfänger nicht idempotent ist?</summary><p>Webhooks kommen at-least-once. Doppelte Events erzeugen doppelte Buchungen oder Mails. Der Empfänger erkennt Duplikate über die Event-ID.</p></details>
+<h3>Design</h3>
+<details><summary>Wie benennen Sie REST-Ressourcen?</summary><p>Nomen im Plural mit Hierarchie, z. B. /orders/981/items. Die HTTP-Methode ist das Verb.</p></details>
+<details><summary>Wie geben Sie Fehler zurück?</summary><p>Als Problem Details (RFC 9457): application/problem+json mit type, title, status, detail. Dazu ein passender Statuscode.</p></details>
+<details><summary>Wie versionieren Sie eine API?</summary><p>Im Pfad (/v1), als Query (api-version, wie Azure) oder im Header. Neue Version nur bei Breaking Changes.</p></details>
+<details><summary>Was ist ein Breaking Change?</summary><p>Eine Änderung, die bestehende Clients bricht: Feld entfernen oder umbenennen, Typ ändern, neues Pflichtfeld, andere Bedeutung.</p></details>
+<details><summary>Wie bauen Sie eine API für lange Jobs?</summary><p>202 Accepted mit Location auf eine Status-Ressource und Retry-After. Der Status zeigt am Ende auf das Ergebnis. Optional ein Webhook.</p></details>
+<details><summary>Was geht kaputt, wenn Sie ein Pflichtfeld zu einer bestehenden API hinzufügen?</summary><p>Alle bestehenden Clients senden es nicht und bekommen Fehler: ein Breaking Change. Neues Feld optional machen oder eine neue Version anbieten.</p></details>
 
 </body>
 </html>

@@ -1,0 +1,298 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Drill 3: Terminbuchung (Locking, Reminder-Queue)</title>
+<style>
+  body { font: 17px/1.55 -apple-system, system-ui, sans-serif; max-width: 760px; margin: 0 auto; padding: 16px; color: #1d1d1f; }
+  h1 { font-size: 28px; margin: 8px 0 4px; }
+  h2 { font-size: 21px; margin: 32px 0 8px; padding-top: 12px; border-top: 2px solid #e5e5ea; }
+  h3 { font-size: 17px; margin: 20px 0 6px; }
+  .kern { background: #eef6ff; border-left: 4px solid #0a66c2; padding: 10px 14px; border-radius: 6px; }
+  .senior { background: #f0faf0; border-left: 4px solid #2e7d32; padding: 10px 14px; border-radius: 6px; }
+  .trap { background: #fff4f2; border-left: 4px solid #c62828; padding: 10px 14px; border-radius: 6px; }
+  code { background: #f2f2f7; padding: 1px 5px; border-radius: 4px; font-size: 15px; }
+  pre { background: #1e1e1e; color: #e6e6e6; padding: 12px; border-radius: 8px; overflow-x: auto; font-size: 13.5px; line-height: 1.45; }
+  svg { width: 100%; height: auto; display: block; margin: 10px 0; }
+  ol li, ul li { margin: 4px 0; }
+  details { border: 1px solid #e5e5ea; border-radius: 8px; padding: 8px 12px; margin: 6px 0; }
+  summary { font-weight: 600; cursor: pointer; }
+  details p { margin: 6px 0 2px; }
+  .small { color: #6e6e73; font-size: 14px; }
+  .auftrag { border: 2px dashed #0a66c2; border-radius: 8px; padding: 10px 14px; margin: 10px 0; background: #fbfdff; }
+</style>
+</head>
+<body>
+<h1>Drill 3: Terminbuchung (Locking, Reminder-Queue)</h1>
+<!-- sources: PostgreSQL Doku (UPDATE, Unique Constraints, Row Locking, Transaction Isolation), Azure Service Bus Doku (Scheduled Messages), allgemeine Kapazitaetsrechnung -->
+
+<h2>1. Die Aufgabe</h2>
+<p><b>So stellt sie der Interviewer:</b> „Entwerfen Sie eine Terminbuchungs-Plattform für Arztpraxen. <b>2'000 Praxen</b>, zusammen etwa <b>500'000 Termine pro Monat</b>. Patienten sehen freie Slots und buchen online. <b>24 h vorher</b> geht eine Erinnerung per E-Mail oder SMS raus. Ein Slot darf <b>nie doppelt</b> gebucht werden — auch nicht, wenn zwei Patienten in derselben Millisekunde klicken. Storno muss möglich sein."</p>
+<div class="auftrag"><b>20 Minuten:</b> Stell die Uhr. Löse die Aufgabe laut an einem leeren Blatt — Rückfragen, Zahlen, Tabellen, der Buchungs-Fluss, ein Diagramm. Dann erst weiterlesen und vergleichen.</div>
+
+<h2>2. Schritt 1: Verstehen</h2>
+<div class="kern">
+<p><b>Die Rückfragen, die du stellst — mit plausiblen Antworten:</b></p>
+<ol>
+<li>„Woher kommen die Slots — definiert die Praxis sie vorab?" → <i>„Ja, jede Praxis legt ihren Kalender als feste Slots an, z. B. alle 15 min."</i> Gut: dann existiert jeder Slot als <b>Zeile</b>, bevor jemand bucht.</li>
+<li>„Wie lange darf ein Slot ‚reserviert' sein, bevor die Buchung bestätigt ist?" → <i>„Buchung ist ein Klick, keine Bezahlung — sofort verbindlich."</i> Das spart einen Reservierungs-Zustand mit Timeout.</li>
+<li>„Erinnerung: reicht ‚mindestens einmal', oder ist doppelt schlimm?" → <i>„Doppelt ist unschön, fehlend ist schlimm."</i> Also <b>at-least-once + Dedup</b>.</li>
+<li>„Storno bis wann? Was passiert mit der Erinnerung?" → <i>„Storno bis 2 h vorher; danach keine Erinnerung mehr senden."</i></li>
+<li>„Gibt es einen Ansturm-Moment?" → <i>„Montag 7:00, wenn Praxen die neue Woche freischalten."</i> Dann plane ich für die Spitze, nicht den Schnitt.</li>
+<li>„PII: welche Patientendaten speichern wir?" → <i>„Name, Telefon, E-Mail, Grund des Besuchs."</i> Gesundheitsdaten ⇒ Verschlüsselung + Zugriffskontrolle sind Muss.</li>
+</ol>
+<p><b>Zahlenschätzung (laut rechnen):</b> 500'000 Buchungen/Monat ≈ 20'000/Arbeitstag ≈ <b>0,7 Buchungen/s</b> im Schnitt. Spitze Montag 7:00: Faktor 50–100 ⇒ <b>~50 Buchungen/s</b>, dazu ~10× mehr Lese-Zugriffe auf die Slot-Suche ⇒ <b>~500 Reads/s</b>. Speicher: Termin-Zeile ~300 Bytes ⇒ 6 Mio Termine/Jahr ≈ <b>2 GB/Jahr</b>. Fazit laut sagen: „Das ist eine <b>kleine</b> Datenmenge — die Schwierigkeit ist Korrektheit unter Nebenläufigkeit, nicht Skalierung."</p>
+</div>
+
+<h2>3. Anforderungen</h2>
+<p><b>Muss:</b></p>
+<ul>
+<li>Kein Doppelverkauf eines Slots — unter beliebiger Nebenläufigkeit.</li>
+<li>Slot-Suche pro Praxis und Tag unter 200 ms.</li>
+<li>Erinnerung 24 h vorher, mindestens einmal; nach Storno keine Erinnerung.</li>
+<li>Storno bis 2 h vor Termin; Slot wird wieder frei.</li>
+<li>PII geschützt: TLS, Verschlüsselung at rest, Zugriff nur eigene Praxis.</li>
+</ul>
+<p><b>Kann:</b></p>
+<ul>
+<li>Warteliste, wenn ein Slot frei wird.</li>
+<li>SMS-Antwort „ABSAGEN" als Storno-Kanal.</li>
+<li>No-Show-Statistik pro Praxis.</li>
+<li>Kalender-Export (iCal) für Patienten.</li>
+</ul>
+
+<h2>4. DB-Design</h2>
+<pre>
+CREATE TABLE praxis (
+  praxis_id   bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  name        text NOT NULL
+);
+
+CREATE TABLE slot (
+  slot_id     bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  praxis_id   bigint NOT NULL REFERENCES praxis,
+  beginn      timestamptz NOT NULL,
+  status      text NOT NULL DEFAULT 'frei'
+              CHECK (status IN ('frei','gebucht','gesperrt')),
+  version     int NOT NULL DEFAULT 0,
+  UNIQUE (praxis_id, beginn)          -- kein doppelter Slot im Kalender
+);
+-- DER Index der Aufgabe: Slot-Suche "freie Slots dieser Praxis ab heute"
+CREATE INDEX idx_slot_suche ON slot (praxis_id, beginn) WHERE status = 'frei';
+
+CREATE TABLE buchung (
+  buchung_id    bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  slot_id       bigint NOT NULL REFERENCES slot,
+  patient_id    bigint NOT NULL,
+  idempotenz_key uuid NOT NULL,
+  status        text NOT NULL DEFAULT 'aktiv'
+                CHECK (status IN ('aktiv','storniert')),
+  erstellt_am   timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (idempotenz_key)             -- Doppelklick/Retry = gleiche Buchung
+);
+-- Sicherheitsnetz Nr. 2 gegen Doppelbuchung: hoechstens EINE aktive
+-- Buchung pro Slot, als partieller Unique-Index
+CREATE UNIQUE INDEX uq_buchung_slot_aktiv
+  ON buchung (slot_id) WHERE status = 'aktiv';
+</pre>
+<ul>
+<li><b>slot:</b> ein Datensatz pro buchbarem Zeitfenster; der Zustand lebt in <code>status</code>, und das atomare UPDATE darauf ist die erste Verteidigungslinie.</li>
+<li><b>buchung:</b> wer hat wann gebucht; der partielle Unique-Index <code>uq_buchung_slot_aktiv</code> ist die zweite Verteidigungslinie — selbst ein Code-Fehler kann keine zwei aktiven Buchungen auf einen Slot schreiben.</li>
+<li><b>praxis:</b> Mandant; jede Query filtert auf <code>praxis_id</code> (Mehrmandanten-Trennung).</li>
+</ul>
+
+<h2>5. API</h2>
+<ul>
+<li><code>GET /praxen/{id}/slots?von=2026-12-01&amp;bis=2026-12-07</code> — freie Slots, nutzt <code>idx_slot_suche</code>.</li>
+<li><code>POST /buchungen</code> — Body: <code>slot_id</code>, Patientendaten, Header <code>Idempotency-Key</code>; Antwort 201 oder <b>409</b> „Slot schon vergeben".</li>
+<li><code>DELETE /buchungen/{id}</code> — Storno; 409, wenn weniger als 2 h bis Termin.</li>
+<li><code>GET /patienten/{id}/buchungen</code> — meine Termine.</li>
+<li><code>POST /praxen/{id}/slots:generieren</code> — Praxis erzeugt Wochenraster (z. B. Mo–Fr, 8–17 Uhr, 15 min).</li>
+<li>Intern: Queue-Nachricht <code>ErinnerungFaellig {buchung_id}</code>, geplante Zustellung = Terminbeginn − 24 h.</li>
+</ul>
+
+<h2>6. Pseudo-Code an der Tafel</h2>
+<pre>
+// POST /buchungen  — der kritische Fluss
+funktion buche(slotId, patient, idemKey):
+  // 0) Retry/Doppelklick? Gleiche Antwort zurueckgeben, nichts neu buchen.
+  alt = SELECT * FROM buchung WHERE idempotenz_key = idemKey
+  wenn alt existiert: return 201 mit alt
+
+  BEGIN TRANSACTION
+    // 1) DER atomare Schritt: pruefen + schreiben in EINEM Statement.
+    //    Die DB serialisiert konkurrierende UPDATEs auf dieselbe Zeile.
+    n = UPDATE slot SET status = 'gebucht', version = version + 1
+        WHERE slot_id = slotId AND status = 'frei'
+    wenn n == 0:                     // Fehlerpfad: jemand war schneller
+      ROLLBACK
+      return 409 "Slot ist bereits vergeben"
+
+    // 2) Buchung schreiben — Unique-Indexe sind das Sicherheitsnetz
+    buchung = INSERT INTO buchung (slot_id, patient_id, idempotenz_key)
+              VALUES (slotId, patient.id, idemKey)
+  COMMIT                             // erst jetzt ist der Slot weg
+
+  // 3) NACH dem Commit: Erinnerung planen (Queue, Zustellzeit = beginn-24h).
+  //    Schlaegt das fehl: Buchung bleibt gueltig, Nachholer-Job sendet spaeter.
+  queue.sende("ErinnerungFaellig", {buchungId: buchung.id},
+              zustellenUm = slot.beginn - 24h)
+  return 201
+
+// Reminder-Worker, wenn die Nachricht faellig wird:
+funktion sendeErinnerung(buchungId):
+  b = SELECT * FROM buchung JOIN slot USING (slot_id) WHERE buchung_id = buchungId
+  wenn b.status != 'aktiv': return   // storniert ⇒ still verwerfen
+  wenn b.erinnerung_gesendet: return // Dedup: at-least-once abfangen
+  sendeMailOderSms(b)
+  UPDATE buchung SET erinnerung_gesendet = true WHERE buchung_id = buchungId
+</pre>
+
+<h2>7. Architektur</h2>
+<svg viewBox="0 0 740 330" role="img" aria-label="Architektur Terminbuchung">
+  <defs><marker id="arr1" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10z" fill="#1d1d1f"/></marker></defs>
+  <rect x="15" y="40" width="140" height="64" rx="10" fill="#fff" stroke="#1d1d1f" stroke-width="2"/>
+  <text x="85" y="66" text-anchor="middle" font-size="15" font-weight="700">Angular-FE</text>
+  <text x="85" y="86" text-anchor="middle" font-size="12.5" fill="#6e6e73">Patient + Praxis</text>
+  <line x1="155" y1="72" x2="220" y2="72" stroke="#1d1d1f" stroke-width="2" marker-end="url(#arr1)"/>
+  <rect x="225" y="40" width="170" height="64" rx="10" fill="#fff" stroke="#1d1d1f" stroke-width="2"/>
+  <text x="310" y="66" text-anchor="middle" font-size="15" font-weight="700">Buchungs-API</text>
+  <text x="310" y="86" text-anchor="middle" font-size="12.5" fill="#6e6e73">2 Pods, zustandslos</text>
+  <line x1="395" y1="72" x2="460" y2="72" stroke="#1d1d1f" stroke-width="2" marker-end="url(#arr1)"/>
+  <rect x="465" y="30" width="260" height="84" rx="10" fill="#fbfbfd" stroke="#1d1d1f" stroke-width="2.5"/>
+  <text x="595" y="58" text-anchor="middle" font-size="15" font-weight="700">PostgreSQL</text>
+  <text x="595" y="78" text-anchor="middle" font-size="12.5" fill="#6e6e73">slot, buchung</text>
+  <text x="595" y="96" text-anchor="middle" font-size="12.5" fill="#6e6e73">atomares UPDATE + Unique-Index</text>
+  <line x1="310" y1="104" x2="310" y2="170" stroke="#1d1d1f" stroke-width="2" marker-end="url(#arr1)"/>
+  <text x="318" y="145" font-size="12.5" fill="#6e6e73">nach Commit</text>
+  <rect x="190" y="175" width="240" height="64" rx="10" fill="#fff" stroke="#1d1d1f" stroke-width="2"/>
+  <text x="310" y="201" text-anchor="middle" font-size="15" font-weight="700">Queue</text>
+  <text x="310" y="221" text-anchor="middle" font-size="12.5" fill="#6e6e73">geplante Zustellung: beginn − 24 h</text>
+  <line x1="430" y1="207" x2="495" y2="207" stroke="#1d1d1f" stroke-width="2" marker-end="url(#arr1)"/>
+  <rect x="500" y="175" width="225" height="64" rx="10" fill="#fff" stroke="#1d1d1f" stroke-width="2"/>
+  <text x="612" y="201" text-anchor="middle" font-size="15" font-weight="700">Reminder-Worker</text>
+  <text x="612" y="221" text-anchor="middle" font-size="12.5" fill="#6e6e73">prueft status, dann senden</text>
+  <line x1="612" y1="239" x2="612" y2="280" stroke="#1d1d1f" stroke-width="2" marker-end="url(#arr1)"/>
+  <rect x="500" y="285" width="225" height="40" rx="10" fill="#fff" stroke="#1d1d1f" stroke-width="2"/>
+  <text x="612" y="310" text-anchor="middle" font-size="13.5">Mail- / SMS-Provider</text>
+  <line x1="500" y1="207" x2="465" y2="113" stroke="#1d1d1f" stroke-width="2" stroke-dasharray="6 4" marker-end="url(#arr1)"/>
+  <text x="430" y="150" font-size="12.5" fill="#6e6e73">Worker liest DB</text>
+</svg>
+<p>Sprich das Bild so: „FE redet nur mit der API. Die API macht die Buchung in <b>einer Transaktion</b> in PostgreSQL. Erst <b>nach</b> dem Commit plane ich die Erinnerung als Queue-Nachricht mit Zustellzeit Termin minus 24 h. Der Worker prüft beim Senden nochmal den Status in der DB — so erledigt sich Storno von selbst."</p>
+
+<h2>8. Der schwierige Teil als Bild</h2>
+<svg viewBox="0 0 740 300" role="img" aria-label="Race zweier Nutzer auf denselben Slot">
+  <defs><marker id="arr2" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10z" fill="#1d1d1f"/></marker></defs>
+  <line x1="60" y1="40" x2="60" y2="270" stroke="#1d1d1f" stroke-width="2"/>
+  <text x="60" y="28" text-anchor="middle" font-size="14" font-weight="700">Anna</text>
+  <line x1="300" y1="40" x2="300" y2="270" stroke="#1d1d1f" stroke-width="2"/>
+  <text x="300" y="28" text-anchor="middle" font-size="14" font-weight="700">Ben</text>
+  <line x1="560" y1="40" x2="560" y2="270" stroke="#1d1d1f" stroke-width="2.5"/>
+  <text x="560" y="28" text-anchor="middle" font-size="14" font-weight="700">DB: slot 7 = frei</text>
+  <line x1="60" y1="70" x2="555" y2="70" stroke="#1d1d1f" stroke-width="2" marker-end="url(#arr2)"/>
+  <text x="305" y="60" text-anchor="middle" font-size="12.5">UPDATE … WHERE status='frei'</text>
+  <line x1="300" y1="105" x2="555" y2="105" stroke="#1d1d1f" stroke-width="2" marker-end="url(#arr2)"/>
+  <text x="430" y="95" text-anchor="middle" font-size="12.5">UPDATE … WHERE status='frei'</text>
+  <text x="625" y="125" font-size="12.5" fill="#6e6e73">Ben WARTET auf</text>
+  <text x="625" y="141" font-size="12.5" fill="#6e6e73">Annas Zeilen-Lock</text>
+  <line x1="555" y1="165" x2="65" y2="165" stroke="#2e7d32" stroke-width="2" marker-end="url(#arr2)"/>
+  <text x="305" y="155" text-anchor="middle" font-size="12.5" fill="#2e7d32">n = 1 ⇒ COMMIT, 201 gebucht</text>
+  <line x1="555" y1="215" x2="305" y2="215" stroke="#c62828" stroke-width="2" marker-end="url(#arr2)"/>
+  <text x="430" y="205" text-anchor="middle" font-size="12.5" fill="#c62828">n = 0 (status ist 'gebucht')</text>
+  <line x1="555" y1="250" x2="305" y2="250" stroke="#c62828" stroke-width="2" marker-end="url(#arr2)"/>
+  <text x="430" y="240" text-anchor="middle" font-size="12.5" fill="#c62828">API antwortet 409 an Ben</text>
+</svg>
+<p>Der Mechanismus in einem Satz: Beide UPDATEs zielen auf <b>dieselbe Zeile</b>; PostgreSQL lässt nur einen Schreiber gleichzeitig an die Zeile. Ben wartet, bis Annas Transaktion committet, prüft dann die WHERE-Bedingung <b>neu</b> — <code>status='frei'</code> stimmt nicht mehr, also 0 Zeilen betroffen, also 409. Kein expliziter Lock-Code nötig.</p>
+
+<h2>9. Frontend kurz</h2>
+<ul>
+<li>Komponenten: <code>SlotKalenderComponent</code> (Woche, freie Slots), <code>BuchungDialogComponent</code>, <code>MeineTermineComponent</code>.</li>
+<li>State: ein <code>BuchungService</code> mit Signals; Slots werden nach jeder Buchung neu geladen — nie clientseitig „frei" raten.</li>
+<li>Auf 409: Meldung „Slot wurde soeben vergeben" + Kalender sofort aktualisieren.</li>
+<li>Idempotency-Key: UUID beim Öffnen des Dialogs erzeugen, bei Retry <b>denselben</b> mitsenden.</li>
+</ul>
+
+<h2>10. Cloud (Azure)</h2>
+<div class="senior">
+<ul>
+<li><b>App Service</b> für API + FE: wenige Pods reichen bei 50 req/s Spitze — AKS wäre Overhead ohne Nutzen.</li>
+<li><b>Azure Service Bus</b> (nicht Event Hubs): wir brauchen <b>geplante Zustellung</b> pro Nachricht, Dead-Letter-Queue und Einzel-Nachricht-Semantik — das ist Queue-Arbeit, kein Event-Stream.</li>
+<li><b>Azure Database for PostgreSQL</b> (Flexible Server, zonenredundant): verwaltete Backups + PITR; Gesundheitsdaten ⇒ Region Schweiz wählen.</li>
+<li><b>Azure Functions</b> mit Service-Bus-Trigger als Reminder-Worker: skaliert mit der Queue, kostet bei Leerlauf fast nichts.</li>
+<li><b>Blob Storage</b>: hier kaum nötig (keine Dokumente) — laut sagen, dass man es bewusst weglässt.</li>
+<li><b>Key Vault</b> für DB- und Provider-Secrets; <b>Monitor/App Insights</b> mit Alarm auf 409-Rate und Queue-Alter.</li>
+</ul>
+</div>
+
+<h2>11. Trade-offs</h2>
+<ul>
+<li><b>Atomares UPDATE vs pessimistisch (<code>SELECT … FOR UPDATE</code>) vs optimistisch (version-Spalte):</b> gewählt atomares UPDATE, weil Prüfung + Schreiben in einem Statement liegen und die Sperre nur Mikrosekunden hält. Preis: die Logik muss in <b>ein</b> Statement passen; mehrschrittige Abläufe bräuchten doch FOR UPDATE.</li>
+<li><b>Unique-Constraint als Netz vs „UPDATE reicht doch":</b> gewählt beides (Defense in depth), weil ein späterer Code-Pfad (Import, Admin-Tool) das UPDATE umgehen könnte. Preis: ein Index mehr, der bei jedem INSERT geprüft wird.</li>
+<li><b>Reminder: Cron-Scan vs geplante Queue-Nachricht:</b> gewählt geplante Nachricht, weil kein minütlicher Full-Scan über alle Buchungen läuft und Zustellung + Retry + DLQ die Queue erledigt. Preis: Storno muss beim <b>Senden</b> geprüft werden (Nachricht lässt sich nicht verlässlich zurückziehen) — darum der Status-Check im Worker. Ein täglicher Mini-Cron als Nachholer für verlorene Nachrichten bleibt sinnvoll.</li>
+<li><b>Buchung sofort verbindlich vs Reservierung mit Timeout:</b> gewählt sofort, weil keine Bezahlung im Spiel ist. Preis: bei späterem Payment-Feature muss ein Zustand <code>reserviert</code> + Ablauf-Job nachgerüstet werden.</li>
+<li><b>Eine DB für alle Praxen vs DB pro Praxis:</b> gewählt eine DB mit <code>praxis_id</code>-Filter, weil 2 GB/Jahr trivial sind und Betrieb × 2'000 unbezahlbar wäre. Preis: ein vergessener Mandanten-Filter ist ein Datenschutz-Vorfall ⇒ Row-Level Security als Netz erwähnen.</li>
+</ul>
+
+<h2>12. Selbsttest</h2>
+<div class="trap">
+<p><b>Typische Fehler genau bei dieser Aufgabe:</b></p>
+<ul>
+<li><b>Lesen-prüfen-schreiben in zwei Statements</b> („erst SELECT status, dann UPDATE") — genau das ist die Race Condition, die der Interviewer sehen will.</li>
+<li><b>Lock im Application-Server</b> (synchronized, Mutex): wirkt nur in <b>einem</b> Pod; ab zwei Pods doppelt gebucht.</li>
+<li><b>Erinnerung in der Buchungs-Transaktion senden:</b> Mail-Provider langsam ⇒ Transaktion hält Locks sekundenlang; Provider down ⇒ Buchung schlägt fehl, obwohl nur die Mail klemmt.</li>
+<li><b>Mit Kafka/Sharding anfangen:</b> bei 50 req/s wirkt das auswendig gelernt — erst die Zahl nennen, dann klein bauen.</li>
+</ul>
+</div>
+<details><summary>Warum verhindert <code>UPDATE … WHERE status='frei'</code> die Doppelbuchung — Mechanismus, nicht Behauptung?</summary>
+<p>Ein UPDATE sperrt die Zielzeile bis zum Commit. Der zweite UPDATE wartet auf diese Sperre und wertet danach die WHERE-Bedingung auf dem <b>neuen</b> Zeilenstand aus. <code>status</code> ist jetzt <code>gebucht</code>, also betrifft er 0 Zeilen — der Code sieht <code>n=0</code> und antwortet 409.</p>
+</details>
+<details><summary>Was geht kaputt, wenn der Server zwischen COMMIT und dem Queue-Send abstürzt?</summary>
+<p>Buchung existiert, Erinnerungs-Nachricht fehlt — genau der „fehlend ist schlimm"-Fall. Darum läuft ein Nachholer-Job (z. B. stündlich): „Buchungen in 23–25 h ohne geplante Erinnerung" nachplanen. Die saubere Senior-Antwort heisst <b>Outbox-Pattern</b>: Event in derselben Transaktion in eine Outbox-Tabelle schreiben, ein Relay publiziert es.</p>
+</details>
+<details><summary>Warum nicht das Outbox-Pattern von Anfang an?</summary>
+<p>Es kostet Tabelle, Relay-Prozess und Monitoring. Bei genau <b>einem</b> nachgelagerten Effekt (Erinnerung) deckt der Nachholer-Job das Risiko billiger ab. Ab mehreren Konsumenten (Statistik, Warteliste, Abrechnung) kippt die Rechnung zur Outbox.</p>
+</details>
+<details><summary>Zwei identische Requests mit demselben Idempotency-Key treffen gleichzeitig ein. Was passiert?</summary>
+<p>Beide finden keinen Alt-Eintrag, beide buchen los. Einer gewinnt das Slot-UPDATE; der zweite scheitert am UPDATE (409) oder — falls er denselben Slot gar nicht mehr erreicht — am <code>UNIQUE (idempotenz_key)</code> beim INSERT. Den Unique-Fehler fängt der Code und liefert die bestehende Buchung als 201 zurück: gleiche Antwort für gleichen Key.</p>
+</details>
+<details><summary>Wie funktioniert Storno, ohne dass die Erinnerung trotzdem rausgeht?</summary>
+<p>Storno setzt <code>buchung.status='storniert'</code> und <code>slot.status='frei'</code> in einer Transaktion. Die geplante Queue-Nachricht bleibt liegen — aber der Worker prüft beim Fälligwerden den Status in der DB und verwirft still. Die DB ist die Wahrheit, die Nachricht nur ein Wecker.</p>
+</details>
+<details><summary>Der Mail-Provider ist 2 h down. Was passiert mit den Erinnerungen?</summary>
+<p>Der Worker wirft einen Fehler, die Queue stellt die Nachricht mit Backoff erneut zu (at-least-once). Nach n Fehlversuchen landet sie in der Dead-Letter-Queue mit Alarm. Verspätete Erinnerung ist okay — das sage ich dem Interviewer explizit als bewusste Entscheidung.</p>
+</details>
+<details><summary>Warum 409 und nicht 200 mit Fehlertext im Body?</summary>
+<p>409 Conflict ist maschinenlesbar: das FE kann gezielt „Slot vergeben" behandeln und den Kalender neu laden, Monitoring kann die 409-Rate als Metrik führen (hohe Rate = Ansturm oder UI zeigt veraltete Slots zu lange).</p>
+</details>
+<details><summary>Zahlen: Montag 7:00 schalten 2'000 Praxen die Woche frei. Hält die DB das aus?</summary>
+<p>50 Buchungen/s sind ~50 kleine Transaktionen/s — eine einzelne PostgreSQL-Instanz schafft tausende. Die 500 Reads/s auf die Slot-Suche trägt der partielle Index; notfalls eine Read-Replica. Der Engpass wäre eher der Connection-Pool: begrenzen (z. B. 20–50) und Requests kurz halten.</p>
+</details>
+<details><summary>Skalierung ×10: 20'000 Praxen, 5 Mio Termine/Monat. Was änderst du?</summary>
+<p>Fast nichts am Kern: 500 Buchungen/s Spitze bleiben DB-tauglich, 20 GB/Jahr bleiben klein. Konkret: mehr API-Pods, Read-Replica für die Suche, Partitionierung von <code>slot</code>/<code>buchung</code> nach Monat für Archivierung. Kein Sharding — das sage ich mit der Zahl als Begründung.</p>
+</details>
+<details><summary>Was geht kaputt, wenn zwei Worker dieselbe Erinnerungs-Nachricht doppelt bekommen?</summary>
+<p>Ohne Schutz: doppelte SMS. Darum das Flag <code>erinnerung_gesendet</code>; streng gemacht per atomarem <code>UPDATE … SET erinnerung_gesendet=true WHERE … AND erinnerung_gesendet=false</code> — nur wer 1 Zeile trifft, darf senden. Rest-Risiko (Crash zwischen Senden und Flag) bleibt at-least-once: akzeptiert, laut Anforderung.</p>
+</details>
+<details><summary>Warum liegt die Doppelbuchungs-Logik in der DB und nicht in Redis (z. B. SETNX)?</summary>
+<p>Die DB hält ohnehin die Wahrheit über den Slot; ein zweites System für dieselbe Invariante schafft zwei Wahrheiten, die auseinanderlaufen können (Redis sagt belegt, DB-Transaktion rollte zurück). Redis lohnt erst, wenn die DB die Schreiblast nicht mehr trägt — hier ist sie Faktor 100 davon entfernt.</p>
+</details>
+<details><summary>Interviewer: „Die Praxis will einen Slot sperren (Urlaub). Kollidiert das mit Buchungen?</summary>
+<p>Gleicher Mechanismus: <code>UPDATE slot SET status='gesperrt' WHERE slot_id=? AND status='frei'</code> — 0 Zeilen heisst „schon gebucht", dann muss die Praxis den Termin aktiv absagen (eigener Prozess mit Patienten-Benachrichtigung). Keine Sonderlogik, derselbe atomare Pfad.</p>
+</details>
+<details><summary>Sicherheits-/PII-Punkt: Was ist hier besonders heikel?</summary>
+<p>Besuchsgrund ist ein Gesundheitsdatum (besondere Kategorie nach DSGVO/DSG). Konkret: TLS, Verschlüsselung at rest, Zugriff pro Praxis (Row-Level Security oder Mandanten-Filter in jeder Query), Besuchsgrund <b>nie</b> in die SMS/Mail schreiben — nur „Sie haben morgen 10:15 einen Termin", Löschkonzept nach Aufbewahrungsfrist.</p>
+</details>
+<details><summary>Wie testest du die Race Condition, bevor der Interviewer fragt?</summary>
+<p>Integrationstest: 100 parallele Threads buchen denselben Slot gegen eine echte PostgreSQL (Testcontainer). Assertion: genau 1× 201, 99× 409, und <code>SELECT count(*) FROM buchung WHERE slot_id=? AND status='aktiv'</code> ergibt 1. Ein Unit-Test mit gemocktem Repository kann diese Klasse Fehler prinzipiell nicht finden.</p>
+</details>
+<details><summary>Was geht kaputt, wenn die Queue komplett ausfällt?</summary>
+<p>Buchen funktioniert weiter (Queue-Send ist nach dem Commit und darf fehlschlagen) — nur Erinnerungen verspäten sich. Der Nachholer-Job plant sie nach, sobald die Queue zurück ist. Das ist der Grund, die Queue <b>nicht</b> in den kritischen Pfad zu nehmen: Buchung verkauft, Erinnerung ist Komfort.</p>
+</details>
+<details><summary>Szenario: Support meldet „Patient sagt, er hat gebucht, aber der Slot gehört jemand anderem." Diagnose?</summary>
+<p>Erst Daten statt Meinung: <code>SELECT * FROM buchung WHERE slot_id=?</code> — gibt es zwei aktive Zeilen (dann wäre der Unique-Index verletzt ⇒ praktisch unmöglich) oder bekam der Patient ein 409 und hat die Fehlermeldung übersehen? Danach Logs zum Idempotency-Key des Patienten. Meist: UI zeigte einen veralteten „frei"-Stand und der 409-Hinweis war zu leise.</p>
+</details>
+
+<p class="small">Übe den Drill, bis du Abschnitt 2–8 in 20 Minuten frei an der Tafel erzählst — mit dem atomaren UPDATE als Kernsatz.</p>
+</body>
+</html>
