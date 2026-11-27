@@ -1,0 +1,275 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>HTTP-Caching: Cache-Control und ETag</title>
+<style>
+  body { font: 17px/1.55 -apple-system, system-ui, sans-serif; max-width: 760px; margin: 0 auto; padding: 16px; color: #1d1d1f; }
+  h1 { font-size: 28px; margin: 8px 0 4px; }
+  h2 { font-size: 21px; margin: 32px 0 8px; padding-top: 12px; border-top: 2px solid #e5e5ea; }
+  .kern { background: #eef6ff; border-left: 4px solid #0a66c2; padding: 10px 14px; border-radius: 6px; }
+  .senior { background: #f0faf0; border-left: 4px solid #2e7d32; padding: 10px 14px; border-radius: 6px; }
+  .trap { background: #fff4f2; border-left: 4px solid #c62828; padding: 10px 14px; border-radius: 6px; }
+  code { background: #f2f2f7; padding: 1px 5px; border-radius: 4px; font-size: 15px; }
+  pre { background: #1e1e1e; color: #e6e6e6; padding: 12px; border-radius: 8px; overflow-x: auto; font-size: 13.5px; line-height: 1.45; }
+  svg { width: 100%; height: auto; display: block; margin: 10px 0; }
+  ol li, ul li { margin: 4px 0; }
+  details { border: 1px solid #e5e5ea; border-radius: 8px; padding: 8px 12px; margin: 6px 0; }
+  summary { font-weight: 600; cursor: pointer; }
+  details p { margin: 6px 0 2px; }
+  .small { color: #6e6e73; font-size: 14px; }
+  h3 { font-size: 17px; margin: 20px 0 6px; }
+  .geruest { border: 2px solid #1d1d1f; border-radius: 6px; padding: 10px 14px; margin: 14px 0; font-size: 15px; line-height: 1.4; }
+  .geruest h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; margin: 0 0 8px; padding: 0; border: 0; }
+  .geruest dl { display: grid; grid-template-columns: 6.6em 1fr; gap: 6px 10px; margin: 0; }
+  .geruest dt { font-weight: 700; font-size: 12px; text-transform: uppercase; letter-spacing: .05em; padding-top: 1px; }
+  .geruest dd { margin: 0; }
+  .muster { border: 1px solid #e5e5ea; border-left: 4px solid #1d1d1f; border-radius: 6px; padding: 10px 14px; margin: 14px 0; }
+  .muster h3 { margin: 0 0 6px; font-size: 13px; text-transform: uppercase; letter-spacing: .06em; }
+  .muster .mq { margin: 0 0 6px; }
+</style>
+</head>
+<body>
+
+<h1>HTTP-Caching: Cache-Control und ETag</h1>
+<!-- sources: RFC 9111 (HTTP Caching), RFC 9110 (HTTP Semantics, ETag, bedingte Requests), RFC 5861 (stale-while-revalidate, stale-if-error), RFC 8246 (immutable) auf rfc-editor.org -->
+
+<div class="kern">
+<b>Kern:</b> <b>HTTP-Caching</b> speichert Antworten, damit sie nicht jedes Mal neu berechnet werden. <b>Cache-Control</b> sagt, wie lange eine Antwort <b>frisch</b> ist. Ein <b>ETag</b> erlaubt danach eine <b>bedingte Anfrage</b>, die mit <b>304 Not Modified</b> ohne Body antwortet.
+</div>
+
+<div class="muster"><h3>Antwort-Muster</h3><p class="mq"><b>Frage:</b> Wie funktioniert HTTP-Caching mit Cache-Control und ETag?</p><ol>
+  <li>Mechanismus: Der Server sendet Cache-Control und ETag. Ein Cache nutzt die Antwort, solange sie frisch ist, danach fragt er mit If-None-Match nach.</li>
+  <li>Zahl: Frische kommt aus s-maxage, max-age oder Expires. Ohne alle drei darf ein Cache sie schätzen, typisch mit 10 % der Zeit seit Last-Modified.</li>
+  <li>Trade-off: Langes max-age spart Requests, aber man kann die Antwort nicht zurückrufen. Ein ETag spart nur den Body, nicht die Anfrage.</li>
+  <li>Produktion: Statische Dateien mit Hash im Namen bekommen langes max-age mit immutable. API-Daten bekommen ETag oder no-cache.</li>
+</ol></div>
+
+<h2>1. Eine Anfrage durch den Cache, in 8 Schritten</h2>
+<svg viewBox="0 0 720 244" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+<defs><marker id="ce1" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+<rect x="10" y="14" width="156" height="62" rx="10" fill="#eee" stroke="#777"/>
+<text x="88" y="38" text-anchor="middle" font-weight="700" fill="#1d1d1f">1. Request</text>
+<text x="88" y="56" text-anchor="middle" font-size="12" fill="#1d1d1f">GET /item</text>
+<rect x="190" y="14" width="156" height="62" rx="10" fill="#dbe9fb" stroke="#0a66c2"/>
+<text x="268" y="38" text-anchor="middle" font-weight="700" fill="#1d1d1f">2. Im Cache?</text>
+<text x="268" y="56" text-anchor="middle" font-size="12" fill="#1d1d1f">Treffer suchen</text>
+<rect x="370" y="14" width="156" height="62" rx="10" fill="#dbe9fb" stroke="#0a66c2"/>
+<text x="448" y="38" text-anchor="middle" font-weight="700" fill="#1d1d1f">3. Frisch?</text>
+<text x="448" y="56" text-anchor="middle" font-size="12" fill="#1d1d1f">Alter &lt; Lebensdauer</text>
+<rect x="550" y="14" width="156" height="62" rx="10" fill="#e8f5e9" stroke="#2e7d32"/>
+<text x="628" y="38" text-anchor="middle" font-weight="700" fill="#1d1d1f">4. Direkt liefern</text>
+<text x="628" y="56" text-anchor="middle" font-size="12" fill="#1d1d1f">ohne Server</text>
+<rect x="550" y="126" width="156" height="62" rx="10" fill="#fff" stroke="#555"/>
+<text x="628" y="150" text-anchor="middle" font-weight="700" fill="#1d1d1f">5. Server fragen</text>
+<text x="628" y="168" text-anchor="middle" font-size="12" fill="#1d1d1f">If-None-Match</text>
+<rect x="370" y="126" width="156" height="62" rx="10" fill="#dbe9fb" stroke="#0a66c2"/>
+<text x="448" y="150" text-anchor="middle" font-weight="700" fill="#1d1d1f">6. ETag prüfen</text>
+<text x="448" y="168" text-anchor="middle" font-size="12" fill="#1d1d1f">gleich?</text>
+<rect x="190" y="126" width="156" height="62" rx="10" fill="#fff" stroke="#555"/>
+<text x="268" y="150" text-anchor="middle" font-weight="700" fill="#1d1d1f">7. 304 oder 200</text>
+<text x="268" y="168" text-anchor="middle" font-size="12" fill="#1d1d1f">Body nur bei 200</text>
+<rect x="10" y="126" width="156" height="62" rx="10" fill="#0a66c2" stroke="#0a66c2"/>
+<text x="88" y="150" text-anchor="middle" font-weight="700" fill="#fff">8. Cache updaten</text>
+<text x="88" y="168" text-anchor="middle" font-size="12" fill="#fff">Header erneuern</text>
+<line x1="166" y1="45" x2="188" y2="45" stroke="#555" stroke-width="2" marker-end="url(#ce1)"/>
+<line x1="346" y1="45" x2="368" y2="45" stroke="#555" stroke-width="2" marker-end="url(#ce1)"/>
+<line x1="526" y1="45" x2="548" y2="45" stroke="#555" stroke-width="2" marker-end="url(#ce1)"/>
+<line x1="628" y1="76" x2="628" y2="124" stroke="#555" stroke-width="2" marker-end="url(#ce1)"/>
+<line x1="550" y1="157" x2="528" y2="157" stroke="#555" stroke-width="2" marker-end="url(#ce1)"/>
+<line x1="370" y1="157" x2="348" y2="157" stroke="#555" stroke-width="2" marker-end="url(#ce1)"/>
+<line x1="190" y1="157" x2="168" y2="157" stroke="#555" stroke-width="2" marker-end="url(#ce1)"/>
+</svg>
+<ol>
+  <li><b>Request:</b> Der Client sendet <code>GET /item</code>. Zuerst schaut er in seinen Cache.</li>
+  <li><b>Treffer suchen:</b> Der Cache sucht eine gespeicherte Antwort zur gleichen URL. Bei <code>Vary</code> müssen auch die genannten Request-Header passen.</li>
+  <li><b>Frisch prüfen:</b> Alter der Antwort gegen Lebensdauer. Die Lebensdauer kommt aus <code>s-maxage</code> (nur Shared Cache), sonst <code>max-age</code>, sonst <code>Expires</code> minus <code>Date</code>.</li>
+  <li><b>Frisch heisst nutzen:</b> Der Cache liefert die gespeicherte Antwort. Der Server sieht nichts davon.</li>
+  <li><b>Stale heisst nachfragen:</b> Der Cache sendet den Request mit <code>If-None-Match: "v1"</code>. Das ist die bedingte Anfrage.</li>
+  <li><b>Server vergleicht:</b> Der Server prüft das ETag der aktuellen Version. Bei If-None-Match gilt der schwache Vergleich.</li>
+  <li><b>304 oder 200:</b> Gleich heisst <code>304</code> ohne Body. Anders heisst <code>200</code> mit neuem Body und neuem ETag.</li>
+  <li><b>Cache aktualisieren:</b> Bei 304 erneuert der Cache die Header der gespeicherten Antwort und nutzt den alten Body weiter. Bei 200 ersetzt er die Antwort.</li>
+</ol>
+<p>Ein normaler <b>GET</b> auf eine 200-Antwort ist der häufigste Fall für Caches. Viele Caches speichern nur GET.</p>
+
+<h2>2. Aufbau</h2>
+<svg viewBox="0 0 720 242" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+<defs><marker id="ce2" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+<rect x="195" y="14" width="330" height="62" rx="10" fill="#dbe9fb" stroke="#0a66c2"/>
+<text x="360" y="38" text-anchor="middle" font-weight="700" fill="#1d1d1f">Antwort des Servers</text>
+<text x="360" y="56" text-anchor="middle" font-size="12" fill="#1d1d1f">Cache-Control · ETag · Last-Modified · Vary</text>
+<rect x="12" y="126" width="156" height="62" rx="10" fill="#fff" stroke="#555"/>
+<text x="90" y="150" text-anchor="middle" font-weight="700" fill="#1d1d1f">Cache-Control</text>
+<text x="90" y="168" text-anchor="middle" font-size="12" fill="#1d1d1f">max-age, no-cache,</text>
+<text x="90" y="183" text-anchor="middle" font-size="12" fill="#1d1d1f">private, public</text>
+<line x1="360" y1="76" x2="90" y2="124" stroke="#555" stroke-width="2" marker-end="url(#ce2)"/>
+<rect x="192" y="126" width="156" height="62" rx="10" fill="#fff" stroke="#555"/>
+<text x="270" y="150" text-anchor="middle" font-weight="700" fill="#1d1d1f">ETag</text>
+<text x="270" y="168" text-anchor="middle" font-size="12" fill="#1d1d1f">Validator in</text>
+<text x="270" y="183" text-anchor="middle" font-size="12" fill="#1d1d1f">Anführungszeichen</text>
+<line x1="360" y1="76" x2="270" y2="124" stroke="#555" stroke-width="2" marker-end="url(#ce2)"/>
+<rect x="372" y="126" width="156" height="62" rx="10" fill="#fff" stroke="#555"/>
+<text x="450" y="150" text-anchor="middle" font-weight="700" fill="#1d1d1f">Last-Modified</text>
+<text x="450" y="168" text-anchor="middle" font-size="12" fill="#1d1d1f">Datum als</text>
+<text x="450" y="183" text-anchor="middle" font-size="12" fill="#1d1d1f">Validator</text>
+<line x1="360" y1="76" x2="450" y2="124" stroke="#555" stroke-width="2" marker-end="url(#ce2)"/>
+<rect x="552" y="126" width="156" height="62" rx="10" fill="#fff" stroke="#555"/>
+<text x="630" y="150" text-anchor="middle" font-weight="700" fill="#1d1d1f">Vary</text>
+<text x="630" y="168" text-anchor="middle" font-size="12" fill="#1d1d1f">welche Request-</text>
+<text x="630" y="183" text-anchor="middle" font-size="12" fill="#1d1d1f">Header zählen</text>
+<line x1="360" y1="76" x2="630" y2="124" stroke="#555" stroke-width="2" marker-end="url(#ce2)"/>
+<text x="360" y="234" text-anchor="middle" font-size="12" fill="#555">Cache-Control steuert Frische. ETag und Last-Modified erlauben Nachfragen.</text>
+</svg>
+<ol>
+  <li><b>Cache-Control</b> hat Direktiven für Frische (<code>max-age</code>) und Regeln (<code>no-store</code>, <code>private</code>).</li>
+  <li><b>ETag</b> ist ein Validator, also eine Kennung der Version. Er steht in Anführungszeichen. Ein <code>W/</code> davor macht ihn schwach.</li>
+  <li><b>Last-Modified</b> ist ein Datum als Validator. Der Client sendet es als <code>If-Modified-Since</code> zurück.</li>
+  <li><b>Vary</b> nennt Request-Header, die den Inhalt ändern, zum Beispiel <code>Accept-Encoding</code>. Der Cache speichert pro Wert eine Variante.</li>
+  <li><b>Private Cache</b> gehört einem Nutzer (Browser). <b>Shared Cache</b> bedient viele (CDN, Proxy).</li>
+  <li><b>Age</b> ist die vom Cache geschätzte Zeit seit der letzten Prüfung durch den Origin.</li>
+</ol>
+
+<h2>3. Details</h2>
+<ol>
+  <li><b>Frische:</b> Eine Antwort ist frisch, solange ihr Alter kleiner ist als die Lebensdauer. Danach ist sie <b>stale</b>. Stale heisst nicht gelöscht, sondern nur prüfpflichtig.</li>
+  <li><b>Reihenfolge der Lebensdauer:</b> <code>s-maxage</code> (nur Shared Cache), dann <code>max-age</code>, dann <code>Expires</code> minus <code>Date</code>. Gibt es nichts davon, darf der Cache <b>heuristisch</b> schätzen.</li>
+  <li><b>Heuristische Frische:</b> Hat die Antwort <code>Last-Modified</code>, ist ein Anteil der Zeit seit diesem Datum üblich. Die Spezifikation nennt typisch 10 %. Wer das nicht will, setzt Cache-Control selbst.</li>
+  <li><b>no-cache:</b> Der Cache darf die Antwort speichern, aber nur nach Validierung beim Server wiederverwenden. Der Name ist irreführend.</li>
+  <li><b>no-store:</b> Der Cache darf keinen Teil von Request oder Antwort speichern. Das ist die Regel für sensible Daten.</li>
+  <li><b>private und public:</b> <code>private</code> erlaubt nur einem privaten Cache zu speichern. <code>public</code> markiert die Antwort ausdrücklich als cachebar.</li>
+  <li><b>must-revalidate:</b> Ist die Antwort stale, darf der Cache sie nur nach erfolgreicher Prüfung nutzen. Ist der Server nicht erreichbar, kommt ein Fehler, zum Beispiel 504.</li>
+  <li><b>Starker und schwacher ETag:</b> Ein starker ETag ändert sich bei jeder Änderung der Daten. Ein schwacher (<code>W/"1"</code>) darf gleich bleiben, wenn der Inhalt gleichwertig ist.</li>
+  <li><b>If-None-Match:</b> Der Server nutzt den schwachen Vergleich. Bei GET und HEAD antwortet er mit 304, bei anderen Methoden mit 412.</li>
+  <li><b>If-Match:</b> Der Server nutzt den starken Vergleich. Passt der ETag nicht, antwortet er mit <b>412 Precondition Failed</b>. So verhindert man verlorene Updates (Optimistic Locking).</li>
+  <li><b>If-Modified-Since:</b> Der Server ignoriert ihn, wenn <code>If-None-Match</code> im Request steht. ETag hat Vorrang vor dem Datum.</li>
+  <li><b>Erweiterungen:</b> <code>stale-while-revalidate</code> und <code>stale-if-error</code> stehen in RFC 5861, nicht in RFC 9111. <code>immutable</code> steht in RFC 8246 und verhindert Nachfragen beim Reload.</li>
+</ol>
+
+<h2>4. Fallen</h2>
+<div class="trap">
+<ul>
+  <li>„<code>no-cache</code> heisst, die Antwort wird nicht gespeichert.“ → <b>Falsch.</b> Sie wird gespeichert, aber vor jeder Wiederverwendung beim Server geprüft. Nicht speichern heisst <code>no-store</code>.</li>
+  <li>„Ein ETag spart die Anfrage zum Server.“ → <b>Falsch.</b> Der Client fragt weiterhin nach. Gespart wird nur der Body bei 304.</li>
+  <li>„Ein 304 hat einen Body.“ → <b>Falsch.</b> Ein 304 hat keinen Body. Der Cache nutzt den gespeicherten Body und erneuert die Header.</li>
+  <li>„Ein CDN darf <code>Authorization</code>-Antworten einfach cachen.“ → <b>Falsch.</b> Personenbezogene Antworten brauchen <code>private</code> oder <code>no-store</code>. Sonst sieht ein Nutzer die Daten eines anderen.</li>
+  <li>„Mit <code>max-age=31536000</code> kann ich die Datei später ändern.“ → <b>Falsch.</b> Der Cache ruft sie ein Jahr lang nicht ab. Darum langes max-age nur mit Hash oder Version im Dateinamen.</li>
+  <li>„<code>If-Match</code> und <code>If-None-Match</code> sind das Gleiche.“ → <b>Falsch.</b> If-None-Match prüft für Caching (304). If-Match schützt Updates (412).</li>
+</ul>
+</div>
+
+<h2>5. Selbsttest</h2>
+<h3>Warum?</h3>
+<details><summary>Warum cachen wir HTTP-Antworten?</summary><p>Weniger Latenz, weniger Last auf dem Server und weniger Datenverkehr. Frische Antworten kommen ohne Serverkontakt.</p></details>
+<details><summary>Warum braucht man ein ETag, wenn es max-age gibt?</summary><p>max-age sagt nur, wie lange nicht gefragt werden muss. Danach spart das ETag per 304 den Body.</p></details>
+<details><summary>Warum gibt es If-Match?</summary><p>Es schützt Updates. Hat jemand die Ressource inzwischen geändert, antwortet der Server mit 412.</p></details>
+<h3>Wie innen?</h3>
+<details><summary>Wie prüft ein Cache, ob eine Antwort frisch ist?</summary><p>Alter gegen Lebensdauer. Die Lebensdauer kommt aus s-maxage (Shared), max-age, Expires minus Date, sonst aus einer Schätzung.</p></details>
+<details><summary>Wie läuft eine bedingte Anfrage ab?</summary><p>Der Cache sendet If-None-Match mit dem gespeicherten ETag. Passt er, antwortet der Server 304 ohne Body. Sonst 200 mit neuem Body.</p></details>
+<details><summary>Was macht der Cache bei einem 304?</summary><p>Er erneuert die Header der gespeicherten Antwort und nutzt den alten Body weiter.</p></details>
+<details><summary>Was bewirkt Vary?</summary><p>Der Cache speichert Varianten pro Wert der genannten Request-Header. Ein <code>Vary: *</code> passt nie.</p></details>
+<details><summary>Was ist der Unterschied zwischen starkem und schwachem ETag?</summary><p>Stark heisst Byte-genau gleich. Schwach (W/-Präfix) heisst gleichwertig. If-Match braucht stark, If-None-Match vergleicht schwach.</p></details>
+<h3>Zahlen</h3>
+<details><summary>Welchen Status liefert eine unveränderte Ressource bei If-None-Match?</summary><p>304 Not Modified, ohne Body.</p></details>
+<details><summary>Welchen Status liefert If-Match bei falschem ETag?</summary><p>412 Precondition Failed.</p></details>
+<details><summary>Wie viel Frische schätzt ein Cache ohne Angaben?</summary><p>Die Spezifikation nennt typisch 10 % der Zeit seit Last-Modified. Eine feste Zahl schreibt sie nicht vor.</p></details>
+<details><summary>Wie lange ist max-age=31536000?</summary><p>Ein Jahr in Sekunden. Das ist der übliche Wert für Dateien mit Hash im Namen, zusammen mit immutable.</p></details>
+<h3>Vergleich</h3>
+<details><summary>no-cache vs no-store?</summary><p>no-cache speichert und prüft vor jeder Nutzung. no-store speichert gar nichts.</p></details>
+<details><summary>ETag vs Last-Modified?</summary><p>ETag ist eine beliebige Kennung und genauer. Last-Modified ist ein Datum mit Sekundengenauigkeit. Der ETag hat Vorrang.</p></details>
+<details><summary>private vs public?</summary><p>private nur im Browser-Cache, public auch in CDN und Proxy. Fehlt beides, gelten die Standardregeln der Antwort.</p></details>
+<details><summary>max-age vs s-maxage?</summary><p>max-age gilt für alle Caches. s-maxage gilt nur für Shared Caches wie ein CDN und hat dort Vorrang.</p></details>
+<h3>Produktion</h3>
+<details><summary>Warum sehen Nutzer nach einem Deployment noch das alte JavaScript?</summary><p>Die Datei hat langes max-age unter gleichem Namen. Lösung: Hash im Dateinamen, dann ändert sich die URL.</p></details>
+<details><summary>Warum bekommt ein Nutzer die Daten eines anderen?</summary><p>Eine personalisierte Antwort wurde im CDN gecacht. Lösung: private oder no-store, und Vary für Header, die den Inhalt ändern.</p></details>
+<details><summary>Szenario: Eine Preis-API ist langsam. Die Preise ändern sich alle paar Minuten. Was tun Sie?</summary><p>Ein ETag und Cache-Control mit kurzem max-age. Clients fragen mit If-None-Match nach und bekommen oft 304. Mit stale-while-revalidate wartet niemand auf die Prüfung.</p></details>
+<details><summary>Szenario: Zwei Nutzer ändern denselben Datensatz und einer überschreibt die Änderung des anderen. Wie verhindern Sie das?</summary><p>GET liefert ein ETag. PUT sendet If-Match mit diesem ETag. Hat sich der Datensatz geändert, antwortet der Server mit 412 und der Client lädt neu.</p></details>
+<h3>Design</h3>
+<details><summary>Wie cachen Sie statische Dateien richtig?</summary><p>Hash im Dateinamen und <code>Cache-Control: max-age=31536000, immutable</code>. Die HTML-Seite selbst bekommt kurz oder no-cache.</p></details>
+<details><summary>Wie berechnet man ein ETag?</summary><p>Aus dem Inhalt (Hash) oder einer Versionsnummer. Es muss sich bei jeder Änderung ändern.</p></details>
+<details><summary>Wann nimmt man no-store?</summary><p>Bei sensiblen Daten wie Kontoständen. Der Cache darf nichts speichern.</p></details>
+<details><summary>Was macht stale-while-revalidate?</summary><p>Der Cache liefert die stale Antwort sofort und prüft im Hintergrund nach. Die Direktive steht in RFC 5861.</p></details>
+
+<details class="mehr"><summary>Mehr</summary>
+<h3>Gerüst</h3>
+<ul>
+  <li><b>Warum?</b> Weniger Latenz und Last. Frische Antworten kommen ohne Server.</li>
+  <li><b>Wie innen?</b> Alter gegen Lebensdauer. Stale: bedingte Anfrage mit If-None-Match, Antwort 304 ohne Body.</li>
+  <li><b>Zahlen</b> 304 Not Modified, 412 Precondition Failed, Heuristik typisch 10 %, ein Jahr = 31536000 Sekunden.</li>
+  <li><b>Vergleich</b> no-cache prüft, no-store speichert nichts. ETag ist genauer als Last-Modified.</li>
+  <li><b>Produktion</b> Altes JavaScript nach Deploy, fremde Daten im CDN, verlorene Updates ohne If-Match.</li>
+  <li><b>Design</b> Hash im Dateinamen mit immutable, ETag für APIs, If-Match für Updates, private bei Nutzerdaten.</li>
+</ul>
+
+<h3>Beispiel: ETag und If-Match im Test</h3>
+<pre>GET /item                         -> 200, ETag "v1", Cache-Control max-age=60
+GET /item  If-None-Match: "v1"    -> 304 (kein Body)
+PUT /item  If-Match: "v1"         -> 204, neuer ETag "v2"
+GET /item  If-None-Match: "v1"    -> 200 (ETag ist jetzt "v2")
+PUT /item  If-Match: "v1"         -> 412</pre>
+<pre>1) GET ohne Header
+  status=200 etag="v1" cache-control=max-age=60 body={"id":1,"price":10}
+2) GET mit If-None-Match: "v1"
+  status=304 etag="v1" cache-control=max-age=60 body=(leer)
+3) PUT mit If-Match: "v1"
+  status=204 etag="v2" cache-control=- body=(leer)
+4) GET mit altem If-None-Match: "v1"
+  status=200 etag="v2" cache-control=max-age=60 body={"id":1,"price":12}
+5) PUT mit veraltetem If-Match: "v1"
+  status=412 etag=- cache-control=- body=(leer)
+Bodies gesendet: 2 von 3 GET-Anfragen</pre>
+<p class="small">Echte Ausgabe, Java 17.0.3 (com.sun.net.httpserver und java.net.http). Die Demo ist ein kleiner Eigenbau-Server, kein Spring.</p>
+<ol>
+  <li>Bei Schritt 2 passt der ETag. Der Server sendet 304 und keinen Body.</li>
+  <li>Bei Schritt 3 passt <code>If-Match</code>. Das Update gelingt und der ETag wird <code>"v2"</code>.</li>
+  <li>Bei Schritt 4 passt der alte ETag nicht mehr. Der Server sendet 200 mit dem neuen Body.</li>
+  <li>Bei Schritt 5 bekommt ein zweiter Schreiber mit altem ETag 412. Sein Update geht nicht durch.</li>
+  <li>Von 3 GET-Anfragen trugen nur 2 einen Body. Eine war ein 304.</li>
+</ol>
+
+<h3>Vergleich</h3>
+<ul>
+  <li><b>Browser-Cache:</b> private, pro Nutzer. Respektiert Cache-Control.</li>
+  <li><b>CDN oder Reverse Proxy:</b> Shared Cache für viele Nutzer. Nutzt <code>s-maxage</code>. Gefährlich bei personalisierten Antworten.</li>
+  <li><b>Application Cache (Redis, Caffeine):</b> im Server, kein HTTP. Spart Datenbank-Zugriffe, nicht Netz.</li>
+  <li><b>ETag:</b> beliebige Kennung, genau. <b>Last-Modified:</b> Datum, sekundengenau.</li>
+  <li><b>max-age:</b> relative Sekunden. <b>Expires:</b> absolutes Datum und hängt an Uhren.</li>
+  <li><b>no-cache, no-store, must-revalidate:</b> drei verschiedene Regeln. Oft werden sie verwechselt.</li>
+</ul>
+
+<h3>Produktion</h3>
+<ol>
+  <li><b>Altes JavaScript oder CSS nach Deployment:</b> Langes max-age unter gleichem Namen. Lösung: Hash im Dateinamen.</li>
+  <li><b>Fremde Daten im CDN:</b> Eine personalisierte Antwort wurde geteilt. Lösung: <code>private</code> oder <code>no-store</code>, <code>Vary</code> richtig setzen.</li>
+  <li><b>Verlorene Updates:</b> Zwei Clients schreiben ohne Prüfung. Lösung: ETag mit <code>If-Match</code> und 412.</li>
+  <li><b>Cache wird nie getroffen:</b> Das ETag ändert sich bei jeder Antwort, zum Beispiel wegen eines Zeitstempels im Body. Lösung: ETag aus dem stabilen Inhalt berechnen.</li>
+  <li><b>Falsche Varianten:</b> Antwort ändert sich je nach Header, aber <code>Vary</code> fehlt. Lösung: Vary setzen, zum Beispiel <code>Accept-Encoding</code>.</li>
+  <li><b>API nach Änderung noch alt:</b> Ein Gateway cached ohne Absprache. Lösung: Cache-Control explizit senden.</li>
+</ol>
+
+<h3>Diagnose: Werkzeuge und Befehle</h3>
+<ul>
+  <li><b>Browser DevTools, Tab Network:</b> zeigt 'from disk cache', 304 und die Header.</li>
+  <li><b>curl -i:</b> zeigt Antwort-Header. <code>curl -i -H 'If-None-Match: "v1"' URL</code> testet die bedingte Anfrage.</li>
+  <li><b>Header Age:</b> zeigt, ob ein Shared Cache die Antwort ausgeliefert hat.</li>
+  <li><b>CDN-Logs:</b> Hit- und Miss-Rate pro Pfad.</li>
+  <li><b>Integrationstest:</b> Zweimal anfragen und den Status prüfen (200, dann 304).</li>
+</ul>
+
+<h3>Senior-Punkte</h3>
+<div class="senior">
+<ol>
+  <li><b>Caching ist ein Vertrag mit allen Caches auf dem Weg.</b> Man kann eine gecachte Antwort nicht zurückrufen.</li>
+  <li><b>Unveränderliche URLs sind der sicherste Weg.</b> Hash im Namen, langes max-age, immutable.</li>
+  <li><b>ETag sorgt für Konsistenz, nicht für Tempo.</b> Es spart Bytes, die Anfrage bleibt. Mit If-Match schützt es zusätzlich vor verlorenen Updates.</li>
+  <li><b>Personalisierte Antworten sind die Hauptgefahr.</b> Im Zweifel private oder no-store.</li>
+  <li><b>Cache-Control immer ausdrücklich setzen.</b> Sonst entscheidet die Heuristik des Caches.</li>
+  <li><b>Kurzes max-age plus stale-while-revalidate</b> ist oft der gute Kompromiss für APIs.</li>
+</ol>
+</div>
+
+<h3>Dein Beispiel</h3>
+</details>
+
+</body>
+</html>

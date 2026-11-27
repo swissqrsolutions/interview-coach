@@ -2,7 +2,7 @@
 
 Generated from content/syllabus.json. Priority 1 = asked in almost every interview. Mark: **Projekt** = shown in CV/Gmail · **— kein Projekt** = no project experience · **? prüfen** = unclear, you decide.
 
-437 topics · P1 267 · P2 132 · P3 38 · written 333
+437 topics · P1 267 · P2 132 · P3 38 · written 362
 
 ## Java 21 (core + advanced) (42)
 Sources: Java SE 21/25 docs (docs.oracle.com) · JVM Specification · OpenJDK source + JEPs (openjdk.org) · Oracle Java SE 21 Developer exam 1Z0-830 topics
@@ -95,10 +95,10 @@ Sources: RFC 9110 HTTP Semantics · RFC 9457 Problem Details · OpenAPI 3.1 spec
 | 1 | API-Versionierung | ? prüfen | ✓ |
 | 1 | OpenAPI und Contract-First | Projekt | ✓ |
 | 1 | API-Sicherheit | Projekt | ✓ |
-| 2 | JSON mit Jackson: Serialisierung, Annotations, Fallen | Projekt |  |
-| 2 | HTTP-Caching: Cache-Control, ETag | ? prüfen |  |
-| 2 | Fehlerformat: Problem Details (RFC 9457) | Projekt |  |
-| 2 | REST vs GraphQL vs gRPC | Projekt |  |
+| 2 | JSON mit Jackson | Projekt | ✓ |
+| 2 | HTTP-Caching: Cache-Control und ETag | ? prüfen | ✓ |
+| 2 | Fehlerformat: Problem Details (RFC 9457) | Projekt | ✓ |
+| 2 | REST vs GraphQL vs gRPC | Projekt | ✓ |
 
 ## Microservices + event-driven (18)
 Sources: microservices.io patterns (Chris Richardson) · Azure Architecture Center: cloud design patterns · Building Microservices (Sam Newman)
@@ -121,8 +121,8 @@ Sources: microservices.io patterns (Chris Richardson) · Azure Architecture Cent
 | 2 | Service Discovery und Load Balancing | ? prüfen | ✓ |
 | 2 | CQRS und Event Sourcing | — kein Projekt | ✓ |
 | 2 | Strangler Fig Migration | ? prüfen | ✓ |
-| 2 | Testen von Microservices: Contract Tests | ? prüfen |  |
-| 2 | 12-Factor App | ? prüfen |  |
+| 2 | Testen von Microservices: Contract Tests | ? prüfen | ✓ |
+| 2 | 12-Factor App | ? prüfen | ✓ |
 
 ## Apache Kafka (16)
 Sources: Apache Kafka documentation · Confluent developer docs · Confluent CCDAK exam topics
@@ -152,8 +152,8 @@ Sources: Jakarta XML Web Services / JAXB specs · W3C SOAP 1.2 and WSDL · Sprin
 | P | Topic | Project | Written |
 |---|---|---|---|
 | 1 | SOAP vs REST | Projekt | ✓ |
-| 2 | SOAP: Envelope, Header, Body, Fault | Projekt |  |
-| 2 | WSDL | Projekt |  |
+| 2 | SOAP: Envelope, Header, Body, Fault | Projekt | ✓ |
+| 2 | WSDL | Projekt | ✓ |
 | 2 | XSD: Typen und Validierung | Projekt |  |
 | 2 | JAXB: Marshalling und Unmarshalling | Projekt |  |
 | 2 | JAX-WS und Spring-WS | ? prüfen |  |
@@ -308,9 +308,9 @@ Sources: Apache Spark 3.5/4 documentation · Databricks Spark developer exam top
 | 2 | Catalyst und Tungsten | ? prüfen | ✓ |
 | 2 | cache und persist | ? prüfen | ✓ |
 | 2 | UDFs und Pandas UDFs | ? prüfen | ✓ |
-| 2 | Structured Streaming | — kein Projekt |  |
-| 2 | Spark auf Kubernetes | Projekt |  |
-| 2 | Spark-Tuning: wichtigste Konfigurationen | ? prüfen |  |
+| 2 | Structured Streaming | — kein Projekt | ✓ |
+| 2 | Spark auf Kubernetes | Projekt | ✓ |
+| 2 | Spark-Tuning: wichtigste Konfigurationen | ? prüfen | ✓ |
 
 ## Apache Iceberg (12)
 Sources: Apache Iceberg spec and docs (iceberg.apache.org)
@@ -371,17 +371,17 @@ Sources: Kimball Group dimensional modeling techniques · Data Vault 2.0 (Linste
 | 1 | Star vs Snowflake Schema | — kein Projekt | ✓ |
 | 1 | Fakten und Dimensionen | — kein Projekt | ✓ |
 | 1 | Slowly Changing Dimensions | — kein Projekt | ✓ |
-| 2 | Data Vault 2.0: Hub, Link, Satellite | — kein Projekt |  |
-| 2 | Kimball vs Inmon vs One Big Table | — kein Projekt |  |
+| 2 | Data Vault 2.0: Hub, Link, Satellite | — kein Projekt | ✓ |
+| 2 | Kimball vs Inmon vs One Big Table | — kein Projekt | ✓ |
 
 ## Airflow / orchestration (4)
 Sources: Apache Airflow 2/3 documentation
 
 | P | Topic | Project | Written |
 |---|---|---|---|
-| 2 | DAGs, Operators, Tasks | — kein Projekt |  |
-| 2 | Scheduler und Executors | — kein Projekt |  |
-| 2 | Backfill und idempotente DAGs | — kein Projekt |  |
+| 2 | DAGs, Operators, Tasks | — kein Projekt | ✓ |
+| 2 | Scheduler und Executors | — kein Projekt | ✓ |
+| 2 | Backfill und idempotente DAGs | — kein Projekt | ✓ |
 | 3 | XCom und Sensors | — kein Projekt |  |
 
 ## dbt (3)
@@ -389,8 +389,8 @@ Sources: docs.getdbt.com
 
 | P | Topic | Project | Written |
 |---|---|---|---|
-| 2 | dbt-Models und Materializations | — kein Projekt |  |
-| 2 | Tests, Sources, Lineage | — kein Projekt |  |
+| 2 | dbt-Models und Materializations | — kein Projekt | ✓ |
+| 2 | Tests, Sources, Lineage | — kein Projekt | ✓ |
 | 3 | Incremental Models und Snapshots | — kein Projekt |  |
 
 ## Databricks (3)
@@ -419,9 +419,9 @@ Sources: Microsoft Learn: AZ-204 and AZ-305 skills outlines · Azure Architectur
 | 1 | Azure Monitor, Log Analytics, Application Insights | Projekt | ✓ |
 | 1 | AKS: Node Pools, Netzwerk, Identity, ACR | Projekt | ✓ |
 | 1 | Azure DevOps: Pipelines, Repos, Environments | Projekt | ✓ |
-| 2 | Defender for Cloud und Malware Scanning | Projekt |  |
-| 2 | Daten-Services: ADF, Synapse, Fabric, Databricks | — kein Projekt |  |
-| 2 | Kosten und Governance: Tags, Policies, Budgets | ? prüfen |  |
+| 2 | Defender for Cloud und Malware Scanning | Projekt | ✓ |
+| 2 | Daten-Services: ADF, Synapse, Fabric, Databricks | — kein Projekt | ✓ |
+| 2 | Kosten und Governance: Tags, Policies, Budgets | ? prüfen | ✓ |
 
 ## Kubernetes + Docker (19)
 Sources: kubernetes.io documentation · CKA and CKAD curricula (CNCF)
@@ -464,7 +464,7 @@ Sources: Terraform docs · Helm docs · Argo CD docs · OpenGitOps principles
 | 1 | Helm | Projekt | ✓ |
 | 1 | Argo CD | Projekt | ✓ |
 | 1 | GitOps-Prinzipien | Projekt | ✓ |
-| 2 | Kustomize vs Helm | — kein Projekt |  |
+| 2 | Kustomize vs Helm | — kein Projekt | ✓ |
 
 ## CI/CD (Azure DevOps, Jenkins, GitHub Actions, Sonar) (6)
 Sources: Azure Pipelines, Jenkins, GitHub Actions docs · SonarQube docs
@@ -473,10 +473,10 @@ Sources: Azure Pipelines, Jenkins, GitHub Actions docs · SonarQube docs
 |---|---|---|---|
 | 1 | CI/CD-Pipeline-Stufen | Projekt | ✓ |
 | 1 | Branching-Strategien | ? prüfen | ✓ |
-| 2 | Versionierung und Artefakte | ? prüfen |  |
-| 2 | SonarQube und Code-Qualität | Projekt |  |
-| 2 | Secrets in Pipelines | Projekt |  |
-| 2 | Azure DevOps vs Jenkins vs GitHub Actions vs GitLab | Projekt |  |
+| 2 | Versionierung und Artefakte | ? prüfen | ✓ |
+| 2 | SonarQube und Code-Qualität | Projekt | ✓ |
+| 2 | Secrets in Pipelines | Projekt | ✓ |
+| 2 | Azure DevOps vs Jenkins vs GitHub Actions vs GitLab | Projekt | ✓ |
 
 ## Monitoring (Prometheus, Grafana, logs) (4)
 Sources: Prometheus docs · OpenTelemetry docs · Google SRE book (SLOs)
@@ -568,7 +568,7 @@ Sources: Design Patterns (GoF) · Hexagonal Architecture (Alistair Cockburn) · 
 | 1 | DDD taktisch | ? prüfen | ✓ |
 | 1 | Anti-Patterns und Code Smells | ? prüfen | ✓ |
 | 1 | Drill: Pattern im Code erkennen | — kein Projekt | ✓ |
-| 2 | DDD strategisch: Bounded Context, Context Map | ? prüfen |  |
+| 2 | DDD strategisch: Bounded Context und Context Map | ? prüfen | ✓ |
 
 ## Search (Elasticsearch, OpenSearch, vector search) (7)
 Sources: Elasticsearch / OpenSearch docs · Introduction to Information Retrieval (Manning et al.)
@@ -691,7 +691,7 @@ Sources: Pro Git (git-scm.com/book) · git documentation
 | 1 | Merge-Konflikte lösen | Projekt | ✓ |
 | 1 | Cherry-Pick und Revert | Projekt | ✓ |
 | 1 | Fehler rückgängig machen | Projekt | ✓ |
-| 2 | Branching-Modelle in Git | ? prüfen |  |
+| 2 | Branching-Modelle in Git | ? prüfen | ✓ |
 
 ## Maven / Gradle (3)
 Sources: Apache Maven docs · Gradle docs
@@ -700,7 +700,7 @@ Sources: Apache Maven docs · Gradle docs
 |---|---|---|---|
 | 1 | Maven: Lifecycle, Phasen, Plugins | Projekt | ✓ |
 | 1 | Abhängigkeiten: Scopes, Konflikte, BOM | Projekt | ✓ |
-| 2 | Gradle-Grundlagen und Maven vs Gradle | Projekt |  |
+| 2 | Gradle-Grundlagen und Maven vs Gradle | Projekt | ✓ |
 
 ## Linux / Bash (4)
 Sources: Linux man pages · The Linux Command Line (Shotts)
