@@ -2,7 +2,7 @@
 
 Generated from content/syllabus.json. Priority 1 = asked in almost every interview. Mark: **Projekt** = shown in CV/Gmail · **— kein Projekt** = no project experience · **? prüfen** = unclear, you decide.
 
-437 topics · P1 267 · P2 132 · P3 38 · written 368
+437 topics · P1 267 · P2 132 · P3 38 · written 369
 
 ## Java 21 (core + advanced) (42)
 Sources: Java SE 21/25 docs (docs.oracle.com) · JVM Specification · OpenJDK source + JEPs (openjdk.org) · Oracle Java SE 21 Developer exam 1Z0-830 topics
@@ -155,7 +155,7 @@ Sources: Jakarta XML Web Services / JAXB specs · W3C SOAP 1.2 and WSDL · Sprin
 | 2 | SOAP: Envelope, Header, Body, Fault | Projekt | ✓ |
 | 2 | WSDL | Projekt | ✓ |
 | 2 | XSD: Typen und Validierung | Projekt | ✓ |
-| 2 | JAXB: Marshalling und Unmarshalling | Projekt |  |
+| 2 | JAXB: Marshalling und Unmarshalling | Projekt | ✓ |
 | 2 | JAX-WS und Spring-WS | ? prüfen |  |
 | 2 | Contract-First vs Code-First | ? prüfen |  |
 | 3 | WS-Security | ? prüfen |  |

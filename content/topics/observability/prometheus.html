@@ -1,0 +1,214 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Prometheus: Pull-Modell, Metrik-Typen, PromQL</title>
+<style>
+  body { font: 17px/1.55 -apple-system, system-ui, sans-serif; max-width: 760px; margin: 0 auto; padding: 16px; color: #1d1d1f; }
+  h1 { font-size: 28px; margin: 8px 0 4px; }
+  h2 { font-size: 21px; margin: 32px 0 8px; padding-top: 12px; border-top: 2px solid #e5e5ea; }
+  .kern { background: #eef6ff; border-left: 4px solid #0a66c2; padding: 10px 14px; border-radius: 6px; }
+  .senior { background: #f0faf0; border-left: 4px solid #2e7d32; padding: 10px 14px; border-radius: 6px; }
+  .trap { background: #fff4f2; border-left: 4px solid #c62828; padding: 10px 14px; border-radius: 6px; }
+  code { background: #f2f2f7; padding: 1px 5px; border-radius: 4px; font-size: 15px; }
+  pre { background: #1e1e1e; color: #e6e6e6; padding: 12px; border-radius: 8px; overflow-x: auto; font-size: 13.5px; line-height: 1.45; }
+  svg { width: 100%; height: auto; display: block; margin: 10px 0; }
+  ol li, ul li { margin: 4px 0; }
+  details { border: 1px solid #e5e5ea; border-radius: 8px; padding: 8px 12px; margin: 6px 0; }
+  summary { font-weight: 600; cursor: pointer; }
+  details p { margin: 6px 0 2px; }
+  .small { color: #6e6e73; font-size: 14px; }
+  h3 { font-size: 17px; margin: 20px 0 6px; }
+  .geruest { border: 2px solid #1d1d1f; border-radius: 6px; padding: 10px 14px; margin: 14px 0; font-size: 15px; line-height: 1.4; }
+  .geruest h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; margin: 0 0 8px; padding: 0; border: 0; }
+  .geruest dl { display: grid; grid-template-columns: 6.6em 1fr; gap: 6px 10px; margin: 0; }
+  .geruest dt { font-weight: 700; font-size: 12px; text-transform: uppercase; letter-spacing: .05em; padding-top: 1px; }
+  .geruest dd { margin: 0; }
+  .muster { border: 1px solid #e5e5ea; border-left: 4px solid #1d1d1f; border-radius: 6px; padding: 10px 14px; margin: 14px 0; }
+  .muster h3 { margin: 0 0 6px; font-size: 13px; text-transform: uppercase; letter-spacing: .06em; }
+  .muster .mq { margin: 0 0 6px; }
+</style>
+</head>
+<body>
+<h1>Prometheus: Pull-Modell, Metrik-Typen, PromQL</h1>
+<!-- sources: Observability · Quellen: prometheus.io/docs (Configuration, Storage, Querying basics und functions, Alerting rules, Metric types, Instrumentation, Histograms und Summaries, When to use the Pushgateway, Recording rules), Alertmanager Configuration, github.com/prometheus/prometheus Releases (v3.16.0) -->
+<div class="kern">
+<b>Kern:</b> <b>Prometheus</b> holt Metriken per HTTP von Zielen ab (<b>Pull-Modell</b>) und speichert sie als Zeitreihen mit Labels. Mit <b>PromQL</b> fragt man sie ab und baut daraus Alerts. Der <b>Alertmanager</b> gruppiert die Alerts und verschickt sie.
+</div>
+<div class="muster"><h3>Antwort-Muster</h3><p class="mq"><b>Frage:</b> Wie funktioniert Prometheus, und was macht rate()?</p><ol>
+  <li>Mechanismus: Prometheus ruft in festem Takt die Ziel-URL <code>/metrics</code> ab und speichert die Werte als Zeitreihen. rate() berechnet aus einem Counter die Zuwachsrate pro Sekunde.</li>
+  <li>Zahl: Standard-Intervall ist 1 Minute, Timeout 10 Sekunden. Die Aufbewahrung ist 15 Tage, und Daten kommen in 2-Stunden-Blöcke.</li>
+  <li>Trade-off: Pull bringt Health-Check und einfache Fehlersuche. Kurze Batch-Jobs sind schwierig und brauchen das Pushgateway. Hohe Kardinalität kostet viel Speicher.</li>
+  <li>Produktion: Ich alarmiere auf Fehlerquote und Latenz-Perzentil mit <code>for</code> und prüfe <code>up</code>. Langzeitdaten gehen per Remote Write in einen anderen Speicher.</li>
+</ol></div>
+<h2>1. Ein Scrape-Zyklus von Prometheus</h2>
+<svg viewBox="0 0 400 330" font-family="-apple-system, system-ui, sans-serif"><defs><marker id="m" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs><rect x="10" y="6" width="380" height="53" rx="9" fill="#eee" stroke="#777"/><text x="200.0" y="30" text-anchor="middle" font-weight="700" font-size="14" fill="#1d1d1f">1. Service Discovery</text><text x="200.0" y="49" text-anchor="middle" font-size="13" fill="#1d1d1f">findet Ziele (Kubernetes, DNS, Datei)</text><rect x="10" y="59" width="380" height="53" rx="9" fill="#dbe9fb" stroke="#0a66c2"/><text x="200.0" y="83" text-anchor="middle" font-weight="700" font-size="14" fill="#1d1d1f">2. Scrape per HTTP GET</text><text x="200.0" y="102" text-anchor="middle" font-size="13" fill="#1d1d1f">Ziel liefert Text auf /metrics</text><rect x="10" y="112" width="380" height="53" rx="9" fill="#dbe9fb" stroke="#0a66c2"/><text x="200.0" y="136" text-anchor="middle" font-weight="700" font-size="14" fill="#1d1d1f">3. Parsen und Relabeln</text><text x="200.0" y="155" text-anchor="middle" font-size="13" fill="#1d1d1f">Labels setzen, Zeitreihen anlegen</text><rect x="10" y="165" width="380" height="53" rx="9" fill="#0a66c2" stroke="#0a66c2"/><text x="200.0" y="189" text-anchor="middle" font-weight="700" font-size="14" fill="#fff">4. TSDB: Head und WAL</text><text x="200.0" y="208" text-anchor="middle" font-size="13" fill="#fff">Speicher plus Write-Ahead-Log</text><rect x="10" y="218" width="380" height="53" rx="9" fill="#fff" stroke="#555"/><text x="200.0" y="242" text-anchor="middle" font-weight="700" font-size="14" fill="#1d1d1f">5. Regeln auswerten</text><text x="200.0" y="261" text-anchor="middle" font-size="13" fill="#1d1d1f">Recording und Alerting Rules</text><rect x="10" y="271" width="380" height="53" rx="9" fill="#e8f5e9" stroke="#2e7d32"/><text x="200.0" y="295" text-anchor="middle" font-weight="700" font-size="14" fill="#1d1d1f">6. Alert an Alertmanager</text><text x="200.0" y="314" text-anchor="middle" font-size="13" fill="#1d1d1f">gruppieren, stumm schalten, senden</text></svg>
+<ol>
+  <li><b>Entdecken:</b> Die Service Discovery liefert die Liste der Ziele. Bei Kubernetes sind das Pods oder Services mit passendem Label.</li>
+  <li><b>Scrapen:</b> Prometheus ruft jedes Ziel alle <code>scrape_interval</code> per HTTP ab. Standard ist 1 Minute, und das Timeout ist 10 Sekunden.</li>
+  <li><b>Verarbeiten:</b> Relabeling ändert Labels. Pro Name und Labelsatz entsteht eine Zeitreihe. Zusätzlich schreibt Prometheus die Metrik <code>up</code> mit 1 oder 0.</li>
+  <li><b>Speichern:</b> Neue Samples liegen im Head im Speicher. Ein Write-Ahead-Log (WAL) sichert sie gegen Abstürze. Alle 2 Stunden entsteht ein Block auf der Platte.</li>
+  <li><b>Auswerten:</b> Alle <code>evaluation_interval</code> (Standard 1 Minute) laufen die Regeln. Recording Rules speichern neue Reihen. Alerting Rules erzeugen Alerts.</li>
+  <li><b>Alarmieren:</b> Feuernde Alerts gehen an den Alertmanager. Er gruppiert, unterdrückt und sendet sie an E-Mail, Chat oder Pager.</li>
+</ol>
+
+<h2>2. Aufbau</h2>
+<svg viewBox="0 0 400 229" font-family="-apple-system, system-ui, sans-serif"><defs><marker id="m" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs><rect x="10" y="6" width="185" height="70" rx="9" fill="#eee" stroke="#777"/><text x="102.5" y="30" text-anchor="middle" font-weight="700" font-size="14" fill="#1d1d1f">Ziele</text><text x="102.5" y="49" text-anchor="middle" font-size="13" fill="#1d1d1f">App mit /metrics</text><text x="102.5" y="66" text-anchor="middle" font-size="13" fill="#1d1d1f">Exporter</text><rect x="205" y="6" width="185" height="53" rx="9" fill="#eee" stroke="#777"/><text x="297.5" y="30" text-anchor="middle" font-weight="700" font-size="14" fill="#1d1d1f">Pushgateway</text><text x="297.5" y="49" text-anchor="middle" font-size="13" fill="#1d1d1f">nur für Batch-Jobs</text><line x1="200" y1="76" x2="200" y2="98" stroke="#555" stroke-width="2" marker-end="url(#m)"/><text x="212" y="92" font-size="12" fill="#555">Pull (HTTP GET)</text><rect x="10" y="100" width="380" height="53" rx="9" fill="#0a66c2" stroke="#0a66c2"/><text x="200.0" y="124" text-anchor="middle" font-weight="700" font-size="14" fill="#fff">Prometheus Server</text><text x="200.0" y="143" text-anchor="middle" font-size="13" fill="#fff">Scrape · TSDB · PromQL · Regeln</text><rect x="10" y="153" width="185" height="70" rx="9" fill="#e8f5e9" stroke="#2e7d32"/><text x="102.5" y="177" text-anchor="middle" font-weight="700" font-size="14" fill="#1d1d1f">Alertmanager</text><text x="102.5" y="196" text-anchor="middle" font-size="13" fill="#1d1d1f">Gruppen, Silences</text><text x="102.5" y="213" text-anchor="middle" font-size="13" fill="#1d1d1f">E-Mail, Chat, Pager</text><rect x="205" y="153" width="185" height="70" rx="9" fill="#dbe9fb" stroke="#0a66c2"/><text x="297.5" y="177" text-anchor="middle" font-weight="700" font-size="14" fill="#1d1d1f">Grafana</text><text x="297.5" y="196" text-anchor="middle" font-size="13" fill="#1d1d1f">Dashboards</text><text x="297.5" y="213" text-anchor="middle" font-size="13" fill="#1d1d1f">fragt PromQL ab</text></svg>
+<ol>
+  <li><b>Target</b> ist ein Ziel mit einer <code>/metrics</code>-Seite. Ein <b>Exporter</b> macht Systeme ohne eigene Metriken abrufbar.</li>
+  <li><b>Prometheus Server</b> scrapt, speichert in der TSDB und wertet PromQL und Regeln aus.</li>
+  <li><b>Zeitreihe</b> ist ein Metrikname plus Labels. Jede Kombination von Labelwerten ist eine eigene Reihe.</li>
+  <li><b>Recording Rule</b> rechnet einen Ausdruck vor und speichert ihn. <b>Alerting Rule</b> erzeugt Alerts.</li>
+  <li><b>Alertmanager</b> nimmt Alerts an, gruppiert, dedupliziert und verschickt sie.</li>
+  <li><b>Pushgateway</b> nimmt Metriken von kurzen Jobs an. Prometheus scrapt dann das Gateway.</li>
+</ol>
+<h2>3. Details</h2>
+<ol>
+  <li><b>Pull vs Push:</b> Pull bringt eine eigene Gesundheitsprüfung, weil jeder Scrape die Metrik <code>up</code> erzeugt. Ziele sind einfach per Browser prüfbar. Der Preis ist, dass sehr kurze Jobs nicht gescrapt werden können.</li>
+  <li><b>Pushgateway:</b> Er ist nur für wenige Fälle gedacht. Er wird zum Single Point of Failure, ersetzt <code>up</code> nicht und vergisst Reihen nie. Man muss alte Reihen per API löschen.</li>
+  <li><b>Metrik-Typen:</b> Es gibt Counter, Gauge, Histogram und Summary. Der Server kennt die Typen kaum und behandelt alles ausser Native Histograms als Zahlen. Der Typ steckt vor allem in der Bibliothek und im Format.</li>
+  <li><b>Counter:</b> Er steigt nur oder fällt beim Neustart auf 0. Man nutzt ihn für Anfragen oder Fehler. Für Werte, die fallen können, nimmt man ein Gauge.</li>
+  <li><b>Gauge:</b> Er kann steigen und fallen. Beispiele sind Speicher, Temperatur oder offene Verbindungen.</li>
+  <li><b>Histogram:</b> Es zählt Beobachtungen in Buckets und liefert eine Summe. Ein klassisches Histogram erzeugt Reihen <code>_bucket</code> mit Label <code>le</code>, dazu <code>_sum</code> und <code>_count</code>. Man kann Histogramme über Instanzen aggregieren.</li>
+  <li><b>Summary:</b> Es berechnet Quantile im Client. Man kann sie nicht über Instanzen aggregieren. Darum nimmt man meist Histogramme, wenn mehrere Instanzen laufen.</li>
+  <li><b>rate, irate, increase:</b> rate() ist die durchschnittliche Zuwachsrate pro Sekunde. Es gleicht Counter-Resets aus und extrapoliert an die Fenster-Ränder. irate() nutzt nur die letzten zwei Punkte. increase() ist rate() mal die Sekunden im Fenster.</li>
+  <li><b>Recording Rules:</b> Man benutzt rate() in Recording Rules, nicht increase(). Das hält die Werte pro Sekunde konsistent. Namen folgen dem Muster <code>level:metric:operations</code>.</li>
+  <li><b>Staleness und Lookback:</b> Eine Abfrage nimmt das jüngste Sample, das weniger als 5 Minuten alt ist. Verschwindet ein Ziel, markiert Prometheus die Reihe als stale. Danach liefert sie keinen Wert mehr.</li>
+  <li><b>Kardinalität:</b> Jede Labelkombination ist eine eigene Reihe mit RAM-, CPU- und Plattenkosten. Als Richtwert hält man die Kardinalität einer Metrik unter 10. Bei über 100 sucht man eine andere Lösung.</li>
+  <li><b>Speicher:</b> Daten kommen in 2-Stunden-Blöcke. Der aktuelle Block liegt im Speicher und ist per WAL in 128-MB-Segmenten gesichert. Ohne Einstellung ist die Aufbewahrung 15 Tage.</li>
+  <li><b>Alert-Ablauf:</b> Ein Alert ist erst pending und nach der <code>for</code>-Dauer firing. <code>keep_firing_for</code> hält ihn danach noch aktiv. Der Alertmanager wartet standardmässig 30 Sekunden (<code>group_wait</code>), schickt Änderungen alle 5 Minuten (<code>group_interval</code>) und wiederholt nach 4 Stunden (<code>repeat_interval</code>).</li>
+</ol>
+<h2>4. Fallen</h2>
+<div class="trap">
+<ul>
+  <li>„Prometheus pusht Metriken an den Server.“ → <b>Falsch.</b> Es holt sie per Pull ab. Nur das Pushgateway nimmt Pushes an, für Sonderfälle.</li>
+  <li>„Ein Counter zeigt die aktuelle Anzahl.“ → <b>Falsch.</b> Er zählt seit dem Start und fällt beim Neustart auf 0. Man fragt <code>rate()</code> ab.</li>
+  <li>„rate() und increase() sind unabhängig.“ → <b>Falsch.</b> increase() ist rate() mal die Sekunden im Fenster. Es liefert wegen Extrapolation auch Kommazahlen.</li>
+  <li>„Man kann Summary-Quantile über Instanzen mitteln.“ → <b>Falsch.</b> Quantile lassen sich nicht aggregieren. Dafür braucht man Histogramme.</li>
+  <li>„Ein Label mit der User-ID ist gute Praxis.“ → <b>Falsch.</b> Jede ID erzeugt eine neue Zeitreihe. Das sprengt Speicher und Kosten.</li>
+  <li>„Prometheus ist ein Langzeitspeicher.“ → <b>Falsch.</b> Die Aufbewahrung ist standardmässig 15 Tage auf lokaler Platte. Für Langzeit nutzt man Remote Write.</li>
+</ul>
+</div>
+<h2>5. Selbsttest</h2>
+<h3>Warum?</h3>
+<details><summary>Warum Pull statt Push?</summary><p>Prometheus bestimmt den Takt und sieht, wenn ein Ziel nicht antwortet (<code>up</code> gleich 0). Ziele sind per Browser prüfbar.</p></details>
+<details><summary>Warum Histogramme statt Summaries?</summary><p>Histogramme lassen sich über Instanzen aggregieren, und die Quantile berechnet man erst in PromQL. Summary-Quantile liegen fest im Client.</p></details>
+<details><summary>Warum Recording Rules?</summary><p>Teure Abfragen werden einmal vorberechnet. Dashboards und Alerts sind schneller und konsistent.</p></details>
+<h3>Wie innen?</h3>
+<details><summary>Wie speichert Prometheus Daten?</summary><p>Neue Samples liegen im Head im Speicher und im WAL. Alle 2 Stunden entsteht ein Block mit Chunks und Index. Ältere Blöcke werden zusammengeführt.</p></details>
+<details><summary>Wie berechnet rate() den Wert?</summary><p>Aus dem ersten und letzten Sample im Fenster, mit Ausgleich von Counter-Resets und Extrapolation an die Ränder. Das Ergebnis ist pro Sekunde.</p></details>
+<details><summary>Was ist Staleness?</summary><p>Verschwindet ein Ziel oder eine Reihe, markiert Prometheus sie als stale. Dann gibt es keinen Wert mehr, statt des alten Werts für die Lookback-Zeit.</p></details>
+<details><summary>Wie funktioniert ein Alert von Regel bis Mail?</summary><p>Die Alerting Rule trifft zu und ist pending. Nach der <code>for</code>-Dauer ist er firing. Der Alertmanager gruppiert und sendet ihn.</p></details>
+<details><summary>Was liefert der Scrape pro Ziel zusätzlich?</summary><p>Die Metrik <code>up</code> mit 1 bei Erfolg und 0 bei Fehler. Sie zeigt, ob das Ziel erreichbar ist.</p></details>
+<h3>Zahlen</h3>
+<details><summary>Wie lauten die Standard-Intervalle?</summary><p><code>scrape_interval</code> 1 Minute, <code>scrape_timeout</code> 10 Sekunden und <code>evaluation_interval</code> 1 Minute.</p></details>
+<details><summary>Wie lange werden Daten standardmässig aufbewahrt?</summary><p>15 Tage, mit <code>--storage.tsdb.retention.time</code> änderbar. Es gibt auch eine Grenze nach Grösse.</p></details>
+<details><summary>Wie lang ist die Lookback-Zeit?</summary><p>5 Minuten. Man kann sie mit <code>--query.lookback-delta</code> ändern.</p></details>
+<details><summary>Welche Standardwerte hat der Alertmanager?</summary><p><code>group_wait</code> 30 Sekunden, <code>group_interval</code> 5 Minuten, <code>repeat_interval</code> 4 Stunden.</p></details>
+<h3>Vergleich</h3>
+<details><summary>Counter vs Gauge?</summary><p>Counter steigt nur und wird mit rate() abgefragt. Gauge steigt und fällt und wird direkt gelesen.</p></details>
+<details><summary>rate vs irate?</summary><p>rate() mittelt über das ganze Fenster und eignet sich für Alerts. irate() nutzt nur die letzten zwei Punkte und zeigt schnelle Spitzen.</p></details>
+<details><summary>Histogram vs Summary?</summary><p>Histogram zählt in Buckets, Quantile berechnet PromQL, aggregierbar. Summary berechnet Quantile im Client, nicht aggregierbar.</p></details>
+<details><summary>Prometheus vs Push-Systeme wie Graphite?</summary><p>Prometheus holt ab und hat Labels und PromQL. Push-Systeme bekommen Daten von den Quellen und kennen kein <code>up</code>.</p></details>
+<h3>Produktion</h3>
+<details><summary>Wie bleibt Prometheus hochverfügbar?</summary><p>Man betreibt zwei gleiche Server, die beide scrapen. Der Alertmanager dedupliziert. Es gibt kein eingebautes Clustering.</p></details>
+<details><summary>Wie speichert man länger als 15 Tage?</summary><p>Mit Remote Write in einen Langzeitspeicher oder durch grössere Aufbewahrung und Platte. Prometheus ist als lokaler Speicher gedacht.</p></details>
+<details><summary>Wie erkennt man ein totes Ziel?</summary><p>Mit einer Alerting Rule auf <code>up == 0</code> und einer <code>for</code>-Dauer. So wird nicht jeder einzelne Fehlscrape alarmiert.</p></details>
+<details><summary>Szenario: Der Speicher von Prometheus steigt stark. Was prüfen Sie?</summary><p>Die Kardinalität, etwa neue Labels mit IDs. Die Anzahl aktiver Reihen pro Metrik prüfen und das Label entfernen oder aggregieren.</p></details>
+<details><summary>Szenario: Ein Alert feuert ständig und flackert. Was tun Sie?</summary><p>Eine <code>for</code>-Dauer setzen, über ein längeres Fenster rechnen und <code>keep_firing_for</code> nutzen. Danach die Schwelle prüfen.</p></details>
+<h3>Design</h3>
+<details><summary>Welche Metriken misst man für einen Service?</summary><p>Anfragen, Fehler und Dauer (RED). Dazu Sättigung der Ressourcen. Die Dauer als Histogramm.</p></details>
+<details><summary>Wann nutzt man das Pushgateway?</summary><p>Nur für Service-Level-Batch-Jobs, die nicht gescrapt werden können. Für alles andere ist Pull besser.</p></details>
+<details><summary>Wie benennt man Metriken und Recording Rules?</summary><p>Mit Einheit im Namen, zum Beispiel <code>_seconds</code>. Recording Rules nach <code>level:metric:operations</code>.</p></details>
+<details><summary>Szenario: Ein Team will pro Kunde eine eigene Metrik mit Label <code>customer_id</code>. Was sagen Sie?</summary><p>Bei vielen Kunden explodiert die Kardinalität. Besser aggregieren und Details in Logs oder Traces halten.</p></details>
+
+<details class="mehr"><summary>Mehr</summary>
+<h3>Gerüst</h3>
+<ul>
+  <li><b>Warum?</b> Zahlen über die Zeit sehen und darauf alarmieren, mit Labels pro Dimension.</li>
+  <li><b>Wie innen?</b> Service Discovery, Scrape, TSDB mit Head und WAL, Regeln, Alertmanager.</li>
+  <li><b>Zahlen</b> 1 Minute Scrape, 10 Sekunden Timeout, 15 Tage Aufbewahrung, 2-Stunden-Blöcke, 5 Minuten Lookback.</li>
+  <li><b>Vergleich</b> Counter gegen Gauge. rate gegen irate. Histogram gegen Summary.</li>
+  <li><b>Produktion</b> Zwei Server, <code>up</code>-Alert, Kardinalität prüfen, Remote Write.</li>
+  <li><b>Design</b> RED-Metriken, Histogramm für Dauer, wenige Labels.</li>
+</ul>
+
+<h3>Beispiel: Metrik-Format und PromQL-Abfragen</h3>
+<pre># Antwort von GET /metrics (Text-Format)
+# HELP http_requests_total Anzahl Requests
+# TYPE http_requests_total counter
+http_requests_total{method="GET",code="200"} 1027
+http_requests_total{method="GET",code="500"} 3
+
+# Requests pro Sekunde, 5-Minuten-Fenster
+sum by (code) (rate(http_requests_total[5m]))
+
+# Fehlerquote
+sum(rate(http_requests_total{code=~"5.."}[5m]))
+  / sum(rate(http_requests_total[5m]))
+
+# 95. Perzentil der Dauer (Histogram)
+histogram_quantile(0.95,
+  sum by (le) (rate(http_request_duration_seconds_bucket[5m])))
+
+# Alert-Regel
+- alert: HighErrorRate
+  expr: &lt;Fehlerquote&gt; &gt; 0.05
+  for: 10m</pre>
+<p class="small">Nicht ausgeführt (kein Prometheus-Server auf dieser Maschine). Die Zahlen im Format-Beispiel sind erfunden und dienen nur der Form.</p>
+<ol>
+  <li>Jede Zeile ist eine Zeitreihe. Der Name plus die Labels <code>method</code> und <code>code</code> macht sie eindeutig.</li>
+  <li><code>rate(...[5m])</code> liefert pro Reihe Anfragen pro Sekunde. <code>sum by (code)</code> fasst die Instanzen zusammen.</li>
+  <li>Die Fehlerquote teilt zwei Raten. So bleibt sie unabhängig von der Last.</li>
+  <li><code>histogram_quantile</code> schätzt das Perzentil aus den Buckets. Dazu summiert man zuerst über <code>le</code>.</li>
+  <li><code>for: 10m</code> verlangt, dass die Bedingung 10 Minuten anhält, bevor der Alert feuert.</li>
+</ol>
+
+<h3>Vergleich</h3>
+<ul>
+  <li><b>Prometheus:</b> Pull, Labels, PromQL, lokale TSDB. Standard für Kubernetes.</li>
+  <li><b>Push-Systeme (Graphite, StatsD):</b> Quellen senden Daten. Es fehlt ein eingebautes <code>up</code>.</li>
+  <li><b>Azure Monitor / CloudWatch:</b> Verwaltete Dienste mit eigener Abfragesprache. Weniger Betrieb, mehr Bindung.</li>
+  <li><b>OpenTelemetry:</b> Standard für Erzeugung und Transport. Metriken können nach Prometheus fliessen.</li>
+  <li><b>Thanos, Mimir, Cortex:</b> Langzeitspeicher und globale Sicht auf Basis von Prometheus-Daten.</li>
+  <li><b>Grafana:</b> Zeigt Daten an. Es speichert sie nicht selbst.</li>
+</ul>
+
+<h3>Produktion</h3>
+<ol>
+  <li><b>Speicher explodiert:</b> Hohe Kardinalität durch IDs in Labels. Lösung: Labels entfernen, aggregieren, Limits setzen.</li>
+  <li><b>Alerts flackern:</b> Kein <code>for</code> und zu kurzes Fenster. Lösung: <code>for</code>, längeres Fenster, <code>keep_firing_for</code>.</li>
+  <li><b>Ziel fehlt still:</b> Kein Alert auf <code>up</code>. Lösung: Regel auf <code>up == 0</code>.</li>
+  <li><b>Daten nach 15 Tagen weg:</b> Standard-Aufbewahrung. Lösung: Remote Write oder grössere Aufbewahrung.</li>
+  <li><b>Dashboards langsam:</b> Teure Abfragen über lange Zeit. Lösung: Recording Rules.</li>
+  <li><b>Pushgateway-Altlasten:</b> Alte Reihen bleiben ewig. Lösung: per API löschen oder Pull nutzen.</li>
+</ol>
+
+<h3>Diagnose: Werkzeuge und Befehle</h3>
+<ul>
+  <li><b>Status → Targets:</b> Zeigt Ziele, Zustand, letzten Scrape und Fehler.</li>
+  <li><b>Metrik <code>up</code>:</b> 1 oder 0 pro Ziel. Basis für Ausfall-Alerts.</li>
+  <li><b>Status → TSDB Status:</b> Zeigt die Metriken mit den meisten Reihen und Label-Paaren.</li>
+  <li><b>Abfrage <code>prometheus_tsdb_head_series</code>:</b> Zeigt die Zahl aktiver Reihen im Head.</li>
+  <li><b>Alerts-Seite:</b> Zeigt pending und firing Alerts mit Labels.</li>
+  <li><b>Alertmanager UI:</b> Zeigt Gruppen, Silences und Inhibitionen.</li>
+</ul>
+
+<h3>Senior-Punkte</h3>
+<div class="senior">
+<ol>
+  <li><b>Metriken beantworten „was“, nicht „warum“.</b> Für Ursachen brauchst du Logs und Traces.</li>
+  <li><b>Kardinalität ist das wichtigste Limit.</b> Plane Labels wie ein Datenmodell.</li>
+  <li><b>Alarmiere auf Symptome,</b> zum Beispiel Fehlerquote und Latenz, nicht auf jede CPU-Spitze.</li>
+  <li><b>Histogramme für Dauer.</b> Sie sind aggregierbar und passen zu SLOs.</li>
+  <li><b>Aufbewahrung ist eine Entscheidung.</b> 15 Tage reichen für Betrieb, nicht für Trends über Monate.</li>
+  <li><b>Hochverfügbarkeit heisst Redundanz.</b> Zwei Server mit gleichen Zielen, ein Alertmanager-Cluster.</li>
+</ol>
+</div>
+
+<h3>Dein Beispiel</h3>
+</details>
+
+</body>
+</html>
