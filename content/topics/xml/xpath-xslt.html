@@ -1,0 +1,299 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>XPath, XSLT und XML-Sicherheit (XXE)</title>
+<style>
+  body { font: 17px/1.55 -apple-system, system-ui, sans-serif; max-width: 760px; margin: 0 auto; padding: 16px; color: #1d1d1f; }
+  h1 { font-size: 28px; margin: 8px 0 4px; }
+  h2 { font-size: 21px; margin: 32px 0 8px; padding-top: 12px; border-top: 2px solid #e5e5ea; }
+  .kern { background: #eef6ff; border-left: 4px solid #0a66c2; padding: 10px 14px; border-radius: 6px; }
+  .senior { background: #f0faf0; border-left: 4px solid #2e7d32; padding: 10px 14px; border-radius: 6px; }
+  .trap { background: #fff4f2; border-left: 4px solid #c62828; padding: 10px 14px; border-radius: 6px; }
+  code { background: #f2f2f7; padding: 1px 5px; border-radius: 4px; font-size: 15px; }
+  pre { background: #1e1e1e; color: #e6e6e6; padding: 12px; border-radius: 8px; overflow-x: auto; font-size: 13.5px; line-height: 1.45; }
+  svg { width: 100%; height: auto; display: block; margin: 10px 0; }
+  ol li, ul li { margin: 4px 0; }
+  details { border: 1px solid #e5e5ea; border-radius: 8px; padding: 8px 12px; margin: 6px 0; }
+  summary { font-weight: 600; cursor: pointer; }
+  details p { margin: 6px 0 2px; }
+  .small { color: #6e6e73; font-size: 14px; }
+  h3 { font-size: 17px; margin: 20px 0 6px; }
+  .geruest { border: 2px solid #1d1d1f; border-radius: 6px; padding: 10px 14px; margin: 14px 0; font-size: 15px; line-height: 1.4; }
+  .geruest h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; margin: 0 0 8px; padding: 0; border: 0; }
+  .geruest dl { display: grid; grid-template-columns: 6.6em 1fr; gap: 6px 10px; margin: 0; }
+  .geruest dt { font-weight: 700; font-size: 12px; text-transform: uppercase; letter-spacing: .05em; padding-top: 1px; }
+  .geruest dd { margin: 0; }
+  .muster { border: 1px solid #e5e5ea; border-left: 4px solid #1d1d1f; border-radius: 6px; padding: 10px 14px; margin: 14px 0; }
+  .muster h3 { margin: 0 0 6px; font-size: 13px; text-transform: uppercase; letter-spacing: .06em; }
+  .muster .mq { margin: 0 0 6px; }
+</style>
+</head>
+<body>
+
+<h1>XPath, XSLT und XML-Sicherheit (XXE)</h1>
+<!-- sources: W3C XPath 1.0 (Recommendation 16.11.1999), W3C XSLT 1.0 (Recommendation 16.11.1999), W3C XSLT 3.0 (Recommendation 08.06.2017), OWASP XML External Entity Prevention Cheat Sheet, JDK 17 API-Doku (java.xml Modul-Zusammenfassung mit JAXP-Limits und FEATURE_SECURE_PROCESSING, javax.xml.xpath.XPath, javax.xml.transform Templates und Transformer, DocumentBuilderFactory), eigene Tests mit OpenJDK 17.0.3 -->
+
+<div class="kern">
+<b>Kern:</b> <b>XPath</b> wählt Knoten in einem XML-Baum aus, <b>XSLT</b> wandelt XML mit Regeln (Templates) in ein anderes Format um. Das JDK kann beides nur in Version 1.0. <b>XXE</b> ist ein Angriff, bei dem ein DOCTYPE den Parser dazu bringt, lokale Dateien oder URLs zu lesen. Der wichtigste Schutz ist, DOCTYPE im Parser zu verbieten.
+</div>
+
+<div class="muster"><h3>Antwort-Muster</h3><p class="mq"><b>Frage:</b> Was ist XXE und wie verhindern Sie es?</p><ol>
+  <li>Mechanismus: Ein DOCTYPE definiert eine externe Entity mit SYSTEM und einem Pfad. Der Parser lädt die Datei und setzt ihren Inhalt ins Dokument.</li>
+  <li>Zahl: Das JDK begrenzt Entity-Expansionen auf 64000. Das stoppt Billion Laughs, nicht aber das Lesen von Dateien.</li>
+  <li>Trade-off: DOCTYPE zu verbieten ist am sichersten. Es bricht aber Dokumente, die eine DTD brauchen.</li>
+  <li>Produktion: Ich setze disallow-doctype-decl oder sperre externe Zugriffe und prüfe das mit einer XXE-Testdatei.</li>
+</ol></div>
+
+<h2>1. Ein XXE-Angriff in 6 Schritten</h2>
+<svg viewBox="0 0 720 360" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="xxA" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker><marker id="xxR" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#c62828"/></marker></defs>
+  <rect x="10" y="20" width="150" height="62" rx="10" fill="#fff4f2" stroke="#c62828"/><text x="85" y="46" text-anchor="middle" font-weight="700">1. Angreifer</text><text x="85" y="66" text-anchor="middle" font-size="12">sendet XML</text>
+  <line x1="160" y1="51" x2="188" y2="51" stroke="#555" stroke-width="2" marker-end="url(#xxA)"/>
+  <rect x="190" y="20" width="150" height="62" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="265" y="46" text-anchor="middle" font-weight="700">2. DOCTYPE</text><text x="265" y="66" text-anchor="middle" font-size="12">Parser liest ihn</text>
+  <line x1="340" y1="51" x2="368" y2="51" stroke="#555" stroke-width="2" marker-end="url(#xxA)"/>
+  <rect x="370" y="20" width="160" height="62" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="450" y="46" text-anchor="middle" font-weight="700">3. ENTITY xxe</text><text x="450" y="66" text-anchor="middle" font-size="12">SYSTEM "file:..."</text>
+  <line x1="530" y1="51" x2="558" y2="51" stroke="#555" stroke-width="2" marker-end="url(#xxA)"/>
+  <rect x="560" y="20" width="150" height="62" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="635" y="46" text-anchor="middle" font-weight="700">4. &amp;xxe;</text><text x="635" y="66" text-anchor="middle" font-size="12">Parser lädt Ziel</text>
+  <line x1="635" y1="82" x2="635" y2="128" stroke="#555" stroke-width="2" marker-end="url(#xxA)"/>
+  <rect x="540" y="130" width="170" height="62" rx="10" fill="#e8f5e9" stroke="#2e7d32"/><text x="625" y="156" text-anchor="middle" font-weight="700">5. Inhalt im Text</text><text x="625" y="176" text-anchor="middle" font-size="12">Element enthält Datei</text>
+  <line x1="540" y1="161" x2="372" y2="161" stroke="#555" stroke-width="2" marker-end="url(#xxA)"/>
+  <rect x="200" y="130" width="170" height="62" rx="10" fill="#fff4f2" stroke="#c62828"/><text x="285" y="156" text-anchor="middle" font-weight="700" fill="#c62828">6. Leck</text><text x="285" y="176" text-anchor="middle" font-size="12">Antwort oder Log</text>
+  <rect x="10" y="226" width="340" height="110" rx="10" fill="#e8f5e9" stroke="#2e7d32"/><text x="180" y="252" text-anchor="middle" font-weight="700">Schutz an Schritt 2</text><text x="180" y="276" text-anchor="middle" font-size="12">DOCTYPE verbieten (disallow-doctype-decl)</text><text x="180" y="296" text-anchor="middle" font-size="12">Der Parser lehnt das Dokument ab.</text><text x="180" y="316" text-anchor="middle" font-size="12">Das ist der stärkste Schutz.</text>
+  <rect x="370" y="226" width="340" height="110" rx="10" fill="#e8f5e9" stroke="#2e7d32"/><text x="540" y="252" text-anchor="middle" font-weight="700">Schutz an Schritt 4</text><text x="540" y="276" text-anchor="middle" font-size="12">Externen Zugriff sperren</text><text x="540" y="296" text-anchor="middle" font-size="12">(FEATURE_SECURE_PROCESSING,</text><text x="540" y="316" text-anchor="middle" font-size="12">ACCESS_EXTERNAL_DTD leer)</text>
+</svg>
+<ol>
+  <li><b>XML senden:</b> Der Angreifer schickt ein Dokument mit DOCTYPE an einen Endpoint. Bei SOAP ist der Body so ein Dokument.</li>
+  <li><b>DOCTYPE lesen:</b> Der Parser verarbeitet die DTD vor dem Inhalt. Ein nicht gehärteter Parser tut das standardmässig.</li>
+  <li><b>Entity definieren:</b> <code>&lt;!ENTITY xxe SYSTEM "file:///..."&gt;</code> deklariert eine externe Entity. Das Ziel ist ein Pfad oder eine URL.</li>
+  <li><b>Entity auflösen:</b> Steht <code>&amp;xxe;</code> im Inhalt, lädt der Parser das Ziel.</li>
+  <li><b>Inhalt im Dokument:</b> Der Dateiinhalt ist nun der Text eines Elements.</li>
+  <li><b>Leck:</b> Gibt die Anwendung das Element zurück oder loggt es, sieht der Angreifer die Datei.</li>
+</ol>
+
+<h2>2. Aufbau</h2>
+<svg viewBox="0 0 720 330" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="xxB" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="10" y="10" width="340" height="150" rx="12" fill="#dbe9fb" stroke="#0a66c2"/><text x="180" y="34" text-anchor="middle" font-weight="700">XPath (javax.xml.xpath)</text>
+  <rect x="26" y="50" width="90" height="46" rx="8" fill="#fff" stroke="#555"/><text x="71" y="78" text-anchor="middle" font-size="13">Document</text>
+  <line x1="116" y1="73" x2="148" y2="73" stroke="#555" stroke-width="2" marker-end="url(#xxB)"/>
+  <rect x="150" y="50" width="100" height="46" rx="8" fill="#fff" stroke="#555"/><text x="200" y="70" text-anchor="middle" font-size="13">XPath</text><text x="200" y="88" text-anchor="middle" font-size="12">Ausdruck</text>
+  <line x1="250" y1="73" x2="282" y2="73" stroke="#555" stroke-width="2" marker-end="url(#xxB)"/>
+  <rect x="284" y="50" width="52" height="46" rx="8" fill="#fff" stroke="#555"/><text x="310" y="78" text-anchor="middle" font-size="12">Wert</text>
+  <text x="180" y="130" text-anchor="middle" font-size="12">Ergebnis: node-set, string, number, boolean</text>
+  <text x="180" y="148" text-anchor="middle" font-size="12">Version 1.0</text>
+  <rect x="370" y="10" width="340" height="150" rx="12" fill="#e8f5e9" stroke="#2e7d32"/><text x="540" y="34" text-anchor="middle" font-weight="700">XSLT (javax.xml.transform)</text>
+  <rect x="386" y="50" width="90" height="46" rx="8" fill="#fff" stroke="#555"/><text x="431" y="70" text-anchor="middle" font-size="13">Stylesheet</text><text x="431" y="88" text-anchor="middle" font-size="12">.xsl</text>
+  <line x1="476" y1="73" x2="506" y2="73" stroke="#555" stroke-width="2" marker-end="url(#xxB)"/>
+  <rect x="508" y="50" width="100" height="46" rx="8" fill="#fff" stroke="#555"/><text x="558" y="70" text-anchor="middle" font-size="13">Templates</text><text x="558" y="88" text-anchor="middle" font-size="12">kompiliert</text>
+  <line x1="608" y1="73" x2="636" y2="73" stroke="#555" stroke-width="2" marker-end="url(#xxB)"/>
+  <rect x="638" y="50" width="62" height="46" rx="8" fill="#fff" stroke="#555"/><text x="669" y="70" text-anchor="middle" font-size="12">Trans-</text><text x="669" y="86" text-anchor="middle" font-size="12">former</text>
+  <text x="540" y="130" text-anchor="middle" font-size="12">Quellbaum → Ergebnisbaum (XML, HTML, Text)</text>
+  <text x="540" y="148" text-anchor="middle" font-size="12">Version 1.0, Prozessor XSLTC</text>
+  <rect x="10" y="180" width="700" height="140" rx="12" fill="#fff4f2" stroke="#c62828"/><text x="360" y="204" text-anchor="middle" font-weight="700">Sicherheits-Schalter pro Parser-Art</text>
+  <text x="30" y="232" font-size="13">DOM und SAX: disallow-doctype-decl, FEATURE_SECURE_PROCESSING</text>
+  <text x="30" y="254" font-size="13">StAX: SUPPORT_DTD false, IS_SUPPORTING_EXTERNAL_ENTITIES false</text>
+  <text x="30" y="276" font-size="13">SchemaFactory und TransformerFactory: ACCESS_EXTERNAL_* leer</text>
+  <text x="30" y="298" font-size="13">XPath: nur über ein bereits gehärtetes Document auswerten</text>
+</svg>
+<ol>
+  <li><b>XPath-Objekt:</b> Es wertet einen Ausdruck gegen ein <code>Document</code> aus. Es ist nicht thread-sicher und nicht reentrant.</li>
+  <li><b>Ergebnistypen:</b> XPath 1.0 kennt node-set, boolean, number und string.</li>
+  <li><b>Templates:</b> Das ist die kompilierte Form eines Stylesheets. Es ist thread-sicher und mehrfach nutzbar.</li>
+  <li><b>Transformer:</b> Er führt die Umwandlung aus. Pro Thread braucht man einen eigenen.</li>
+  <li><b>Parser-Schalter:</b> Jede Parser-Art hat eigene Sicherheits-Schalter, die man kennen muss.</li>
+  <li><b>JAXP-Limits:</b> Das JDK begrenzt Entity-Expansionen und Namenslängen. Das sind Grenzen, kein Ersatz für die Schalter.</li>
+</ol>
+
+<h2>3. Details</h2>
+<ol>
+  <li><b>XPath-Datenmodell:</b> Der Baum hat sieben Knotenarten. Es sind root, element, text, attribute, namespace, processing instruction und comment. Der String-Wert eines Elements ist die Verkettung aller Text-Nachfahren.</li>
+  <li><b>Location Step:</b> Ein Schritt hat Achse, Knotentest und Prädikate. Ohne Achse gilt <code>child</code>. Es gibt 13 Achsen, zum Beispiel <code>ancestor</code>, <code>following-sibling</code> und <code>descendant-or-self</code>.</li>
+  <li><b>Kurzschreibweise:</b> <code>.</code> ist <code>self::node()</code>. <code>..</code> ist <code>parent::node()</code>. <code>@</code> ist <code>attribute::</code>. <code>//</code> ist <code>/descendant-or-self::node()/</code>.</li>
+  <li><b>Prädikate:</b> Ist ein Prädikat eine Zahl, vergleicht XPath sie mit der Position. <code>order[3]</code> ist <code>order[position()=3]</code>. Der Test zeigt <code>//order[last()]/@id</code> als 3.</li>
+  <li><b>Vergleiche mit Knotenmengen:</b> Ein Vergleich ist wahr, wenn mindestens ein Knoten passt. <code>//order[betrag &gt; 100]</code> findet Bestellungen, bei denen ein betrag grösser als 100 ist.</li>
+  <li><b>JDK kann nur XPath 1.0:</b> Die Doku verweist auf XPath 1.0. Im Test scheiterten <code>upper-case(...)</code> und <code>matches(...)</code> mit „Could not find function“. Für XPath 2.0 oder 3.1 braucht man einen anderen Prozessor.</li>
+  <li><b>XPath Injection:</b> Fügt man Eingaben in den Ausdruck ein, kann ein Angreifer ihn verändern. Im Test lieferte <code>x' or '1'='1</code> alle drei Bestellungen. Mit einem <code>XPathVariableResolver</code> und <code>$k</code> lieferte dieselbe Eingabe null Treffer.</li>
+  <li><b>XSLT-Modell:</b> Eine Transformation macht aus einem Quellbaum einen eigenen Ergebnisbaum. Der Prozessor beginnt an der Wurzel. Er wählt für jeden Knoten die beste Template-Regel und wiederholt das rekursiv.</li>
+  <li><b>Eingebaute Regeln:</b> Element- und Wurzelknoten verarbeiten ihre Kinder. Text und Attribute werden kopiert. Kommentare und Processing Instructions erzeugen nichts. Diese Regeln haben die niedrigste Priorität.</li>
+  <li><b>Standard-Priorität:</b> Ein Namenstest wie <code>order</code> hat 0. <code>prefix:*</code> hat -0.25. Ein Test wie <code>node()</code> oder <code>text()</code> hat -0.5. Alles andere hat 0.5. Bei Gleichstand gewinnt die letzte Regel, wenn der Prozessor keinen Fehler meldet.</li>
+  <li><b>Identitäts-Transformation:</b> Ein Template auf <code>@*|node()</code> mit <code>xsl:copy</code> und <code>xsl:apply-templates</code> kopiert alles. Man überschreibt dann einzelne Stellen.</li>
+  <li><b>XSLT im JDK:</b> Das Modul nutzt den Prozessor XSLTC. Im Test lief ein Stylesheet mit <code>version="1.0"</code>. Ein Stylesheet mit <code>xsl:for-each-group</code> aus XSLT 2.0 scheiterte mit „Unsupported XSL element“.</li>
+  <li><b>XSLT 3.0:</b> Die Recommendation vom 8. Juni 2017 baut auf XPath 3.0 auf. Sie bringt Streaming, Packages, Maps und JSON-Funktionen. Das JDK nutzt davon nichts.</li>
+  <li><b>Templates und Transformer:</b> <code>Templates</code> ist thread-sicher und wird einmal kompiliert. Ein <code>Transformer</code> darf nur von einem Thread gleichzeitig genutzt werden.</li>
+  <li><b>XXE im Test:</b> Der DOM-Parser mit Standardwerten las die Datei. Mit <code>FEATURE_SECURE_PROCESSING</code> und mit <code>ACCESS_EXTERNAL_DTD</code> leer scheiterte er mit einer Meldung über <code>accessExternalDTD</code>. Mit <code>disallow-doctype-decl</code> lehnte er schon den DOCTYPE ab.</li>
+  <li><b>StAX und XXE:</b> Der StAX-Reader mit Standardwerten las die Datei. Mit <code>SUPPORT_DTD</code> auf false meldete er „entity xxe was referenced, but not declared“. OWASP nennt dazu einen Resolver, der eine Exception wirft, und sagt, StAX kenne <code>FEATURE_SECURE_PROCESSING</code> nicht.</li>
+  <li><b>Billion Laughs:</b> Zehn Entity-Ebenen mit je zehn Verweisen würden eine Milliarde Texte erzeugen. Das JDK brach mit <code>JAXP00010001</code> bei 64000 Expansionen ab. Die weiteren Grenzen sind <code>totalEntitySizeLimit</code> 50 Millionen und <code>entityReplacementLimit</code> 3 Millionen.</li>
+  <li><b>Reihenfolge der Einstellungen:</b> Standardwerte gelten zuerst. Dann kommt Secure Processing, dann <code>jaxp.properties</code>, dann Systemproperties. Was man an der Factory oder am Parser setzt, gilt zuletzt.</li>
+  <li><b>OWASP-Grundsatz:</b> DTDs wenn möglich abschalten. XInclude aus. Schlägt eine Schutzeinstellung fehl, bricht man ab statt weiterzumachen. Ein XSLT-Prozessor ist keine Sandbox für fremde Stylesheets.</li>
+  <li><b>XPath und InputSource:</b> OWASP rät, die Überladungen mit <code>InputSource</code> zu meiden, weil sie das Dokument intern parsen. Man parst mit dem gehärteten Builder und wertet auf dem <code>Document</code> aus.</li>
+</ol>
+
+<h2>4. Fallen</h2>
+<div class="trap">
+<ul>
+  <li>„Das JDK ist standardmässig sicher gegen XXE.“ → <b>Falsch.</b> Im Test las DOM mit Standardwerten eine lokale Datei.</li>
+  <li>„Billion-Laughs-Schutz ist auch XXE-Schutz.“ → <b>Falsch.</b> Das Limit von 64000 stoppt die Explosion, nicht das Lesen von Dateien.</li>
+  <li>„XPath im JDK kann upper-case und matches.“ → <b>Falsch.</b> Das sind XPath-2.0-Funktionen. Das JDK kann XPath 1.0.</li>
+  <li>„SUPPORT_DTD false genügt immer bei StAX.“ → <b>Ungenau.</b> OWASP sagt, es lehne den DOCTYPE nicht unbedingt ab. Man ergänzt externe Entities aus und einen Resolver.</li>
+  <li>„Ein Transformer ist thread-sicher.“ → <b>Falsch.</b> Nur Templates ist es. Ein Transformer gehört einem Thread.</li>
+  <li>„XSLT ist eine Sandbox.“ → <b>Falsch.</b> OWASP sagt, man soll nur eigene, vertrauenswürdige Stylesheets kompilieren.</li>
+</ul>
+</div>
+
+<h2>5. Selbsttest</h2>
+<h3>Warum?</h3>
+<details><summary>Warum sind externe Entities gefährlich?</summary><p>Der Parser lädt das Ziel selbst. So können Dateien oder URLs gelesen werden, und der Inhalt landet im Dokument. Der Angreifer braucht nur ein XML-Dokument.</p></details>
+<details><summary>Warum ist DOCTYPE verbieten besser als Entities einzeln abzuschalten?</summary><p>Ohne DOCTYPE gibt es keine Entities und keine DTD. Es bleiben keine Sonderfälle. Das ist die Empfehlung von OWASP.</p></details>
+<details><summary>Warum hat man XPath-Variablen?</summary><p>Damit Eingaben nicht Teil des Ausdrucks werden. Das verhindert XPath Injection, wie bei Prepared Statements in SQL.</p></details>
+<h3>Wie innen?</h3>
+<details><summary>Wie wertet XPath einen Ausdruck aus?</summary><p>Er geht Schritt für Schritt durch den Baum. Jeder Schritt wählt über eine Achse Knoten und filtert sie mit Test und Prädikaten.</p></details>
+<details><summary>Was ist der Unterschied zwischen / und //?</summary><p>Ein einzelner Schrägstrich geht zum Kind. Der doppelte steht für /descendant-or-self::node()/ und findet Nachfahren in jeder Tiefe.</p></details>
+<details><summary>Wie arbeitet XSLT?</summary><p>Es macht aus einem Quellbaum einen Ergebnisbaum. Für jeden Knoten wird die passendste Template-Regel gewählt, und apply-templates wählt neue Knoten.</p></details>
+<details><summary>Was passiert ohne passendes Template?</summary><p>Die eingebauten Regeln greifen. Elemente verarbeiten ihre Kinder, Text wird kopiert, Kommentare und Processing Instructions fallen weg.</p></details>
+<details><summary>Wie funktioniert ein XXE-Angriff?</summary><p>Ein DOCTYPE deklariert eine externe Entity mit SYSTEM. Der Parser lädt das Ziel und setzt den Inhalt ein.</p></details>
+<details><summary>Wie funktioniert Billion Laughs?</summary><p>Jede Entity verweist zehnmal auf die vorige. Die Expansion wächst exponentiell. Das JDK bricht bei 64000 Expansionen ab.</p></details>
+<details><summary>Was bewirkt FEATURE_SECURE_PROCESSING?</summary><p>Der Parser erzwingt strengere Grenzen. Im Test sperrte es den Dateizugriff über externe Entities in DOM. Es gilt für DOM, SAX, Schema, XSLT und XPath.</p></details>
+<h3>Zahlen</h3>
+<details><summary>Wie viele Achsen hat XPath 1.0?</summary><p>Dreizehn. Dazu vier Datentypen und sieben Knotenarten.</p></details>
+<details><summary>Welche JDK-Grenze gilt für Entity-Expansionen?</summary><p>jdk.xml.entityExpansionLimit mit 64000. Dazu totalEntitySizeLimit 50 Millionen, entityReplacementLimit 3 Millionen und maxXMLNameLimit 1000.</p></details>
+<details><summary>Wann erschienen XPath 1.0, XSLT 1.0 und XSLT 3.0?</summary><p>XPath 1.0 und XSLT 1.0 am 16. November 1999. XSLT 3.0 am 8. Juni 2017.</p></details>
+<details><summary>Welche Standard-Priorität haben Template-Muster?</summary><p>Ein Namenstest 0, prefix:* -0.25, node() und text() -0.5, alles andere 0.5.</p></details>
+<h3>Vergleich</h3>
+<details><summary>XPath 1.0 gegen 2.0 und 3.1?</summary><p>Das JDK kann nur 1.0. Spätere Versionen bringen mehr Funktionen und Typen und brauchen einen anderen Prozessor. Im Test fehlten upper-case und matches.</p></details>
+<details><summary>XSLT gegen Java-Code für die Umwandlung?</summary><p>XSLT ist deklarativ und ohne Neukompilierung änderbar. Java-Code ist besser testbar und schneller zu debuggen. Bei fester Struktur wählt man oft Java mit JAXB.</p></details>
+<details><summary>XPath gegen DOM-Navigation?</summary><p>XPath ist kurz und lesbar für Auswahl. DOM-Methoden sind schneller für einfache Zugriffe. XPath braucht ein DOM im Speicher.</p></details>
+<details><summary>disallow-doctype-decl gegen ACCESS_EXTERNAL_DTD leer?</summary><p>Das erste lehnt jeden DOCTYPE ab. Das zweite lässt DTD zu, sperrt aber den Zugriff auf externe Ziele. Das erste ist strenger.</p></details>
+<h3>Produktion</h3>
+<details><summary>Szenario: Ein Penetrationstest zeigt, dass der Upload-Endpoint /etc-Dateien liest. Was tun Sie?</summary><p>Ich verbiete DOCTYPE im Parser und prüfe alle Parser im Code, auch in Bibliotheken. Dazu ein Test mit einer XXE-Datei.</p></details>
+<details><summary>Szenario: Eine Suche per XPath liefert für bestimmte Eingaben alle Datensätze. Warum?</summary><p>Die Eingabe wird in den Ausdruck eingefügt (XPath Injection). Ich nutze einen XPathVariableResolver mit Variablen.</p></details>
+<details><summary>Szenario: Der Server wird bei einem kleinen XML-Request sehr langsam und braucht viel Speicher. Warum?</summary><p>Wahrscheinlich Billion Laughs. Ich verbiete DOCTYPE, setze Grössenlimits und prüfe die Entity-Grenzen.</p></details>
+<details><summary>Szenario: Mehrere Threads teilen einen Transformer und liefern falsche Ausgaben. Was ändern Sie?</summary><p>Ich kompiliere das Stylesheet einmal zu Templates und erzeuge pro Aufruf einen eigenen Transformer.</p></details>
+<h3>Design</h3>
+<details><summary>Wie verhindern Sie XXE zentral im Projekt?</summary><p>Mit einer gemeinsamen Factory-Hilfsklasse, die alle Schalter setzt. Verbote für direkte newInstance-Aufrufe in einem Code-Check. Dazu Tests.</p></details>
+<details><summary>Wie gehen Sie mit XML-Dateien um, die eine DTD brauchen?</summary><p>Ich lade die DTD aus eigenen Ressourcen über einen Resolver. Externe Zugriffe bleiben gesperrt, und Entity-Grenzen bleiben aktiv.</p></details>
+<details><summary>Wann nehmen Sie XSLT?</summary><p>Wenn Stylesheets von Fachleuten gepflegt werden oder die Umwandlung ohne Release änderbar sein soll. Die Stylesheets müssen aus vertrauenswürdiger Quelle stammen.</p></details>
+<details><summary>Wie sichert man die XPath-Auswertung ab?</summary><p>Man parst mit einem gehärteten Builder und wertet auf dem Document aus. Eingaben gehen als Variablen in den Ausdruck.</p></details>
+
+<details class="mehr"><summary>Mehr</summary>
+<h3>Gerüst</h3>
+<ul>
+  <li><b>Warum?</b> XPath wählt Daten aus, XSLT wandelt sie um. XXE-Schutz ist Pflicht für jedes XML von aussen.</li>
+  <li><b>Wie innen?</b> XPath: Achse, Test, Prädikat. XSLT: Quellbaum, Template-Regeln, Ergebnisbaum. XXE: DOCTYPE, Entity, Ladeversuch.</li>
+  <li><b>Zahlen</b> 13 Achsen. 64000 Expansionen. JDK nur XPath 1.0 und XSLT 1.0. XSLT 3.0 am 8. Juni 2017.</li>
+  <li><b>Vergleich</b> XPath 1.0 gegen 2.0 und 3.1. XSLT gegen Java. disallow-doctype-decl gegen ACCESS_EXTERNAL_DTD.</li>
+  <li><b>Produktion</b> Datei-Leck über XXE. XPath Injection. Billion Laughs. Geteilter Transformer.</li>
+  <li><b>Design</b> Zentrale Factory-Klasse, XXE-Test, Variablen statt Verkettung, Stylesheets nur aus eigener Quelle.</li>
+</ul>
+
+<h3>Beispiel: XPath, XSLT und XXE im JDK</h3>
+<pre>&lt;!-- orders.xml: drei Bestellungen, id, status, kunde, betrag mit waehrung --&gt;
+&lt;order id="1" status="offen"&gt;&lt;kunde&gt;Meier AG&lt;/kunde&gt;&lt;betrag waehrung="CHF"&gt;120.50&lt;/betrag&gt;&lt;/order&gt;
+&lt;!-- xxe.xml --&gt;
+&lt;!DOCTYPE order [ &lt;!ENTITY xxe SYSTEM "file:///.../secret.txt"&gt; ]&gt;
+&lt;order&gt;&lt;kunde&gt;&amp;xxe;&lt;/kunde&gt;&lt;/order&gt;
+
+// Härten (DOM):
+dbf.setFeature("http://apache.org/xml/features/disallow-doctype-decl", true);
+// XPath mit Variable:
+xpath.setXPathVariableResolver(q -&gt; q.getLocalPart().equals("k") ? eingabe : null);
+xpath.evaluate("count(//order[kunde=$k])", doc);</pre>
+<pre>--- XPath 1.0
+count(//order)  =&gt;  3
+//order[@status='offen']/kunde  =&gt;  Meier AG
+//order[2]/kunde  =&gt;  Keller GmbH
+//order[last()]/@id  =&gt;  3
+sum(//betrag[@waehrung='CHF'])  =&gt;  200.5
+//kunde[.='Meier AG']/following-sibling::betrag  =&gt;  120.50
+//betrag[@waehrung='EUR']/ancestor::order/@id  =&gt;  3
+//order[betrag > 100]/@id  =&gt;  1
+string(//order[1])  =&gt;  Meier AG120.50
+//order[kunde='Meier AG' and @status='offen']/@id  =&gt;  1
+upper-case(//order[1]/kunde)  =&gt;  TransformerException: Could not find function: upper-case
+matches(//order[1]/kunde, 'M.*')  =&gt;  TransformerException: Could not find function: matches
+--- XSLT
+[report.xsl]
+Offene Bestellungen:
+1. Meier AG - 120.50 CHF
+2. Meier AG - 45.25 EUR
+Total (alle): 245.75
+[group.xsl] TransformerException: java.lang.RuntimeException: Unsupported XSL element 'http://www.w3.org/1999/XSL/Transform:for-each-group'</pre>
+<p class="small">Echte Ausgabe, OpenJDK 17.0.3. report.xsl hat version="1.0", group.xsl hat version="2.0" mit xsl:for-each-group. Die Daten sind erfunden.</p>
+<pre>--- XXE (Datei lesen)
+DOM Standard: kunde = GEHEIM: db.passwort=hunter2
+DOM FEATURE_SECURE_PROCESSING: SAXParseException: External Entity: Failed to read external document 'secret.txt', because 'file' access is not allowed due to restriction set by the accessExternalDTD property.
+DOM ACCESS_EXTERNAL_DTD="": SAXParseException: External Entity: Failed to read external document 'secret.txt', because 'file' access is not allowed due to restriction set by the accessExternalDTD property.
+DOM disallow-doctype-decl: SAXParseException: DOCTYPE is disallowed when the feature "http://apache.org/xml/features/disallow-doctype-decl" set to true.
+--- StAX Standard und mit SUPPORT_DTD=false
+StAX supportDTD=true: text = GEHEIM: db.passwort=hunter2
+StAX supportDTD=false: XMLStreamException: ParseError at [row,col]:[3,20] Message: The entity "xxe" was referenced, but not declared.
+--- Billion Laughs
+[Fatal Error] :1:1: JAXP00010001: The parser has encountered more than "64000" entity expansions in this document; this is the limit imposed by the JDK.
+SAXParseException: JAXP00010001: The parser has encountered more than "64000" entity expansions in this document; this is the limit imposed by the JDK.
+disallow-doctype-decl: SAXParseException: DOCTYPE is disallowed when the feature "http://apache.org/xml/features/disallow-doctype-decl" set to true.</pre>
+<p class="small">Echte Ausgabe, OpenJDK 17.0.3. Die Geheimdatei ist selbst erzeugt, die Zeile „[Fatal Error]“ stammt vom Standard-ErrorHandler.</p>
+<pre>Eingabe [Meier AG]
+  verkettet: count(//order[kunde='Meier AG']) = 2
+  Variable : count(//order[kunde=$k]) = 2
+Eingabe [x' or '1'='1]
+  verkettet: count(//order[kunde='x' or '1'='1']) = 3
+  Variable : count(//order[kunde=$k]) = 0</pre>
+<p class="small">Echte Ausgabe, OpenJDK 17.0.3.</p>
+<ol>
+  <li><code>sum(//betrag[@waehrung='CHF'])</code> ergibt 200.5. Die Summe über zwei Beträge ist eine Zahl, kein Text.</li>
+  <li><code>string(//order[1])</code> ergibt „Meier AG120.50“. Der String-Wert ist die Verkettung aller Texte.</li>
+  <li>Die Funktionen <code>upper-case</code> und <code>matches</code> fehlen. Das ist die Grenze von XPath 1.0.</li>
+  <li>Das Stylesheet mit <code>apply-templates</code> wählt nur offene Bestellungen. Der Total-Wert rechnet über alle.</li>
+  <li>Der Standard-Parser liest die Geheimdatei. Drei Schalter verhindern es, <code>disallow-doctype-decl</code> am frühesten.</li>
+  <li>Bei StAX ist die Standardeinstellung ebenfalls offen. <code>SUPPORT_DTD=false</code> hilft hier.</li>
+  <li>Bei Billion Laughs greift im JDK schon die Standardgrenze von 64000 Expansionen.</li>
+  <li>Bei XPath Injection liefert die verkettete Eingabe alle Datensätze. Die Variable findet nichts.</li>
+</ol>
+
+<h3>Vergleich</h3>
+<ul>
+  <li><b>XPath 1.0:</b> Im JDK. Vier Datentypen, 13 Achsen. Keine Regex-Funktionen.</li>
+  <li><b>XPath 2.0 und 3.1:</b> Mehr Typen und Funktionen. Braucht einen anderen Prozessor.</li>
+  <li><b>XSLT 1.0:</b> Im JDK mit XSLTC. Reicht für einfache Umwandlungen.</li>
+  <li><b>XSLT 3.0:</b> Streaming, Packages, Maps, JSON. Nur mit anderem Prozessor.</li>
+  <li><b>Java mit JAXB:</b> Typisierte Umwandlung, gut testbar. Weniger flexibel als Stylesheets.</li>
+</ul>
+
+<h3>Produktion</h3>
+<ol>
+  <li><b>Datei-Leck über XXE:</b> Ein Endpoint parst fremdes XML ohne Schutz. Lösung: DOCTYPE verbieten, zentrale Factory, Test mit XXE-Datei.</li>
+  <li><b>Vergessene Parser:</b> Eine Bibliothek legt eine eigene Factory an. Lösung: Code-Check auf <code>newInstance</code>, Abhängigkeiten prüfen.</li>
+  <li><b>XPath Injection:</b> Eingaben stehen im Ausdruck. Lösung: Variablen mit <code>XPathVariableResolver</code>.</li>
+  <li><b>Billion Laughs:</b> Kleine Anfrage, grosse Last. Lösung: DOCTYPE verbieten, Limits nicht lockern, Grösse begrenzen.</li>
+  <li><b>Geteilter Transformer:</b> Zufällige Fehler. Lösung: Templates einmal, Transformer pro Aufruf.</li>
+  <li><b>Fremde Stylesheets:</b> Ein Kunde lädt ein Stylesheet hoch. Lösung: nicht ausführen. XSLT ist keine Sandbox.</li>
+</ol>
+
+<h3>Diagnose: Werkzeuge und Befehle</h3>
+<ul>
+  <li><b>XXE-Testdatei</b> mit lokaler Datei als Entity: Erwartet wird ein Fehler und kein Dateiinhalt.</li>
+  <li><b>Billion-Laughs-Testdatei</b> im Test: Erwartet wird ein JAXP00010001-Fehler oder die Ablehnung des DOCTYPE.</li>
+  <li><code>xmllint --xpath "//order[@status='offen']" orders.xml</code>: Ausdrücke von der Kommandozeile testen.</li>
+  <li><code>xsltproc report.xsl orders.xml</code>: Stylesheet unabhängig vom Java-Code prüfen.</li>
+  <li><code>-Djdk.xml.entityExpansionLimit=...</code> und <code>jaxp.properties</code>: Grenzen ansehen und prüfen, dass niemand sie auf 0 stellt.</li>
+  <li><b>Dependency-Check und Code-Suche:</b> Alle Aufrufe von <code>DocumentBuilderFactory.newInstance</code> und <code>XMLInputFactory</code> finden.</li>
+</ul>
+
+<h3>Senior-Punkte</h3>
+<div class="senior">
+<ol>
+  <li><b>Jeden Parser mit fremden Daten härten.</b> Die Standardwerte sind für Kompatibilität gebaut, nicht für Sicherheit.</li>
+  <li><b>Eine zentrale Stelle für Factories.</b> Eine Hilfsklasse setzt alle Schalter, und ein Code-Check verbietet den direkten Aufruf.</li>
+  <li><b>Verbieten ist besser als Filtern.</b> DOCTYPE abzulehnen beseitigt eine ganze Klasse von Angriffen.</li>
+  <li><b>Eingaben nie in Ausdrücke kleben.</b> Das gilt für XPath wie für SQL. Variablen sind die Lösung.</li>
+  <li><b>Versionen kennen.</b> Das JDK spricht XPath 1.0 und XSLT 1.0. Moderne Features brauchen einen anderen Prozessor und eine bewusste Abhängigkeit.</li>
+  <li><b>Stylesheets sind Code.</b> Man führt nur eigene, geprüfte aus und behandelt fremde als nicht vertrauenswürdig.</li>
+</ol>
+</div>
+
+<h3>Dein Beispiel</h3>
+</details>
+
+</body>
+</html>

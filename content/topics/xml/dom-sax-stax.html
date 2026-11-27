@@ -1,0 +1,282 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DOM vs SAX vs StAX</title>
+<style>
+  body { font: 17px/1.55 -apple-system, system-ui, sans-serif; max-width: 760px; margin: 0 auto; padding: 16px; color: #1d1d1f; }
+  h1 { font-size: 28px; margin: 8px 0 4px; }
+  h2 { font-size: 21px; margin: 32px 0 8px; padding-top: 12px; border-top: 2px solid #e5e5ea; }
+  .kern { background: #eef6ff; border-left: 4px solid #0a66c2; padding: 10px 14px; border-radius: 6px; }
+  .senior { background: #f0faf0; border-left: 4px solid #2e7d32; padding: 10px 14px; border-radius: 6px; }
+  .trap { background: #fff4f2; border-left: 4px solid #c62828; padding: 10px 14px; border-radius: 6px; }
+  code { background: #f2f2f7; padding: 1px 5px; border-radius: 4px; font-size: 15px; }
+  pre { background: #1e1e1e; color: #e6e6e6; padding: 12px; border-radius: 8px; overflow-x: auto; font-size: 13.5px; line-height: 1.45; }
+  svg { width: 100%; height: auto; display: block; margin: 10px 0; }
+  ol li, ul li { margin: 4px 0; }
+  details { border: 1px solid #e5e5ea; border-radius: 8px; padding: 8px 12px; margin: 6px 0; }
+  summary { font-weight: 600; cursor: pointer; }
+  details p { margin: 6px 0 2px; }
+  .small { color: #6e6e73; font-size: 14px; }
+  h3 { font-size: 17px; margin: 20px 0 6px; }
+  .geruest { border: 2px solid #1d1d1f; border-radius: 6px; padding: 10px 14px; margin: 14px 0; font-size: 15px; line-height: 1.4; }
+  .geruest h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; margin: 0 0 8px; padding: 0; border: 0; }
+  .geruest dl { display: grid; grid-template-columns: 6.6em 1fr; gap: 6px 10px; margin: 0; }
+  .geruest dt { font-weight: 700; font-size: 12px; text-transform: uppercase; letter-spacing: .05em; padding-top: 1px; }
+  .geruest dd { margin: 0; }
+  .muster { border: 1px solid #e5e5ea; border-left: 4px solid #1d1d1f; border-radius: 6px; padding: 10px 14px; margin: 14px 0; }
+  .muster h3 { margin: 0 0 6px; font-size: 13px; text-transform: uppercase; letter-spacing: .06em; }
+  .muster .mq { margin: 0 0 6px; }
+</style>
+</head>
+<body>
+
+<h1>DOM vs SAX vs StAX</h1>
+<!-- sources: JDK 17 API-Doku (javax.xml.parsers DocumentBuilderFactory, DocumentBuilder, SAXParser; org.xml.sax ContentHandler; javax.xml.stream XMLInputFactory, XMLStreamReader; java.xml Modul-Zusammenfassung), OWASP XML External Entity Prevention Cheat Sheet, Jakarta XML Binding 4.0 API (Unmarshaller XMLStreamReader), eigene Messungen mit OpenJDK 17.0.3 -->
+
+<div class="kern">
+<b>Kern:</b> <b>DOM</b> liest das ganze Dokument in einen Baum im Speicher. <b>SAX</b> liest einmal vorwärts und ruft Callbacks auf (Push). <b>StAX</b> liest vorwärts, aber der Code holt die Events selbst (Pull). Bei grossen Dateien ist DOM das Risiko, weil der Speicher mit der Dateigrösse wächst.
+</div>
+
+<div class="muster"><h3>Antwort-Muster</h3><p class="mq"><b>Frage:</b> Was ist der Unterschied zwischen DOM, SAX und StAX?</p><ol>
+  <li>Mechanismus: DOM baut einen Baum und erlaubt Zugriff und Änderung. SAX pusht Events in einen Handler. StAX lässt den Code Events per Cursor abrufen.</li>
+  <li>Zahl: Im Test brauchte eine 23-MB-Datei in DOM zwischen 128 und 256 MB Heap. Eine 119-MB-Datei lief mit 32 MB Heap nur mit SAX und StAX.</li>
+  <li>Trade-off: DOM ist bequem, kostet aber Speicher. SAX und StAX sind sparsam, aber nur vorwärts und mit mehr Code.</li>
+  <li>Produktion: Bei grossen Nachrichten nehme ich StAX und baue nur kleine Teile als Objekte. Alle Parser konfiguriere ich gegen XXE.</li>
+</ol></div>
+
+<h2>1. Wie ein Dokument gelesen wird, in 6 Schritten</h2>
+<svg viewBox="0 0 720 360" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="dsA" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="10" y="20" width="150" height="62" rx="10" fill="#eee" stroke="#777"/><text x="85" y="46" text-anchor="middle" font-weight="700">1. Factory</text><text x="85" y="66" text-anchor="middle" font-size="12">holen, absichern</text>
+  <line x1="160" y1="51" x2="188" y2="51" stroke="#555" stroke-width="2" marker-end="url(#dsA)"/>
+  <rect x="190" y="20" width="150" height="62" rx="10" fill="#eee" stroke="#777"/><text x="265" y="46" text-anchor="middle" font-weight="700">2. Parser</text><text x="265" y="66" text-anchor="middle" font-size="12">erzeugen</text>
+  <line x1="340" y1="51" x2="368" y2="51" stroke="#555" stroke-width="2" marker-end="url(#dsA)"/>
+  <rect x="370" y="20" width="160" height="62" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="450" y="46" text-anchor="middle" font-weight="700">3. Quelle öffnen</text><text x="450" y="66" text-anchor="middle" font-size="12">Datei, Stream</text>
+  <line x1="530" y1="51" x2="558" y2="51" stroke="#555" stroke-width="2" marker-end="url(#dsA)"/>
+  <rect x="560" y="20" width="150" height="62" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="635" y="46" text-anchor="middle" font-weight="700">4. Tokens lesen</text><text x="635" y="66" text-anchor="middle" font-size="12">Tag, Text, Attribut</text>
+  <line x1="635" y1="82" x2="635" y2="118" stroke="#555" stroke-width="2" marker-end="url(#dsA)"/>
+  <text x="360" y="112" text-anchor="middle" font-weight="700">5. Was passiert mit den Tokens?</text>
+  <rect x="10" y="130" width="220" height="120" rx="10" fill="#e8f5e9" stroke="#2e7d32"/><text x="120" y="156" text-anchor="middle" font-weight="700">DOM</text><text x="120" y="180" text-anchor="middle" font-size="12">Baum aus Node-Objekten</text><text x="120" y="198" text-anchor="middle" font-size="12">alles bleibt im Speicher</text><text x="120" y="216" text-anchor="middle" font-size="12">parse() liefert Document</text>
+  <rect x="250" y="130" width="220" height="120" rx="10" fill="#fff" stroke="#555"/><text x="360" y="156" text-anchor="middle" font-weight="700">SAX (Push)</text><text x="360" y="180" text-anchor="middle" font-size="12">Parser ruft startElement,</text><text x="360" y="198" text-anchor="middle" font-size="12">characters, endElement</text><text x="360" y="216" text-anchor="middle" font-size="12">Code merkt sich den Zustand</text>
+  <rect x="490" y="130" width="220" height="120" rx="10" fill="#fff" stroke="#555"/><text x="600" y="156" text-anchor="middle" font-weight="700">StAX (Pull)</text><text x="600" y="180" text-anchor="middle" font-size="12">Code ruft next() auf</text><text x="600" y="198" text-anchor="middle" font-size="12">Cursor auf dem aktuellen</text><text x="600" y="216" text-anchor="middle" font-size="12">Event, nur vorwärts</text>
+  <rect x="10" y="272" width="700" height="72" rx="10" fill="#0a66c2"/><text x="360" y="298" text-anchor="middle" fill="#fff" font-weight="700">6. Ergebnis</text><text x="360" y="320" text-anchor="middle" fill="#fff" font-size="12">DOM: Speicher wächst mit der Dateigrösse. SAX und StAX: Speicher bleibt klein.</text>
+</svg>
+<ol>
+  <li><b>Factory holen:</b> <code>DocumentBuilderFactory</code>, <code>SAXParserFactory</code> oder <code>XMLInputFactory</code> sind der Einstieg (JAXP). Hier setzt man auch die Sicherheitseinstellungen.</li>
+  <li><b>Parser erzeugen:</b> Die Factory baut <code>DocumentBuilder</code>, <code>SAXParser</code> oder einen <code>XMLStreamReader</code>.</li>
+  <li><b>Quelle öffnen:</b> Datei, <code>InputStream</code> oder <code>InputSource</code>. Die Zeichenkodierung steht in der XML-Deklaration.</li>
+  <li><b>Tokens lesen:</b> Der Parser erkennt Start-Tags, Text, Attribute und Kommentare in Dokumentreihenfolge.</li>
+  <li><b>Tokens verarbeiten:</b> DOM baut daraus einen Baum. SAX ruft Methoden eines <code>ContentHandler</code>. Bei StAX ruft der Code <code>next()</code> auf.</li>
+  <li><b>Ergebnis:</b> DOM gibt ein <code>Document</code> zurück, und alles liegt im Speicher. SAX und StAX halten nur den aktuellen Zustand.</li>
+</ol>
+
+<h2>2. Aufbau</h2>
+<svg viewBox="0 0 720 330" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="dsB" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="10" y="10" width="220" height="310" rx="12" fill="#e8f5e9" stroke="#2e7d32"/><text x="120" y="34" text-anchor="middle" font-weight="700">DOM</text>
+  <rect x="26" y="50" width="188" height="48" rx="8" fill="#fff" stroke="#555"/><text x="120" y="70" text-anchor="middle" font-size="13">DocumentBuilderFactory</text><text x="120" y="88" text-anchor="middle" font-size="12">DocumentBuilder</text>
+  <rect x="26" y="110" width="188" height="48" rx="8" fill="#fff" stroke="#555"/><text x="120" y="130" text-anchor="middle" font-size="13">Document</text><text x="120" y="148" text-anchor="middle" font-size="12">Element · Attr · Text</text>
+  <rect x="26" y="170" width="188" height="48" rx="8" fill="#fff" stroke="#555"/><text x="120" y="190" text-anchor="middle" font-size="13">Node · NodeList</text><text x="120" y="208" text-anchor="middle" font-size="12">navigieren, ändern</text>
+  <rect x="26" y="230" width="188" height="72" rx="8" fill="#fff" stroke="#555"/><text x="120" y="252" text-anchor="middle" font-size="13">Schreiben</text><text x="120" y="272" text-anchor="middle" font-size="12">Transformer mit</text><text x="120" y="290" text-anchor="middle" font-size="12">DOMSource und Result</text>
+  <rect x="250" y="10" width="220" height="310" rx="12" fill="#f7f7fa" stroke="#999"/><text x="360" y="34" text-anchor="middle" font-weight="700">SAX</text>
+  <rect x="266" y="50" width="188" height="48" rx="8" fill="#fff" stroke="#555"/><text x="360" y="70" text-anchor="middle" font-size="13">SAXParserFactory</text><text x="360" y="88" text-anchor="middle" font-size="12">SAXParser</text>
+  <rect x="266" y="110" width="188" height="48" rx="8" fill="#fff" stroke="#555"/><text x="360" y="130" text-anchor="middle" font-size="13">DefaultHandler</text><text x="360" y="148" text-anchor="middle" font-size="12">implementiert ContentHandler</text>
+  <rect x="266" y="170" width="188" height="48" rx="8" fill="#fff" stroke="#555"/><text x="360" y="190" text-anchor="middle" font-size="13">Attributes</text><text x="360" y="208" text-anchor="middle" font-size="12">Attribute je Element</text>
+  <rect x="266" y="230" width="188" height="72" rx="8" fill="#fff" stroke="#555"/><text x="360" y="252" text-anchor="middle" font-size="13">Locator</text><text x="360" y="272" text-anchor="middle" font-size="12">Zeile und Spalte,</text><text x="360" y="290" text-anchor="middle" font-size="12">nur während Callbacks</text>
+  <rect x="490" y="10" width="220" height="310" rx="12" fill="#dbe9fb" stroke="#0a66c2"/><text x="600" y="34" text-anchor="middle" font-weight="700">StAX</text>
+  <rect x="506" y="50" width="188" height="48" rx="8" fill="#fff" stroke="#555"/><text x="600" y="70" text-anchor="middle" font-size="13">XMLInputFactory</text><text x="600" y="88" text-anchor="middle" font-size="12">Properties setzen</text>
+  <rect x="506" y="110" width="188" height="48" rx="8" fill="#fff" stroke="#555"/><text x="600" y="130" text-anchor="middle" font-size="13">XMLStreamReader</text><text x="600" y="148" text-anchor="middle" font-size="12">Cursor, vorwärts, read-only</text>
+  <rect x="506" y="170" width="188" height="48" rx="8" fill="#fff" stroke="#555"/><text x="600" y="190" text-anchor="middle" font-size="13">XMLEventReader</text><text x="600" y="208" text-anchor="middle" font-size="12">Event-Objekte</text>
+  <rect x="506" y="230" width="188" height="72" rx="8" fill="#fff" stroke="#555"/><text x="600" y="252" text-anchor="middle" font-size="13">XMLStreamWriter</text><text x="600" y="272" text-anchor="middle" font-size="12">schreibt XML</text><text x="600" y="290" text-anchor="middle" font-size="12">ohne Baum</text>
+</svg>
+<ol>
+  <li><b>Factory:</b> Jede Technik hat eine Factory. Dort stellt man Namespaces, Validierung und Sicherheit ein.</li>
+  <li><b>DOM-Baum:</b> <code>Document</code> ist die Wurzel. <code>Element</code>, <code>Attr</code> und <code>Text</code> sind Knoten. Man navigiert und ändert sie.</li>
+  <li><b>SAX-Handler:</b> Man erweitert <code>DefaultHandler</code> und überschreibt die Callbacks, die man braucht.</li>
+  <li><b>StAX-Reader:</b> Der <code>XMLStreamReader</code> ist laut Doku der niedrigste und effizienteste Weg, XML zu lesen. <code>XMLEventReader</code> liefert Event-Objekte.</li>
+  <li><b>Schreiben:</b> DOM schreibt man mit einem <code>Transformer</code>. StAX hat den <code>XMLStreamWriter</code>. SAX liest nur.</li>
+  <li><b>Gemeinsame Basis:</b> Alle drei laufen im JDK ohne Zusatzbibliothek (Modul <code>java.xml</code>).</li>
+</ol>
+
+<h2>3. Details</h2>
+<ol>
+  <li><b>DOM:</b> Er baut den ganzen Baum im Speicher. Man hat Zugriff in beliebiger Reihenfolge und kann Knoten ändern. Das ist bequem, kostet aber Speicher. Das Ergebnis von <code>parse()</code> ist ein <code>Document</code>.</li>
+  <li><b>DOM-Speicher im Test:</b> Eine 23-MB-Datei lief mit 256 MB Heap, aber nicht mit 128 MB. Eine 119-MB-Datei scheiterte mit 1 GB und lief mit 4 GB. Der Speicher ist also ein Mehrfaches der Dateigrösse. Der Wert hängt vom Inhalt ab.</li>
+  <li><b>DOM-Standardwerte:</b> Namespace-aware ist false. Dann liefert <code>getLocalName()</code> den Wert <code>null</code>. Validating, coalescing, ignoringComments und XInclude sind false. <code>expandEntityReferences</code> ist true.</li>
+  <li><b>SAX:</b> Der Parser ruft <code>startElement</code>, <code>characters</code> und <code>endElement</code> auf. Es gibt zu jedem <code>startElement</code> ein <code>endElement</code>, auch bei leeren Elementen. Der Code muss den Zustand selbst führen, oft mit einem Stack.</li>
+  <li><b>SAX characters():</b> Text kann in mehreren Stücken kommen. Im Test lieferte <code>Tom &amp;amp; Jerry</code> drei Aufrufe. Man sammelt den Text in einem <code>StringBuilder</code> und wertet ihn in <code>endElement</code> aus.</li>
+  <li><b>SAX und Namespaces:</b> Die <code>SAXParserFactory</code> ist standardmässig nicht namespace-aware. Im Test waren <code>uri</code> und <code>localName</code> dann leer. Mit <code>setNamespaceAware(true)</code> waren sie gefüllt.</li>
+  <li><b>SAX Locator:</b> Er gibt Zeile und Spalte. Er liefert nur während der Callbacks korrekte Werte. Damit baut man gute Fehlermeldungen.</li>
+  <li><b>StAX:</b> Der Code holt Events mit <code>next()</code>. Der Reader ist laut Doku vorwärts und read-only. Der Cursor steht immer auf dem aktuellen Event, und der Start-Zustand ist <code>START_DOCUMENT</code>.</li>
+  <li><b>StAX Text:</b> <code>isCoalescing</code> ist standardmässig false. Im Test gab <code>Tom &amp;amp; Jerry</code> drei CHARACTERS-Events, mit true eines. <code>getElementText()</code> liefert immer zusammengefügten Text und wirft bei Kindelementen eine Exception.</li>
+  <li><b>StAX-Standardwerte:</b> <code>isNamespaceAware</code> ist true. <code>supportDTD</code> ist true. <code>isReplacingEntityReferences</code> ist true. Der Wert für externe Entities ist in der Doku nicht festgelegt.</li>
+  <li><b>StAX seit Java 6:</b> <code>XMLStreamReader</code> hat das Tag <code>Since 1.6</code>. <code>getTextCharacters()</code> liefert ein kurzlebiges Array. Man darf es nicht behalten.</li>
+  <li><b>Push gegen Pull:</b> Bei SAX steuert der Parser den Ablauf. Bei StAX steuert der Code ihn. StAX ist dadurch leichter zu lesen und kann zwischen Elementen andere Dinge tun.</li>
+  <li><b>StAX mit JAXB:</b> Der <code>Unmarshaller</code> akzeptiert einen <code>XMLStreamReader</code> auf <code>START_ELEMENT</code>. Danach steht der Reader hinter dem Element. So liest man eine grosse Datei Element für Element als Objekte.</li>
+  <li><b>XXE:</b> Im Test las DOM mit Standard-Einstellungen eine lokale Datei über eine externe Entity. StAX tat es auch. Mit <code>FEATURE_SECURE_PROCESSING</code> blockierte DOM den Zugriff. Bei StAX hilft <code>SUPPORT_DTD=false</code>. OWASP sagt, StAX kenne <code>FEATURE_SECURE_PROCESSING</code> nicht.</li>
+</ol>
+
+<h2>4. Fallen</h2>
+<div class="trap">
+<ul>
+  <li>„DOM ist schneller, weil der Baum im Speicher liegt.“ → <b>Falsch.</b> DOM braucht Speicher und Zeit zum Aufbau. Im Test war er bei der grossen Datei mit 4 GB Heap am langsamsten.</li>
+  <li>„SAX ruft characters() einmal pro Element.“ → <b>Falsch.</b> Text kann in mehreren Stücken kommen. Man sammelt ihn.</li>
+  <li>„Der DOM-Parser kennt Namespaces von Haus aus.“ → <b>Falsch.</b> Der Standard ist nicht namespace-aware, und <code>getLocalName()</code> gibt <code>null</code>.</li>
+  <li>„StAX ist dasselbe wie SAX.“ → <b>Falsch.</b> SAX pusht, StAX pullt. Der Code steuert bei StAX den Ablauf.</li>
+  <li>„Der Standard-Parser ist sicher.“ → <b>Falsch.</b> Im Test las er eine lokale Datei über eine externe Entity.</li>
+  <li>„Mit StAX kann man zurückspringen.“ → <b>Falsch.</b> Der Reader geht nur vorwärts. Wer zurück will, baut selbst Zustand auf oder nutzt DOM.</li>
+</ul>
+</div>
+
+<h2>5. Selbsttest</h2>
+<h3>Warum?</h3>
+<details><summary>Warum braucht DOM so viel Speicher?</summary><p>Jedes Element, Attribut und jeder Text ist ein eigenes Objekt mit Verweisen. Der ganze Baum liegt im Heap. Im Test brauchte eine 23-MB-Datei mehr als 128 MB.</p></details>
+<details><summary>Warum nimmt man bei grossen Dateien SAX oder StAX?</summary><p>Beide lesen vorwärts und halten nur den aktuellen Zustand. Der Speicher hängt nicht von der Dateigrösse ab.</p></details>
+<details><summary>Warum ist StAX oft angenehmer als SAX?</summary><p>Der Code steuert den Ablauf mit einer Schleife. Es gibt keine Callbacks, und man kann Zustand in lokalen Variablen halten.</p></details>
+<h3>Wie innen?</h3>
+<details><summary>Wie funktioniert SAX?</summary><p>Ein Parser liest vorwärts und ruft Methoden eines ContentHandler auf. Zu jedem startElement kommt ein endElement. Text kommt in Stücken.</p></details>
+<details><summary>Wie funktioniert StAX?</summary><p>Ein XMLStreamReader steht auf dem aktuellen Event. Der Code ruft next() und fragt Name, Text oder Attribute ab.</p></details>
+<details><summary>Was ist der Unterschied zwischen XMLStreamReader und XMLEventReader?</summary><p>Der StreamReader ist ein Cursor mit Abfragemethoden und der effizienteste Weg. Der EventReader liefert Event-Objekte, die man weitergeben kann.</p></details>
+<details><summary>Warum liefert characters() manchmal Teile?</summary><p>Die Spezifikation erlaubt es dem Parser, zusammenhängenden Text zu teilen. Im Test gab es für Text mit einem Entity drei Aufrufe.</p></details>
+<details><summary>Wie schreibt man XML mit diesen APIs?</summary><p>DOM mit einem Transformer. StAX mit XMLStreamWriter. SAX hat keine Schreib-API.</p></details>
+<details><summary>Wie bekommt man bei SAX die Zeilennummer?</summary><p>Über den Locator. Er liefert nur während der Callbacks gültige Werte.</p></details>
+<details><summary>Wie kombiniert man StAX und JAXB?</summary><p>Man liest mit StAX bis zu einem Element und übergibt den Reader dem Unmarshaller. Er liest das Element als Objekt, und der Reader steht danach dahinter.</p></details>
+<h3>Zahlen</h3>
+<details><summary>Welche Namespace-Standardwerte gelten?</summary><p>DocumentBuilderFactory und SAXParserFactory sind standardmässig nicht namespace-aware. XMLInputFactory ist es standardmässig.</p></details>
+<details><summary>Welche StAX-Standardwerte kennen Sie?</summary><p>isCoalescing false, supportDTD true, isReplacingEntityReferences true, isNamespaceAware true.</p></details>
+<details><summary>Seit wann gibt es StAX im JDK?</summary><p>Seit Java 6. Das Tag Since 1.6 steht bei XMLStreamReader.</p></details>
+<details><summary>Wie viel Speicher braucht DOM?</summary><p>Ein Mehrfaches der Dateigrösse. Im Test lief eine 23-MB-Datei mit 256 MB, aber nicht mit 128 MB. Der genaue Faktor hängt vom Inhalt ab.</p></details>
+<h3>Vergleich</h3>
+<details><summary>DOM gegen SAX gegen StAX?</summary><p>DOM: Baum, bequem, viel Speicher. SAX: Push, sparsam, Zustand selbst führen. StAX: Pull, sparsam, Code steuert den Ablauf.</p></details>
+<details><summary>Wann nimmt man DOM?</summary><p>Bei kleinen Dokumenten, wenn man in beliebiger Reihenfolge zugreift, mit XPath arbeitet oder das Dokument ändert.</p></details>
+<details><summary>Wann nimmt man SAX und wann StAX?</summary><p>Beide für Ströme und grosse Dateien. StAX, wenn der Ablauf klar im Code stehen soll. SAX, wenn ein Handler-Modell passt.</p></details>
+<details><summary>DOM gegen JAXB?</summary><p>DOM liefert einen allgemeinen Baum. JAXB liefert typisierte Objekte nach der XSD und braucht eine feste Struktur.</p></details>
+<h3>Produktion</h3>
+<details><summary>Szenario: Ein Import grosser XML-Dateien stürzt mit OutOfMemoryError ab. Was tun Sie?</summary><p>Ich ersetze DOM durch StAX. Ich lese Element für Element und baue nur ein Objekt je Datensatz. Dazu setze ich eine Grössengrenze für Eingaben.</p></details>
+<details><summary>Szenario: Ein Feld enthält manchmal nur den Teil vor einem „&amp;“. Warum?</summary><p>Der SAX-Handler nimmt nur den ersten characters()-Aufruf. Ich sammle den Text in einem StringBuilder und werte ihn in endElement aus.</p></details>
+<details><summary>Szenario: getLocalName() liefert null. Warum?</summary><p>Der DOM-Parser ist nicht namespace-aware. Ich setze setNamespaceAware(true) an der Factory.</p></details>
+<details><summary>Szenario: Ein Upload-Endpoint liest fremde XML-Dateien. Wie sichern Sie den Parser?</summary><p>Ich verbiete DOCTYPE oder deaktiviere DTDs und externe Entities, bei StAX mit SUPPORT_DTD false. Ich teste mit einer XXE-Datei, dass sie scheitert.</p></details>
+<h3>Design</h3>
+<details><summary>Wie verarbeiten Sie eine 2-GB-Datei mit Millionen von Datensätzen?</summary><p>Mit StAX als Strom. Pro Datensatz ein Unmarshal mit JAXB oder ein kleiner DOM. Verarbeitung und Schreiben in Batches.</p></details>
+<details><summary>Teilt man Parser zwischen Threads?</summary><p>Nein. Die JDK-Doku macht dazu keine Zusage. Man erzeugt Parser pro Aufruf oder nutzt reset() für Wiederverwendung im selben Thread.</p></details>
+<details><summary>Wie stoppt man früh, wenn man das Gesuchte gefunden hat?</summary><p>Mit StAX beendet man einfach die Schleife und schliesst den Reader. Das ist ein Vorteil gegenüber DOM, das immer alles liest.</p></details>
+<details><summary>Wie testet man Parser-Code auf XXE?</summary><p>Mit einer Testdatei, die eine externe Entity auf eine lokale Datei enthält. Der Test erwartet einen Fehler statt des Dateiinhalts.</p></details>
+
+<details class="mehr"><summary>Mehr</summary>
+<h3>Gerüst</h3>
+<ul>
+  <li><b>Warum?</b> Man wählt je nach Dateigrösse und Zugriffsmuster den passenden Parser.</li>
+  <li><b>Wie innen?</b> DOM baut den Baum. SAX pusht Callbacks. StAX pullt Events mit einem Cursor.</li>
+  <li><b>Zahlen</b> 23 MB brauchen im DOM zwischen 128 und 256 MB. Namespace-aware Standard false (DOM, SAX), true (StAX).</li>
+  <li><b>Vergleich</b> DOM für klein und flexibel, StAX für gross und klar, SAX für Handler-Modelle.</li>
+  <li><b>Produktion</b> OutOfMemoryError bei DOM. characters() in Stücken. XXE bei Standard-Einstellungen.</li>
+  <li><b>Design</b> Strom plus Objekt je Datensatz, Parser pro Aufruf, XXE-Test.</li>
+</ul>
+
+<h3>Beispiel: dieselbe Summe mit DOM, SAX und StAX</h3>
+<pre>// Aufgabe: die Summe aller &lt;betrag&gt; in &lt;order&gt;-Elementen bilden
+// DOM
+Document d = dbf.newDocumentBuilder().parse(file);
+NodeList l = d.getElementsByTagName("betrag");
+for (int i = 0; i &lt; l.getLength(); i++) sum = sum.add(new BigDecimal(l.item(i).getTextContent()));
+
+// SAX: Text sammeln, in endElement auswerten
+public void characters(char[] ch, int st, int len) { if (in) text.append(ch, st, len); }
+public void endElement(String u, String l, String q) { if (q.equals("betrag")) sum = sum.add(new BigDecimal(text.toString())); }
+
+// StAX: Schleife mit Cursor
+while (r.hasNext())
+  if (r.next() == XMLStreamConstants.START_ELEMENT &amp;&amp; r.getLocalName().equals("betrag"))
+    sum = sum.add(new BigDecimal(r.getElementText()));</pre>
+<pre>== kleine Datei (1000 Bestellungen, 71 KB), -Xmx512m
+dom  orders=1000 sum=50000.00 time=190 ms maxHeap=512 MB
+sax  orders=1000 sum=50000.00 time=166 ms maxHeap=512 MB
+stax orders=1000 sum=50000.00 time=186 ms maxHeap=512 MB
+
+== mittlere Datei (300000 Bestellungen, 23 MB), nur DOM
+-Xmx128m   OutOfMemoryError (Java heap space)
+-Xmx256m   orders=300000 sum=15000000.00 time=1877 ms
+-Xmx512m   orders=300000 sum=15000000.00 time=1768 ms
+
+== grosse Datei (1500000 Bestellungen, 119 MB), -Xmx32m
+dom  OutOfMemoryError (Java heap space) maxHeap=32 MB
+sax  orders=1500000 sum=75000000.00 time=3032 ms maxHeap=32 MB
+stax orders=1500000 sum=75000000.00 time=3425 ms maxHeap=32 MB
+
+== grosse Datei, nur DOM
+-Xmx1g     OutOfMemoryError (Java heap space)
+-Xmx4g     orders=1500000 sum=75000000.00 time=9046 ms</pre>
+<p class="small">Echte Ausgabe, OpenJDK 17.0.3. Die Zeiten sind Einzelläufe auf einem Windows-Laptop und nur ein grober Anhaltspunkt. Die Daten sind erzeugt.</p>
+<ol>
+  <li>Bei der kleinen Datei sind alle drei gleich schnell. Die Wahl ist dort eine Stilfrage.</li>
+  <li>DOM braucht für 23 MB mehr als 128 MB Heap. Der Speicher ist ein Mehrfaches der Dateigrösse.</li>
+  <li>Bei 119 MB scheitert DOM mit 1 GB, und es braucht 4 GB. SAX und StAX laufen mit 32 MB.</li>
+  <li>SAX und StAX haben ähnliche Zeiten. Bei der grossen Datei war DOM mit 4 GB am langsamsten.</li>
+</ol>
+<p>Zweiter Test: derselbe Text <code>&lt;p:a xmlns:p='urn:x'&gt;Tom &amp;amp; Jerry&lt;/p:a&gt;</code> mit allen Parsern.</p>
+<pre>SAX Standard namespaceAware=false
+  SAX start uri='' local='' qName='p:a'
+  SAX characters('Tom ')
+  SAX characters('&amp;')
+  SAX characters(' Jerry')
+SAX namespaceAware=true
+  SAX start uri='urn:x' local='a' qName='p:a'
+DOM namespaceAware=false getLocalName=null getNodeName=p:a getNamespaceURI=null childNodes=1 text='Tom &amp; Jerry'
+DOM namespaceAware=true getLocalName=a getNodeName=p:a getNamespaceURI=urn:x childNodes=1 text='Tom &amp; Jerry'
+StAX isCoalescing=false CHARACTERS-Events=3 'Tom ' '&amp;' ' Jerry'
+StAX isCoalescing=true CHARACTERS-Events=1 'Tom &amp; Jerry'</pre>
+<p class="small">Echte Ausgabe, OpenJDK 17.0.3.</p>
+<ol>
+  <li>SAX und StAX zerlegen den Text bei der Entity in drei Stücke. DOM fügt ihn zu einem Text-Knoten zusammen.</li>
+  <li>Ohne Namespace-Unterstützung sind <code>uri</code> und <code>localName</code> in SAX leer und <code>getLocalName()</code> in DOM <code>null</code>.</li>
+  <li>Mit <code>isCoalescing=true</code> liefert StAX den Text in einem Event.</li>
+</ol>
+
+<h3>Vergleich</h3>
+<ul>
+  <li><b>DOM:</b> Baum im Speicher, wahlfreier Zugriff, änderbar. Gut für kleine Dokumente und XPath.</li>
+  <li><b>SAX:</b> Push mit Callbacks, nur vorwärts, kein Schreiben. Sparsam, aber Zustand von Hand.</li>
+  <li><b>StAX Cursor:</b> <code>XMLStreamReader</code>, Pull, nur vorwärts, sparsam und schnell.</li>
+  <li><b>StAX Iterator:</b> <code>XMLEventReader</code>, Pull mit Event-Objekten. Bequemer, mit mehr Objekten.</li>
+  <li><b>JAXB:</b> Typisierte Objekte nach XSD, aufbauend auf einem dieser Parser.</li>
+</ul>
+
+<h3>Produktion</h3>
+<ol>
+  <li><b>OutOfMemoryError beim Import:</b> DOM hält die ganze Datei. Lösung: StAX und ein Objekt je Datensatz.</li>
+  <li><b>Abgeschnittene Texte:</b> Der SAX-Handler liest nur das erste characters(). Lösung: StringBuilder und Auswertung in endElement.</li>
+  <li><b>Namespace-Fehler:</b> <code>getLocalName()</code> ist null oder Elemente werden nicht gefunden. Lösung: <code>setNamespaceAware(true)</code>.</li>
+  <li><b>XXE:</b> Ein Standard-Parser liest lokale Dateien. Lösung: DOCTYPE verbieten oder DTD und externe Entities abschalten, bei StAX <code>SUPPORT_DTD</code> false.</li>
+  <li><b>Billion Laughs:</b> Ein verschachteltes Entity-Dokument erzeugt riesige Texte. Lösung: DOCTYPE verbieten. Das JDK begrenzt Expansionen standardmässig auf 64000.</li>
+  <li><b>Geteilter Parser:</b> Fehler unter Last. Lösung: Parser pro Aufruf erzeugen. Factories gelten nicht als thread-sicher, die Doku sagt dazu nichts.</li>
+</ol>
+
+<h3>Diagnose: Werkzeuge und Befehle</h3>
+<ul>
+  <li><code>java -Xmx64m ...</code>: Mit kleinem Heap testen, ob ein Parser als Strom arbeitet.</li>
+  <li><code>jcmd &lt;pid&gt; GC.class_histogram</code>: Sehr viele DOM-Knotenobjekte zeigen einen Baum im Heap.</li>
+  <li><b>Heap Dump</b> mit Eclipse MAT: Wer hält das <code>Document</code>?</li>
+  <li><b>JFR</b> oder ein Profiler: Zeit im Parser gegen Zeit in der Verarbeitung trennen.</li>
+  <li><b>Locator</b> im SAX-Handler: Zeile und Spalte bei Fehlern in die Meldung schreiben.</li>
+  <li><b>XXE-Testdatei</b> im Unit-Test: Der Parser muss sie ablehnen.</li>
+</ul>
+
+<h3>Senior-Punkte</h3>
+<div class="senior">
+<ol>
+  <li><b>Grösse und Zugriff entscheiden.</b> Klein und flexibel gibt DOM. Gross oder Strom gibt StAX.</li>
+  <li><b>Strom plus Objekt je Datensatz.</b> StAX liest die Struktur, JAXB oder ein kleiner DOM baut das Einzelne. So bleibt der Speicher flach.</li>
+  <li><b>Eingaben begrenzen.</b> Grössenlimit und Timeouts gehören an jeden Endpoint, der fremdes XML liest.</li>
+  <li><b>Sicherheit in der Factory.</b> Jede Parser-Art hat eigene Schalter. Man kennt sie und testet sie.</li>
+  <li><b>Text ist nie ein einziges Stück.</b> Wer das vergisst, verliert Daten bei Entities.</li>
+  <li><b>Messen statt raten.</b> Ein Test mit kleinem Heap zeigt in Minuten, ob ein Import skaliert.</li>
+</ol>
+</div>
+
+<h3>Dein Beispiel</h3>
+</details>
+
+</body>
+</html>

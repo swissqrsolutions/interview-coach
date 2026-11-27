@@ -2,7 +2,7 @@
 
 Generated from content/syllabus.json. Priority 1 = asked in almost every interview. Mark: **Projekt** = shown in CV/Gmail · **— kein Projekt** = no project experience · **? prüfen** = unclear, you decide.
 
-437 topics · P1 267 · P2 132 · P3 38 · written 369
+437 topics · P1 267 · P2 132 · P3 38 · written 386
 
 ## Java 21 (core + advanced) (42)
 Sources: Java SE 21/25 docs (docs.oracle.com) · JVM Specification · OpenJDK source + JEPs (openjdk.org) · Oracle Java SE 21 Developer exam 1Z0-830 topics
@@ -156,8 +156,8 @@ Sources: Jakarta XML Web Services / JAXB specs · W3C SOAP 1.2 and WSDL · Sprin
 | 2 | WSDL | Projekt | ✓ |
 | 2 | XSD: Typen und Validierung | Projekt | ✓ |
 | 2 | JAXB: Marshalling und Unmarshalling | Projekt | ✓ |
-| 2 | JAX-WS und Spring-WS | ? prüfen |  |
-| 2 | Contract-First vs Code-First | ? prüfen |  |
+| 2 | JAX-WS und Spring-WS | ? prüfen | ✓ |
+| 2 | Contract-First vs Code-First | ? prüfen | ✓ |
 | 3 | WS-Security | ? prüfen |  |
 
 ## Kotlin (4)
@@ -212,9 +212,9 @@ Sources: Jakarta Faces 4 specification · PrimeFaces documentation
 |---|---|---|---|
 | 2 | JSF-Lebenszyklus | Projekt | ✓ |
 | 2 | Beans, CDI, Scopes | Projekt | ✓ |
-| 2 | Ajax und Partial Rendering | Projekt |  |
-| 2 | PrimeFaces-Komponenten und Lazy DataTable | Projekt |  |
-| 2 | Migration RichFaces zu PrimeFaces / Jakarta Faces | Projekt |  |
+| 2 | Ajax und Partial Rendering | Projekt | ✓ |
+| 2 | PrimeFaces-Komponenten und Lazy DataTable | Projekt | ✓ |
+| 2 | Migration RichFaces zu PrimeFaces / Jakarta Faces | Projekt | ✓ |
 | 3 | ViewState: client vs server | ? prüfen |  |
 | 3 | Converter und Validatoren | Projekt |  |
 
@@ -226,9 +226,9 @@ Sources: docs.python.org · pandas and pytest docs
 | 1 | Iteratoren und Generatoren | ? prüfen | ✓ |
 | 2 | Listen, Dicts, Sets, Tuples | Projekt | ✓ |
 | 2 | Decorators und Context Manager | ? prüfen | ✓ |
-| 2 | GIL, Threads, Multiprocessing, asyncio | ? prüfen |  |
-| 2 | pandas-Grundlagen | ? prüfen |  |
-| 2 | pytest | Projekt |  |
+| 2 | GIL, Threads, Multiprocessing, asyncio | ? prüfen | ✓ |
+| 2 | pandas-Grundlagen | ? prüfen | ✓ |
+| 2 | pytest | Projekt | ✓ |
 | 3 | Type Hints | ? prüfen |  |
 | 3 | venv, pip, Packaging | ? prüfen |  |
 
@@ -500,9 +500,9 @@ Sources: OWASP Top 10 (2025) · RFC 6749/9700 OAuth 2 · OpenID Connect Core · 
 | 1 | OWASP Top 10 | ? prüfen | ✓ |
 | 1 | Secret-Management mit Vault | Projekt | ✓ |
 | 1 | Web-Angriffe | ? prüfen | ✓ |
-| 2 | Keycloak | Projekt |  |
-| 2 | TLS und mTLS | ? prüfen |  |
-| 2 | Datenschutz: DSG und DSGVO für Entwickler | Projekt |  |
+| 2 | Keycloak | Projekt | ✓ |
+| 2 | TLS und mTLS | ? prüfen | ✓ |
+| 2 | Datenschutz: DSG und DSGVO | Projekt | ✓ |
 
 ## Angular (14 → modern) (14)
 Sources: angular.dev guides (v20) · RxJS docs
@@ -521,7 +521,7 @@ Sources: angular.dev guides (v20) · RxJS docs
 | 1 | Reactive, Template und Signal Forms | Projekt | ✓ |
 | 1 | HttpClient und Interceptors | Projekt | ✓ |
 | 1 | Angular 14 bis 22: was ist neu | ? prüfen | ✓ |
-| 2 | Performance: trackBy, @defer, Bundle-Grösse | ? prüfen |  |
+| 2 | Performance: trackBy, @defer, Bundle-Grösse | ? prüfen | ✓ |
 | 2 | Angular-Tests | ? prüfen |  |
 
 ## Angular Signals + NgRx (9)
@@ -579,9 +579,9 @@ Sources: Elasticsearch / OpenSearch docs · Introduction to Information Retrieva
 | 1 | Inverted Index | — kein Projekt | ✓ |
 | 1 | Vektorsuche und Embeddings | — kein Projekt | ✓ |
 | 1 | Suchindex synchron halten | — kein Projekt | ✓ |
-| 2 | Analyzer, Tokenizer, Stemming | — kein Projekt |  |
-| 2 | Relevanz: TF-IDF und BM25 | — kein Projekt |  |
-| 2 | Elasticsearch: Shards, Replicas, Cluster | — kein Projekt |  |
+| 2 | Analyzer, Tokenizer, Stemming | — kein Projekt | ✓ |
+| 2 | Relevanz: TF-IDF und BM25 | — kein Projekt | ✓ |
+| 2 | Elasticsearch: Shards, Replicas, Cluster | — kein Projekt | ✓ |
 
 ## Camunda / CIB Seven (BPMN) (2)
 Sources: Camunda 7 and 8 docs · BPMN 2.0 spec
@@ -737,5 +737,5 @@ Sources: Java API for XML Processing (JAXP) docs · OWASP XXE prevention cheat s
 
 | P | Topic | Project | Written |
 |---|---|---|---|
-| 2 | DOM vs SAX vs StAX | Projekt |  |
-| 2 | XPath, XSLT und XML-Sicherheit (XXE) | Projekt |  |
+| 2 | DOM vs SAX vs StAX | Projekt | ✓ |
+| 2 | XPath, XSLT und XML-Sicherheit (XXE) | Projekt | ✓ |
