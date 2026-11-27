@@ -1,0 +1,264 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Scheduler und Executors</title>
+<style>
+  body { font: 17px/1.55 -apple-system, system-ui, sans-serif; max-width: 760px; margin: 0 auto; padding: 16px; color: #1d1d1f; }
+  h1 { font-size: 28px; margin: 8px 0 4px; }
+  h2 { font-size: 21px; margin: 32px 0 8px; padding-top: 12px; border-top: 2px solid #e5e5ea; }
+  .kern { background: #eef6ff; border-left: 4px solid #0a66c2; padding: 10px 14px; border-radius: 6px; }
+  .senior { background: #f0faf0; border-left: 4px solid #2e7d32; padding: 10px 14px; border-radius: 6px; }
+  .trap { background: #fff4f2; border-left: 4px solid #c62828; padding: 10px 14px; border-radius: 6px; }
+  code { background: #f2f2f7; padding: 1px 5px; border-radius: 4px; font-size: 15px; }
+  pre { background: #1e1e1e; color: #e6e6e6; padding: 12px; border-radius: 8px; overflow-x: auto; font-size: 13.5px; line-height: 1.45; }
+  svg { width: 100%; height: auto; display: block; margin: 10px 0; }
+  ol li, ul li { margin: 4px 0; }
+  details { border: 1px solid #e5e5ea; border-radius: 8px; padding: 8px 12px; margin: 6px 0; }
+  summary { font-weight: 600; cursor: pointer; }
+  details p { margin: 6px 0 2px; }
+  .small { color: #6e6e73; font-size: 14px; }
+  h3 { font-size: 17px; margin: 20px 0 6px; }
+  .geruest { border: 2px solid #1d1d1f; border-radius: 6px; padding: 10px 14px; margin: 14px 0; font-size: 15px; line-height: 1.4; }
+  .geruest h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; margin: 0 0 8px; padding: 0; border: 0; }
+  .geruest dl { display: grid; grid-template-columns: 6.6em 1fr; gap: 6px 10px; margin: 0; }
+  .geruest dt { font-weight: 700; font-size: 12px; text-transform: uppercase; letter-spacing: .05em; padding-top: 1px; }
+  .geruest dd { margin: 0; }
+  .muster { border: 1px solid #e5e5ea; border-left: 4px solid #1d1d1f; border-radius: 6px; padding: 10px 14px; margin: 14px 0; }
+  .muster h3 { margin: 0 0 6px; font-size: 13px; text-transform: uppercase; letter-spacing: .06em; }
+  .muster .mq { margin: 0 0 6px; }
+</style>
+</head>
+<body>
+<h1>Scheduler und Executors</h1>
+<!-- sources: Airflow · Tier 2 · Quellen: Apache Airflow Docs 3.4.0 (stable) – Scheduler (High Availability, Fine-tuning), Executor (Overview, Built-in Executors, Using Multiple Executors, Executor Interface), Architecture Overview, Configuration Reference; apache-airflow-providers-celery (CeleryExecutor), apache-airflow-providers-cncf-kubernetes (KubernetesExecutor) -->
+<div class="kern">
+<b>Kern:</b> Der <b>Scheduler</b> erstellt DAG Runs, wählt bereite Tasks und gibt sie dem <b>Executor</b>. Der Executor läuft im Scheduler-Prozess und startet die Tasks lokal oder auf <b>Workern</b>. Wichtig sind die Grenzen für <b>Parallelität</b>, <b>Pools</b> und die Wahl zwischen <b>Celery</b> und <b>Kubernetes</b>.
+</div>
+<div class="muster"><h3>Antwort-Muster</h3><p class="mq"><b>Frage:</b> Wie plant der Airflow-Scheduler Tasks, und was macht ein Executor?</p><ol>
+  <li>Mechanismus: Der Scheduler erstellt DAG Runs, prüft sie auf bereite Tasks und gibt diese dem Executor. Der Executor startet sie auf Workern.</li>
+  <li>Zahl: Standard sind 32 Task Instances im ganzen System, 16 pro DAG und 128 Slots im Default-Pool. Ein Loop erstellt höchstens 10 DAG Runs.</li>
+  <li>Trade-off: Celery hat laufende Worker und tiefe Latenz, braucht aber Broker und Result Backend. KubernetesExecutor startet pro Task einen Pod und braucht keinen Broker.</li>
+  <li>Produktion: Ich betreibe mehrere Scheduler mit Row-Level Locking auf PostgreSQL oder MySQL. Ich beobachte Queue-Zeit und DB-Last, denn die DB ist der Engpass.</li>
+</ol></div>
+<h2>1. Eine Task Instance in 8 Schritten</h2>
+<svg viewBox="0 0 520 448" font-family="-apple-system, system-ui, sans-serif" font-size="13">
+  <defs><marker id="mschedulerexecutorsa" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="10" y="10" width="235" height="80" rx="10" fill="#eee" stroke="#777"/>
+  <text x="127.5" y="34" text-anchor="middle" font-weight="700" font-size="15">1. DAGs lesen</text>
+  <text x="127.5" y="54" text-anchor="middle" font-size="13">Parse-Ergebnisse sammeln</text>
+  <rect x="295" y="10" width="235" height="80" rx="10" fill="#dbe9fb" stroke="#0a66c2"/>
+  <text x="412.5" y="34" text-anchor="middle" font-weight="700" font-size="15">2. DAG Run erstellen</text>
+  <text x="412.5" y="54" text-anchor="middle" font-size="13">wenn ein Zeitplan fällig ist</text>
+  <rect x="295" y="126" width="235" height="80" rx="10" fill="#dbe9fb" stroke="#0a66c2"/>
+  <text x="412.5" y="150" text-anchor="middle" font-weight="700" font-size="15">3. Runs prüfen</text>
+  <text x="412.5" y="170" text-anchor="middle" font-size="13">bereite Tasks suchen</text>
+  <rect x="10" y="126" width="235" height="80" rx="10" fill="#e8f5e9" stroke="#2e7d32"/>
+  <text x="127.5" y="150" text-anchor="middle" font-weight="700" font-size="15">4. Tasks wählen</text>
+  <text x="127.5" y="170" text-anchor="middle" font-size="13">Pools und Limits prüfen</text>
+  <rect x="10" y="242" width="235" height="80" rx="10" fill="#e8f5e9" stroke="#2e7d32"/>
+  <text x="127.5" y="266" text-anchor="middle" font-weight="700" font-size="15">5. Executor</text>
+  <text x="127.5" y="286" text-anchor="middle" font-size="13">Task in die Queue stellen</text>
+  <rect x="295" y="242" width="235" height="80" rx="10" fill="#fff4f2" stroke="#c62828"/>
+  <text x="412.5" y="266" text-anchor="middle" font-weight="700" font-size="15">6. Worker</text>
+  <text x="412.5" y="286" text-anchor="middle" font-size="13">startet den Task-Prozess</text>
+  <rect x="295" y="358" width="235" height="80" rx="10" fill="#fff4f2" stroke="#c62828"/>
+  <text x="412.5" y="382" text-anchor="middle" font-weight="700" font-size="15">7. Heartbeat</text>
+  <text x="412.5" y="402" text-anchor="middle" font-size="13">Task meldet, dass er lebt</text>
+  <rect x="10" y="358" width="235" height="80" rx="10" fill="#eee" stroke="#777"/>
+  <text x="127.5" y="382" text-anchor="middle" font-weight="700" font-size="15">8. Ergebnis</text>
+  <text x="127.5" y="402" text-anchor="middle" font-size="13">Status, dann nächste Tasks</text>
+  <line x1="245" y1="50.0" x2="293" y2="50.0" stroke="#555" stroke-width="2" marker-end="url(#mschedulerexecutorsa)"/>
+  <line x1="412.5" y1="90" x2="412.5" y2="124" stroke="#555" stroke-width="2" marker-end="url(#mschedulerexecutorsa)"/>
+  <line x1="295" y1="166.0" x2="247" y2="166.0" stroke="#555" stroke-width="2" marker-end="url(#mschedulerexecutorsa)"/>
+  <line x1="127.5" y1="206" x2="127.5" y2="240" stroke="#555" stroke-width="2" marker-end="url(#mschedulerexecutorsa)"/>
+  <line x1="245" y1="282.0" x2="293" y2="282.0" stroke="#555" stroke-width="2" marker-end="url(#mschedulerexecutorsa)"/>
+  <line x1="412.5" y1="322" x2="412.5" y2="356" stroke="#555" stroke-width="2" marker-end="url(#mschedulerexecutorsa)"/>
+  <line x1="295" y1="398.0" x2="247" y2="398.0" stroke="#555" stroke-width="2" marker-end="url(#mschedulerexecutorsa)"/>
+</svg>
+<ol>
+  <li><b>DAGs lesen:</b> Der Scheduler sammelt standardmässig einmal pro Minute die Parse-Ergebnisse des DAG-Processors.</li>
+  <li><b>DAG Run erstellen:</b> Er prüft, welche DAGs einen neuen Run brauchen. Pro Loop sperrt er höchstens <code>max_dagruns_to_create_per_loop</code> DAGs (Standard 10).</li>
+  <li><b>Runs prüfen:</b> Er nimmt einen Stapel DAG Runs (Standard 20 pro Loop) und sucht Task Instances, die laufen dürfen.</li>
+  <li><b>Tasks wählen:</b> Er beachtet Pools und Limits. Ein Pool begrenzt die Slots. <code>parallelism</code> begrenzt alle Tasks im System.</li>
+  <li><b>Executor:</b> Der Scheduler stellt den Task über den Executor in die Queue. Der Executor läuft im Scheduler-Prozess.</li>
+  <li><b>Worker:</b> Ein Worker startet den Task in einem Subprozess. Bei Celery holt er ihn vom Broker, bei Kubernetes startet ein neuer Pod.</li>
+  <li><b>Heartbeat:</b> Der laufende Task meldet regelmässig, dass er lebt. Fehlt das Signal zu lange, gilt er als Zombie.</li>
+  <li><b>Ergebnis:</b> Der Status landet in der DB. Der Scheduler sieht ihn im nächsten Loop und plant die Nachfolger.</li>
+</ol>
+<p>Mit mehreren Schedulern darf nur einer zugleich in den kritischen Abschnitt. Airflow erzwingt das mit Row-Level Locks (<code>SELECT ... FOR UPDATE</code>) auf den Zeilen der Pool-Tabelle.</p>
+<h2>2. Aufbau</h2>
+<svg viewBox="0 0 520 298" font-family="-apple-system, system-ui, sans-serif" font-size="13">
+  <defs><marker id="mschedulerexecutorsb" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="10" y="10" width="500" height="70" rx="10" fill="#e8f5e9" stroke="#2e7d32"/>
+  <text x="260.0" y="34" text-anchor="middle" font-weight="700" font-size="15">Scheduler</text>
+  <text x="260.0" y="54" text-anchor="middle" font-size="13">erstellt Runs, wählt Tasks · Executor läuft darin</text>
+  <line x1="260" y1="80" x2="260" y2="112" stroke="#555" stroke-width="2" marker-end="url(#mschedulerexecutorsb)"/>
+  <rect x="10" y="114" width="243" height="70" rx="10" fill="#fff" stroke="#555"/>
+  <text x="131.5" y="138" text-anchor="middle" font-weight="700" font-size="15">Metadaten-DB</text>
+  <text x="131.5" y="158" text-anchor="middle" font-size="13">Zustand · Row-Level Locks</text>
+  <rect x="267" y="114" width="243" height="70" rx="10" fill="#dbe9fb" stroke="#0a66c2"/>
+  <text x="388.5" y="138" text-anchor="middle" font-weight="700" font-size="15">Queue</text>
+  <text x="388.5" y="158" text-anchor="middle" font-size="13">Broker bei Celery,</text>
+  <text x="388.5" y="175" text-anchor="middle" font-size="13">API bei Kubernetes</text>
+  <line x1="260" y1="184" x2="260" y2="216" stroke="#555" stroke-width="2" marker-end="url(#mschedulerexecutorsb)"/>
+  <rect x="10" y="218" width="157" height="70" rx="10" fill="#eee" stroke="#777"/>
+  <text x="88.5" y="242" text-anchor="middle" font-weight="700" font-size="15">LocalExecutor</text>
+  <text x="88.5" y="262" text-anchor="middle" font-size="13">Subprozess</text>
+  <text x="88.5" y="279" text-anchor="middle" font-size="13">im Scheduler</text>
+  <rect x="181" y="218" width="157" height="70" rx="10" fill="#fff4f2" stroke="#c62828"/>
+  <text x="259.5" y="242" text-anchor="middle" font-weight="700" font-size="15">Celery-Worker</text>
+  <text x="259.5" y="262" text-anchor="middle" font-size="13">läuft dauernd</text>
+  <text x="259.5" y="279" text-anchor="middle" font-size="13">viele Tasks</text>
+  <rect x="352" y="218" width="157" height="70" rx="10" fill="#fff4f2" stroke="#c62828"/>
+  <text x="430.5" y="242" text-anchor="middle" font-weight="700" font-size="15">K8s-Pod</text>
+  <text x="430.5" y="262" text-anchor="middle" font-size="13">ein Pod</text>
+  <text x="430.5" y="279" text-anchor="middle" font-size="13">pro Task</text>
+</svg>
+<ol>
+  <li>Der <b>Scheduler</b> plant und löst Abhängigkeiten auf. Er führt keinen Task-Code aus.</li>
+  <li>Der <b>Executor</b> ist eine Einstellung des Schedulers, keine eigene Komponente. Er läuft im Scheduler-Prozess.</li>
+  <li>Die <b>Metadaten-DB</b> ist der gemeinsame Zustand. Mehrere Scheduler reden nur über sie.</li>
+  <li>Der <b>LocalExecutor</b> führt Tasks auf derselben Maschine aus. Er ist der Standard.</li>
+  <li>Der <b>CeleryExecutor</b> nutzt einen Broker (RabbitMQ oder Redis) und dauerhaft laufende Worker.</li>
+  <li>Der <b>KubernetesExecutor</b> startet pro Task Instance einen eigenen Pod über die Kubernetes-API.</li>
+</ol>
+<h2>3. Details</h2>
+<ol>
+  <li><b>Scheduler-Loop:</b> Er erstellt DAG Runs, prüft einen Stapel Runs auf bereite Task Instances und stellt sie in die Queue. Dabei beachtet er Pool- und Concurrency-Limits.</li>
+  <li><b>Mehrere Scheduler:</b> Airflow unterstützt mehr als einen Scheduler für Leistung und Ausfallsicherheit. Es gibt keine direkte Abstimmung. Die Datenbank koordiniert alles.</li>
+  <li><b>Row-Level Locking:</b> Nur ein Scheduler darf in den kritischen Abschnitt. Airflow nutzt <code>SELECT ... FOR UPDATE</code> auf der Pool-Tabelle. <code>use_row_level_locking</code> ist standardmässig <code>True</code>.</li>
+  <li><b>Datenbank für HA:</b> PostgreSQL 12+ und MySQL 8.0+ sind voll unterstützt. MariaDB braucht 10.6.0 oder neuer für <code>SKIP LOCKED</code>. Microsoft SQL Server wurde nicht für HA getestet.</li>
+  <li><b>Grenzen:</b> <code>parallelism</code> ist 32. <code>max_active_tasks_per_dag</code> ist 16. <code>max_active_runs_per_dag</code> ist 16. Der Default-Pool hat 128 Slots (<code>default_pool_task_slot_count</code>).</li>
+  <li><b>Loop-Werte:</b> <code>max_dagruns_to_create_per_loop</code> ist 10, <code>max_dagruns_per_loop_to_schedule</code> ist 20 und <code>max_tis_per_query</code> ist 16. Bei 0 nimmt <code>max_tis_per_query</code> den Wert von <code>parallelism</code>.</li>
+  <li><b>Heartbeats und Timeouts:</b> <code>scheduler_heartbeat_sec</code> ist 5. <code>scheduler_health_check_threshold</code> ist 30. <code>task_instance_heartbeat_timeout</code> ist 300. <code>orphaned_tasks_check_interval</code> ist 300. <code>task_queued_timeout</code> ist 600.</li>
+  <li><b>Priorität:</b> Der Scheduler favorisiert Durchsatz. Task-Priorität zählt nur, wenn mehr Tasks warten als Slots frei sind. Darum kann ein Task mit tiefer Priorität früher laufen.</li>
+  <li><b>Executor-Auswahl:</b> Bundled sind Local, Celery, Batch, Edge, Kubernetes und ECS. Die Hybrid-Executors <code>LocalKubernetesExecutor</code> und <code>CeleryKubernetesExecutor</code> gibt es seit 3.0.0 nicht mehr.</li>
+  <li><b>Mehrere Executors:</b> Man schreibt eine Liste, zum Beispiel <code>executor = LocalExecutor,CeleryExecutor</code>. Der erste ist der Standard. Ein Task wählt mit dem Parameter <code>executor</code> einen anderen.</li>
+  <li><b>CeleryExecutor:</b> Er braucht einen Broker wie RabbitMQ oder Redis und ein Result Backend. Der Scheduler schickt Tasks an den Broker, ein Worker führt sie aus, und der Scheduler fragt das Result Backend nach dem Status. Worker brauchen Airflow, die Operator-Abhängigkeiten und Zugriff auf den DAGS_FOLDER.</li>
+  <li><b>Celery-Details:</b> Das Result Backend soll datenbankbasiert sein. Die Visibility Timeout im Broker soll länger sein als der längste Task. Man startet Worker mit <code>airflow celery worker</code> und kann Queues mit <code>-q</code> wählen.</li>
+  <li><b>KubernetesExecutor:</b> Jede Task Instance läuft in einem eigenen Pod. Der Pod entsteht bei der Queue und endet nach dem Task. Man braucht keine Broker-Komponente, aber eine Nicht-SQLite-Datenbank. Pod-Template und <code>pod_override</code> pro Task steuern den Pod.</li>
+  <li><b>Celery vs Kubernetes:</b> Celery hat meist tiefere Latenz, weil die Worker schon laufen. Beim KubernetesExecutor stoppt ein Deploy laufende Tasks nicht. Logs gehen verloren, wenn der Pod endet, ausser man nutzt Remote Logging.</li>
+</ol>
+<h2>4. Fallen</h2>
+<div class="trap">
+<ul>
+  <li>„Der Executor ist ein eigener Dienst.“ → <b>Falsch.</b> Er ist eine Einstellung des Schedulers und läuft in dessen Prozess.</li>
+  <li>„<code>parallelism=32</code> heisst 32 Tasks pro DAG.“ → <b>Falsch.</b> Es sind 32 Task Instances im ganzen System. Pro DAG gilt <code>max_active_tasks_per_dag</code> (16).</li>
+  <li>„Mehr Scheduler brauchen eine eigene Abstimmung.“ → <b>Falsch.</b> Sie nutzen nur die Datenbank und Row-Level Locks.</li>
+  <li>„Mit Priorität läuft ein wichtiger Task immer zuerst.“ → <b>Falsch.</b> Priorität zählt nur, wenn mehr Tasks warten als Slots frei sind.</li>
+  <li>„KubernetesExecutor ist immer besser als Celery.“ → <b>Falsch.</b> Celery hat meist tiefere Latenz, weil Worker schon laufen.</li>
+  <li>„SQLite reicht für Produktion.“ → <b>Falsch.</b> Für mehrere Scheduler und den KubernetesExecutor braucht es eine echte Datenbank.</li>
+</ul>
+</div>
+<h2>5. Selbsttest</h2>
+<h3>Warum?</h3>
+<details><summary>Warum braucht Airflow Row-Level Locking?</summary><p>Mehrere Scheduler dürfen nicht dieselbe Task Instance planen. Die Sperre auf der Pool-Tabelle erlaubt nur einem zugleich den kritischen Abschnitt.</p></details>
+<details><summary>Warum hat der Default-Pool 128 Slots und <code>parallelism</code> nur 32?</summary><p>Beide Grenzen gelten. Die kleinere greift zuerst. Man passt beide an die Kapazität an.</p></details>
+<details><summary>Warum gibt es mehrere Executors?</summary><p>Verschiedene Tasks haben verschiedene Anforderungen. Leichte laufen lokal, schwere auf Celery oder in einem Pod.</p></details>
+<h3>Wie innen?</h3>
+<details><summary>Was passiert im Scheduler-Loop?</summary><p>DAG Runs erstellen, einen Stapel Runs prüfen, bereite Task Instances wählen und in die Queue stellen.</p></details>
+<details><summary>Wie koordinieren sich mehrere Scheduler?</summary><p>Über die Datenbank. Nur einer zugleich darf in den kritischen Abschnitt, durch Row-Level Locks auf der Pool-Tabelle.</p></details>
+<details><summary>Wie läuft ein Task bei Celery?</summary><p>Scheduler an Broker, Broker an Worker, Worker startet Kindprozess, Status in das Result Backend, Scheduler fragt den Status ab.</p></details>
+<details><summary>Wie läuft ein Task beim KubernetesExecutor?</summary><p>Der Executor fragt die Kubernetes-API nach einem Worker-Pod. Der Pod läuft den Task, meldet das Ergebnis und endet.</p></details>
+<details><summary>Was ist ein Zombie-Task?</summary><p>Ein Task, der <code>running</code> bleibt, obwohl sein Prozess weg ist. Airflow findet ihn und markiert ihn als failed oder wiederholt ihn.</p></details>
+<details><summary>Wie erkennt der Executor, dass ein Pod abstürzt?</summary><p>Ein Kubernetes-Watcher bekommt Meldungen bei Start, Lauf, Ende und Fehler. So kann er den Task als failed markieren.</p></details>
+<h3>Zahlen</h3>
+<details><summary>Welche Standardgrenzen gelten für Concurrency?</summary><p><code>parallelism</code> 32, <code>max_active_tasks_per_dag</code> 16, <code>max_active_runs_per_dag</code> 16, Default-Pool 128 Slots.</p></details>
+<details><summary>Wie viele DAG Runs erstellt ein Loop höchstens?</summary><p>10 (<code>max_dagruns_to_create_per_loop</code>). Zum Prüfen nimmt er bis 20 (<code>max_dagruns_per_loop_to_schedule</code>).</p></details>
+<details><summary>Welche Datenbanken sind für mehrere Scheduler getestet?</summary><p>PostgreSQL 12+ und MySQL 8.0+. MariaDB 10.6.0+ ist möglich, aber nicht voll getestet.</p></details>
+<h3>Vergleich</h3>
+<details><summary>LocalExecutor vs CeleryExecutor?</summary><p>Local läuft im Scheduler-Prozess auf einer Maschine. Celery verteilt auf Worker über einen Broker und skaliert aus.</p></details>
+<details><summary>CeleryExecutor vs KubernetesExecutor?</summary><p>Celery hat laufende Worker und tiefere Latenz, braucht Broker und Backend. Kubernetes startet pro Task einen Pod mit Isolation und ohne Broker.</p></details>
+<details><summary>Ein Executor vs mehrere Executors?</summary><p>Mit mehreren wählt jeder Task seinen Executor. Der erste in der Liste ist der Standard. Das ersetzt die alten Hybrid-Executors.</p></details>
+<h3>Produktion</h3>
+<details><summary>Tasks bleiben lange <code>queued</code>. Was prüfen Sie?</summary><p>Slots in Pool, <code>parallelism</code>, Worker-Kapazität und <code>task_queued_timeout</code>. Die Queue-Zeit zeigt, wo der Engpass ist.</p></details>
+<details><summary>Die Datenbank ist überlastet. Was tun?</summary><p>Einen Connection-Pooler wie PgBouncer einsetzen. Airflow braucht viele Verbindungen.</p></details>
+<details><summary>Logs sind weg, nachdem ein Pod endet. Was tun?</summary><p>Remote Logging oder persistente Logs einrichten. Beim KubernetesExecutor liegen Logs sonst im Pod.</p></details>
+<details><summary>Szenario: Eine Release-Pipeline startet Celery-Worker neu und Tasks brechen ab. Was ändern Sie?</summary><p>Ich nutze eine Grace Period für den Worker-Stopp oder lasse lange Tasks beim KubernetesExecutor laufen. Dort stoppt ein Deploy laufende Tasks nicht.</p></details>
+<details><summary>Szenario: 200 kleine Tasks pro Minute, jeder braucht 2 Sekunden. Welcher Executor?</summary><p>Celery oder Local, weil der Pod-Start pro Task zu viel Overhead wäre. Ein Pod pro Task lohnt für schwere, isolierte Tasks.</p></details>
+<h3>Design</h3>
+<details><summary>Wie skaliert man den Scheduler?</summary><p>Mit mehr Scheduler-Instanzen, wenn CPU der Engpass ist. Die Doku sagt, die Kapazität wächst fast linear.</p></details>
+<details><summary>Wie begrenzt man einen teuren Task, der die Datenbank belastet?</summary><p>Mit einem Pool mit wenigen Slots. Alle Tasks mit dieser Ressource nutzen denselben Pool.</p></details>
+<details><summary>Wann nutzt man <code>pod_override</code>?</summary><p>Wenn ein einzelner Task andere Ressourcen oder Volumes braucht als die Standard-Vorlage.</p></details>
+<details><summary>Szenario: Ein Team nutzt Celery, ein anderes will isolierte Pods. Wie lösen Sie das?</summary><p>Mit mehreren Executors in einer Umgebung. Der Standard bleibt Celery, die Tasks des zweiten Teams setzen <code>executor="KubernetesExecutor"</code>.</p></details>
+
+<details class="mehr"><summary>Mehr</summary>
+<h3>Gerüst</h3>
+<ul>
+  <li><b>Warum?</b> Tasks zur richtigen Zeit und mit richtigen Grenzen auf passende Ressourcen verteilen.</li>
+  <li><b>Wie innen?</b> Scheduler-Loop, Executor im Scheduler, Worker oder Pod, Status in die DB.</li>
+  <li><b>Zahlen</b> 32, 16, 16, 128 Slots, 10 und 20 DAG Runs, 5 s Heartbeat, 300 s Task-Timeout.</li>
+  <li><b>Vergleich</b> Local vs Celery vs Kubernetes, ein vs mehrere Executors.</li>
+  <li><b>Produktion</b> Tasks bleiben <code>queued</code>, DB überlastet, Logs weg nach Pod-Ende.</li>
+  <li><b>Design</b> Mehr Scheduler bei CPU-Engpass, Pools für teure Ressourcen, <code>pod_override</code> pro Task.</li>
+</ul>
+
+<h3>Beispiel: Mehrere Executors konfigurieren</h3>
+<pre># airflow.cfg: zwei Executors, der erste ist der Standard
+[core]
+executor = LocalExecutor,CeleryExecutor
+parallelism = 32            # alle Task Instances im ganzen System
+max_active_tasks_per_dag = 16
+max_active_runs_per_dag = 16
+
+# im DAG-File: ein Task wählt seinen Executor selbst
+BashOperator(task_id="heavy", bash_command="...", executor="CeleryExecutor")</pre>
+<p class="small">Nicht ausgeführt.</p>
+<ol>
+  <li><code>executor = LocalExecutor,CeleryExecutor</code> nennt zwei Executors. Der erste ist der Standard.</li>
+  <li><code>parallelism</code> begrenzt alle Task Instances im ganzen System. Der Standard ist 32.</li>
+  <li><code>max_active_tasks_per_dag</code> begrenzt die parallelen Tasks eines DAGs. Der Standard ist 16.</li>
+  <li><code>max_active_runs_per_dag</code> begrenzt die parallelen DAG Runs eines DAGs. Der Standard ist 16.</li>
+  <li>Im Task wählt <code>executor="CeleryExecutor"</code> einen anderen als den Standard.</li>
+  <li>Ist ein Executor nicht konfiguriert, kann der DAG nicht geparst werden. Die UI zeigt eine Warnung.</li>
+</ol>
+
+<h3>Vergleich</h3>
+<ul>
+  <li><b>LocalExecutor:</b> im Scheduler, einfach, keine Skalierung über eine Maschine.</li>
+  <li><b>CeleryExecutor:</b> Broker, laufende Worker, tiefe Latenz, mehr Komponenten.</li>
+  <li><b>KubernetesExecutor:</b> ein Pod pro Task, Isolation, kein Broker, höhere Startzeit.</li>
+  <li><b>EdgeExecutor, BatchExecutor, EcsExecutor:</b> weitere gebündelte Executors für Batch, Edge und ECS.</li>
+  <li><b>Ein Scheduler:</b> einfach. <b>Mehrere Scheduler:</b> Ausfallsicherheit und Leistung, DB mit Row-Level Locks nötig.</li>
+  <li><b>Pool:</b> begrenzt Slots für eine Ressource. <b>Parallelism:</b> begrenzt das ganze System.</li>
+</ul>
+
+<h3>Produktion</h3>
+<ol>
+  <li><b>Tasks bleiben queued:</b> Slots voll oder Worker fehlen. Lösung: Pools und <code>parallelism</code> prüfen, Worker skalieren.</li>
+  <li><b>DB überlastet:</b> Airflow ist verbindungshungrig. Lösung: PgBouncer, DB vergrössern.</li>
+  <li><b>Scheduler hängt still:</b> Er sendet keinen Heartbeat. Lösung: Health Check auf den Heartbeat einrichten.</li>
+  <li><b>Zombie-Tasks:</b> OOM, Probe-Fehler, Pod-Wechsel. Lösung: Ressourcen und Probes prüfen.</li>
+  <li><b>Pods starten langsam:</b> Image-Pull und Scheduling. Lösung: kleine Images, Celery für kurze Tasks.</li>
+  <li><b>Logs weg:</b> Pod ist beendet. Lösung: Remote Logging.</li>
+</ol>
+
+<h3>Diagnose: Werkzeuge und Befehle</h3>
+<ul>
+  <li>Airflow UI, Browse und Pools: belegte und freie Slots.</li>
+  <li>Task-Logs und Task-Details: Zeiten für queued und running.</li>
+  <li>Scheduler-Logs und Metriken: Heartbeat, Loop-Dauer, Queue-Länge.</li>
+  <li><code>airflow celery worker</code> Logs und Flower (<code>airflow celery flower</code>): Celery-Zustand.</li>
+  <li><code>kubectl get pods</code> und <code>kubectl describe pod</code>: Pods des KubernetesExecutors.</li>
+  <li><code>airflow kubernetes generate-dag-yaml</code>: zeigt die Pod-Spezifikationen.</li>
+</ul>
+
+<h3>Senior-Punkte</h3>
+<div class="senior">
+<ol>
+  <li><b>Die Datenbank ist der Engpass.</b> Ich schütze sie mit Pooler und sinnvollen Limits.</li>
+  <li><b>Der Executor ist eine Architektur-Entscheidung:</b> Latenz gegen Isolation.</li>
+  <li><b>Grenzen sind Zahlen für den Betrieb:</b> Ich setze Pools für jede knappe Ressource.</li>
+  <li><b>Mehrere Executors lösen Mischlast.</b> Leichte und schwere Tasks brauchen verschiedene Wege.</li>
+  <li><b>Monitoring der Queue-Zeit</b> zeigt früher als Fehler, dass die Kapazität fehlt.</li>
+  <li><b>Der Scheduler ist kein Ort für Arbeit.</b> Keine schweren Berechnungen im DAG-File.</li>
+</ol>
+</div>
+
+<h3>Dein Beispiel</h3>
+</details>
+
+</body>
+</html>

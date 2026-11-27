@@ -1,0 +1,273 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Delta Lake</title>
+<style>
+  body { font: 17px/1.55 -apple-system, system-ui, sans-serif; max-width: 760px; margin: 0 auto; padding: 16px; color: #1d1d1f; }
+  h1 { font-size: 28px; margin: 8px 0 4px; }
+  h2 { font-size: 21px; margin: 32px 0 8px; padding-top: 12px; border-top: 2px solid #e5e5ea; }
+  .kern { background: #eef6ff; border-left: 4px solid #0a66c2; padding: 10px 14px; border-radius: 6px; }
+  .senior { background: #f0faf0; border-left: 4px solid #2e7d32; padding: 10px 14px; border-radius: 6px; }
+  .trap { background: #fff4f2; border-left: 4px solid #c62828; padding: 10px 14px; border-radius: 6px; }
+  code { background: #f2f2f7; padding: 1px 5px; border-radius: 4px; font-size: 15px; }
+  pre { background: #1e1e1e; color: #e6e6e6; padding: 12px; border-radius: 8px; overflow-x: auto; font-size: 13.5px; line-height: 1.45; }
+  svg { width: 100%; height: auto; display: block; margin: 10px 0; }
+  ol li, ul li { margin: 4px 0; }
+  details { border: 1px solid #e5e5ea; border-radius: 8px; padding: 8px 12px; margin: 6px 0; }
+  summary { font-weight: 600; cursor: pointer; }
+  details p { margin: 6px 0 2px; }
+  .small { color: #6e6e73; font-size: 14px; }
+  h3 { font-size: 17px; margin: 20px 0 6px; }
+  .geruest { border: 2px solid #1d1d1f; border-radius: 6px; padding: 10px 14px; margin: 14px 0; font-size: 15px; line-height: 1.4; }
+  .geruest h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; margin: 0 0 8px; padding: 0; border: 0; }
+  .geruest dl { display: grid; grid-template-columns: 6.6em 1fr; gap: 6px 10px; margin: 0; }
+  .geruest dt { font-weight: 700; font-size: 12px; text-transform: uppercase; letter-spacing: .05em; padding-top: 1px; }
+  .geruest dd { margin: 0; }
+  .muster { border: 1px solid #e5e5ea; border-left: 4px solid #1d1d1f; border-radius: 6px; padding: 10px 14px; margin: 14px 0; }
+  .muster h3 { margin: 0 0 6px; font-size: 13px; text-transform: uppercase; letter-spacing: .06em; }
+  .muster .mq { margin: 0 0 6px; }
+</style>
+</head>
+<body>
+<h1>Delta Lake</h1>
+<!-- sources: Databricks · Tier 2 · Quellen: Delta Lake Protocol (github.com/delta-io/delta, PROTOCOL.md), docs.delta.io (Concurrency Control, Table batch reads and writes, Utility commands, Optimizations, Deletion Vectors, Change Data Feed, Table deletes updates and merges, Table properties), Delta Lake Quellcode DeltaConfig.scala, docs.databricks.com (Delta Lake, VACUUM, Isolation levels) -->
+<div class="kern">
+<b>Kern:</b> <b>Delta Lake</b> ist ein Table Format auf Parquet-Dateien mit einem <b>Transaktionslog</b> im Ordner <code>_delta_log</code>. Jeder Commit ist eine JSON-Datei mit <b>Actions</b> wie <code>add</code> und <code>remove</code>. So gibt es <b>ACID</b>, <b>Time Travel</b> und <b>Schema-Prüfung</b> auf Object Storage.
+</div>
+<div class="muster"><h3>Antwort-Muster</h3><p class="mq"><b>Frage:</b> Wie funktioniert Delta Lake, und wie bekommt man ACID auf Object Storage?</p><ol>
+  <li>Mechanismus: Daten liegen als Parquet-Dateien. Der Zustand der Tabelle ist die Summe der Actions im <code>_delta_log</code>, und ein Commit ist eine neue JSON-Datei.</li>
+  <li>Zahl: Dateinamen sind 20-stellig, zum Beispiel <code>00000000000000000004.json</code>. Ein Checkpoint wird standardmässig alle 10 Commits geschrieben. VACUUM löscht nach 7 Tagen.</li>
+  <li>Trade-off: Optimistische Nebenläufigkeit braucht keine Sperren, aber bei Konflikten scheitert ein Writer. Ich begrenze Konflikte mit Partitionen in der Bedingung.</li>
+  <li>Produktion: Ich plane OPTIMIZE und VACUUM ein und stelle die Retention so ein, dass Time Travel und lange Jobs funktionieren.</li>
+</ol></div>
+<h2>1. Ein Commit in 8 Schritten</h2>
+<svg viewBox="0 0 520 448" font-family="-apple-system, system-ui, sans-serif" font-size="13">
+  <defs><marker id="mdeltalakea" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="10" y="10" width="235" height="80" rx="10" fill="#eee" stroke="#777"/>
+  <text x="127.5" y="34" text-anchor="middle" font-weight="700" font-size="15">1. Version lesen</text>
+  <text x="127.5" y="54" text-anchor="middle" font-size="13">Checkpoint plus neue JSONs</text>
+  <rect x="295" y="10" width="235" height="80" rx="10" fill="#dbe9fb" stroke="#0a66c2"/>
+  <text x="412.5" y="34" text-anchor="middle" font-weight="700" font-size="15">2. Dateien wählen</text>
+  <text x="412.5" y="54" text-anchor="middle" font-size="13">welche Dateien ändern?</text>
+  <rect x="295" y="126" width="235" height="80" rx="10" fill="#dbe9fb" stroke="#0a66c2"/>
+  <text x="412.5" y="150" text-anchor="middle" font-weight="700" font-size="15">3. Parquet schreiben</text>
+  <text x="412.5" y="170" text-anchor="middle" font-size="13">neue Dateien, noch unsichtbar</text>
+  <rect x="10" y="126" width="235" height="80" rx="10" fill="#e8f5e9" stroke="#2e7d32"/>
+  <text x="127.5" y="150" text-anchor="middle" font-weight="700" font-size="15">4. Actions sammeln</text>
+  <text x="127.5" y="170" text-anchor="middle" font-size="13">add und remove</text>
+  <rect x="10" y="242" width="235" height="80" rx="10" fill="#e8f5e9" stroke="#2e7d32"/>
+  <text x="127.5" y="266" text-anchor="middle" font-weight="700" font-size="15">5. Konflikte prüfen</text>
+  <text x="127.5" y="286" text-anchor="middle" font-size="13">gegen neue Commits</text>
+  <rect x="295" y="242" width="235" height="80" rx="10" fill="#fff4f2" stroke="#c62828"/>
+  <text x="412.5" y="266" text-anchor="middle" font-weight="700" font-size="15">6. Log schreiben</text>
+  <text x="412.5" y="286" text-anchor="middle" font-size="13">JSON Version v+1</text>
+  <rect x="295" y="358" width="235" height="80" rx="10" fill="#fff4f2" stroke="#c62828"/>
+  <text x="412.5" y="382" text-anchor="middle" font-weight="700" font-size="15">7. Checkpoint</text>
+  <text x="412.5" y="402" text-anchor="middle" font-size="13">alle 10 Commits</text>
+  <rect x="10" y="358" width="235" height="80" rx="10" fill="#eee" stroke="#777"/>
+  <text x="127.5" y="382" text-anchor="middle" font-weight="700" font-size="15">8. Leser sehen v+1</text>
+  <text x="127.5" y="402" text-anchor="middle" font-size="13">neuer Snapshot</text>
+  <line x1="245" y1="50.0" x2="293" y2="50.0" stroke="#555" stroke-width="2" marker-end="url(#mdeltalakea)"/>
+  <line x1="412.5" y1="90" x2="412.5" y2="124" stroke="#555" stroke-width="2" marker-end="url(#mdeltalakea)"/>
+  <line x1="295" y1="166.0" x2="247" y2="166.0" stroke="#555" stroke-width="2" marker-end="url(#mdeltalakea)"/>
+  <line x1="127.5" y1="206" x2="127.5" y2="240" stroke="#555" stroke-width="2" marker-end="url(#mdeltalakea)"/>
+  <line x1="245" y1="282.0" x2="293" y2="282.0" stroke="#555" stroke-width="2" marker-end="url(#mdeltalakea)"/>
+  <line x1="412.5" y1="322" x2="412.5" y2="356" stroke="#555" stroke-width="2" marker-end="url(#mdeltalakea)"/>
+  <line x1="295" y1="398.0" x2="247" y2="398.0" stroke="#555" stroke-width="2" marker-end="url(#mdeltalakea)"/>
+</svg>
+<ol>
+  <li><b>Version lesen:</b> Der Writer liest den letzten Checkpoint und die JSON-Dateien danach. Daraus entsteht der aktuelle Zustand.</li>
+  <li><b>Dateien wählen:</b> Er bestimmt, welche Dateien er liest und ändern muss. Bei einem <code>UPDATE</code> sind das die Dateien mit passenden Zeilen.</li>
+  <li><b>Parquet schreiben:</b> Er schreibt neue Datendateien. Noch sieht kein Leser sie, denn sie stehen nicht im Log.</li>
+  <li><b>Actions sammeln:</b> Die Änderung ist eine Liste von Actions. Neue Dateien sind <code>add</code>, ersetzte Dateien sind <code>remove</code>.</li>
+  <li><b>Konflikte prüfen:</b> Der Writer prüft, ob ein anderer Commit seit seinem Start dieselben Dateien berührt hat. Wenn ja, scheitert er.</li>
+  <li><b>Log schreiben:</b> Er schreibt die nächste Version als JSON-Datei. Der Name ist die Versionsnummer, 20-stellig mit Nullen.</li>
+  <li><b>Checkpoint:</b> Alle 10 Commits (Standard) fasst Delta den Zustand in einer Parquet-Datei zusammen. Sie hat einen 20-stelligen Namen.</li>
+  <li><b>Leser sehen v+1:</b> Ein neuer Leser findet die neue Version. Ein laufender Leser behält seinen Snapshot.</li>
+</ol>
+<p>Der Commit gilt erst, wenn die Log-Datei existiert. Daten ohne Log-Eintrag sind für Leser unsichtbar. Darum sind Schreiben und Commit getrennt.</p>
+<h2>2. Aufbau</h2>
+<svg viewBox="0 0 520 298" font-family="-apple-system, system-ui, sans-serif" font-size="13">
+  <defs><marker id="mdeltalakeb" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="10" y="10" width="500" height="70" rx="10" fill="#eee" stroke="#777"/>
+  <text x="260.0" y="34" text-anchor="middle" font-weight="700" font-size="15">Tabelle</text>
+  <text x="260.0" y="54" text-anchor="middle" font-size="13">Ordner mit Daten und _delta_log</text>
+  <line x1="260" y1="80" x2="260" y2="112" stroke="#555" stroke-width="2" marker-end="url(#mdeltalakeb)"/>
+  <rect x="10" y="114" width="243" height="70" rx="10" fill="#dbe9fb" stroke="#0a66c2"/>
+  <text x="131.5" y="138" text-anchor="middle" font-weight="700" font-size="15">Parquet-Dateien</text>
+  <text x="131.5" y="158" text-anchor="middle" font-size="13">Daten, nie geändert,</text>
+  <text x="131.5" y="175" text-anchor="middle" font-size="13">nur ersetzt</text>
+  <rect x="267" y="114" width="243" height="70" rx="10" fill="#e8f5e9" stroke="#2e7d32"/>
+  <text x="388.5" y="138" text-anchor="middle" font-weight="700" font-size="15">_delta_log</text>
+  <text x="388.5" y="158" text-anchor="middle" font-size="13">JSON pro Commit</text>
+  <text x="388.5" y="175" text-anchor="middle" font-size="13">plus Checkpoints</text>
+  <line x1="260" y1="184" x2="260" y2="216" stroke="#555" stroke-width="2" marker-end="url(#mdeltalakeb)"/>
+  <rect x="10" y="218" width="243" height="70" rx="10" fill="#e8f5e9" stroke="#2e7d32"/>
+  <text x="131.5" y="242" text-anchor="middle" font-weight="700" font-size="15">Actions</text>
+  <text x="131.5" y="262" text-anchor="middle" font-size="13">add, remove, metaData,</text>
+  <text x="131.5" y="279" text-anchor="middle" font-size="13">protocol, txn, cdc ...</text>
+  <rect x="267" y="218" width="243" height="70" rx="10" fill="#fff4f2" stroke="#c62828"/>
+  <text x="388.5" y="242" text-anchor="middle" font-weight="700" font-size="15">Checkpoint</text>
+  <text x="388.5" y="262" text-anchor="middle" font-size="13">Zustand als</text>
+  <text x="388.5" y="279" text-anchor="middle" font-size="13">Parquet-Datei</text>
+</svg>
+<ol>
+  <li>Die <b>Parquet-Dateien</b> sind unveränderlich. Eine Änderung schreibt neue Dateien.</li>
+  <li>Das <b><code>_delta_log</code></b> hält pro Commit eine JSON-Datei. Der Name ist die Version, 20-stellig.</li>
+  <li><b>Actions</b> sind <code>metaData</code>, <code>add</code>, <code>remove</code>, <code>cdc</code>, <code>txn</code>, <code>protocol</code>, <code>commitInfo</code> und <code>domainMetadata</code>.</li>
+  <li>Ein <b>Checkpoint</b> ist der Zustand der Tabelle bei einer Version. <code>_last_checkpoint</code> zeigt den letzten.</li>
+  <li><b><code>protocol</code></b> nennt <code>minReaderVersion</code> und <code>minWriterVersion</code>. Ältere Clients lesen dann nicht.</li>
+  <li>Ein <b><code>remove</code></b> bleibt als Tombstone im Zustand, bis er abgelaufen ist.</li>
+</ol>
+<h2>3. Details</h2>
+<ol>
+  <li><b>Log und Version:</b> Die Delta-Dateien sind JSON-Dateien im <code>_delta_log</code>. Ihr Name ist die nächste freie Versionsnummer, mit Nullen auf 20 Stellen aufgefüllt. Jeder Commit ist eine Menge von Actions.</li>
+  <li><b>add und remove:</b> Sie hängen am Pfad der Datei. Eine Datei darf nicht zugleich in <code>add</code> und <code>remove</code> stehen. <code>remove</code> bleibt als Tombstone im Zustand, bis er abgelaufen ist.</li>
+  <li><b>dataChange:</b> Das Flag zeigt, ob eine Action Daten ändert. Bei <code>false</code> ordnet sie nur Daten um oder fügt Statistiken hinzu. Streaming-Leser können sie überspringen.</li>
+  <li><b>Checkpoints:</b> Ein Checkpoint kann zu jeder Version entstehen. Klassisch ist er eine einzelne Parquet-Datei. <code>delta.checkpointInterval</code> ist standardmässig 10. <code>_last_checkpoint</code> spart das Auflisten des ganzen Ordners.</li>
+  <li><b>Protokoll-Versionen:</b> Die Action <code>protocol</code> hat <code>minReaderVersion</code> und <code>minWriterVersion</code>. Feature-Listen gibt es nur bei Reader 3 und Writer 7. Wer das Feature nicht kennt, darf die Tabelle nicht lesen oder schreiben.</li>
+  <li><b>Optimistische Nebenläufigkeit:</b> Ein Writer liest, schreibt Dateien und prüft dann beim Commit gegen neue Commits. Gibt es keinen Konflikt, entsteht eine neue Version. Sonst scheitert er mit einer Exception.</li>
+  <li><b>Isolation:</b> Im Open-Source-Code ist der Standard von <code>delta.isolationLevel</code> <code>Serializable</code>. Man setzt ihn als Table Property.</li>
+  <li><b>Konflikte vermeiden:</b> Ob zwei Operationen kollidieren, hängt davon ab, ob sie dieselben Dateien berühren. Partitionen nach den Spalten der Bedingungen halten die Dateimengen getrennt. Eine Spalte mit hoher Kardinalität als Partition schafft andere Probleme.</li>
+  <li><b>Exceptions:</b> <code>ConcurrentAppendException</code> (neue Dateien in einer gelesenen Partition), <code>ConcurrentDeleteReadException</code>, <code>ConcurrentDeleteDeleteException</code> (zwei Writer löschen dieselbe Datei), <code>MetadataChangedException</code> und <code>ProtocolChangedException</code>. <code>ConcurrentTransactionException</code> kommt, wenn Streams denselben Checkpoint teilen.</li>
+  <li><b>MERGE:</b> Es braucht typischerweise zwei Durchläufe über die Quelle. Matchen mehrere Quellzeilen eine Zielzeile, kann der Lauf scheitern. Man dedupliziert die Quelle. Standardmässig durchsucht es die ganze Zieltabelle. Eine Partitionsbedingung verkleinert die Suche.</li>
+  <li><b>Time Travel:</b> <code>VERSION AS OF</code> und <code>TIMESTAMP AS OF</code> lesen alte Versionen. Standardmässig geht das bis 30 Tage zurück. <code>delta.logRetentionDuration</code> ist 30 Tage und <code>delta.deletedFileRetentionDuration</code> ist 7 Tage.</li>
+  <li><b>VACUUM:</b> Es löscht Datendateien, die nicht mehr gebraucht werden. Die Standard-Schwelle ist 7 Tage. Danach geht Time Travel auf ältere Versionen verloren. Es läuft nicht automatisch. Die Log-Dateien löscht es nicht, dafür sorgen Checkpoints.</li>
+  <li><b>RESTORE:</b> Es setzt die Tabelle auf eine alte Version zurück. Es scheitert, wenn VACUUM die Dateien schon gelöscht hat.</li>
+  <li><b>Schema:</b> Delta prüft beim Schreiben, ob das DataFrame-Schema zum Tabellen-Schema passt. Schema-Evolution ist standardmässig aus. Man schaltet sie mit <code>mergeSchema</code> pro Schreibvorgang ein. Global (<code>autoMerge</code>) rät die Doku ab.</li>
+  <li><b>OPTIMIZE und Z-Order:</b> OPTIMIZE (seit Delta 1.2.0) fasst kleine Dateien zusammen. Z-Ordering (seit 2.0.0) ordnet verwandte Daten in dieselben Dateien und ist nicht idempotent. Auto Compaction (seit 3.1.0) zielt standardmässig auf 128 MB.</li>
+  <li><b>Data Skipping:</b> Delta sammelt Statistiken pro Datei. <code>delta.dataSkippingNumIndexedCols</code> ist 32, es zählt die Spaltenposition. Mit <code>-1</code> sammelt es für alle Spalten.</li>
+  <li><b>Deletion Vectors:</b> Sie markieren Zeilen als gelöscht, ohne die Parquet-Datei neu zu schreiben (seit Delta 2.3.0). Sie brauchen Reader 3 und Writer 7. <code>REORG TABLE ... APPLY (PURGE)</code> schreibt die Dateien wirklich neu. Danach löscht VACUUM die alten.</li>
+  <li><b>Change Data Feed:</b> Mit <code>delta.enableChangeDataFeed=true</code> (Standard <code>false</code>) speichert Delta Änderungen. <code>_change_type</code> ist <code>insert</code>, <code>update_preimage</code>, <code>update_postimage</code> oder <code>delete</code>. Daten für UPDATE, DELETE und MERGE liegen im Ordner <code>_change_data</code>.</li>
+  <li><b>replaceWhere:</b> Es überschreibt atomar nur Zeilen, die zu einem Prädikat passen. Delta prüft standardmässig, ob die geschriebenen Daten dazu passen. Das ist ein einfaches idempotentes Muster.</li>
+</ol>
+<h2>4. Fallen</h2>
+<div class="trap">
+<ul>
+  <li>„Delta Lake ist ein eigenes Speichersystem.“ → <b>Falsch.</b> Es sind Parquet-Dateien plus ein Log. Der Speicher bleibt normaler Object Storage.</li>
+  <li>„Ein UPDATE ändert die Parquet-Datei.“ → <b>Falsch.</b> Parquet-Dateien sind unveränderlich. Delta schreibt neue Dateien und hält die alten per <code>remove</code> fest.</li>
+  <li>„VACUUM löscht den Log.“ → <b>Falsch.</b> Es löscht Datendateien. Log-Dateien räumen Checkpoints und die Log-Retention auf.</li>
+  <li>„Time Travel geht für immer.“ → <b>Falsch.</b> Nur bis zur Retention. Nach VACUUM mit 7 Tagen sind ältere Datendateien weg.</li>
+  <li>„Optimistische Nebenläufigkeit heisst, es gibt nie Fehler.“ → <b>Falsch.</b> Konflikte führen zu Exceptions. Der Writer muss es neu versuchen.</li>
+  <li>„Ein Deletion Vector löscht die Daten sofort physisch.“ → <b>Falsch.</b> Er markiert die Zeilen nur. Erst REORG PURGE und VACUUM löschen sie wirklich.</li>
+</ul>
+</div>
+<h2>5. Selbsttest</h2>
+<h3>Warum?</h3>
+<details><summary>Warum braucht man ein Log über Parquet-Dateien?</summary><p>Object Storage hat keine Transaktionen über viele Dateien. Das Log macht eine Änderung mit vielen Dateien zu einem atomaren Commit.</p></details>
+<details><summary>Warum sind Datendateien unveränderlich?</summary><p>Leser lesen sie gleichzeitig. Neue Dateien machen Änderungen sicher und erlauben Time Travel.</p></details>
+<details><summary>Warum braucht VACUUM eine Wartezeit?</summary><p>Laufende Leser und Jobs können noch alte Dateien brauchen. Die Wartezeit schützt sie und Time Travel.</p></details>
+<h3>Wie innen?</h3>
+<details><summary>Wie ist der Zustand einer Tabelle definiert?</summary><p>Als Summe der Actions im Log bis zu einer Version. Ein Checkpoint kürzt das Auflisten.</p></details>
+<details><summary>Was steht in einem Checkpoint?</summary><p>Der komplette Tabellenzustand bei einer Version, klassisch als einzelne Parquet-Datei.</p></details>
+<details><summary>Wie läuft ein Commit mit Konfliktprüfung?</summary><p>Lesen, neue Dateien schreiben, gegen neue Commits prüfen und die nächste Versionsdatei schreiben. Bei Konflikt scheitert der Writer.</p></details>
+<details><summary>Was ist <code>dataChange</code>?</summary><p>Ein Flag auf Actions. Bei <code>false</code> ändern sich keine Daten, zum Beispiel bei Compaction. Streaming-Leser überspringen es.</p></details>
+<details><summary>Wie funktioniert ein MERGE?</summary><p>Zwei Durchläufe: passende Dateien finden, dann Dateien neu schreiben und im Log ersetzen. Mehrere Quelltreffer pro Zielzeile können scheitern.</p></details>
+<details><summary>Wie funktioniert der Change Data Feed?</summary><p>Mit der Table Property an erfasst Delta Änderungen. UPDATE, DELETE und MERGE legen Zeilen in <code>_change_data</code> ab. Reiner Insert wird aus dem Log berechnet.</p></details>
+<h3>Zahlen</h3>
+<details><summary>Wie lang ist der Name einer Log-Datei?</summary><p>20 Stellen, mit Nullen aufgefüllt.</p></details>
+<details><summary>Wie oft schreibt Delta standardmässig einen Checkpoint?</summary><p>Alle 10 Commits (<code>delta.checkpointInterval</code>).</p></details>
+<details><summary>Welche Standard-Retention gilt?</summary><p>VACUUM 7 Tage. Datei-Retention 7 Tage, Log-Retention 30 Tage, Time Travel bis 30 Tage, wenn nicht gevacuumt.</p></details>
+<h3>Vergleich</h3>
+<details><summary>Delta Lake vs Iceberg?</summary><p>Beide haben ACID und Time Travel auf Object Storage. Delta nutzt ein Log mit JSON und Checkpoints. Iceberg nutzt Metadaten- und Manifest-Dateien.</p></details>
+<details><summary>Delta Lake vs reines Parquet?</summary><p>Parquet ohne Log hat keine atomaren Änderungen und keine Versionen. Delta macht daraus eine Tabelle mit ACID.</p></details>
+<details><summary>Z-Order vs Partitionierung?</summary><p>Partitionen trennen Dateien nach einer Spalte mit wenigen Werten. Z-Order ordnet Daten in den Dateien nach mehreren Spalten.</p></details>
+<h3>Produktion</h3>
+<details><summary>Writes scheitern mit <code>ConcurrentAppendException</code>. Was tun Sie?</summary><p>Ich nehme die Partition in die Bedingung auf, damit die Dateimengen getrennt sind. Dazu baue ich einen Retry ein.</p></details>
+<details><summary>Die Tabelle hat tausende kleine Dateien. Was tun Sie?</summary><p>OPTIMIZE regelmässig laufen lassen oder Auto Compaction und Optimized Writes prüfen.</p></details>
+<details><summary>Time Travel auf eine alte Version scheitert. Warum?</summary><p>VACUUM hat die Datendateien gelöscht oder die Retention ist abgelaufen.</p></details>
+<details><summary>Szenario: Ein MERGE-Job wird jede Woche langsamer. Was prüfen Sie?</summary><p>Kleine Dateien und die Suche über die ganze Tabelle. Ich füge eine Partitionsbedingung hinzu und führe OPTIMIZE aus.</p></details>
+<details><summary>Szenario: Personendaten müssen wirklich gelöscht werden, die Tabelle nutzt Deletion Vectors. Was tun Sie?</summary><p>DELETE reicht nicht, die Daten sind noch in den Dateien. Ich führe REORG TABLE APPLY (PURGE) aus und danach VACUUM nach Ablauf der Retention.</p></details>
+<h3>Design</h3>
+<details><summary>Wie wählt man die Partitionierung?</summary><p>Nach Spalten mit wenigen Werten, die in Bedingungen vorkommen, zum Beispiel Datum. Hohe Kardinalität erzeugt zu viele kleine Dateien.</p></details>
+<details><summary>Wie macht man eine Pipeline mit Delta idempotent?</summary><p>Mit <code>replaceWhere</code> auf das Intervall oder MERGE auf einen Schlüssel. Ein zweiter Lauf ändert dann nichts.</p></details>
+<details><summary>Wann nimmt man Change Data Feed?</summary><p>Wenn Nachfolger nur die Änderungen brauchen, nicht die ganze Tabelle. Zum Beispiel Replikation oder inkrementelle Marts.</p></details>
+<details><summary>Szenario: Zwei Teams schreiben in dieselbe Tabelle und kollidieren. Wie lösen Sie das?</summary><p>Ich trenne die Dateimengen über Partitionen oder getrennte Tabellen. Andernfalls baue ich Retries ein und halte Transaktionen kurz.</p></details>
+
+<details class="mehr"><summary>Mehr</summary>
+<h3>Gerüst</h3>
+<ul>
+  <li><b>Warum?</b> ACID, Versionen und Schema-Prüfung auf billigem Object Storage.</li>
+  <li><b>Wie innen?</b> Parquet plus <code>_delta_log</code>. Commit = neue JSON-Datei mit <code>add</code> und <code>remove</code>. Checkpoint fasst zusammen.</li>
+  <li><b>Zahlen</b> 20-stellige Namen, Checkpoint alle 10, VACUUM 7 Tage, Log 30 Tage, 32 Statistik-Spalten.</li>
+  <li><b>Vergleich</b> Delta vs Iceberg vs Parquet, Z-Order vs Partitionen.</li>
+  <li><b>Produktion</b> Konflikt-Exceptions, kleine Dateien, VACUUM und Time Travel.</li>
+  <li><b>Design</b> Partition in der Bedingung, <code>replaceWhere</code> oder MERGE für Idempotenz.</li>
+</ul>
+
+<h3>Beispiel: Tabelle, MERGE, Wartung und Log</h3>
+<pre>-- Tabelle anlegen und ändern (Spark SQL mit Delta Lake)
+CREATE TABLE events (id BIGINT, day DATE, amount DOUBLE) USING delta PARTITIONED BY (day);
+
+MERGE INTO events t
+USING updates s ON t.id = s.id AND t.day = s.day     -- Partition in der Bedingung
+WHEN MATCHED THEN UPDATE SET *
+WHEN NOT MATCHED THEN INSERT *;
+
+OPTIMIZE events;                                      -- kleine Dateien zusammenfassen
+DESCRIBE HISTORY events;                              -- Versionen ansehen
+SELECT * FROM events VERSION AS OF 3;                 -- Time Travel
+VACUUM events;                                        -- alte Dateien löschen, Standard 7 Tage
+
+-- Auszug aus dem Log: _delta_log/00000000000000000004.json (vereinfacht, Schema nur skizziert)
+{"commitInfo": {"operation": "MERGE"}}
+{"remove": {"path": "day=2026-01-01/part-0001.parquet", "dataChange": true}}
+{"add":    {"path": "day=2026-01-01/part-0007.parquet", "dataChange": true}}</pre>
+<p class="small">Nicht ausgeführt.</p>
+<ol>
+  <li><code>PARTITIONED BY (day)</code> trennt die Dateien nach Tag. Das hilft gegen Konflikte.</li>
+  <li>Das <code>MERGE</code> nennt <code>day</code> in der Bedingung. So durchsucht es nur passende Partitionen.</li>
+  <li><code>OPTIMIZE</code> fasst kleine Dateien zusammen. Die alten Dateien bekommen ein <code>remove</code>.</li>
+  <li><code>DESCRIBE HISTORY</code> und <code>VERSION AS OF</code> zeigen und lesen alte Versionen.</li>
+  <li><code>VACUUM</code> löscht nach der Standard-Schwelle von 7 Tagen die alten Dateien.</li>
+  <li>Der Log-Auszug zeigt einen Commit: ein <code>remove</code> für die alte Datei und ein <code>add</code> für die neue.</li>
+</ol>
+
+<h3>Vergleich</h3>
+<ul>
+  <li><b>Delta Lake:</b> Log mit JSON und Checkpoints, Spark-nah, Open Source.</li>
+  <li><b>Iceberg:</b> Metadaten und Manifest-Dateien, viele Engines.</li>
+  <li><b>Parquet ohne Log:</b> keine atomaren Änderungen, keine Versionen.</li>
+  <li><b>Partitionierung vs Z-Order:</b> Partitionen trennen, Z-Order sortiert innerhalb der Dateien.</li>
+  <li><b>Deletion Vectors vs Rewrite:</b> Vectors markieren nur, schneller, brauchen später PURGE.</li>
+  <li><b>CDF vs Time Travel:</b> CDF liefert Änderungszeilen, Time Travel liefert alte Zustände.</li>
+</ul>
+
+<h3>Produktion</h3>
+<ol>
+  <li><b>Konflikte bei Writes:</b> gleiche Dateien berührt. Lösung: Partition in die Bedingung, Retry.</li>
+  <li><b>Viele kleine Dateien:</b> Streaming oder viele Writes. Lösung: OPTIMIZE, Auto Compaction.</li>
+  <li><b>Time Travel scheitert:</b> VACUUM oder Retention. Lösung: Retention an den Bedarf anpassen.</li>
+  <li><b>Speicher wächst:</b> VACUUM läuft nie. Lösung: planen, denn es ist nicht automatisch.</li>
+  <li><b>Alte Clients lesen nicht:</b> Protokoll oder Feature zu neu. Lösung: Version planen vor dem Upgrade.</li>
+  <li><b>MERGE scheitert mit mehreren Treffern:</b> Quelle hat Duplikate. Lösung: Quelle deduplizieren.</li>
+</ol>
+
+<h3>Diagnose: Werkzeuge und Befehle</h3>
+<ul>
+  <li><code>DESCRIBE HISTORY tabelle</code>: Operationen, Versionen, Zeiten.</li>
+  <li><code>DESCRIBE DETAIL tabelle</code>: Dateien, Grösse, Properties.</li>
+  <li><code>_delta_log</code> ansehen: JSON-Dateien und Checkpoints.</li>
+  <li><code>VACUUM tabelle DRY RUN</code>: zeigt, was gelöscht würde.</li>
+  <li>Spark UI: Dateien pro Task, Dauer von MERGE-Schritten.</li>
+</ul>
+
+<h3>Senior-Punkte</h3>
+<div class="senior">
+<ol>
+  <li><b>Das Log ist die Tabelle.</b> Wer es versteht, versteht ACID, Time Travel und Konflikte.</li>
+  <li><b>Optimistisch heisst: Konflikte planen.</b> Partitionen und Retries gehören ins Design.</li>
+  <li><b>VACUUM-Retention ist ein Vertrag</b> mit Time Travel, Streaming und langen Jobs.</li>
+  <li><b>Löschen ist zweistufig:</b> DELETE und dann PURGE und VACUUM.</li>
+  <li><b>Kleine Dateien sind der Alltag.</b> Wartung ist Teil des Betriebs.</li>
+  <li><b>Protokoll-Upgrades sind einseitig.</b> Ich prüfe Clients vor dem Aktivieren neuer Features.</li>
+</ol>
+</div>
+
+<h3>Dein Beispiel</h3>
+</details>
+
+</body>
+</html>

@@ -2,7 +2,7 @@
 
 Generated from content/syllabus.json. Priority 1 = asked in almost every interview. Mark: **Projekt** = shown in CV/Gmail · **— kein Projekt** = no project experience · **? prüfen** = unclear, you decide.
 
-437 topics · P1 267 · P2 132 · P3 38 · written 362
+437 topics · P1 267 · P2 132 · P3 38 · written 368
 
 ## Java 21 (core + advanced) (42)
 Sources: Java SE 21/25 docs (docs.oracle.com) · JVM Specification · OpenJDK source + JEPs (openjdk.org) · Oracle Java SE 21 Developer exam 1Z0-830 topics
@@ -154,7 +154,7 @@ Sources: Jakarta XML Web Services / JAXB specs · W3C SOAP 1.2 and WSDL · Sprin
 | 1 | SOAP vs REST | Projekt | ✓ |
 | 2 | SOAP: Envelope, Header, Body, Fault | Projekt | ✓ |
 | 2 | WSDL | Projekt | ✓ |
-| 2 | XSD: Typen und Validierung | Projekt |  |
+| 2 | XSD: Typen und Validierung | Projekt | ✓ |
 | 2 | JAXB: Marshalling und Unmarshalling | Projekt |  |
 | 2 | JAX-WS und Spring-WS | ? prüfen |  |
 | 2 | Contract-First vs Code-First | ? prüfen |  |
@@ -398,8 +398,8 @@ Sources: Databricks and Delta Lake docs
 
 | P | Topic | Project | Written |
 |---|---|---|---|
-| 2 | Delta Lake | — kein Projekt |  |
-| 2 | Databricks vs eigener Stack (Spark, Iceberg, Nessie) | — kein Projekt |  |
+| 2 | Delta Lake | — kein Projekt | ✓ |
+| 2 | Databricks vs eigener Stack: Spark, Iceberg, Nessie | — kein Projekt | ✓ |
 | 3 | Unity Catalog und Workspaces | — kein Projekt |  |
 
 ## Azure (15)
@@ -484,9 +484,9 @@ Sources: Prometheus docs · OpenTelemetry docs · Google SRE book (SLOs)
 | P | Topic | Project | Written |
 |---|---|---|---|
 | 1 | Logs, Metriken, Traces | Projekt | ✓ |
-| 2 | Prometheus: Pull-Modell, Metrik-Typen, PromQL | Projekt |  |
-| 2 | OpenTelemetry | Projekt |  |
-| 2 | Alerting, SLI, SLO, SLA | ? prüfen |  |
+| 2 | Prometheus: Pull-Modell, Metrik-Typen, PromQL | Projekt | ✓ |
+| 2 | OpenTelemetry | Projekt | ✓ |
+| 2 | Alerting, SLI, SLO, SLA | ? prüfen | ✓ |
 
 ## Security (OAuth2, JWT, Keycloak, Vault, OWASP) (10)
 Sources: OWASP Top 10 (2025) · RFC 6749/9700 OAuth 2 · OpenID Connect Core · RFC 7519 JWT · Keycloak and Vault docs

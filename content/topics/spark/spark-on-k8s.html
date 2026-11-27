@@ -1,0 +1,267 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Spark auf Kubernetes</title>
+<style>
+  body { font: 17px/1.55 -apple-system, system-ui, sans-serif; max-width: 760px; margin: 0 auto; padding: 16px; color: #1d1d1f; }
+  h1 { font-size: 28px; margin: 8px 0 4px; }
+  h2 { font-size: 21px; margin: 32px 0 8px; padding-top: 12px; border-top: 2px solid #e5e5ea; }
+  .kern { background: #eef6ff; border-left: 4px solid #0a66c2; padding: 10px 14px; border-radius: 6px; }
+  .senior { background: #f0faf0; border-left: 4px solid #2e7d32; padding: 10px 14px; border-radius: 6px; }
+  .trap { background: #fff4f2; border-left: 4px solid #c62828; padding: 10px 14px; border-radius: 6px; }
+  code { background: #f2f2f7; padding: 1px 5px; border-radius: 4px; font-size: 15px; }
+  pre { background: #1e1e1e; color: #e6e6e6; padding: 12px; border-radius: 8px; overflow-x: auto; font-size: 13.5px; line-height: 1.45; }
+  svg { width: 100%; height: auto; display: block; margin: 10px 0; }
+  ol li, ul li { margin: 4px 0; }
+  details { border: 1px solid #e5e5ea; border-radius: 8px; padding: 8px 12px; margin: 6px 0; }
+  summary { font-weight: 600; cursor: pointer; }
+  details p { margin: 6px 0 2px; }
+  .small { color: #6e6e73; font-size: 14px; }
+  h3 { font-size: 17px; margin: 20px 0 6px; }
+  .geruest { border: 2px solid #1d1d1f; border-radius: 6px; padding: 10px 14px; margin: 14px 0; font-size: 15px; line-height: 1.4; }
+  .geruest h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; margin: 0 0 8px; padding: 0; border: 0; }
+  .geruest dl { display: grid; grid-template-columns: 6.6em 1fr; gap: 6px 10px; margin: 0; }
+  .geruest dt { font-weight: 700; font-size: 12px; text-transform: uppercase; letter-spacing: .05em; padding-top: 1px; }
+  .geruest dd { margin: 0; }
+  .muster { border: 1px solid #e5e5ea; border-left: 4px solid #1d1d1f; border-radius: 6px; padding: 10px 14px; margin: 14px 0; }
+  .muster h3 { margin: 0 0 6px; font-size: 13px; text-transform: uppercase; letter-spacing: .06em; }
+  .muster .mq { margin: 0 0 6px; }
+</style>
+</head>
+<body>
+<h1>Spark auf Kubernetes</h1>
+<!-- sources: Spark · Tier 2 · Quellen: Apache Spark Docs 4.3.0 – Running Spark on Kubernetes (How it works, Submitting Applications, Client Mode, Pod Template, Local Storage, Dynamic Allocation, Configuration table), Configuration (spark.executor.memoryOverhead, spark.executor.minMemoryOverhead, spark.dynamicAllocation.*) -->
+<div class="kern">
+<b>Kern:</b> Auf <b>Kubernetes</b> startet <code>spark-submit</code> einen <b>Driver-Pod</b>, und der Driver startet die <b>Executor-Pods</b>. Kubernetes ist der Cluster Manager, es gibt keinen Spark-Master und keinen externen Shuffle Service. Darum brauchen <b>Dynamic Allocation</b> und <b>Shuffle-Dateien</b> besondere Sorgfalt.
+</div>
+<div class="muster"><h3>Antwort-Muster</h3><p class="mq"><b>Frage:</b> Wie läuft ein Spark-Job auf Kubernetes?</p><ol>
+  <li>Mechanismus: <code>spark-submit</code> ruft den API-Server auf und erstellt den Driver-Pod. Der Driver erstellt die Executor-Pods und verbindet sich mit ihnen.</li>
+  <li>Zahl: Spark startet Executor-Pods in Runden, standardmässig 20 Pods pro Runde mit 1 Sekunde Pause. Der Memory Overhead ist standardmässig 10 %.</li>
+  <li>Trade-off: Kubernetes hat keinen externen Shuffle Service. Dynamic Allocation läuft nur mit Shuffle Tracking, und Shuffle-Dateien liegen im Executor-Pod.</li>
+  <li>Produktion: Verschwindet ein Node, gehen die Shuffle-Dateien verloren und Spark rechnet neu. Ich nutze Decommissioning und lasse den Driver auf stabilen Nodes laufen.</li>
+</ol></div>
+<h2>1. Ein Job auf Kubernetes in 8 Schritten</h2>
+<svg viewBox="0 0 520 448" font-family="-apple-system, system-ui, sans-serif" font-size="13">
+  <defs><marker id="msparkonk8sa" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="10" y="10" width="235" height="80" rx="10" fill="#eee" stroke="#777"/>
+  <text x="127.5" y="34" text-anchor="middle" font-weight="700" font-size="15">1. spark-submit</text>
+  <text x="127.5" y="54" text-anchor="middle" font-size="13">master k8s://host:port</text>
+  <rect x="295" y="10" width="235" height="80" rx="10" fill="#dbe9fb" stroke="#0a66c2"/>
+  <text x="412.5" y="34" text-anchor="middle" font-weight="700" font-size="15">2. Driver-Pod</text>
+  <text x="412.5" y="54" text-anchor="middle" font-size="13">API-Server erstellt ihn</text>
+  <rect x="295" y="126" width="235" height="80" rx="10" fill="#dbe9fb" stroke="#0a66c2"/>
+  <text x="412.5" y="150" text-anchor="middle" font-weight="700" font-size="15">3. Driver startet</text>
+  <text x="412.5" y="170" text-anchor="middle" font-size="13">SparkContext, plant Stages</text>
+  <rect x="10" y="126" width="235" height="80" rx="10" fill="#e8f5e9" stroke="#2e7d32"/>
+  <text x="127.5" y="150" text-anchor="middle" font-weight="700" font-size="15">4. Executor-Pods</text>
+  <text x="127.5" y="170" text-anchor="middle" font-size="13">in Runden angefordert</text>
+  <rect x="10" y="242" width="235" height="80" rx="10" fill="#e8f5e9" stroke="#2e7d32"/>
+  <text x="127.5" y="266" text-anchor="middle" font-weight="700" font-size="15">5. Tasks laufen</text>
+  <text x="127.5" y="286" text-anchor="middle" font-size="13">Driver verteilt die Tasks</text>
+  <rect x="295" y="242" width="235" height="80" rx="10" fill="#fff4f2" stroke="#c62828"/>
+  <text x="412.5" y="266" text-anchor="middle" font-weight="700" font-size="15">6. Shuffle-Dateien</text>
+  <text x="412.5" y="286" text-anchor="middle" font-size="13">lokale Disk im Pod</text>
+  <rect x="295" y="358" width="235" height="80" rx="10" fill="#eee" stroke="#777"/>
+  <text x="412.5" y="382" text-anchor="middle" font-weight="700" font-size="15">7. Ende</text>
+  <text x="412.5" y="402" text-anchor="middle" font-size="13">Executors weg, Driver bleibt</text>
+  <rect x="10" y="358" width="235" height="80" rx="10" fill="#dbe9fb" stroke="#0a66c2"/>
+  <text x="127.5" y="382" text-anchor="middle" font-weight="700" font-size="15">8. Aufräumen</text>
+  <text x="127.5" y="402" text-anchor="middle" font-size="13">Driver-Pod löschen</text>
+  <line x1="245" y1="50.0" x2="293" y2="50.0" stroke="#555" stroke-width="2" marker-end="url(#msparkonk8sa)"/>
+  <line x1="412.5" y1="90" x2="412.5" y2="124" stroke="#555" stroke-width="2" marker-end="url(#msparkonk8sa)"/>
+  <line x1="295" y1="166.0" x2="247" y2="166.0" stroke="#555" stroke-width="2" marker-end="url(#msparkonk8sa)"/>
+  <line x1="127.5" y1="206" x2="127.5" y2="240" stroke="#555" stroke-width="2" marker-end="url(#msparkonk8sa)"/>
+  <line x1="245" y1="282.0" x2="293" y2="282.0" stroke="#555" stroke-width="2" marker-end="url(#msparkonk8sa)"/>
+  <line x1="412.5" y1="322" x2="412.5" y2="356" stroke="#555" stroke-width="2" marker-end="url(#msparkonk8sa)"/>
+  <line x1="295" y1="398.0" x2="247" y2="398.0" stroke="#555" stroke-width="2" marker-end="url(#msparkonk8sa)"/>
+</svg>
+<ol>
+  <li><b>spark-submit:</b> Die Master-URL hat die Form <code>k8s://&lt;host&gt;:&lt;port&gt;</code>. Der Port ist immer Pflicht. Ohne Protokoll nimmt Spark <code>https</code>.</li>
+  <li><b>Driver-Pod:</b> <code>spark-submit</code> erstellt den Driver-Pod über den Kubernetes API-Server. Das Image kommt aus <code>spark.kubernetes.container.image</code>.</li>
+  <li><b>Driver startet:</b> Im Pod läuft die Spark-Anwendung. Der Driver plant die Stages und braucht Executors.</li>
+  <li><b>Executor-Pods:</b> Der Driver erstellt die Pods über die API. Er startet sie in Runden und verbindet sich mit ihnen.</li>
+  <li><b>Tasks laufen:</b> Die Executors führen die Tasks aus. Jeder Executor ist ein Pod mit eigenem Speicher und eigenen CPUs.</li>
+  <li><b>Shuffle-Dateien:</b> Sie liegen in <code>spark.local.dir</code>. Spark erstellt dafür ein <code>emptyDir</code>-Volume, das mit dem Pod verschwindet.</li>
+  <li><b>Ende:</b> Die Executor-Pods enden und werden aufgeräumt. Der Driver-Pod bleibt im Status Completed, mit seinen Logs.</li>
+  <li><b>Aufräumen:</b> Löscht man den Driver-Pod, räumt Kubernetes die ganze Anwendung ab, auch Executors und Service.</li>
+</ol>
+<p>Im <b>Client Mode</b> läuft der Driver ausserhalb der Pods. Die Executors müssen ihn erreichen. Dafür braucht es einen Headless Service und <code>spark.driver.host</code> und <code>spark.driver.port</code>.</p>
+<h2>2. Aufbau</h2>
+<svg viewBox="0 0 520 402" font-family="-apple-system, system-ui, sans-serif" font-size="13">
+  <defs><marker id="msparkonk8sb" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="10" y="10" width="243" height="70" rx="10" fill="#eee" stroke="#777"/>
+  <text x="131.5" y="34" text-anchor="middle" font-weight="700" font-size="15">spark-submit</text>
+  <text x="131.5" y="54" text-anchor="middle" font-size="13">Client oder CI-Job</text>
+  <rect x="267" y="10" width="243" height="70" rx="10" fill="#dbe9fb" stroke="#0a66c2"/>
+  <text x="388.5" y="34" text-anchor="middle" font-weight="700" font-size="15">API-Server</text>
+  <text x="388.5" y="54" text-anchor="middle" font-size="13">Kubernetes Control Plane</text>
+  <line x1="260" y1="80" x2="260" y2="112" stroke="#555" stroke-width="2" marker-end="url(#msparkonk8sb)"/>
+  <rect x="10" y="114" width="500" height="70" rx="10" fill="#e8f5e9" stroke="#2e7d32"/>
+  <text x="260.0" y="138" text-anchor="middle" font-weight="700" font-size="15">Driver-Pod</text>
+  <text x="260.0" y="158" text-anchor="middle" font-size="13">Service Account · Namespace</text>
+  <line x1="260" y1="184" x2="260" y2="216" stroke="#555" stroke-width="2" marker-end="url(#msparkonk8sb)"/>
+  <rect x="10" y="218" width="243" height="70" rx="10" fill="#e8f5e9" stroke="#2e7d32"/>
+  <text x="131.5" y="242" text-anchor="middle" font-weight="700" font-size="15">Executor-Pods</text>
+  <text x="131.5" y="262" text-anchor="middle" font-size="13">Tasks · Shuffle-Dateien</text>
+  <rect x="267" y="218" width="243" height="70" rx="10" fill="#eee" stroke="#777"/>
+  <text x="388.5" y="242" text-anchor="middle" font-weight="700" font-size="15">Pod Template</text>
+  <text x="388.5" y="262" text-anchor="middle" font-size="13">eigene Labels, Volumes</text>
+  <line x1="260" y1="288" x2="260" y2="320" stroke="#555" stroke-width="2" marker-end="url(#msparkonk8sb)"/>
+  <rect x="10" y="322" width="243" height="70" rx="10" fill="#fff4f2" stroke="#c62828"/>
+  <text x="131.5" y="346" text-anchor="middle" font-weight="700" font-size="15">Lokale Disk</text>
+  <text x="131.5" y="366" text-anchor="middle" font-size="13">emptyDir oder PVC</text>
+  <rect x="267" y="322" width="243" height="70" rx="10" fill="#dbe9fb" stroke="#0a66c2"/>
+  <text x="388.5" y="346" text-anchor="middle" font-weight="700" font-size="15">Object Storage</text>
+  <text x="388.5" y="366" text-anchor="middle" font-size="13">s3a:// für Daten, Jars</text>
+</svg>
+<ol>
+  <li><b>spark-submit</b> spricht nur mit dem API-Server. Die Pods starten dann im Cluster.</li>
+  <li>Der <b>Driver-Pod</b> läuft mit einem Service Account. Er braucht Rechte, um Executor-Pods zu erstellen.</li>
+  <li><b>Executor-Pods</b> sind normale Pods. Name: <code>$podNamePrefix-exec-$id</code>. Das Präfix darf höchstens 47 Zeichen haben.</li>
+  <li>Ein <b>Pod Template</b> setzt Dinge, die Spark nicht kennt, zum Beispiel Labels oder Volumes. Spark überschreibt Name, Namespace und <code>restartPolicy</code>.</li>
+  <li><b>Lokale Disk:</b> Jedes Verzeichnis aus <code>spark.local.dir</code> wird ein <code>emptyDir</code>. Es kann auch ein PVC sein.</li>
+  <li><b>Object Storage</b> hält Daten und Dateien. Mit <code>spark.kubernetes.file.upload.path</code> lädt Spark lokale Dateien im Cluster Mode dorthin.</li>
+</ol>
+<h2>3. Details</h2>
+<ol>
+  <li><b>Cluster Mode vs Client Mode:</b> Im Cluster Mode läuft der Driver als Pod. Im Client Mode läuft er ausserhalb. Dann braucht es einen Headless Service, der nur den Driver-Pod trifft.</li>
+  <li><b>Image:</b> <code>spark.kubernetes.container.image</code> hat keinen Standardwert. Man muss es setzen, ausser man setzt Images pro Pod-Typ.</li>
+  <li><b>Namespace und Service Account:</b> Der Namespace ist standardmässig <code>default</code>. Der Service Account des Drivers ist auch <code>default</code>. Der Executor nutzt standardmässig den Account des Drivers.</li>
+  <li><b>Executor-Start in Runden:</b> <code>spark.kubernetes.allocation.batch.size</code> ist 20, <code>batch.delay</code> ist 1 Sekunde. Bei 200 Executors dauert das Hochfahren darum einige Runden.</li>
+  <li><b>Memory Overhead:</b> <code>spark.kubernetes.memoryOverheadFactor</code> ist 0.1 für JVM-Jobs und 0.4 für nicht-JVM-Jobs. Das Minimum liegt bei 384 MiB seit Spark 4.0. Der Pod-Speicher ist Heap plus Overhead.</li>
+  <li><b>CPU:</b> <code>spark.kubernetes.executor.request.cores</code> setzt die Pod-Anfrage. Es ändert die Zahl der parallelen Tasks nicht. <code>limit.cores</code> ist das harte Limit. Standard ist beides nicht gesetzt.</li>
+  <li><b>Executor-Pods aufräumen:</b> <code>spark.kubernetes.executor.deleteOnTermination</code> ist standardmässig <code>true</code>. Bei Fehlersuche setzt man es auf <code>false</code>, um Pods zu behalten.</li>
+  <li><b>Dynamic Allocation:</b> Auf Kubernetes gibt es keinen externen Shuffle Service. Darum braucht es <code>spark.dynamicAllocation.shuffleTracking.enabled</code>. Der Standard ist <code>true</code>, die Dynamic Allocation selbst ist standardmässig aus.</li>
+  <li><b>Decommissioning:</b> Beim Beenden kann ein Executor seine Daten abgeben. Das Skript heisst standardmässig <code>/opt/decom.sh</code>. Mit <code>decommissionLabel</code> markiert Spark die betroffenen Pods.</li>
+  <li><b>Lokale Verzeichnisse:</b> Spark nutzt <code>emptyDir</code>. Mit <code>spark.kubernetes.local.dirs.tmpfs=true</code> liegt es im RAM. Der Standard ist <code>false</code>. Statt <code>emptyDir</code> kann man auch ein PVC für <code>spark-local-dir-*</code> einsetzen.</li>
+  <li><b>Pod-Erkennung:</b> Spark fragt den API-Server alle 30 Sekunden nach dem Zustand der Executors. Ein Pod, den der Server nicht kennt, gilt nach 30 Sekunden als vermisst.</li>
+  <li><b>Scheduler:</b> <code>spark.kubernetes.scheduler.name</code> setzt einen eigenen Scheduler für Driver und Executors. Driver- und Executor-Einstellungen überschreiben den Wert.</li>
+  <li><b>Node Selector:</b> <code>spark.kubernetes.{driver,executor}.node.selector.[labelKey]</code> legt Pods auf bestimmte Nodes. So trennt man Driver und Executors.</li>
+</ol>
+<h2>4. Fallen</h2>
+<div class="trap">
+<ul>
+  <li>„Auf Kubernetes gibt es einen Spark-Master.“ → <b>Falsch.</b> Es gibt keinen. Der API-Server von Kubernetes ist der Cluster Manager.</li>
+  <li>„Der Driver-Pod verschwindet nach dem Job.“ → <b>Falsch.</b> Er bleibt im Status Completed mit seinen Logs, bis man ihn löscht oder Kubernetes ihn aufräumt.</li>
+  <li>„<code>executor.request.cores=4</code> gibt 4 parallele Tasks.“ → <b>Falsch.</b> Es setzt nur die Pod-Anfrage. Die Parallelität kommt aus <code>spark.executor.cores</code>.</li>
+  <li>„Dynamic Allocation funktioniert wie auf YARN.“ → <b>Falsch.</b> Es gibt keinen externen Shuffle Service. Shuffle Tracking ist nötig.</li>
+  <li>„Ein Executor-Pod ist nach einem Neustart wieder derselbe.“ → <b>Falsch.</b> <code>restartPolicy</code> ist Never. Spark erstellt einen neuen Executor und rechnet verlorene Shuffle-Daten neu.</li>
+  <li>„Der Executor-Speicher ist genau <code>spark.executor.memory</code>.“ → <b>Falsch.</b> Der Pod braucht Heap plus Overhead. Das Pod-Limit ist grösser als der Heap.</li>
+</ul>
+</div>
+<h2>5. Selbsttest</h2>
+<h3>Warum?</h3>
+<details><summary>Warum ist Kubernetes für Spark attraktiv?</summary><p>Man nutzt denselben Cluster für alle Anwendungen. Isolation, Images und Autoscaling kommen von Kubernetes.</p></details>
+<details><summary>Warum braucht Dynamic Allocation Shuffle Tracking?</summary><p>Es gibt keinen externen Shuffle Service. Spark darf Executors nur abbauen, wenn ihre Shuffle-Daten nicht mehr gebraucht werden.</p></details>
+<details><summary>Warum braucht der Pod mehr Speicher als der Heap?</summary><p>Neben dem Heap brauchen Spark und die JVM Speicher für Off-Heap, Python und Buffer. Das deckt der Memory Overhead ab.</p></details>
+<h3>Wie innen?</h3>
+<details><summary>Was passiert bei spark-submit im Cluster Mode?</summary><p>Der Client erstellt über den API-Server den Driver-Pod. Der Driver erstellt die Executor-Pods und verbindet sich mit ihnen.</p></details>
+<details><summary>Wie findet der Executor den Driver?</summary><p>Im Cluster Mode über den Service des Drivers. Im Client Mode muss man Host und Port setzen und einen Headless Service anlegen.</p></details>
+<details><summary>Was passiert mit den Executor-Pods am Ende?</summary><p>Sie enden und werden aufgeräumt. <code>deleteOnTermination</code> ist standardmässig <code>true</code>.</p></details>
+<details><summary>Was passiert, wenn man den Driver-Pod löscht?</summary><p>Kubernetes räumt die ganze Anwendung ab, auch Executors und den Service.</p></details>
+<details><summary>Wo liegen Shuffle-Dateien?</summary><p>In <code>spark.local.dir</code>. Auf Kubernetes ist das ein <code>emptyDir</code>-Volume im Pod, wenn nichts anderes gesetzt ist.</p></details>
+<details><summary>Wie nutzt man ein Pod Template?</summary><p>Mit <code>spark.kubernetes.driver.podTemplateFile</code> und <code>executor.podTemplateFile</code>. Spark überschreibt Name, Namespace und <code>restartPolicy</code>.</p></details>
+<h3>Zahlen</h3>
+<details><summary>Wie viele Executors startet Spark pro Runde?</summary><p>Standard 20, mit 1 Sekunde Pause. Das sind <code>allocation.batch.size</code> und <code>batch.delay</code>.</p></details>
+<details><summary>Wie hoch ist der Memory Overhead?</summary><p>Der Faktor ist 0.1 für JVM-Jobs und 0.4 für nicht-JVM-Jobs. Das Minimum ist 384 MiB seit Spark 4.0.</p></details>
+<details><summary>Was ist der Standard-Namespace?</summary><p><code>default</code>. Man setzt ihn mit <code>spark.kubernetes.namespace</code>.</p></details>
+<h3>Vergleich</h3>
+<details><summary>Kubernetes vs YARN für Spark?</summary><p>YARN hat einen externen Shuffle Service. Kubernetes nicht, dafür gibt es Images, Namespaces und die Cloud-Integration.</p></details>
+<details><summary>Spark Operator vs spark-submit?</summary><p>Der Operator macht Spark-Jobs zu Kubernetes-Ressourcen mit eigenem Lebenszyklus. spark-submit ist der direkte Weg und gehört zu Spark.</p></details>
+<details><summary>Cluster Mode vs Client Mode?</summary><p>Cluster Mode lässt den Driver im Cluster laufen und ist für Jobs üblich. Client Mode braucht Netzwerkzugang zum Driver und passt zu Notebooks.</p></details>
+<h3>Produktion</h3>
+<details><summary>Executors sterben, wenn ein Node weggeht. Was tun?</summary><p>Decommissioning aktivieren und Spot-Nodes nur für Executors nutzen. Spark rechnet sonst verlorene Shuffle-Daten neu.</p></details>
+<details><summary>Executor wird mit OOMKilled beendet. Was tun?</summary><p>Memory Overhead erhöhen. Heap und Overhead zusammen sind das Pod-Limit.</p></details>
+<details><summary>Pods bleiben Pending. Was prüfen Sie?</summary><p>Ressourcen-Anfragen, Node Selector und Quotas im Namespace. <code>kubectl describe pod</code> zeigt den Grund.</p></details>
+<details><summary>Szenario: Ein Job mit 300 Executors startet sehr langsam. Warum?</summary><p>Spark startet Executors in Runden zu 20 Pods mit 1 Sekunde Pause. Dazu kommen Scheduling und Image-Pull. Man erhöht <code>allocation.batch.size</code> und prüft den Image-Cache.</p></details>
+<details><summary>Szenario: Der Driver stirbt nach 5 Stunden, weil sein Node entfernt wird. Was ändern Sie?</summary><p>Der Driver läuft auf stabilen Nodes ohne Spot. Zusätzlich speichere ich Zwischenergebnisse in Object Storage, damit ein Neustart nicht alles neu rechnet.</p></details>
+<h3>Design</h3>
+<details><summary>Wie trennt man Driver und Executors beim Scheduling?</summary><p>Mit Node Selectors für Driver und Executors. Der Driver kommt auf stabile Nodes.</p></details>
+<details><summary>Wie baut man ein gutes Spark-Image?</summary><p>Basis-Image mit passender Spark-Version, die Jars und Python-Pakete der Anwendung. Ein Image pro Version, nicht pro Job.</p></details>
+<details><summary>Wie dimensioniert man Executor-Pods?</summary><p>Heap, Overhead und Cores zusammen passen in einen Node. Kleine Pods nutzen den Node besser, grosse Pods haben weniger Shuffle-Verkehr.</p></details>
+<details><summary>Szenario: Mehrere Teams starten Jobs im selben Cluster. Wie begrenzen Sie sie?</summary><p>Ich nutze einen Namespace pro Team mit Resource Quota und einem eigenen Service Account. Für Warteschlangen nutze ich einen Batch-Scheduler über <code>spark.kubernetes.scheduler.name</code>.</p></details>
+
+<details class="mehr"><summary>Mehr</summary>
+<h3>Gerüst</h3>
+<ul>
+  <li><b>Warum?</b> Kubernetes ist der Cluster Manager, das Image bringt die Anwendung mit.</li>
+  <li><b>Wie innen?</b> Driver-Pod erstellt Executor-Pods in Runden. Shuffle-Dateien liegen im <code>emptyDir</code>.</li>
+  <li><b>Zahlen</b> Batch-Grösse 20, Delay 1 s, Overhead 0.1, Namespace <code>default</code>, Decommission-Skript <code>/opt/decom.sh</code>.</li>
+  <li><b>Vergleich</b> Kein externer Shuffle Service, Shuffle Tracking statt dessen. YARN hat den Service.</li>
+  <li><b>Produktion</b> Pods, die verschwinden, verlieren Shuffle-Dateien. OOMKilled heisst zu wenig Overhead.</li>
+  <li><b>Design</b> Driver auf stabile Nodes, Quotas pro Team, Images pro Version.</li>
+</ul>
+
+<h3>Beispiel: Job im Cluster Mode mit Dynamic Allocation</h3>
+<pre>spark-submit \
+  --master k8s://https://&lt;api-server&gt;:6443 \
+  --deploy-mode cluster \
+  --name daily-orders \
+  --conf spark.kubernetes.container.image=registry/spark-app:1.4.0 \
+  --conf spark.kubernetes.namespace=data-jobs \
+  --conf spark.kubernetes.authenticate.driver.serviceAccountName=spark \
+  --conf spark.dynamicAllocation.enabled=true \
+  --conf spark.dynamicAllocation.shuffleTracking.enabled=true \
+  --conf spark.dynamicAllocation.maxExecutors=50 \
+  --conf spark.executor.memory=4g \
+  --conf spark.kubernetes.memoryOverheadFactor=0.2 \
+  --conf spark.kubernetes.driver.podTemplateFile=s3a://conf/driver.yml \
+  local:///opt/app/orders.py</pre>
+<p class="small">Nicht ausgeführt.</p>
+<ol>
+  <li>Die Master-URL enthält den API-Server mit Port. Der Port ist Pflicht.</li>
+  <li>Namespace und Service Account stehen explizit, damit der Driver Executors erstellen darf.</li>
+  <li>Dynamic Allocation und Shuffle Tracking gehören zusammen. Auf Kubernetes gibt es keinen externen Shuffle Service.</li>
+  <li><code>maxExecutors=50</code> begrenzt die Kosten. Der Standard ist unbegrenzt.</li>
+  <li><code>memoryOverheadFactor=0.2</code> ersetzt den Standard 0.1. Das hilft bei PySpark-Jobs mit viel Off-Heap-Speicher.</li>
+  <li><code>local://</code> zeigt auf eine Datei im Image. So braucht der Job keinen Upload.</li>
+</ol>
+
+<h3>Vergleich</h3>
+<ul>
+  <li><b>Kubernetes:</b> keine eigene Spark-Infrastruktur, Images, Namespaces, kein externer Shuffle Service.</li>
+  <li><b>YARN:</b> Hadoop-Cluster, externer Shuffle Service, bekannt aus On-Premise.</li>
+  <li><b>Standalone:</b> eigener Spark-Master und Worker. Einfach, aber ein eigener Cluster.</li>
+  <li><b>Cluster Mode:</b> Driver als Pod. Üblich für Produktion.</li>
+  <li><b>Client Mode:</b> Driver ausserhalb. Headless Service und Netzwerkzugang nötig.</li>
+  <li><b>spark-submit direkt:</b> wenig Bausteine. <b>Spark Operator:</b> Jobs als Kubernetes-Ressource, mit Status und Wiederholung.</li>
+</ul>
+
+<h3>Produktion</h3>
+<ol>
+  <li><b>Executors fallen aus (Spot, Node-Wartung):</b> Shuffle-Dateien gehen verloren. Lösung: Decommissioning und stabile Nodes für den Driver.</li>
+  <li><b>OOMKilled:</b> Heap plus Overhead ist zu klein. Lösung: Overhead erhöhen oder Speicher pro Executor ändern.</li>
+  <li><b>Pods bleiben Pending:</b> Quota, Node Selector oder zu grosse Anfrage. Lösung: <code>kubectl describe pod</code> lesen.</li>
+  <li><b>Langsamer Start:</b> Executors kommen in Runden, dazu der Image-Pull. Lösung: Batch-Grösse anpassen, Images klein halten.</li>
+  <li><b>Verwaiste Pods:</b> Im Client Mode fehlt <code>spark.kubernetes.driver.pod.name</code>. Lösung: setzen, damit Executors mit dem Driver verschwinden.</li>
+  <li><b>Kein Log nach Fehler:</b> Executor-Pods sind weg. Lösung: Logs zentral sammeln oder <code>deleteOnTermination=false</code> zum Debuggen.</li>
+</ol>
+
+<h3>Diagnose: Werkzeuge und Befehle</h3>
+<ul>
+  <li><code>kubectl get pods -n &lt;ns&gt;</code>: zeigt Driver und Executors mit Status.</li>
+  <li><code>kubectl logs &lt;driver-pod&gt;</code>: das wichtigste Log bei Start-Fehlern.</li>
+  <li><code>kubectl describe pod &lt;pod&gt;</code>: zeigt OOMKilled, Pending-Gründe und Events.</li>
+  <li>Spark UI über <code>kubectl port-forward &lt;driver-pod&gt; 4040</code>: Stages, Shuffle, Spill.</li>
+  <li><code>kubectl get events -n &lt;ns&gt;</code>: zeigt Scheduling- und Pull-Fehler.</li>
+</ul>
+
+<h3>Senior-Punkte</h3>
+<div class="senior">
+<ol>
+  <li><b>Der Pod-Speicher ist Heap plus Overhead.</b> Ich dimensioniere beides, nicht nur <code>executor.memory</code>.</li>
+  <li><b>Shuffle-Daten sind der schwache Punkt.</b> Ohne externen Service hängt alles an Decommissioning und lokalem Speicher.</li>
+  <li><b>Der Driver ist ein Single Point of Failure.</b> Er gehört auf stabile Nodes.</li>
+  <li><b>Quotas und Namespaces sind Governance.</b> Ohne sie nimmt ein Job den ganzen Cluster.</li>
+  <li><b>Images klein und versioniert halten.</b> Sie bestimmen Startzeit und Reproduzierbarkeit.</li>
+  <li><b>Ich vergleiche mit Managed Spark.</b> Der Betrieb auf Kubernetes kostet Zeit, die man einrechnen muss.</li>
+</ol>
+</div>
+
+<h3>Dein Beispiel</h3>
+</details>
+
+</body>
+</html>

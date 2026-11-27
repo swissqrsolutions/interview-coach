@@ -1,0 +1,268 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Structured Streaming</title>
+<style>
+  body { font: 17px/1.55 -apple-system, system-ui, sans-serif; max-width: 760px; margin: 0 auto; padding: 16px; color: #1d1d1f; }
+  h1 { font-size: 28px; margin: 8px 0 4px; }
+  h2 { font-size: 21px; margin: 32px 0 8px; padding-top: 12px; border-top: 2px solid #e5e5ea; }
+  .kern { background: #eef6ff; border-left: 4px solid #0a66c2; padding: 10px 14px; border-radius: 6px; }
+  .senior { background: #f0faf0; border-left: 4px solid #2e7d32; padding: 10px 14px; border-radius: 6px; }
+  .trap { background: #fff4f2; border-left: 4px solid #c62828; padding: 10px 14px; border-radius: 6px; }
+  code { background: #f2f2f7; padding: 1px 5px; border-radius: 4px; font-size: 15px; }
+  pre { background: #1e1e1e; color: #e6e6e6; padding: 12px; border-radius: 8px; overflow-x: auto; font-size: 13.5px; line-height: 1.45; }
+  svg { width: 100%; height: auto; display: block; margin: 10px 0; }
+  ol li, ul li { margin: 4px 0; }
+  details { border: 1px solid #e5e5ea; border-radius: 8px; padding: 8px 12px; margin: 6px 0; }
+  summary { font-weight: 600; cursor: pointer; }
+  details p { margin: 6px 0 2px; }
+  .small { color: #6e6e73; font-size: 14px; }
+  h3 { font-size: 17px; margin: 20px 0 6px; }
+  .geruest { border: 2px solid #1d1d1f; border-radius: 6px; padding: 10px 14px; margin: 14px 0; font-size: 15px; line-height: 1.4; }
+  .geruest h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; margin: 0 0 8px; padding: 0; border: 0; }
+  .geruest dl { display: grid; grid-template-columns: 6.6em 1fr; gap: 6px 10px; margin: 0; }
+  .geruest dt { font-weight: 700; font-size: 12px; text-transform: uppercase; letter-spacing: .05em; padding-top: 1px; }
+  .geruest dd { margin: 0; }
+  .muster { border: 1px solid #e5e5ea; border-left: 4px solid #1d1d1f; border-radius: 6px; padding: 10px 14px; margin: 14px 0; }
+  .muster h3 { margin: 0 0 6px; font-size: 13px; text-transform: uppercase; letter-spacing: .06em; }
+  .muster .mq { margin: 0 0 6px; }
+</style>
+</head>
+<body>
+<h1>Structured Streaming</h1>
+<!-- sources: Spark · Tier 2 · Quellen: Apache Spark Docs 4.3.0 – Structured Streaming Programming Guide (Getting Started, APIs on DataFrames and Datasets: Window Operations, Handling Late Data and Watermarking, Triggers, Recovering from Failures with Checkpointing, Recovery Semantics after Changes, State Store, Stream-Stream Joins, foreachBatch), Performance Tips (Continuous Processing) -->
+<div class="kern">
+<b>Kern:</b> <b>Structured Streaming</b> behandelt einen Datenstrom wie eine Tabelle, an die immer neue Zeilen kommen. Spark rechnet die Query in kleinen <b>Micro-Batches</b> und speichert Fortschritt und <b>State</b> im <b>Checkpoint</b>. Mit wiederholbarer Quelle und idempotentem Sink ist <b>Exactly-once</b> möglich.
+</div>
+<div class="muster"><h3>Antwort-Muster</h3><p class="mq"><b>Frage:</b> Wie funktioniert Structured Streaming, und wie geht es mit Ausfällen um?</p><ol>
+  <li>Mechanismus: Ein Strom ist eine unendliche Tabelle. Spark rechnet in jedem Trigger einen Micro-Batch und aktualisiert das Ergebnis.</li>
+  <li>Zahl: Ohne Trigger startet der nächste Batch, sobald der vorige fertig ist. Mit <code>processingTime</code> startet er im festen Intervall.</li>
+  <li>Trade-off: Ein Watermark begrenzt den State, aber Daten, die später kommen, können verloren gehen. Ich wähle ihn nach der echten Verspätung.</li>
+  <li>Produktion: Ich setze immer einen <code>checkpointLocation</code> auf zuverlässigen Speicher. Der Sink muss idempotent sein, sonst gibt es Duplikate nach einem Restart.</li>
+</ol></div>
+<h2>1. Ein Micro-Batch in 8 Schritten</h2>
+<svg viewBox="0 0 520 448" font-family="-apple-system, system-ui, sans-serif" font-size="13">
+  <defs><marker id="mstructuredstreaminga" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="10" y="10" width="235" height="80" rx="10" fill="#eee" stroke="#777"/>
+  <text x="127.5" y="34" text-anchor="middle" font-weight="700" font-size="15">1. Trigger</text>
+  <text x="127.5" y="54" text-anchor="middle" font-size="13">neuer Batch startet</text>
+  <rect x="295" y="10" width="235" height="80" rx="10" fill="#dbe9fb" stroke="#0a66c2"/>
+  <text x="412.5" y="34" text-anchor="middle" font-weight="700" font-size="15">2. Offsets planen</text>
+  <text x="412.5" y="54" text-anchor="middle" font-size="13">Bereich ins Write-ahead Log</text>
+  <rect x="295" y="126" width="235" height="80" rx="10" fill="#dbe9fb" stroke="#0a66c2"/>
+  <text x="412.5" y="150" text-anchor="middle" font-weight="700" font-size="15">3. Plan bauen</text>
+  <text x="412.5" y="170" text-anchor="middle" font-size="13">Catalyst plant die Query</text>
+  <rect x="10" y="126" width="235" height="80" rx="10" fill="#e8f5e9" stroke="#2e7d32"/>
+  <text x="127.5" y="150" text-anchor="middle" font-weight="700" font-size="15">4. Tasks laufen</text>
+  <text x="127.5" y="170" text-anchor="middle" font-size="13">Quelle lesen, State lesen</text>
+  <rect x="10" y="242" width="235" height="80" rx="10" fill="#e8f5e9" stroke="#2e7d32"/>
+  <text x="127.5" y="266" text-anchor="middle" font-weight="700" font-size="15">5. State ändern</text>
+  <text x="127.5" y="286" text-anchor="middle" font-size="13">neue Version im State Store</text>
+  <rect x="295" y="242" width="235" height="80" rx="10" fill="#fff4f2" stroke="#c62828"/>
+  <text x="412.5" y="266" text-anchor="middle" font-weight="700" font-size="15">6. Sink schreiben</text>
+  <text x="412.5" y="286" text-anchor="middle" font-size="13">Ergebnis nach Output Mode</text>
+  <rect x="295" y="358" width="235" height="80" rx="10" fill="#dbe9fb" stroke="#0a66c2"/>
+  <text x="412.5" y="382" text-anchor="middle" font-weight="700" font-size="15">7. Batch fertig</text>
+  <text x="412.5" y="402" text-anchor="middle" font-size="13">Fortschritt im Checkpoint</text>
+  <rect x="10" y="358" width="235" height="80" rx="10" fill="#eee" stroke="#777"/>
+  <text x="127.5" y="382" text-anchor="middle" font-weight="700" font-size="15">8. Watermark</text>
+  <text x="127.5" y="402" text-anchor="middle" font-size="13">rückt mit der Event Time vor</text>
+  <line x1="245" y1="50.0" x2="293" y2="50.0" stroke="#555" stroke-width="2" marker-end="url(#mstructuredstreaminga)"/>
+  <line x1="412.5" y1="90" x2="412.5" y2="124" stroke="#555" stroke-width="2" marker-end="url(#mstructuredstreaminga)"/>
+  <line x1="295" y1="166.0" x2="247" y2="166.0" stroke="#555" stroke-width="2" marker-end="url(#mstructuredstreaminga)"/>
+  <line x1="127.5" y1="206" x2="127.5" y2="240" stroke="#555" stroke-width="2" marker-end="url(#mstructuredstreaminga)"/>
+  <line x1="245" y1="282.0" x2="293" y2="282.0" stroke="#555" stroke-width="2" marker-end="url(#mstructuredstreaminga)"/>
+  <line x1="412.5" y1="322" x2="412.5" y2="356" stroke="#555" stroke-width="2" marker-end="url(#mstructuredstreaminga)"/>
+  <line x1="295" y1="398.0" x2="247" y2="398.0" stroke="#555" stroke-width="2" marker-end="url(#mstructuredstreaminga)"/>
+</svg>
+<ol>
+  <li><b>Trigger:</b> Ohne Angabe startet ein Micro-Batch, sobald der vorige fertig ist. Mit festem Intervall wartet die Engine bis zum Intervallende.</li>
+  <li><b>Offsets planen:</b> Die Engine legt fest, welchen Offset-Bereich der Batch liest. Sie schreibt den Bereich ins Write-ahead Log im Checkpoint.</li>
+  <li><b>Plan bauen:</b> Die Streaming-Query wird wie eine Batch-Query geplant. Catalyst baut den Plan für genau diese neuen Daten.</li>
+  <li><b>Tasks laufen:</b> Tasks lesen die neuen Zeilen aus der Quelle. Bei Aggregationen oder Joins lesen sie auch den State.</li>
+  <li><b>State ändern:</b> Der State Store ist ein Key-Value-Store mit Versionen. Jeder Batch schreibt eine neue Version.</li>
+  <li><b>Sink schreiben:</b> Der Sink bekommt das Ergebnis gemäss Output Mode. Das sind alle Zeilen, nur neue oder nur geänderte.</li>
+  <li><b>Batch fertig:</b> Die Engine hält den Fortschritt im Checkpoint fest. Nach einem Absturz macht sie von dort weiter.</li>
+  <li><b>Watermark:</b> Mit jedem Batch rückt der Watermark vor, wenn neue Event Times ankommen. Alter State wird danach gelöscht.</li>
+</ol>
+<p>Fällt der Job aus, liest er beim Start den Checkpoint. Er plant den offenen Batch mit denselben Offsets neu. Darum muss die Quelle wiederholbar sein.</p>
+<h2>2. Aufbau</h2>
+<svg viewBox="0 0 520 298" font-family="-apple-system, system-ui, sans-serif" font-size="13">
+  <defs><marker id="mstructuredstreamingb" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="10" y="10" width="500" height="70" rx="10" fill="#dbe9fb" stroke="#0a66c2"/>
+  <text x="260.0" y="34" text-anchor="middle" font-weight="700" font-size="15">Source</text>
+  <text x="260.0" y="54" text-anchor="middle" font-size="13">Kafka, Dateien · hat Offsets</text>
+  <line x1="260" y1="80" x2="260" y2="112" stroke="#555" stroke-width="2" marker-end="url(#mstructuredstreamingb)"/>
+  <rect x="10" y="114" width="243" height="70" rx="10" fill="#e8f5e9" stroke="#2e7d32"/>
+  <text x="131.5" y="138" text-anchor="middle" font-weight="700" font-size="15">Micro-Batch-Engine</text>
+  <text x="131.5" y="158" text-anchor="middle" font-size="13">Catalyst · Tasks · Trigger</text>
+  <rect x="267" y="114" width="243" height="70" rx="10" fill="#fff4f2" stroke="#c62828"/>
+  <text x="388.5" y="138" text-anchor="middle" font-weight="700" font-size="15">State Store</text>
+  <text x="388.5" y="158" text-anchor="middle" font-size="13">Key-Value · mit Versionen</text>
+  <line x1="260" y1="184" x2="260" y2="216" stroke="#555" stroke-width="2" marker-end="url(#mstructuredstreamingb)"/>
+  <rect x="10" y="218" width="243" height="70" rx="10" fill="#dbe9fb" stroke="#0a66c2"/>
+  <text x="131.5" y="242" text-anchor="middle" font-weight="700" font-size="15">Sink</text>
+  <text x="131.5" y="262" text-anchor="middle" font-size="13">Dateien, Kafka, foreachBatch</text>
+  <rect x="267" y="218" width="243" height="70" rx="10" fill="#eee" stroke="#777"/>
+  <text x="388.5" y="242" text-anchor="middle" font-weight="700" font-size="15">Checkpoint</text>
+  <text x="388.5" y="262" text-anchor="middle" font-size="13">Offsets · State · Fortschritt</text>
+</svg>
+<ol>
+  <li>Die <b>Source</b> muss Offsets haben, zum Beispiel Kafka. Nur so kann Spark einen Bereich wieder lesen.</li>
+  <li>Die <b>Micro-Batch-Engine</b> plant und rechnet jeden Batch als eigene Query.</li>
+  <li>Der <b>State Store</b> hält Zwischenstände für Aggregationen, Joins und Deduplizierung.</li>
+  <li>Der <b>Sink</b> schreibt das Ergebnis. Die Docs verlangen für Exactly-once einen idempotenten Sink.</li>
+  <li>Der <b>Checkpoint</b> liegt in einem HDFS-kompatiblen Dateisystem. Er hält Offsets und laufende Aggregate fest.</li>
+  <li>Ein <b>Trigger</b> steuert, wann ein Batch startet. Der Standard ist Micro-Batch ohne Pause.</li>
+</ol>
+<h2>3. Details</h2>
+<ol>
+  <li><b>Programmiermodell:</b> Der Strom ist eine Input-Tabelle ohne Ende. Neue Daten sind neue Zeilen. Spark hält die ganze Tabelle nicht, nur den minimalen State für das Ergebnis.</li>
+  <li><b>Trigger:</b> Ohne Angabe läuft Micro-Batch, sobald der vorige fertig ist. Mit <code>processingTime</code> startet ein Batch im Intervall. Dauert ein Batch länger, startet der nächste sofort danach. Gibt es keine neuen Daten, startet kein Batch.</li>
+  <li><b>availableNow:</b> Die Query liest alle verfügbaren Daten und stoppt dann. Sie nutzt möglicherweise mehrere Batches, je nach Source-Option wie <code>maxFilesPerTrigger</code>. Der alte Trigger <code>once</code> ist deprecated.</li>
+  <li><b>Output Modes:</b> <b>Append</b> schreibt nur neue Zeilen. <b>Update</b> schreibt nur geänderte Zeilen und gilt seit Spark 2.1.1. <b>Complete</b> schreibt die ganze Result Table. Ohne Aggregation ist Update wie Append.</li>
+  <li><b>Checkpoint:</b> Er speichert den Offset-Bereich pro Trigger und die laufenden Aggregate. Der Pfad muss in einem HDFS-kompatiblen Dateisystem liegen. Man setzt ihn mit <code>checkpointLocation</code>.</li>
+  <li><b>Exactly-once:</b> Die Docs nennen zwei Bedingungen. Die Quelle ist wiederholbar und der Sink ist idempotent. Dann gilt Exactly-once Ende-zu-Ende, auch bei Fehlern.</li>
+  <li><b>foreachBatch:</b> Die Funktion bekommt den Batch-DataFrame und eine Batch-ID. Sie gibt standardmässig nur At-least-once. Mit der Batch-ID kann man Duplikate erkennen und so Exactly-once erreichen.</li>
+  <li><b>Event Time und Watermark:</b> Event Time ist die Zeit im Ereignis. <code>withWatermark</code> gibt die erlaubte Verspätung an. Der Zustand eines Fensters bleibt, bis das maximale Event-Time minus Schwelle über dem Fensterende liegt.</li>
+  <li><b>Watermark-Garantie:</b> Ein Watermark von 2 Stunden verwirft nie Daten, die weniger als 2 Stunden spät sind. Die Garantie gilt nur in eine Richtung. Spätere Daten können noch zählen, müssen aber nicht.</li>
+  <li><b>Fenster:</b> Tumbling-Fenster sind fest und überlappen nicht. Sliding-Fenster können überlappen, dann gehört ein Ereignis zu mehreren Fenstern. Session-Fenster nutzen <code>session_window</code> und kennen keinen Update Mode.</li>
+  <li><b>State Store:</b> Er ist ein versionierter Key-Value-Store. Standard ist der HDFS-Provider mit einer Map im Speicher, gesichert in Dateien. RocksDB gibt es seit Spark 3.2 über <code>spark.sql.streaming.stateStore.providerClass</code>.</li>
+  <li><b>Stream-Stream-Join:</b> Ohne Grenze wächst der State ohne Ende. Man braucht Watermarks auf beiden Seiten und eine Zeitbedingung im Join. Bei Outer Joins sind beide Pflicht. Die Docs nennen für Joins nur den Append Mode.</li>
+  <li><b>Deduplizierung:</b> <code>dropDuplicatesWithinWatermark</code> entfernt Duplikate mit gleicher ID innerhalb des Watermarks. Der Watermark muss länger sein als der grösste Abstand zwischen Duplikaten.</li>
+  <li><b>Änderungen beim Restart:</b> Änderungen an zustandsbehafteten Operationen sind nicht erlaubt. Auch andere Input-Quellen sind nicht erlaubt. Ein Rate-Limit wie <code>maxOffsetsPerTrigger</code> darf man ergänzen.</li>
+</ol>
+<h2>4. Fallen</h2>
+<div class="trap">
+<ul>
+  <li>„Structured Streaming ist echtes Event-für-Event-Streaming.“ → <b>Falsch.</b> Standard ist Micro-Batch. Continuous Processing ist experimentell und gibt nur At-least-once.</li>
+  <li>„Ein Watermark von 2 Stunden verwirft alles, was älter ist.“ → <b>Falsch.</b> Nur Daten unter 2 Stunden Verspätung sind garantiert dabei. Ältere Daten können aggregiert werden oder nicht.</li>
+  <li>„Mit Checkpoint habe ich automatisch Exactly-once.“ → <b>Falsch.</b> Es braucht auch eine wiederholbare Quelle und einen idempotenten Sink. foreachBatch gibt standardmässig At-least-once.</li>
+  <li>„Ich kann die Aggregation nach dem Restart einfach ändern.“ → <b>Falsch.</b> Änderungen an Gruppierung, Aggregaten oder Join-Typ sind mit altem Checkpoint nicht erlaubt.</li>
+  <li>„Complete Mode mit Watermark räumt State auf.“ → <b>Falsch.</b> Complete braucht alle Aggregate. Ein Watermark löscht den State nur bei Append oder Update.</li>
+  <li>„Der Checkpoint ist nur ein Cache und darf gelöscht werden.“ → <b>Falsch.</b> Er hält Offsets und State. Ohne ihn startet die Query neu und liest je nach Option alles oder nur Neues.</li>
+</ul>
+</div>
+<h2>5. Selbsttest</h2>
+<h3>Warum?</h3>
+<details><summary>Warum braucht ein Aggregations-Stream einen Watermark?</summary><p>Ohne Watermark weiss Spark nie, wann ein Fenster fertig ist. Der State wächst dann ohne Ende.</p></details>
+<details><summary>Warum braucht Exactly-once eine wiederholbare Quelle?</summary><p>Nach einem Absturz liest Spark denselben Offset-Bereich noch einmal. Das geht nur, wenn die Quelle die Daten behält.</p></details>
+<details><summary>Warum ist availableNow besser als der alte Trigger once?</summary><p>Er kann die Daten in mehreren Batches verarbeiten. Das skaliert besser. once nimmt alles in einen Batch.</p></details>
+<h3>Wie innen?</h3>
+<details><summary>Was passiert in einem Micro-Batch?</summary><p>Die Engine plant den Offset-Bereich und schreibt ihn ins Write-ahead Log. Dann rechnet sie die Query, aktualisiert den State und schreibt in den Sink. Zuletzt hält sie den Fortschritt fest.</p></details>
+<details><summary>Was steht im Checkpoint?</summary><p>Der Offset-Bereich pro Trigger und die laufenden Aggregate. Der Pfad muss in einem HDFS-kompatiblen Dateisystem liegen.</p></details>
+<details><summary>Was ist der State Store?</summary><p>Ein versionierter Key-Value-Store für Aggregate, Joins und Deduplizierung. Standard ist eine Map im Speicher, gesichert in Dateien.</p></details>
+<details><summary>Wann wird ein Fenster im Append Mode geschrieben?</summary><p>Wenn der Watermark das Fensterende überschritten hat. Dann ist das Ergebnis final.</p></details>
+<details><summary>Wie entscheidet Spark, ob späte Daten noch zählen?</summary><p>Der Watermark ist das maximale gesehene Event-Time minus die Schwelle. Liegt ein Fenster darunter, löscht Spark seinen State.</p></details>
+<details><summary>Was macht availableNow bei einem Neustart mit offenen Batches?</summary><p>Alle nicht abgeschlossenen Batches werden zuerst verarbeitet. Dann liest die Query die neuen Daten bis zum Startzeitpunkt.</p></details>
+<h3>Zahlen</h3>
+<details><summary>Wie viele Shuffle-Partitionen nutzt eine Aggregation standardmässig?</summary><p>Der Standard von <code>spark.sql.shuffle.partitions</code> ist 200.</p></details>
+<details><summary>Ab welcher Version gibt es RocksDB als State Store?</summary><p>Seit Spark 3.2. Der Standard ist der HDFS-Provider.</p></details>
+<details><summary>Was heisst ein Watermark von 10 Minuten?</summary><p>Daten unter 10 Minuten Verspätung sind garantiert dabei. Das Fensterende plus 10 Minuten bestimmt, wann der State fällt.</p></details>
+<h3>Vergleich</h3>
+<details><summary>Micro-Batch vs Continuous Processing?</summary><p>Micro-Batch hat höhere Latenz, aber Exactly-once mit den Bedingungen. Continuous ist experimentell und gibt At-least-once.</p></details>
+<details><summary>Append vs Update vs Complete?</summary><p>Append: nur neue Zeilen. Update: nur geänderte Zeilen. Complete: die ganze Tabelle bei jedem Trigger.</p></details>
+<details><summary>Streaming vs Batch-Job alle 15 Minuten?</summary><p>Streaming hält State und Fortschritt selbst. Ein Batch-Job muss beides selbst verwalten. Ein Batch-Job mit availableNow ist oft billiger.</p></details>
+<h3>Produktion</h3>
+<details><summary>Was tun bei Duplikaten im Sink nach einem Restart?</summary><p>Prüfen, ob der Sink idempotent ist. Bei foreachBatch die Batch-ID zum Deduplizieren nutzen.</p></details>
+<details><summary>Der State wächst ständig. Was tun?</summary><p>Prüfen, ob ein Watermark gesetzt ist und ob er auf der richtigen Spalte liegt. Bei Joins fehlt oft die Zeitbedingung.</p></details>
+<details><summary>Warum startet die Query nach einer Code-Änderung nicht mehr?</summary><p>Sie hat eine nicht erlaubte Änderung an einer zustandsbehafteten Operation. Neuen Checkpoint nutzen und bei Bedarf neu aufbauen.</p></details>
+<details><summary>Szenario: Ein Stream verliert zu späte Events. Was tun Sie?</summary><p>Ich messe die echte Verspätung. Dann setze ich den Watermark grösser oder speichere späte Daten extra und korrigiere sie per Batch.</p></details>
+<details><summary>Szenario: Ein Job läuft als Stream, bekommt aber nur einmal pro Stunde Daten. Was schlagen Sie vor?</summary><p>Ich nutze availableNow und starte den Job vom Scheduler. So braucht er nur Ressourcen während der Verarbeitung und behält den Checkpoint.</p></details>
+<h3>Design</h3>
+<details><summary>Wie baue ich einen idempotenten Sink mit foreachBatch?</summary><p>Ich speichere die Batch-ID mit dem Ergebnis oder nutze ein MERGE auf einen Schlüssel. Ein wiederholter Batch ändert dann nichts.</p></details>
+<details><summary>Wie wähle ich den Watermark?</summary><p>Nach der echten Verspätung, die ich messe. Ein grösserer Wert hält mehr State und verzögert Append-Ergebnisse.</p></details>
+<details><summary>Wie ändere ich eine Aggregation sicher?</summary><p>Mit neuem Checkpoint und neuer Ausgabe. Alte Ergebnisse berechne ich bei Bedarf aus den Rohdaten neu.</p></details>
+<details><summary>Szenario: Zwei Streams sollen nach Klick und Impression verknüpft werden. Wie gehen Sie vor?</summary><p>Ich setze Watermarks auf beiden Seiten und eine Zeitbedingung, zum Beispiel Klick höchstens 1 Stunde nach Impression. Das begrenzt den State und gilt für Outer Joins als Pflicht.</p></details>
+
+<details class="mehr"><summary>Mehr</summary>
+<h3>Gerüst</h3>
+<ul>
+  <li><b>Warum?</b> Ein Strom wird inkrementell wie eine Tabelle berechnet, ohne eigenes Batch-Scheduling.</li>
+  <li><b>Wie innen?</b> Micro-Batch: Offsets planen, rechnen, State ändern, Sink schreiben, Checkpoint.</li>
+  <li><b>Zahlen</b> Standard-Shuffle-Partitionen 200. Watermark-Garantie nur in eine Richtung. RocksDB seit 3.2.</li>
+  <li><b>Vergleich</b> Continuous ist experimentell und At-least-once. availableNow ersetzt once.</li>
+  <li><b>Produktion</b> State wächst ohne Watermark. foreachBatch ist At-least-once ohne Batch-ID-Logik.</li>
+  <li><b>Design</b> Idempotenter Sink, Watermark nach echter Verspätung, Checkpoint auf zuverlässigem Speicher.</li>
+</ul>
+
+<h3>Beispiel: Kafka-Strom mit Fenstern und Checkpoint</h3>
+<pre>from pyspark.sql import functions as F
+
+events = (spark.readStream.format("kafka")
+    .option("kafka.bootstrap.servers", "kafka:9092")
+    .option("subscribe", "clicks")
+    .load()
+    .select(F.col("timestamp").alias("event_time"),
+            F.col("value").cast("string").alias("page")))
+
+counts = (events
+    .withWatermark("event_time", "10 minutes")
+    .groupBy(F.window("event_time", "5 minutes"), "page")
+    .count())
+
+query = (counts.writeStream
+    .outputMode("append")
+    .format("parquet")
+    .option("path", "s3a://lake/clicks_5min")
+    .option("checkpointLocation", "s3a://lake/_chk/clicks_5min")
+    .trigger(processingTime="1 minute")
+    .start())</pre>
+<p class="small">Nicht ausgeführt.</p>
+<ol>
+  <li><code>withWatermark</code> steht vor der Aggregation und nutzt dieselbe Spalte wie das Fenster. Nur so löscht Spark den State.</li>
+  <li>Der Append Mode schreibt ein Fenster erst, wenn der Watermark sein Ende überschritten hat.</li>
+  <li><code>checkpointLocation</code> hält Offsets und State. Nach einem Restart macht die Query dort weiter.</li>
+  <li><code>processingTime="1 minute"</code> startet höchstens einen Batch pro Minute. Ohne neue Daten startet kein Batch.</li>
+  <li>Ein Datei-Sink ist hier der Sink. Bei foreachBatch müsste man selbst deduplizieren.</li>
+</ol>
+
+<h3>Vergleich</h3>
+<ul>
+  <li><b>Micro-Batch:</b> Standard, Latenz im Bereich des Batches, Exactly-once möglich.</li>
+  <li><b>Continuous Processing:</b> experimentell, niedrige Latenz, At-least-once, keine automatischen Retries.</li>
+  <li><b>availableNow:</b> liest alles, stoppt dann. Gut für geplante Läufe mit Checkpoint.</li>
+  <li><b>Append:</b> nur neue Zeilen. Mit Aggregation braucht es einen Watermark.</li>
+  <li><b>Update:</b> nur geänderte Zeilen. Session-Fenster unterstützen es nicht.</li>
+  <li><b>Complete:</b> ganze Tabelle. Kein State-Aufräumen per Watermark.</li>
+  <li><b>foreachBatch vs fester Sink:</b> foreachBatch ist flexibel, aber At-least-once ohne eigene Logik.</li>
+</ul>
+
+<h3>Produktion</h3>
+<ol>
+  <li><b>Duplikate nach Restart:</b> Der Sink ist nicht idempotent. Lösung: MERGE auf Schlüssel oder Batch-ID speichern.</li>
+  <li><b>State wächst ohne Ende:</b> Watermark fehlt oder liegt auf der falschen Spalte. Lösung: Watermark vor der Aggregation setzen.</li>
+  <li><b>Query startet nicht nach Deployment:</b> nicht erlaubte Änderung im State-Plan. Lösung: neuer Checkpoint und Neuaufbau.</li>
+  <li><b>Checkpoint verloren:</b> Die Query beginnt neu. Lösung: Checkpoint auf zuverlässigen Speicher legen und sichern.</li>
+  <li><b>Späte Daten fehlen:</b> Der Watermark ist zu klein. Lösung: Verspätung messen und Watermark anpassen.</li>
+  <li><b>Viele kleine Dateien:</b> Jeder Batch schreibt Dateien. Lösung: grösseres Intervall oder Compaction.</li>
+</ol>
+
+<h3>Diagnose: Werkzeuge und Befehle</h3>
+<ul>
+  <li><code>query.lastProgress</code> und <code>query.status</code>: zeigen Zeilen pro Sekunde und Batch-Dauer.</li>
+  <li>Spark UI, Tab Structured Streaming: zeigt Input-Rate, Process-Rate und Batch-Dauer.</li>
+  <li><code>StreamingQueryListener</code>: sendet Fortschritt an ein Monitoring.</li>
+  <li>Checkpoint-Ordner prüfen: Er muss wachsen und lesbar sein.</li>
+  <li><code>query.exception</code>: zeigt den Fehler, wenn die Query gestoppt ist.</li>
+</ul>
+
+<h3>Senior-Punkte</h3>
+<div class="senior">
+<ol>
+  <li><b>Der Watermark ist eine Geschäftsentscheidung:</b> Er tauscht Vollständigkeit gegen State und Latenz.</li>
+  <li><b>Exactly-once ist ein System-Property:</b> Quelle, Engine und Sink müssen zusammenpassen.</li>
+  <li><b>Nicht jeder Job muss laufen:</b> availableNow mit Scheduler spart oft Kosten.</li>
+  <li><b>Checkpoint und Code gehören zusammen:</b> Ein neuer Plan braucht oft einen neuen Checkpoint.</li>
+  <li><b>State ist der Kostenfaktor:</b> Ich messe seine Grösse und begrenze ihn bewusst.</li>
+  <li><b>Späte Daten brauchen einen Plan:</b> Stream für schnelle Zahlen, Batch-Korrektur für die Wahrheit.</li>
+</ol>
+</div>
+
+<h3>Dein Beispiel</h3>
+</details>
+
+</body>
+</html>

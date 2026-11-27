@@ -1,0 +1,265 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Backfill und idempotente DAGs</title>
+<style>
+  body { font: 17px/1.55 -apple-system, system-ui, sans-serif; max-width: 760px; margin: 0 auto; padding: 16px; color: #1d1d1f; }
+  h1 { font-size: 28px; margin: 8px 0 4px; }
+  h2 { font-size: 21px; margin: 32px 0 8px; padding-top: 12px; border-top: 2px solid #e5e5ea; }
+  .kern { background: #eef6ff; border-left: 4px solid #0a66c2; padding: 10px 14px; border-radius: 6px; }
+  .senior { background: #f0faf0; border-left: 4px solid #2e7d32; padding: 10px 14px; border-radius: 6px; }
+  .trap { background: #fff4f2; border-left: 4px solid #c62828; padding: 10px 14px; border-radius: 6px; }
+  code { background: #f2f2f7; padding: 1px 5px; border-radius: 4px; font-size: 15px; }
+  pre { background: #1e1e1e; color: #e6e6e6; padding: 12px; border-radius: 8px; overflow-x: auto; font-size: 13.5px; line-height: 1.45; }
+  svg { width: 100%; height: auto; display: block; margin: 10px 0; }
+  ol li, ul li { margin: 4px 0; }
+  details { border: 1px solid #e5e5ea; border-radius: 8px; padding: 8px 12px; margin: 6px 0; }
+  summary { font-weight: 600; cursor: pointer; }
+  details p { margin: 6px 0 2px; }
+  .small { color: #6e6e73; font-size: 14px; }
+  h3 { font-size: 17px; margin: 20px 0 6px; }
+  .geruest { border: 2px solid #1d1d1f; border-radius: 6px; padding: 10px 14px; margin: 14px 0; font-size: 15px; line-height: 1.4; }
+  .geruest h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; margin: 0 0 8px; padding: 0; border: 0; }
+  .geruest dl { display: grid; grid-template-columns: 6.6em 1fr; gap: 6px 10px; margin: 0; }
+  .geruest dt { font-weight: 700; font-size: 12px; text-transform: uppercase; letter-spacing: .05em; padding-top: 1px; }
+  .geruest dd { margin: 0; }
+  .muster { border: 1px solid #e5e5ea; border-left: 4px solid #1d1d1f; border-radius: 6px; padding: 10px 14px; margin: 14px 0; }
+  .muster h3 { margin: 0 0 6px; font-size: 13px; text-transform: uppercase; letter-spacing: .06em; }
+  .muster .mq { margin: 0 0 6px; }
+</style>
+</head>
+<body>
+<h1>Backfill und idempotente DAGs</h1>
+<!-- sources: Airflow · Tier 2 · Quellen: Apache Airflow Docs 3.4.0 (stable) – DAG Runs (Catchup, Backfill, Data Interval, Re-run Tasks, Clearing), Best Practices (Idempotent tasks, Top-level code), Core Concepts: Tasks (Retries), Configuration Reference (catchup_by_default) -->
+<div class="kern">
+<b>Kern:</b> Ein <b>Backfill</b> lässt einen DAG für vergangene Zeiträume laufen. Ein Task ist <b>idempotent</b>, wenn ein zweiter Lauf mit denselben Eingaben dasselbe Ergebnis gibt. Nur idempotente Tasks sind bei <b>Retries</b>, <b>Backfills</b> und Neustarts sicher.
+</div>
+<div class="muster"><h3>Antwort-Muster</h3><p class="mq"><b>Frage:</b> Was ist ein Backfill, und wie macht man einen DAG idempotent?</p><ol>
+  <li>Mechanismus: Ein Backfill erstellt DAG Runs für jedes Data Interval im Zeitraum. Jeder Task liest und schreibt nur sein eigenes Intervall.</li>
+  <li>Zahl: Catchup ist standardmässig aus (<code>catchup_by_default=False</code>). Im Beispiel sind nach zwei Läufen der append-Variante 4 Zeilen statt 2 da.</li>
+  <li>Trade-off: Überschreiben des Intervalls oder UPSERT macht den Lauf wiederholbar. Anhängen erzeugt Duplikate und ist einfach, aber unsicher.</li>
+  <li>Produktion: Ich lese nie <code>now()</code> oder die neuesten Daten, sondern das Data Interval. So gibt ein Backfill dasselbe wie der Originallauf.</li>
+</ol></div>
+<h2>1. Ein Backfill in 8 Schritten</h2>
+<svg viewBox="0 0 520 448" font-family="-apple-system, system-ui, sans-serif" font-size="13">
+  <defs><marker id="mbackfillidempotencya" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="10" y="10" width="235" height="80" rx="10" fill="#eee" stroke="#777"/>
+  <text x="127.5" y="34" text-anchor="middle" font-weight="700" font-size="15">1. Zeitraum wählen</text>
+  <text x="127.5" y="54" text-anchor="middle" font-size="13">from-date und to-date</text>
+  <rect x="295" y="10" width="235" height="80" rx="10" fill="#dbe9fb" stroke="#0a66c2"/>
+  <text x="412.5" y="34" text-anchor="middle" font-weight="700" font-size="15">2. Backfill starten</text>
+  <text x="412.5" y="54" text-anchor="middle" font-size="13">UI oder CLI</text>
+  <rect x="295" y="126" width="235" height="80" rx="10" fill="#dbe9fb" stroke="#0a66c2"/>
+  <text x="412.5" y="150" text-anchor="middle" font-weight="700" font-size="15">3. DAG Runs</text>
+  <text x="412.5" y="170" text-anchor="middle" font-size="13">ein Run pro Interval</text>
+  <rect x="10" y="126" width="235" height="80" rx="10" fill="#e8f5e9" stroke="#2e7d32"/>
+  <text x="127.5" y="150" text-anchor="middle" font-weight="700" font-size="15">4. Reprocess</text>
+  <text x="127.5" y="170" text-anchor="middle" font-size="13">welche Runs neu laufen</text>
+  <rect x="10" y="242" width="235" height="80" rx="10" fill="#e8f5e9" stroke="#2e7d32"/>
+  <text x="127.5" y="266" text-anchor="middle" font-weight="700" font-size="15">5. Limit</text>
+  <text x="127.5" y="286" text-anchor="middle" font-size="13">max-active-runs</text>
+  <rect x="295" y="242" width="235" height="80" rx="10" fill="#fff4f2" stroke="#c62828"/>
+  <text x="412.5" y="266" text-anchor="middle" font-weight="700" font-size="15">6. Task liest</text>
+  <text x="412.5" y="286" text-anchor="middle" font-size="13">nur das Data Interval</text>
+  <rect x="295" y="358" width="235" height="80" rx="10" fill="#fff4f2" stroke="#c62828"/>
+  <text x="412.5" y="382" text-anchor="middle" font-weight="700" font-size="15">7. Task schreibt</text>
+  <text x="412.5" y="402" text-anchor="middle" font-size="13">überschreiben oder UPSERT</text>
+  <rect x="10" y="358" width="235" height="80" rx="10" fill="#eee" stroke="#777"/>
+  <text x="127.5" y="382" text-anchor="middle" font-weight="700" font-size="15">8. Prüfen</text>
+  <text x="127.5" y="402" text-anchor="middle" font-size="13">Zahlen mit der Quelle</text>
+  <line x1="245" y1="50.0" x2="293" y2="50.0" stroke="#555" stroke-width="2" marker-end="url(#mbackfillidempotencya)"/>
+  <line x1="412.5" y1="90" x2="412.5" y2="124" stroke="#555" stroke-width="2" marker-end="url(#mbackfillidempotencya)"/>
+  <line x1="295" y1="166.0" x2="247" y2="166.0" stroke="#555" stroke-width="2" marker-end="url(#mbackfillidempotencya)"/>
+  <line x1="127.5" y1="206" x2="127.5" y2="240" stroke="#555" stroke-width="2" marker-end="url(#mbackfillidempotencya)"/>
+  <line x1="245" y1="282.0" x2="293" y2="282.0" stroke="#555" stroke-width="2" marker-end="url(#mbackfillidempotencya)"/>
+  <line x1="412.5" y1="322" x2="412.5" y2="356" stroke="#555" stroke-width="2" marker-end="url(#mbackfillidempotencya)"/>
+  <line x1="295" y1="398.0" x2="247" y2="398.0" stroke="#555" stroke-width="2" marker-end="url(#mbackfillidempotencya)"/>
+</svg>
+<ol>
+  <li><b>Zeitraum wählen:</b> Man wählt Start und Ende. Beides sind Zeitpunkte, aus denen Airflow die Data Intervals ableitet.</li>
+  <li><b>Backfill starten:</b> In der UI über Trigger und Backfill. Auf der CLI mit <code>airflow backfill create --dag-id ... --from-date ... --to-date ...</code>.</li>
+  <li><b>DAG Runs:</b> Der Befehl führt alle Instanzen des DAGs für alle Intervalle im Zeitraum neu aus. Jeder Run hat sein Data Interval.</li>
+  <li><b>Reprocess:</b> Die Option <code>--reprocess-behavior</code> steuert, was mit bereits gelaufenen Runs passiert. Die Doku zeigt <code>failed</code> als Beispiel.</li>
+  <li><b>Limit:</b> <code>--max-active-runs</code> begrenzt, wie viele Runs gleichzeitig laufen. So überlastet ein Backfill die Quelle nicht.</li>
+  <li><b>Task liest:</b> Der Task nutzt <code>data_interval_start</code> und <code>data_interval_end</code> aus dem Run. Er liest keine „neuesten“ Daten.</li>
+  <li><b>Task schreibt:</b> Er überschreibt sein Intervall oder macht einen UPSERT. Ein zweiter Lauf ändert dann nichts.</li>
+  <li><b>Prüfen:</b> Zeilen und Summen pro Intervall mit der Quelle vergleichen. Erst dann gilt der Backfill als fertig.</li>
+</ol>
+<p><code>--run-backwards</code> startet mit dem jüngsten Intervall. Das hilft, wenn neue Daten zuerst wichtig sind.</p>
+<h2>2. Aufbau</h2>
+<svg viewBox="0 0 520 298" font-family="-apple-system, system-ui, sans-serif" font-size="13">
+  <defs><marker id="mbackfillidempotencyb" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="10" y="10" width="500" height="70" rx="10" fill="#eee" stroke="#777"/>
+  <text x="260.0" y="34" text-anchor="middle" font-weight="700" font-size="15">Data Interval</text>
+  <text x="260.0" y="54" text-anchor="middle" font-size="13">Anfang und Ende der Daten</text>
+  <line x1="260" y1="80" x2="260" y2="112" stroke="#555" stroke-width="2" marker-end="url(#mbackfillidempotencyb)"/>
+  <rect x="10" y="114" width="243" height="70" rx="10" fill="#dbe9fb" stroke="#0a66c2"/>
+  <text x="131.5" y="138" text-anchor="middle" font-weight="700" font-size="15">DAG Run</text>
+  <text x="131.5" y="158" text-anchor="middle" font-size="13">ein Run pro</text>
+  <text x="131.5" y="175" text-anchor="middle" font-size="13">Interval</text>
+  <rect x="267" y="114" width="243" height="70" rx="10" fill="#dbe9fb" stroke="#0a66c2"/>
+  <text x="388.5" y="138" text-anchor="middle" font-weight="700" font-size="15">Task Instance</text>
+  <text x="388.5" y="158" text-anchor="middle" font-size="13">liest nur sein</text>
+  <text x="388.5" y="175" text-anchor="middle" font-size="13">Interval</text>
+  <line x1="260" y1="184" x2="260" y2="216" stroke="#555" stroke-width="2" marker-end="url(#mbackfillidempotencyb)"/>
+  <rect x="10" y="218" width="243" height="70" rx="10" fill="#e8f5e9" stroke="#2e7d32"/>
+  <text x="131.5" y="242" text-anchor="middle" font-weight="700" font-size="15">Idempotenter Sink</text>
+  <text x="131.5" y="262" text-anchor="middle" font-size="13">Partition überschreiben</text>
+  <text x="131.5" y="279" text-anchor="middle" font-size="13">oder UPSERT</text>
+  <rect x="267" y="218" width="243" height="70" rx="10" fill="#fff4f2" stroke="#c62828"/>
+  <text x="388.5" y="242" text-anchor="middle" font-weight="700" font-size="15">Quelle</text>
+  <text x="388.5" y="262" text-anchor="middle" font-size="13">fest pro Interval,</text>
+  <text x="388.5" y="279" text-anchor="middle" font-size="13">nicht „neueste“</text>
+</svg>
+<ol>
+  <li>Das <b>Data Interval</b> ist der Zeitraum der Daten eines Runs. Es hat einen Start und ein Ende.</li>
+  <li>Die <b>logical date</b> ist beim geplanten Run der Anfang des Data Interval.</li>
+  <li>Ein Run läuft meist <b>nach</b> dem Ende seines Intervalls, wenn die Daten da sind.</li>
+  <li>Eine <b>Task Instance</b> bekommt das Intervall als Kontext und Template-Variable.</li>
+  <li>Der <b>Sink</b> muss pro Intervall wiederholbar schreiben können, zum Beispiel in eine Partition.</li>
+  <li>Die <b>Quelle</b> muss pro Intervall stabil lesbar sein. Sonst gibt der Backfill andere Zahlen.</li>
+</ol>
+<h2>3. Details</h2>
+<ol>
+  <li><b>Catchup:</b> Mit <code>catchup=True</code> erstellt der Scheduler einen Run für jeden geplanten Zeitpunkt, der noch nicht gelaufen ist. Mit <code>False</code> nur den letzten. Der Standard <code>scheduler.catchup_by_default</code> ist <code>False</code>.</li>
+  <li><b>Catchup-Beispiel:</b> Ein <code>@daily</code> DAG mit <code>start_date</code> 2015-12-01 wird am 2016-01-02 aktiv. Mit <code>catchup=False</code> gibt es einen Run. Mit <code>True</code> gäbe es einen Run für jede Mitternacht seit dem Start.</li>
+  <li><b>Data Interval:</b> Es ist der Zeitraum der Daten, die ein Run verarbeiten soll. Bei geplanten Runs läuft der Run meist nach dem Ende des Intervalls. Bei manuellen Runs passt das Intervall nicht immer zum angegebenen Datum.</li>
+  <li><b>Backfill:</b> Er läuft einen DAG für eine vergangene Zeit. Man startet ihn in der UI oder mit <code>airflow backfill create</code>. Optionen sind unter anderem <code>--reprocess-behavior</code>, <code>--max-active-runs</code> und <code>--run-backwards</code>.</li>
+  <li><b>Clear statt Backfill:</b> Ein Task, der gelöscht (cleared) wird, bekommt einen neuen Versuch. Airflow erhöht <code>try_number</code>, setzt <code>max_tries</code> auf 0 und den Status auf <code>None</code>. Man kann Past, Future, Upstream und Downstream wählen.</li>
+  <li><b>Idempotenz-Regel:</b> Die Doku sagt, Tasks sollen bei jeder Wiederholung dasselbe Ergebnis geben. Man soll sie wie Transaktionen in einer Datenbank behandeln.</li>
+  <li><b>INSERT vs UPSERT:</b> Die Doku sagt, man soll bei einer Wiederholung kein reines <code>INSERT</code> nutzen, weil es Duplikate geben kann. Man ersetzt es durch ein UPSERT.</li>
+  <li><b>Feste Partition lesen:</b> Die Doku sagt, ein Task soll nie die neuesten verfügbaren Daten lesen. Man kann <code>data_interval_start</code> als Partition nutzen, auch beim Schreiben nach S3 oder HDFS.</li>
+  <li><b>Keine aktuelle Zeit:</b> <code>datetime.now()</code> soll man nie in einem Task für kritische Berechnungen nutzen. Bei einem Backfill wäre das Ergebnis falsch.</li>
+  <li><b>Overwrite pro Partition:</b> Man löscht das Intervall und schreibt es neu, in einer Transaktion. Das ist idempotent und bei grossen Mengen oft schneller als ein UPSERT.</li>
+  <li><b>Retries brauchen Idempotenz:</b> Airflow wiederholt fehlgeschlagene Tasks mit fester Zahl und Abstand. Ein Task, der nach dem Schreiben scheitert, läuft erneut und schreibt noch einmal.</li>
+  <li><b>depends_on_past:</b> Mit <code>True</code> läuft ein Task nur, wenn er im vorigen Run erfolgreich war. Das erzwingt eine Reihenfolge, bremst aber Backfills. Beim ersten Run läuft er trotzdem.</li>
+  <li><b>Späte Daten:</b> Ein Backfill ist das Werkzeug, um ein Intervall neu zu rechnen, wenn spät Daten kommen. Er funktioniert nur sicher mit idempotenten Tasks.</li>
+</ol>
+<h2>4. Fallen</h2>
+<div class="trap">
+<ul>
+  <li>„Mit <code>catchup=False</code> gibt es keinen Backfill.“ → <b>Falsch.</b> Man kann trotzdem jederzeit manuell einen Backfill starten.</li>
+  <li>„Ein Backfill läuft mit dem heutigen Datum.“ → <b>Falsch.</b> Jeder Run hat das Data Interval seines Zeitraums. Der Task muss damit rechnen.</li>
+  <li>„<code>INSERT</code> im Task ist bei Retries unproblematisch.“ → <b>Falsch.</b> Die Doku warnt vor Duplikaten. Man nutzt UPSERT oder überschreibt das Intervall.</li>
+  <li>„Ein Task liest am besten die neuesten Daten.“ → <b>Falsch.</b> Die Doku sagt nie. Man liest feste Partitionen des Intervalls.</li>
+  <li>„<code>datetime.now()</code> ist in Ordnung, wenn man es einmal braucht.“ → <b>Falsch.</b> Nicht für kritische Berechnungen. Ein Backfill liefe mit der falschen Zeit.</li>
+  <li>„Der tägliche Run mit logical date 2026-01-01 läuft am 1. Januar um Mitternacht.“ → <b>Falsch.</b> Er verarbeitet das Intervall ab dem 1. Januar. Er läuft meist erst nach dem Ende des Intervalls.</li>
+</ul>
+</div>
+<h2>5. Selbsttest</h2>
+<h3>Warum?</h3>
+<details><summary>Warum müssen Tasks idempotent sein?</summary><p>Retries, Backfills und manuelle Neustarts führen Tasks mehrfach aus. Ohne Idempotenz entstehen Duplikate oder falsche Summen.</p></details>
+<details><summary>Warum soll man nie die neuesten Daten lesen?</summary><p>Ein Backfill würde die heutigen Daten für ein altes Intervall lesen. Das Ergebnis wäre falsch und nicht wiederholbar.</p></details>
+<details><summary>Warum ist <code>datetime.now()</code> in Tasks gefährlich?</summary><p>Jede Wiederholung bekäme eine andere Zeit. Das Ergebnis hängt dann vom Moment des Laufs ab.</p></details>
+<h3>Wie innen?</h3>
+<details><summary>Was passiert bei <code>catchup=True</code>?</summary><p>Der Scheduler erstellt für jeden geplanten Zeitpunkt seit dem letzten Run einen DAG Run.</p></details>
+<details><summary>Was macht <code>airflow backfill create</code>?</summary><p>Es führt den DAG für alle Intervalle zwischen Start und Ende neu aus. Mit Optionen wie <code>--max-active-runs</code> und <code>--run-backwards</code>.</p></details>
+<details><summary>Was passiert beim Löschen (Clear) eines Tasks?</summary><p>Airflow erstellt einen neuen Versuch, erhöht <code>try_number</code>, setzt <code>max_tries</code> auf 0 und den Status auf <code>None</code>. Der Task läuft neu.</p></details>
+<details><summary>Wie hängen logical date und Data Interval zusammen?</summary><p>Bei geplanten Runs ist die logical date der Anfang des Data Interval. Der Run läuft meist nach dem Ende.</p></details>
+<details><summary>Wie wird ein Intervall idempotent überschrieben?</summary><p>Löschen und Einfügen für das Intervall in einer Transaktion. Oder ein UPSERT auf den Schlüssel.</p></details>
+<details><summary>Wie erkennt man im Beispiel unten die Duplikate?</summary><p>Die append-Variante hat nach dem zweiten Lauf 4 Zeilen und Summe 60. Die anderen haben 2 Zeilen und 30.</p></details>
+<h3>Zahlen</h3>
+<details><summary>Welchen Standard hat <code>catchup_by_default</code>?</summary><p><code>False</code>.</p></details>
+<details><summary>Wie viele Zeilen hat die append-Tabelle im Beispiel nach der Korrektur?</summary><p>6 Zeilen mit Summe 179. Die anderen Varianten haben 2 Zeilen mit Summe 119.</p></details>
+<details><summary>Wie viele Runs erzeugt ein <code>@daily</code> DAG mit <code>catchup=False</code> beim ersten Aktivieren?</summary><p>Einen Run für die letzte Mitternacht. Mit <code>catchup=True</code> gäbe es einen für jede Mitternacht seit <code>start_date</code>.</p></details>
+<h3>Vergleich</h3>
+<details><summary>Append vs Overwrite vs UPSERT?</summary><p>Append ist einfach, aber nicht wiederholbar. Overwrite ersetzt das Intervall. UPSERT ändert Zeilen nach Schlüssel. Die letzten beiden sind idempotent.</p></details>
+<details><summary>Backfill vs Clear?</summary><p>Backfill erstellt Runs für einen Zeitraum, auch neue. Clear startet vorhandene Task Instances neu.</p></details>
+<details><summary>Catchup vs Backfill?</summary><p>Catchup ist ein DAG-Setting, das beim Start fehlende Runs erstellt. Ein Backfill startet man gezielt für einen Zeitraum.</p></details>
+<h3>Produktion</h3>
+<details><summary>Nach einem Backfill sind die Zahlen doppelt so hoch. Was ist passiert?</summary><p>Die Tasks hängen an und sind nicht idempotent. Ich stelle auf Overwrite oder UPSERT um und bereinige die Duplikate.</p></details>
+<details><summary>Ein Backfill überlastet die Quell-Datenbank. Was tun?</summary><p><code>--max-active-runs</code> senken und einen Pool für die Quelle nutzen.</p></details>
+<details><summary>Ein Task gibt beim Backfill andere Zahlen als im Originallauf. Warum?</summary><p>Er liest „neueste“ Daten oder nutzt <code>now()</code>. Ich lese feste Partitionen und nutze das Data Interval.</p></details>
+<details><summary>Szenario: Ein Fehler in der Quelle hat 3 Wochen falsche Daten erzeugt. Was tun Sie?</summary><p>Ich korrigiere die Quelle und starte einen Backfill für die 3 Wochen mit begrenzten parallelen Runs. Die Tasks sind idempotent, darum ersetzt der Lauf die Daten.</p></details>
+<details><summary>Szenario: Ein Task schreibt und scheitert danach. Beim Retry gibt es Duplikate. Was ändern Sie?</summary><p>Ich ersetze <code>INSERT</code> durch Overwrite des Intervalls in einer Transaktion oder UPSERT. Dann ist der zweite Versuch sicher.</p></details>
+<h3>Design</h3>
+<details><summary>Wie plant man idempotente Tasks?</summary><p>Gleiche Eingabe, gleiches Ergebnis. Feste Partitionen lesen, Intervall überschreiben, keine Zeit aus der Uhr.</p></details>
+<details><summary>Wie behandelt man Seiteneffekte wie E-Mails?</summary><p>Ein Seiteneffekt ist nicht wiederholbar. Man trennt ihn in einen Task, der nur beim ersten Mal sendet, oder prüft vorher einen Marker.</p></details>
+<details><summary>Wann ist ein Overwrite besser als ein UPSERT?</summary><p>Bei grossen Intervallen, wo man ohnehin alles neu schreibt. UPSERT ist besser, wenn nur wenige Zeilen ändern.</p></details>
+<details><summary>Szenario: Eine Quelle liefert Daten bis 3 Tage spät. Wie gestalten Sie den DAG?</summary><p>Ich lasse den DAG täglich laufen und rechne die letzten 3 Tage jedes Mal neu, idempotent. So holt sich jeder Lauf die späten Daten.</p></details>
+
+<details class="mehr"><summary>Mehr</summary>
+<h3>Gerüst</h3>
+<ul>
+  <li><b>Warum?</b> Vergangene Zeiträume neu rechnen und Fehler sicher wiederholen, ohne Duplikate.</li>
+  <li><b>Wie innen?</b> Ein Run pro Data Interval, jeder Task liest und schreibt nur sein Intervall.</li>
+  <li><b>Zahlen</b> Catchup-Standard <code>False</code>. Im Beispiel: append 4 Zeilen statt 2 nach dem zweiten Lauf.</li>
+  <li><b>Vergleich</b> Append vs Overwrite vs UPSERT. Backfill vs Clear.</li>
+  <li><b>Produktion</b> Doppelte Zahlen, falsche Daten durch <code>now()</code>, Quelle überlastet.</li>
+  <li><b>Design</b> Feste Partitionen lesen, Intervall überschreiben, späte Daten über ein Fenster neu rechnen.</li>
+</ul>
+
+<h3>Beispiel: Append, Overwrite und UPSERT bei Wiederholung</h3>
+<pre>def run_append(day):                 # A: einfach anhängen
+    db.execute("insert into t_append select * from src where day=?", (day,))
+
+def run_overwrite(day):              # B: Tag löschen und neu schreiben, eine Transaktion
+    with db:
+        db.execute("delete from t_overwrite where day=?", (day,))
+        db.execute("insert into t_overwrite select * from src where day=?", (day,))
+
+def run_merge(day):                  # C: UPSERT auf den Schlüssel id
+    db.execute("insert into t_merge select * from src where day=? "
+               "on conflict(id) do update set amount=excluded.amount", (day,))
+
+# Retry: derselbe Tag läuft zweimal. Dann wird die Quelle korrigiert und der Tag neu geladen.</pre>
+<pre>nach Lauf 1 {'t_append': (2, 30), 't_overwrite': (2, 30), 't_merge': (2, 30)}
+nach Lauf 2 {'t_append': (4, 60), 't_overwrite': (2, 30), 't_merge': (2, 30)}
+nach Korrektur {'t_append': (6, 179), 't_overwrite': (2, 119), 't_merge': (2, 119)}</pre>
+<p class="small">Echte Ausgabe, Python 3.12.10 mit sqlite3 (Logik der drei Schreibmuster, kein Airflow). Angezeigt: Zeilen und Summe pro Tabelle.</p>
+<ol>
+  <li>Beim ersten Lauf sind alle drei Tabellen gleich: 2 Zeilen, Summe 30.</li>
+  <li>Beim zweiten Lauf desselben Tages hat nur die append-Tabelle Duplikate (4 Zeilen, Summe 60).</li>
+  <li>Overwrite und UPSERT bleiben bei 2 Zeilen und Summe 30. Beide sind idempotent.</li>
+  <li>Dann wird die Quelle korrigiert (id 1 von 10 auf 99) und der Tag neu geladen.</li>
+  <li>Overwrite und UPSERT zeigen den korrigierten Wert (Summe 119). Die append-Tabelle hat 6 Zeilen und ein falsches Ergebnis.</li>
+</ol>
+
+<h3>Vergleich</h3>
+<ul>
+  <li><b>Append:</b> einfach, nicht wiederholbar, erzeugt Duplikate.</li>
+  <li><b>Overwrite des Intervalls:</b> idempotent, gut für Partitionen, braucht atomares Löschen und Schreiben.</li>
+  <li><b>UPSERT (MERGE):</b> idempotent auf Schlüsseln, gut bei wenigen Änderungen.</li>
+  <li><b>Backfill:</b> neue Runs für einen Zeitraum, mit Limits.</li>
+  <li><b>Clear:</b> vorhandene Task Instances neu starten.</li>
+  <li><b>Full Refresh:</b> alles neu bauen. Sicher, aber teuer.</li>
+</ul>
+
+<h3>Produktion</h3>
+<ol>
+  <li><b>Doppelte Daten nach Retry oder Backfill:</b> Task ist nicht idempotent. Lösung: Overwrite oder UPSERT, Duplikate bereinigen.</li>
+  <li><b>Falsche Zahlen im Backfill:</b> Task liest „neueste“ Daten. Lösung: feste Partition aus dem Data Interval.</li>
+  <li><b>Quelle überlastet:</b> Zu viele parallele Runs. Lösung: <code>--max-active-runs</code> und Pool.</li>
+  <li><b>Backfill dauert ewig:</b> <code>depends_on_past</code> zwingt zur Reihenfolge. Lösung: nur nutzen, wenn nötig.</li>
+  <li><b>Teilweise geschriebene Daten:</b> Task scheitert mitten im Schreiben. Lösung: Transaktion oder Staging und atomarer Austausch.</li>
+  <li><b>Späte Daten fehlen:</b> Intervall wurde nie neu gerechnet. Lösung: Fenster der letzten Tage neu laden.</li>
+</ol>
+
+<h3>Diagnose: Werkzeuge und Befehle</h3>
+<ul>
+  <li><code>airflow backfill create --dag-id D --from-date A --to-date B --max-active-runs 3</code>: Backfill starten.</li>
+  <li>UI, Grid-Ansicht: Runs pro Intervall, Status, Versuchszahl.</li>
+  <li>Task-Log: welches Data Interval wurde gelesen und wie viele Zeilen geschrieben?</li>
+  <li>Zeilen und Summen pro Intervall in Quelle und Ziel vergleichen.</li>
+  <li>Duplikate suchen: <code>select key, count(*) ... group by key having count(*) &gt; 1</code>.</li>
+</ul>
+
+<h3>Senior-Punkte</h3>
+<div class="senior">
+<ol>
+  <li><b>Idempotenz ist die Grundlage von Betrieb:</b> Retries, Backfills und Neustarts brauchen sie.</li>
+  <li><b>Das Data Interval ist die einzige Zeit,</b> die ein Task nutzt.</li>
+  <li><b>Overwrite pro Partition</b> ist oft das einfachste idempotente Muster.</li>
+  <li><b>Ein Backfill ist ein Betriebsfall:</b> Limits, Pools und Prüfung der Zahlen gehören dazu.</li>
+  <li><b>Seiteneffekte brauchen Marker,</b> damit sie nicht doppelt passieren.</li>
+  <li><b>Späte Daten:</b> ein gleitendes Fenster neu rechnen ist stabiler als ein Einzel-Backfill.</li>
+</ol>
+</div>
+
+<h3>Dein Beispiel</h3>
+</details>
+
+</body>
+</html>

@@ -1,0 +1,264 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Spark-Tuning: wichtigste Konfigurationen</title>
+<style>
+  body { font: 17px/1.55 -apple-system, system-ui, sans-serif; max-width: 760px; margin: 0 auto; padding: 16px; color: #1d1d1f; }
+  h1 { font-size: 28px; margin: 8px 0 4px; }
+  h2 { font-size: 21px; margin: 32px 0 8px; padding-top: 12px; border-top: 2px solid #e5e5ea; }
+  .kern { background: #eef6ff; border-left: 4px solid #0a66c2; padding: 10px 14px; border-radius: 6px; }
+  .senior { background: #f0faf0; border-left: 4px solid #2e7d32; padding: 10px 14px; border-radius: 6px; }
+  .trap { background: #fff4f2; border-left: 4px solid #c62828; padding: 10px 14px; border-radius: 6px; }
+  code { background: #f2f2f7; padding: 1px 5px; border-radius: 4px; font-size: 15px; }
+  pre { background: #1e1e1e; color: #e6e6e6; padding: 12px; border-radius: 8px; overflow-x: auto; font-size: 13.5px; line-height: 1.45; }
+  svg { width: 100%; height: auto; display: block; margin: 10px 0; }
+  ol li, ul li { margin: 4px 0; }
+  details { border: 1px solid #e5e5ea; border-radius: 8px; padding: 8px 12px; margin: 6px 0; }
+  summary { font-weight: 600; cursor: pointer; }
+  details p { margin: 6px 0 2px; }
+  .small { color: #6e6e73; font-size: 14px; }
+  h3 { font-size: 17px; margin: 20px 0 6px; }
+  .geruest { border: 2px solid #1d1d1f; border-radius: 6px; padding: 10px 14px; margin: 14px 0; font-size: 15px; line-height: 1.4; }
+  .geruest h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; margin: 0 0 8px; padding: 0; border: 0; }
+  .geruest dl { display: grid; grid-template-columns: 6.6em 1fr; gap: 6px 10px; margin: 0; }
+  .geruest dt { font-weight: 700; font-size: 12px; text-transform: uppercase; letter-spacing: .05em; padding-top: 1px; }
+  .geruest dd { margin: 0; }
+  .muster { border: 1px solid #e5e5ea; border-left: 4px solid #1d1d1f; border-radius: 6px; padding: 10px 14px; margin: 14px 0; }
+  .muster h3 { margin: 0 0 6px; font-size: 13px; text-transform: uppercase; letter-spacing: .06em; }
+  .muster .mq { margin: 0 0 6px; }
+</style>
+</head>
+<body>
+<h1>Spark-Tuning: wichtigste Konfigurationen</h1>
+<!-- sources: Spark · Tier 2 · Quellen: Apache Spark Docs 4.3.0 – Configuration (Application Properties, Memory Management, Execution Behavior, Dynamic Allocation, Shuffle Behavior, Spark SQL), SQL Performance Tuning (Adaptive Query Execution, Broadcast Hint, Coalescing Post Shuffle Partitions, Skew Join) -->
+<div class="kern">
+<b>Kern:</b> <b>Spark-Tuning</b> heisst, die Einstellungen an den echten Engpass anzupassen. Wichtig sind <b>Partitionen</b>, <b>Joins</b>, <b>Executor-Speicher</b> und <b>Dynamic Allocation</b>. Zuerst messen, dann eine Einstellung ändern, dann wieder messen.
+</div>
+<div class="muster"><h3>Antwort-Muster</h3><p class="mq"><b>Frage:</b> Welche Spark-Konfigurationen stellen Sie als Erstes ein?</p><ol>
+  <li>Mechanismus: Ich messe zuerst in der Spark UI und suche den Engpass. Dann ändere ich die Einstellung, die zu diesem Engpass gehört.</li>
+  <li>Zahl: Standard sind 200 Shuffle-Partitionen, 128 MB pro Input-Partition und 10 MB für Broadcast Joins. AQE ist seit Spark 3.2 an.</li>
+  <li>Trade-off: Mehr Partitionen geben mehr Parallelität, aber kleine Tasks. Mehr Speicher pro Executor spart Spill, kostet aber mehr GC und weniger Executors.</li>
+  <li>Produktion: Ich ändere pro Lauf nur eine Einstellung und prüfe Spill, Skew und GC. Oft löst AQE das Problem schon zur Laufzeit.</li>
+</ol></div>
+<h2>1. Tuning in 8 Schritten</h2>
+<svg viewBox="0 0 520 448" font-family="-apple-system, system-ui, sans-serif" font-size="13">
+  <defs><marker id="mtuninga" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="10" y="10" width="235" height="80" rx="10" fill="#eee" stroke="#777"/>
+  <text x="127.5" y="34" text-anchor="middle" font-weight="700" font-size="15">1. Messen</text>
+  <text x="127.5" y="54" text-anchor="middle" font-size="13">Spark UI: Stages, Spill, Skew</text>
+  <rect x="295" y="10" width="235" height="80" rx="10" fill="#dbe9fb" stroke="#0a66c2"/>
+  <text x="412.5" y="34" text-anchor="middle" font-weight="700" font-size="15">2. Input lesen</text>
+  <text x="412.5" y="54" text-anchor="middle" font-size="13">maxPartitionBytes 128 MB</text>
+  <rect x="295" y="126" width="235" height="80" rx="10" fill="#dbe9fb" stroke="#0a66c2"/>
+  <text x="412.5" y="150" text-anchor="middle" font-weight="700" font-size="15">3. Shuffle</text>
+  <text x="412.5" y="170" text-anchor="middle" font-size="13">sql.shuffle.partitions 200</text>
+  <rect x="10" y="126" width="235" height="80" rx="10" fill="#e8f5e9" stroke="#2e7d32"/>
+  <text x="127.5" y="150" text-anchor="middle" font-weight="700" font-size="15">4. AQE nutzen</text>
+  <text x="127.5" y="170" text-anchor="middle" font-size="13">coalesce, Skew, Broadcast</text>
+  <rect x="10" y="242" width="235" height="80" rx="10" fill="#e8f5e9" stroke="#2e7d32"/>
+  <text x="127.5" y="266" text-anchor="middle" font-weight="700" font-size="15">5. Joins prüfen</text>
+  <text x="127.5" y="286" text-anchor="middle" font-size="13">Broadcast bis 10 MB</text>
+  <rect x="295" y="242" width="235" height="80" rx="10" fill="#fff4f2" stroke="#c62828"/>
+  <text x="412.5" y="266" text-anchor="middle" font-weight="700" font-size="15">6. Speicher</text>
+  <text x="412.5" y="286" text-anchor="middle" font-size="13">Heap, Overhead, Fraction</text>
+  <rect x="295" y="358" width="235" height="80" rx="10" fill="#fff4f2" stroke="#c62828"/>
+  <text x="412.5" y="382" text-anchor="middle" font-weight="700" font-size="15">7. Executors</text>
+  <text x="412.5" y="402" text-anchor="middle" font-size="13">Cores, Dynamic Allocation</text>
+  <rect x="10" y="358" width="235" height="80" rx="10" fill="#eee" stroke="#777"/>
+  <text x="127.5" y="382" text-anchor="middle" font-weight="700" font-size="15">8. Wieder messen</text>
+  <text x="127.5" y="402" text-anchor="middle" font-size="13">eine Änderung pro Lauf</text>
+  <line x1="245" y1="50.0" x2="293" y2="50.0" stroke="#555" stroke-width="2" marker-end="url(#mtuninga)"/>
+  <line x1="412.5" y1="90" x2="412.5" y2="124" stroke="#555" stroke-width="2" marker-end="url(#mtuninga)"/>
+  <line x1="295" y1="166.0" x2="247" y2="166.0" stroke="#555" stroke-width="2" marker-end="url(#mtuninga)"/>
+  <line x1="127.5" y1="206" x2="127.5" y2="240" stroke="#555" stroke-width="2" marker-end="url(#mtuninga)"/>
+  <line x1="245" y1="282.0" x2="293" y2="282.0" stroke="#555" stroke-width="2" marker-end="url(#mtuninga)"/>
+  <line x1="412.5" y1="322" x2="412.5" y2="356" stroke="#555" stroke-width="2" marker-end="url(#mtuninga)"/>
+  <line x1="295" y1="398.0" x2="247" y2="398.0" stroke="#555" stroke-width="2" marker-end="url(#mtuninga)"/>
+</svg>
+<ol>
+  <li><b>Messen:</b> Die Spark UI zeigt pro Stage Dauer, Shuffle, Spill und Task-Zeiten. Ohne Messung rät man nur.</li>
+  <li><b>Input lesen:</b> <code>spark.sql.files.maxPartitionBytes</code> ist 128 MB. Es gilt für Parquet, JSON und ORC. Das bestimmt die Zahl der Input-Tasks.</li>
+  <li><b>Shuffle:</b> <code>spark.sql.shuffle.partitions</code> ist 200. Das ist die Zahl der Partitionen nach einem Shuffle.</li>
+  <li><b>AQE nutzen:</b> AQE ist an. Es fasst kleine Shuffle-Partitionen zusammen und teilt schiefe Partitionen.</li>
+  <li><b>Joins prüfen:</b> Eine Tabelle bis <code>spark.sql.autoBroadcastJoinThreshold</code> (10 MB) wird gebroadcastet. Grössere Tabellen laufen als Sort-Merge Join.</li>
+  <li><b>Speicher:</b> Heap, Overhead und <code>spark.memory.fraction</code> bestimmen, wie viel Platz für Execution und Storage bleibt.</li>
+  <li><b>Executors:</b> Cores pro Executor und Zahl der Executors legen die Parallelität fest. Dynamic Allocation passt sie an die Last an.</li>
+  <li><b>Wieder messen:</b> Ändere nur eine Einstellung pro Lauf. Sonst weiss man nicht, was gewirkt hat.</li>
+</ol>
+<p>Die Reihenfolge ist wichtig. Zuerst Daten und Partitionen, dann Joins, dann Speicher. Speicher erhöhen löst oft nur das Symptom.</p>
+<h2>2. Aufbau</h2>
+<svg viewBox="0 0 520 402" font-family="-apple-system, system-ui, sans-serif" font-size="13">
+  <defs><marker id="mtuningb" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="10" y="10" width="500" height="70" rx="10" fill="#dbe9fb" stroke="#0a66c2"/>
+  <text x="260.0" y="34" text-anchor="middle" font-weight="700" font-size="15">Input</text>
+  <text x="260.0" y="54" text-anchor="middle" font-size="13">maxPartitionBytes 128 MB</text>
+  <line x1="260" y1="80" x2="260" y2="112" stroke="#555" stroke-width="2" marker-end="url(#mtuningb)"/>
+  <rect x="10" y="114" width="243" height="70" rx="10" fill="#dbe9fb" stroke="#0a66c2"/>
+  <text x="131.5" y="138" text-anchor="middle" font-weight="700" font-size="15">Shuffle</text>
+  <text x="131.5" y="158" text-anchor="middle" font-size="13">sql.shuffle.partitions 200</text>
+  <rect x="267" y="114" width="243" height="70" rx="10" fill="#e8f5e9" stroke="#2e7d32"/>
+  <text x="388.5" y="138" text-anchor="middle" font-weight="700" font-size="15">AQE</text>
+  <text x="388.5" y="158" text-anchor="middle" font-size="13">Ziel 64 MB pro Partition</text>
+  <line x1="260" y1="184" x2="260" y2="216" stroke="#555" stroke-width="2" marker-end="url(#mtuningb)"/>
+  <rect x="10" y="218" width="243" height="70" rx="10" fill="#e8f5e9" stroke="#2e7d32"/>
+  <text x="131.5" y="242" text-anchor="middle" font-weight="700" font-size="15">Join</text>
+  <text x="131.5" y="262" text-anchor="middle" font-size="13">Broadcast bis 10 MB</text>
+  <rect x="267" y="218" width="243" height="70" rx="10" fill="#fff4f2" stroke="#c62828"/>
+  <text x="388.5" y="242" text-anchor="middle" font-weight="700" font-size="15">Skew</text>
+  <text x="388.5" y="262" text-anchor="middle" font-size="13">Faktor 5, ab 256 MB</text>
+  <line x1="260" y1="288" x2="260" y2="320" stroke="#555" stroke-width="2" marker-end="url(#mtuningb)"/>
+  <rect x="10" y="322" width="243" height="70" rx="10" fill="#fff4f2" stroke="#c62828"/>
+  <text x="131.5" y="346" text-anchor="middle" font-weight="700" font-size="15">Executor-Speicher</text>
+  <text x="131.5" y="366" text-anchor="middle" font-size="13">1 g Heap, 0.6 Fraction</text>
+  <rect x="267" y="322" width="243" height="70" rx="10" fill="#eee" stroke="#777"/>
+  <text x="388.5" y="346" text-anchor="middle" font-weight="700" font-size="15">Executor-Zahl</text>
+  <text x="388.5" y="366" text-anchor="middle" font-size="13">Dynamic Allocation, Cores</text>
+</svg>
+<ol>
+  <li><b>Input:</b> Wenige grosse Dateien ergeben wenige Partitionen. Viele kleine Dateien kosten Öffnungs-Zeit.</li>
+  <li><b>Shuffle:</b> Jede Wide Transformation nutzt <code>spark.sql.shuffle.partitions</code>. Das ist ein Wert für das ganze Programm.</li>
+  <li><b>AQE:</b> Es plant zur Laufzeit neu, mit echten Grössen aus den fertigen Stages.</li>
+  <li><b>Join:</b> Spark wählt die Strategie nach der Grösse der Tabellen. Mit AQE kann es zur Laufzeit zu Broadcast wechseln.</li>
+  <li><b>Skew:</b> AQE teilt eine Partition, die viel grösser ist als der Median.</li>
+  <li><b>Ressourcen:</b> Speicher pro Executor und Zahl der Executors sind die letzten Stellschrauben.</li>
+</ol>
+<h2>3. Details</h2>
+<ol>
+  <li><b>spark.sql.shuffle.partitions:</b> Standard 200. Ist der Shuffle klein, entstehen viele winzige Tasks. Ist er gross, werden die Partitionen zu gross und laufen in Spill.</li>
+  <li><b>AQE:</b> <code>spark.sql.adaptive.enabled</code> ist seit Spark 3.2.0 standardmässig <code>true</code>. Es plant die Query anhand echter Statistiken neu. Es braucht keinen manuellen Eingriff.</li>
+  <li><b>Partitionen zusammenfassen:</b> <code>coalescePartitions.enabled</code> ist <code>true</code>. Das Ziel ist <code>advisoryPartitionSizeInBytes</code> mit 64 MB. Die Start-Zahl ist <code>initialPartitionNum</code>, sonst <code>spark.sql.shuffle.partitions</code>.</li>
+  <li><b>Skew Join:</b> <code>skewJoin.enabled</code> ist <code>true</code>. Eine Partition gilt als schief, wenn sie mehr als das 5-Fache des Medians hat und über 256 MB liegt. Beide Bedingungen müssen stimmen.</li>
+  <li><b>Broadcast Join:</b> <code>spark.sql.autoBroadcastJoinThreshold</code> ist 10 MB. Mit <code>-1</code> schaltet man ihn aus. <code>spark.sql.broadcastTimeout</code> ist 300 Sekunden.</li>
+  <li><b>Executor-Speicher:</b> <code>spark.executor.memory</code> ist 1 g mit Minimum 450 m. Der Driver hat auch 1 g. Beides ist für echte Jobs fast immer zu klein.</li>
+  <li><b>Memory Overhead:</b> Er ist Executor-Speicher mal Faktor, mindestens 384 MiB seit Spark 4.0. Er deckt Off-Heap, Python und Buffer. Fehlt er, killt der Cluster Manager den Container.</li>
+  <li><b>Unified Memory:</b> <code>spark.memory.fraction</code> ist 0.6 von (Heap minus 300 MB). <code>spark.memory.storageFraction</code> ist 0.5 davon und schützt gecachte Daten vor Verdrängung.</li>
+  <li><b>Off-Heap:</b> <code>spark.memory.offHeap.enabled</code> ist <code>false</code>, <code>size</code> ist 0. Man schaltet es ein und setzt die Grösse, wenn man weniger GC will.</li>
+  <li><b>Cores:</b> <code>spark.executor.cores</code> ist 1 auf YARN und alle Cores im Standalone-Modus. <code>spark.task.cpus</code> ist 1. Parallele Tasks pro Executor sind Cores geteilt durch task.cpus.</li>
+  <li><b>Dynamic Allocation:</b> <code>enabled</code> ist <code>false</code>. <code>minExecutors</code> ist 0, <code>maxExecutors</code> ist unbegrenzt, <code>executorIdleTimeout</code> ist 60 s. Shuffle Tracking ist an. Man setzt <code>maxExecutors</code> immer selbst.</li>
+  <li><b>Serializer:</b> <code>spark.serializer</code> ist standardmässig der Java-Serializer. Kryo ist schneller und kleiner, braucht aber Konfiguration.</li>
+  <li><b>Shuffle-Details:</b> <code>spark.shuffle.compress</code> ist <code>true</code>. <code>spark.shuffle.file.buffer</code> ist 32k. <code>spark.reducer.maxSizeInFlight</code> ist 48m.</li>
+  <li><b>Weitere Grenzen:</b> <code>spark.driver.maxResultSize</code> ist 1 g, <code>spark.network.timeout</code> ist 120 s und <code>spark.speculation</code> ist <code>false</code>.</li>
+</ol>
+<h2>4. Fallen</h2>
+<div class="trap">
+<ul>
+  <li>„Mehr Executor-Speicher löst jedes Problem.“ → <b>Falsch.</b> Bei Skew oder zu vielen Partitionen hilft er nicht. Erst die Ursache in der UI suchen.</li>
+  <li>„200 Shuffle-Partitionen sind immer richtig.“ → <b>Falsch.</b> Es ist nur der Standard. AQE fasst kleine Partitionen zusammen, aber bei sehr grossen Daten sind 200 zu wenig.</li>
+  <li>„AQE teilt jede grosse Partition.“ → <b>Falsch.</b> Nur Partitionen über dem 5-Fachen des Medians und über 256 MB, bei Sort-Merge Joins.</li>
+  <li>„<code>spark.memory.fraction=0.6</code> heisst 60 % des Heaps.“ → <b>Falsch.</b> Es sind 60 % von (Heap minus 300 MB).</li>
+  <li>„Dynamic Allocation ist standardmässig an.“ → <b>Falsch.</b> Der Standard ist <code>false</code>. <code>maxExecutors</code> ist unbegrenzt.</li>
+  <li>„Broadcast ist immer schneller.“ → <b>Falsch.</b> Nur wenn die kleine Tabelle wirklich klein ist. Sonst belastet sie den Driver und die Executors.</li>
+</ul>
+</div>
+<h2>5. Selbsttest</h2>
+<h3>Warum?</h3>
+<details><summary>Warum misst man vor dem Tuning?</summary><p>Ein Engpass kann Skew, Spill, GC oder Input sein. Jede Ursache hat eine andere Einstellung.</p></details>
+<details><summary>Warum hilft AQE bei der Zahl der Shuffle-Partitionen?</summary><p>Es kennt nach dem Shuffle die echten Grössen. Es fasst kleine Partitionen auf das Ziel von 64 MB zusammen.</p></details>
+<details><summary>Warum braucht ein Executor-Pod mehr als <code>spark.executor.memory</code>?</summary><p>Der Overhead kommt dazu. Er deckt Off-Heap, Python und Buffer.</p></details>
+<h3>Wie innen?</h3>
+<details><summary>Wie wird Executor-Speicher aufgeteilt?</summary><p><code>spark.memory.fraction</code> (0.6) von Heap minus 300 MB geht an Execution und Storage zusammen.</p></details>
+<details><summary>Was schützt <code>storageFraction</code>?</summary><p>Es schützt gecachte Daten vor Verdrängung. Es ist 0.5 der Fraction-Region.</p></details>
+<details><summary>Wie erkennt AQE eine schiefe Partition?</summary><p>Sie ist grösser als das 5-Fache des Medians und grösser als 256 MB. Dann teilt AQE sie bei Sort-Merge Joins.</p></details>
+<details><summary>Wie wählt Spark die Zahl der Input-Partitionen?</summary><p>Aus den Dateigrössen und <code>maxPartitionBytes</code> (128 MB). Grosse Dateien werden geteilt.</p></details>
+<details><summary>Wie funktioniert der Wechsel auf Broadcast zur Laufzeit?</summary><p>AQE kennt die echte Grösse nach einer Stage. Ist eine Seite klein genug, wechselt es von Sort-Merge zu Broadcast.</p></details>
+<details><summary>Was macht der Local Shuffle Reader?</summary><p>Er liest Shuffle-Daten lokal, wenn keine neue Verteilung nötig ist, zum Beispiel nach dem Wechsel zu Broadcast.</p></details>
+<h3>Zahlen</h3>
+<details><summary>Wie viele Shuffle-Partitionen und wie gross sollten sie sein?</summary><p>Standard 200. AQE zielt auf 64 MB pro Partition.</p></details>
+<details><summary>Wie gross darf eine Tabelle für Broadcast sein?</summary><p>Standard bis 10 MB. Mit <code>-1</code> ist Broadcast aus.</p></details>
+<details><summary>Wie viel Speicher hat ein Executor standardmässig?</summary><p>1 g, mit Minimum 450 m. Der Memory Overhead hat mindestens 384 MiB seit Spark 4.0.</p></details>
+<h3>Vergleich</h3>
+<details><summary>Mehr Partitionen vs grössere Partitionen?</summary><p>Mehr Partitionen geben Parallelität und weniger Spill, aber mehr Overhead pro Task. Grosse Partitionen sparen Overhead, riskieren aber Spill.</p></details>
+<details><summary>Wenige grosse vs viele kleine Executors?</summary><p>Grosse Executors teilen Speicher und Broadcast, haben aber mehr GC. Kleine haben weniger GC und mehr Shuffle-Verkehr.</p></details>
+<details><summary>Java-Serializer vs Kryo?</summary><p>Java ist der Standard und braucht keine Konfiguration. Kryo ist schneller und kompakter, braucht aber Registrierung.</p></details>
+<h3>Produktion</h3>
+<details><summary>Ein Job hat viel Spill auf Disk. Was tun?</summary><p>Partitionen verkleinern und die Partitionszahl erhöhen. Dann Executor-Speicher prüfen.</p></details>
+<details><summary>Eine Stage hat einen Task, der viel länger läuft. Was ist das?</summary><p>Skew. Ich prüfe AQE-Skew-Join und salze den Schlüssel, wenn AQE nicht reicht.</p></details>
+<details><summary>Ein Container wird vom Cluster Manager getötet. Was tun?</summary><p>Memory Overhead erhöhen. Der Heap ist nicht das Problem, sondern der Speicher ausserhalb.</p></details>
+<details><summary>Szenario: Ein nächtlicher Job läuft doppelt so lang wie letzte Woche. Wie gehen Sie vor?</summary><p>Ich vergleiche die Spark UI beider Läufe. Ich suche gewachsene Input-Grösse, Skew oder Spill, bevor ich Einstellungen ändere.</p></details>
+<details><summary>Szenario: Der Cluster ist voll, weil ein Job alle Executors nimmt. Was ändern Sie?</summary><p>Ich setze <code>maxExecutors</code> und prüfe, ob der Job so viele braucht. Dynamic Allocation hat standardmässig keine Obergrenze.</p></details>
+<h3>Design</h3>
+<details><summary>Wie legt man Defaults für ein Team fest?</summary><p>Ein kleiner Satz an Basis-Einstellungen, zum Beispiel Executor-Grösse und <code>maxExecutors</code>. Abweichungen pro Job begründen und messen.</p></details>
+<details><summary>Was ändert man nie ohne Messung?</summary><p>Shuffle-Partitionen, Speicher und Cores. Eine falsche Änderung verschlechtert den Job oft.</p></details>
+<details><summary>Wann lohnt sich Off-Heap?</summary><p>Wenn GC-Zeit gross ist und man den Speicher selbst begrenzen will. Man muss es einschalten und die Grösse setzen.</p></details>
+<details><summary>Szenario: Ein Analyst startet Jobs mit 1 g Executor-Speicher und bekommt OOM. Was empfehlen Sie?</summary><p>Zuerst Ursache klären, zum Beispiel <code>collect</code> auf dem Driver oder Skew. Dann Speicher und Overhead anpassen und ein Template mit sinnvollen Defaults anbieten.</p></details>
+
+<details class="mehr"><summary>Mehr</summary>
+<h3>Gerüst</h3>
+<ul>
+  <li><b>Warum?</b> Gezielt die Einstellung ändern, die zum gemessenen Engpass passt.</li>
+  <li><b>Wie innen?</b> AQE plant zur Laufzeit neu und fasst Partitionen zusammen. Speicher: Heap, Overhead, Fraction.</li>
+  <li><b>Zahlen</b> 200 Partitionen, 128 MB Input, 10 MB Broadcast, 64 MB AQE-Ziel, Faktor 5, 256 MB, 0.6 und 0.5.</li>
+  <li><b>Vergleich</b> Java- vs Kryo-Serializer, grosse vs kleine Executors, Broadcast vs Sort-Merge.</li>
+  <li><b>Produktion</b> Spill, Skew, GC und OOM unterscheiden. Eine Änderung pro Lauf.</li>
+  <li><b>Design</b> Team-Defaults, <code>maxExecutors</code> setzen, Vergleich der Läufe in der Spark UI.</li>
+</ul>
+
+<h3>Beispiel: Basis-Einstellungen für einen Batch-Job</h3>
+<pre>spark = (SparkSession.builder
+    .config("spark.sql.shuffle.partitions", "400")
+    .config("spark.sql.adaptive.enabled", "true")
+    .config("spark.sql.adaptive.advisoryPartitionSizeInBytes", "128MB")
+    .config("spark.sql.autoBroadcastJoinThreshold", "50MB")
+    .config("spark.executor.memory", "8g")
+    .config("spark.executor.memoryOverhead", "1g")
+    .config("spark.dynamicAllocation.enabled", "true")
+    .config("spark.dynamicAllocation.maxExecutors", "40")
+    .getOrCreate())</pre>
+<p class="small">Nicht ausgeführt.</p>
+<ol>
+  <li><code>shuffle.partitions=400</code> gibt mehr Start-Partitionen als der Standard 200. AQE fasst kleine wieder zusammen.</li>
+  <li><code>advisoryPartitionSizeInBytes=128MB</code> ersetzt den Standard 64 MB. Es gibt weniger, grössere Partitionen.</li>
+  <li><code>autoBroadcastJoinThreshold=50MB</code> erlaubt grössere Broadcast-Tabellen als die 10 MB im Standard. Der Driver braucht dafür genug Speicher.</li>
+  <li><code>executor.memory=8g</code> plus <code>memoryOverhead=1g</code> ergibt 9 GB pro Pod oder Container.</li>
+  <li><code>maxExecutors=40</code> begrenzt die Dynamic Allocation. Ohne Wert ist sie unbegrenzt.</li>
+  <li>Alle Zahlen sind ein Beispiel. Man misst sie für den eigenen Job.</li>
+</ol>
+
+<h3>Vergleich</h3>
+<ul>
+  <li><b>Shuffle-Partitionen fest vs AQE:</b> fest ist vorhersagbar, AQE passt sich den echten Daten an.</li>
+  <li><b>Broadcast vs Sort-Merge Join:</b> Broadcast spart den Shuffle, braucht aber Speicher für die kleine Tabelle.</li>
+  <li><b>Viele kleine vs wenige grosse Executors:</b> Grosse haben mehr GC, kleine mehr Netzwerk.</li>
+  <li><b>Dynamic Allocation vs feste Zahl:</b> Dynamic spart Kosten, feste Zahl ist vorhersagbar.</li>
+  <li><b>Java-Serializer vs Kryo:</b> Standard ist Java. Kryo ist kompakter.</li>
+  <li><b>Heap vs Off-Heap:</b> Off-Heap ist standardmässig aus und entlastet den GC.</li>
+</ul>
+
+<h3>Produktion</h3>
+<ol>
+  <li><b>OOM im Executor:</b> Partition zu gross oder Heap zu klein. Lösung: mehr Partitionen, dann mehr Speicher.</li>
+  <li><b>Container getötet:</b> Overhead fehlt. Lösung: <code>memoryOverhead</code> erhöhen.</li>
+  <li><b>Ein langsamer Task pro Stage:</b> Skew. Lösung: AQE prüfen, Schlüssel salzen, Ausreisser separat behandeln.</li>
+  <li><b>Tausende winzige Tasks:</b> zu viele Partitionen für kleine Daten. Lösung: AQE-Coalescing oder weniger Partitionen.</li>
+  <li><b>Driver OOM bei collect oder Broadcast:</b> Lösung: weniger zum Driver holen, <code>maxResultSize</code> und Broadcast-Grenze prüfen.</li>
+  <li><b>Cluster zu voll:</b> Dynamic Allocation ohne Limit. Lösung: <code>maxExecutors</code> setzen.</li>
+</ol>
+
+<h3>Diagnose: Werkzeuge und Befehle</h3>
+<ul>
+  <li>Spark UI, Stages-Tab: Task-Zeiten, Shuffle Read/Write, Spill (Memory und Disk).</li>
+  <li>Spark UI, SQL-Tab: Plan mit AQE-Änderungen und Join-Strategie.</li>
+  <li>Executors-Tab: GC-Zeit, Speichernutzung, ausgefallene Executors.</li>
+  <li><code>df.explain("formatted")</code>: zeigt den physischen Plan.</li>
+  <li><code>spark.conf.get(...)</code>: prüft, welcher Wert wirklich gilt.</li>
+</ul>
+
+<h3>Senior-Punkte</h3>
+<div class="senior">
+<ol>
+  <li><b>Messen vor Ändern.</b> Ich ändere pro Lauf eine Einstellung und vergleiche.</li>
+  <li><b>AQE zuerst.</b> Es löst viele Probleme zur Laufzeit, die man sonst von Hand tunt.</li>
+  <li><b>Ursache vor Speicher.</b> Skew und zu viele Partitionen löst man nicht mit mehr RAM.</li>
+  <li><b>Grenzen setzen.</b> <code>maxExecutors</code> und Quotas schützen den Cluster.</li>
+  <li><b>Defaults sind ein Kompromiss.</b> Sie passen für kleine Jobs und selten für die grössten.</li>
+  <li><b>Kosten zählen.</b> Schneller mit doppelten Ressourcen ist nicht immer besser.</li>
+</ol>
+</div>
+
+<h3>Dein Beispiel</h3>
+</details>
+
+</body>
+</html>
