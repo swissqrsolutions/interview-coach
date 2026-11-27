@@ -2,7 +2,7 @@
 
 Generated from content/syllabus.json. Priority 1 = asked in almost every interview. Mark: **Projekt** = shown in CV/Gmail · **— kein Projekt** = no project experience · **? prüfen** = unclear, you decide.
 
-437 topics · P1 267 · P2 132 · P3 38 · written 400
+437 topics · P1 267 · P2 132 · P3 38 · written 405
 
 ## Java 21 (core + advanced) (42)
 Sources: Java SE 21/25 docs (docs.oracle.com) · JVM Specification · OpenJDK source + JEPs (openjdk.org) · Oracle Java SE 21 Developer exam 1Z0-830 topics
@@ -158,7 +158,7 @@ Sources: Jakarta XML Web Services / JAXB specs · W3C SOAP 1.2 and WSDL · Sprin
 | 2 | JAXB: Marshalling und Unmarshalling | Projekt | ✓ |
 | 2 | JAX-WS und Spring-WS | ? prüfen | ✓ |
 | 2 | Contract-First vs Code-First | ? prüfen | ✓ |
-| 3 | WS-Security | ? prüfen |  |
+| 3 | WS-Security | ? prüfen | ✓ |
 
 ## Kotlin (4)
 Sources: kotlinlang.org docs
@@ -192,7 +192,7 @@ Sources: Apache Camel docs · Enterprise Integration Patterns (Hohpe/Woolf)
 
 | P | Topic | Project | Written |
 |---|---|---|---|
-| 3 | Enterprise Integration Patterns und Camel Routes | — kein Projekt |  |
+| 3 | Enterprise Integration Patterns und Camel Routes | — kein Projekt | ✓ |
 
 ## C# / .NET / Blazor / EF Core (5)
 Sources: Microsoft Learn: .NET, C#, EF Core, Blazor
@@ -729,8 +729,8 @@ Sources: redis.io documentation
 | P | Topic | Project | Written |
 |---|---|---|---|
 | 1 | Cache-Muster | — kein Projekt | ✓ |
-| 2 | Redis-Datentypen und Einsatz | — kein Projekt |  |
-| 2 | Eviction, TTL und Persistenz | — kein Projekt |  |
+| 2 | Redis-Datentypen und Einsatz | — kein Projekt | ✓ |
+| 2 | Eviction, TTL und Persistenz | — kein Projekt | ✓ |
 
 ## XML-Verarbeitung (2)
 Sources: Java API for XML Processing (JAXP) docs · OWASP XXE prevention cheat sheet

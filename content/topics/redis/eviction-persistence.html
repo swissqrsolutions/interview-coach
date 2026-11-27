@@ -1,0 +1,235 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Eviction, TTL und Persistenz</title>
+<style>
+  body { font: 17px/1.55 -apple-system, system-ui, sans-serif; max-width: 760px; margin: 0 auto; padding: 16px; color: #1d1d1f; }
+  h1 { font-size: 28px; margin: 8px 0 4px; }
+  h2 { font-size: 21px; margin: 32px 0 8px; padding-top: 12px; border-top: 2px solid #e5e5ea; }
+  .kern { background: #eef6ff; border-left: 4px solid #0a66c2; padding: 10px 14px; border-radius: 6px; }
+  .senior { background: #f0faf0; border-left: 4px solid #2e7d32; padding: 10px 14px; border-radius: 6px; }
+  .trap { background: #fff4f2; border-left: 4px solid #c62828; padding: 10px 14px; border-radius: 6px; }
+  code { background: #f2f2f7; padding: 1px 5px; border-radius: 4px; font-size: 15px; }
+  pre { background: #1e1e1e; color: #e6e6e6; padding: 12px; border-radius: 8px; overflow-x: auto; font-size: 13.5px; line-height: 1.45; }
+  svg { width: 100%; height: auto; display: block; margin: 10px 0; }
+  ol li, ul li { margin: 4px 0; }
+  details { border: 1px solid #e5e5ea; border-radius: 8px; padding: 8px 12px; margin: 6px 0; }
+  summary { font-weight: 600; cursor: pointer; }
+  details p { margin: 6px 0 2px; }
+  .small { color: #6e6e73; font-size: 14px; }
+  h3 { font-size: 17px; margin: 20px 0 6px; }
+  .geruest { border: 2px solid #1d1d1f; border-radius: 6px; padding: 10px 14px; margin: 14px 0; font-size: 15px; line-height: 1.4; }
+  .geruest h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; margin: 0 0 8px; padding: 0; border: 0; }
+  .geruest dl { display: grid; grid-template-columns: 6.6em 1fr; gap: 6px 10px; margin: 0; }
+  .geruest dt { font-weight: 700; font-size: 12px; text-transform: uppercase; letter-spacing: .05em; padding-top: 1px; }
+  .geruest dd { margin: 0; }
+  .muster { border: 1px solid #e5e5ea; border-left: 4px solid #1d1d1f; border-radius: 6px; padding: 10px 14px; margin: 14px 0; }
+  .muster h3 { margin: 0 0 6px; font-size: 13px; text-transform: uppercase; letter-spacing: .06em; }
+  .muster .mq { margin: 0 0 6px; }
+</style>
+</head>
+<body>
+
+<h1>Eviction, TTL und Persistenz</h1>
+<!-- sources: redis.io Docs (Key eviction, EXPIRE, Redis persistence) -->
+
+<div class="kern">
+<b>Kern:</b> Redis hält alle Daten im Speicher. Mit <b>maxmemory</b> und einer <b>Eviction-Policy</b> löscht es bei vollem Speicher Schlüssel. Mit <b>TTL</b> laufen einzelne Schlüssel von selbst ab. <b>RDB</b> (Snapshots) und <b>AOF</b> (Log jeder Änderung) schreiben die Daten auf Platte, damit sie einen Neustart überleben.
+</div>
+
+<div class="muster"><h3>Antwort-Muster</h3><p class="mq"><b>Frage:</b> Was passiert, wenn Redis voll ist, und wie überstehen Daten einen Neustart?</p><ol>
+  <li>Mechanismus: Bei Erreichen von maxmemory löscht Redis nach der Policy Schlüssel. Für den Neustart gibt es RDB-Snapshots und das AOF-Log.</li>
+  <li>Zahl: maxmemory ist standardmässig 0, also unbegrenzt. Das AOF schreibt standardmässig jede Sekunde auf Platte (<code>everysec</code>).</li>
+  <li>Trade-off: <code>allkeys-lru</code> eignet sich für Caches. Mit <code>noeviction</code> lehnt Redis neue Schreibzugriffe ab. AOF ist sicherer, RDB schneller beim Start.</li>
+  <li>Produktion: Für Caches nehme ich eine Policy und TTL. Für Daten, die nicht verloren gehen dürfen, nehme ich RDB und AOF zusammen.</li>
+</ol></div>
+
+<h2>1. Eviction in 5 Schritten</h2>
+<svg viewBox="0 0 720 340" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="b" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="10" y="20" width="200" height="66" rx="10" fill="#eee" stroke="#777"/><text x="110" y="44" text-anchor="middle" font-weight="700">1. Befehl kommt</text><text x="110" y="66" text-anchor="middle" font-size="12">er fügt Daten hinzu</text>
+  <line x1="210" y1="53" x2="248" y2="53" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="250" y="20" width="220" height="66" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="360" y="44" text-anchor="middle" font-weight="700">2. Speicher prüfen</text><text x="360" y="66" text-anchor="middle" font-size="12">über maxmemory?</text>
+  <line x1="470" y1="53" x2="508" y2="53" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="510" y="20" width="200" height="66" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="610" y="44" text-anchor="middle" font-weight="700">3. Policy fragen</text><text x="610" y="66" text-anchor="middle" font-size="12">noeviction oder Auswahl</text>
+  <line x1="610" y1="86" x2="610" y2="134" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="440" y="136" width="270" height="66" rx="10" fill="#fff" stroke="#555"/><text x="575" y="160" text-anchor="middle" font-weight="700">4. Kandidaten ziehen</text><text x="575" y="182" text-anchor="middle" font-size="12">zufällige Stichprobe, nicht alle</text>
+  <line x1="440" y1="169" x2="398" y2="169" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="170" y="136" width="226" height="66" rx="10" fill="#e8f5e9" stroke="#2e7d32"/><text x="283" y="160" text-anchor="middle" font-weight="700">5. Schlechtesten löschen</text><text x="283" y="182" text-anchor="middle" font-size="12">wiederholen bis unter Limit</text>
+  <rect x="10" y="236" width="700" height="90" rx="10" fill="#f7f7fa" stroke="#999"/><text x="360" y="260" text-anchor="middle" font-weight="700">Policies</text><text x="360" y="282" text-anchor="middle" font-size="12">allkeys-lru · allkeys-lfu · allkeys-random · volatile-lru · volatile-lfu</text><text x="360" y="302" text-anchor="middle" font-size="12">volatile-random · volatile-ttl · noeviction · (ab 8.6: allkeys-lrm, volatile-lrm)</text>
+</svg>
+<ol>
+  <li><b>Befehl kommt:</b> Ein Client führt einen Befehl aus, der Daten hinzufügt.</li>
+  <li><b>Speicher prüfen:</b> Bei jedem solchen Befehl prüft Redis die Speichernutzung gegen <code>maxmemory</code>.</li>
+  <li><b>Policy fragen:</b> Bei <code>noeviction</code> bekommt der Client einen Fehler. Sonst wählt Redis nach <code>maxmemory-policy</code> Schlüssel zum Löschen.</li>
+  <li><b>Kandidaten ziehen:</b> LRU und LFU sind Näherungen. Redis zieht eine kleine Stichprobe (<code>maxmemory-samples</code>, Standard 5) und löscht den schlechtesten Kandidaten.</li>
+  <li><b>Wiederholen:</b> Redis löscht, bis die Nutzung wieder unter dem Limit liegt. Ein einzelner grosser Befehl kann das Limit kurz weit überschreiten.</li>
+</ol>
+
+<h2>2. Aufbau</h2>
+<svg viewBox="0 0 720 340" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="a" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="10" y="16" width="220" height="110" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="120" y="40" text-anchor="middle" font-weight="700">TTL (Ablauf)</text><text x="120" y="64" text-anchor="middle" font-size="12">passiv: beim Zugriff</text><text x="120" y="84" text-anchor="middle" font-size="12">aktiv: Stichprobe im Hintergrund</text><text x="120" y="104" text-anchor="middle" font-size="12">Genauigkeit: 0 bis 1 ms</text>
+  <rect x="250" y="16" width="220" height="110" rx="10" fill="#e8f5e9" stroke="#2e7d32"/><text x="360" y="40" text-anchor="middle" font-weight="700">Eviction</text><text x="360" y="64" text-anchor="middle" font-size="12">greift bei vollem Speicher</text><text x="360" y="84" text-anchor="middle" font-size="12">maxmemory + Policy</text><text x="360" y="104" text-anchor="middle" font-size="12">löscht auch Schlüssel ohne TTL</text>
+  <rect x="490" y="16" width="220" height="110" rx="10" fill="#fff" stroke="#555"/><text x="600" y="40" text-anchor="middle" font-weight="700">Persistenz</text><text x="600" y="64" text-anchor="middle" font-size="12">RDB: Snapshot (fork)</text><text x="600" y="84" text-anchor="middle" font-size="12">AOF: Log jeder Änderung</text><text x="600" y="104" text-anchor="middle" font-size="12">beides zusammen möglich</text>
+  <rect x="10" y="146" width="340" height="180" rx="10" fill="#f7f7fa" stroke="#999"/><text x="180" y="170" text-anchor="middle" font-weight="700">RDB: dump.rdb</text><text x="180" y="196" text-anchor="middle" font-size="12">1. Redis macht fork(), Eltern und Kind</text><text x="180" y="216" text-anchor="middle" font-size="12">2. Kind schreibt temporäre RDB-Datei</text><text x="180" y="236" text-anchor="middle" font-size="12">3. Kind ersetzt die alte Datei</text><text x="180" y="262" text-anchor="middle" font-size="12">Vorteil: kompakt, schneller Start</text><text x="180" y="282" text-anchor="middle" font-size="12">Nachteil: letzte Minuten können fehlen</text><text x="180" y="302" text-anchor="middle" font-size="12">fork kann Millisekunden bis Sekunde stören</text>
+  <rect x="370" y="146" width="340" height="180" rx="10" fill="#f7f7fa" stroke="#999"/><text x="540" y="170" text-anchor="middle" font-weight="700">AOF: appendonly</text><text x="540" y="196" text-anchor="middle" font-size="12">jeder schreibende Befehl wird angehängt</text><text x="540" y="216" text-anchor="middle" font-size="12">fsync: always · everysec · no</text><text x="540" y="236" text-anchor="middle" font-size="12">Rewrite macht das Log kürzer</text><text x="540" y="262" text-anchor="middle" font-size="12">Vorteil: höchstens etwa 1 s Verlust</text><text x="540" y="282" text-anchor="middle" font-size="12">Nachteil: grösser, kann langsamer sein</text><text x="540" y="302" text-anchor="middle" font-size="12">ab 7.0: Base-Datei plus Incr-Dateien</text>
+</svg>
+<ol>
+  <li><b>maxmemory:</b> Die Grenze für die Daten. Der Standard ist 0, also keine Grenze (64-Bit-Systeme).</li>
+  <li><b>Eviction-Policy:</b> Sie bestimmt, welche Schlüssel bei vollem Speicher gehen. Es gibt <code>allkeys-*</code> und <code>volatile-*</code>.</li>
+  <li><b>TTL:</b> Ein Schlüssel kann eine Lebensdauer haben. Danach löscht Redis ihn.</li>
+  <li><b>RDB:</b> Ein Snapshot des ganzen Datenbestands zu einem Zeitpunkt in einer Datei.</li>
+  <li><b>AOF:</b> Ein Log aller schreibenden Befehle. Beim Start spielt Redis es ab.</li>
+  <li><b>Beides:</b> RDB und AOF können zusammen laufen. Beim Neustart gilt das AOF als vollständiger.</li>
+</ol>
+
+<h2>3. Details</h2>
+<ol>
+  <li><b>maxmemory:</b> Standard 0 auf 64-Bit-Systemen, also unbegrenzt. 32-Bit-Systeme haben eine implizite Grenze von 3 GB. Man setzt sie in <code>redis.conf</code> oder mit <code>CONFIG SET</code>.</li>
+  <li><b>Puffer zählen nicht mit:</b> Der Speicher für Replikations- und AOF-Puffer wird nicht mit <code>maxmemory</code> verglichen. Sonst gäbe es eine Rückkopplung mit unnötigen Löschungen. Man lässt darum etwas RAM frei.</li>
+  <li><b>Policies:</b> <code>noeviction</code> lehnt Schreiben mit Fehler ab. <code>allkeys-lru</code>, <code>allkeys-lfu</code>, <code>allkeys-random</code> wählen unter allen Schlüsseln. <code>volatile-*</code> wählt nur Schlüssel mit TTL. <code>volatile-ttl</code> nimmt die kürzeste Restzeit. Gibt es keine Schlüssel mit TTL, verhält sich <code>volatile-*</code> wie <code>noeviction</code>.</li>
+  <li><b>Welche Policy?</b> Die Doku nennt <code>allkeys-lru</code> einen guten Standard, wenn ein Teil der Schlüssel viel öfter gelesen wird. <code>allkeys-random</code> passt bei gleichmässigem Zugriff. Ein TTL kostet Speicher, darum ist <code>allkeys-lru</code> sparsamer als <code>volatile-lru</code>.</li>
+  <li><b>Approximiertes LRU:</b> Redis zieht eine Stichprobe und löscht den Schlüssel mit der längsten Zeit seit dem letzten Zugriff. Seit 3.0 gibt es einen Pool guter Kandidaten. <code>maxmemory-samples</code> ist 5. Mit 10 kommt es nahe an echtes LRU, kostet aber mehr CPU.</li>
+  <li><b>LFU:</b> Seit Redis 4.0 zählt Redis die Zugriffshäufigkeit mit einem Morris-Zähler (0 bis 255) und lässt ihn zerfallen. Standard: <code>lfu-log-factor</code> 10, <code>lfu-decay-time</code> 1 Minute. Der Zähler sättigt bei etwa einer Million Zugriffen.</li>
+  <li><b>LRM und Schutz:</b> Seit Redis 8.6 gibt es LRM (zuletzt geändert), das nur bei Schreibzugriffen den Zeitstempel erneuert. Seit 8.12 schützt <code>BLESS SET</code> einzelne Schlüssel vor Eviction.</li>
+  <li><b>TTL setzen:</b> <code>EXPIRE</code> ist O(1). Optionen NX, XX, GT, LT gibt es seit 7.0.0. Ein TTL von null oder ein vergangener Zeitpunkt löscht den Schlüssel sofort.</li>
+  <li><b>TTL löschen oder erhalten:</b> <code>DEL</code>, <code>SET</code> und <code>*STORE</code>-Befehle löschen den TTL. <code>INCR</code>, <code>LPUSH</code> und <code>HSET</code> lassen ihn bestehen. <code>PERSIST</code> macht den Schlüssel dauerhaft. <code>RENAME</code> überträgt den TTL.</li>
+  <li><b>Ablauf passiv und aktiv:</b> Passiv: Beim Zugriff auf einen abgelaufenen Schlüssel löscht Redis ihn. Aktiv: Redis prüft regelmässig eine zufällige Stichprobe von Schlüsseln mit TTL. Die Genauigkeit liegt seit 2.6 bei 0 bis 1 Millisekunde.</li>
+  <li><b>TTL, Replikation und AOF:</b> Läuft ein Schlüssel ab, schreibt der Master ein <code>DEL</code> ins AOF und an die Replicas. Replicas löschen nicht selbständig. Der Ablauf wird als absoluter Zeitstempel gespeichert, die Uhr muss darum stimmen.</li>
+  <li><b>RDB und AOF:</b> RDB ist eine kompakte Punkt-in-Zeit-Datei, gut für Backups und schnelle Starts. Der Elternprozess macht nur <code>fork()</code>, das Kind schreibt. AOF loggt jede Änderung. <code>appendfsync</code> hat <code>always</code>, <code>everysec</code> (Standard) und <code>no</code>. Mit <code>everysec</code> gehen höchstens etwa 1 Sekunde Schreibzugriffe verloren.</li>
+</ol>
+
+<h2>4. Fallen</h2>
+<div class="trap">
+<ul>
+  <li>„Redis löscht bei vollem Speicher automatisch alte Schlüssel.“ → <b>Falsch.</b> Nur mit einer Policy ausser <code>noeviction</code>. Mit <code>noeviction</code> lehnt Redis neue Schreibzugriffe ab, und maxmemory ist standardmässig 0.</li>
+  <li>„<code>volatile-lru</code> schützt mich vor einem vollen Speicher.“ → <b>Falsch.</b> Hat kein Schlüssel einen TTL, verhält es sich wie <code>noeviction</code>. Schreiben schlägt dann fehl.</li>
+  <li>„<code>SET</code> auf einen Schlüssel mit TTL behält den TTL.“ → <b>Falsch.</b> <code>SET</code> überschreibt den Wert und löscht den TTL. <code>INCR</code> und <code>HSET</code> erhalten ihn.</li>
+  <li>„Mit RDB verliere ich höchstens eine Sekunde.“ → <b>Falsch.</b> RDB macht Snapshots in Abständen, oft alle paar Minuten. Dann gehen die letzten Minuten verloren. Die Sekunde gilt für AOF mit <code>everysec</code>.</li>
+  <li>„Redis berechnet echtes LRU.“ → <b>Falsch.</b> Es ist eine Näherung mit Stichprobe, weil echtes LRU mehr Speicher kostet.</li>
+  <li>„Der AOF-Schreibpuffer zählt zu maxmemory.“ → <b>Falsch.</b> Puffer für AOF und Replikation sind ausgenommen. Man lässt darum Reserve frei.</li>
+</ul>
+</div>
+
+<h2>5. Selbsttest</h2>
+<h3>Warum?</h3>
+<details><summary>Warum braucht ein Cache eine Eviction-Policy?</summary><p>Ein Cache hält Kopien von Daten. Wird der Speicher voll, ist Löschen unkritisch, weil die Daten neu geladen werden können. Ohne Policy lehnt Redis bei noeviction neue Daten ab.</p></details>
+<details><summary>Warum setzt man TTLs?</summary><p>Sie begrenzen das Alter von Daten und halten den Speicher klein. Wer TTLs gut nutzt, stösst seltener ans maxmemory-Limit.</p></details>
+<details><summary>Warum nutzt man RDB und AOF zusammen?</summary><p>Die Doku sagt: Für eine Sicherheit wie bei PostgreSQL nimmt man beides. AOF gibt Haltbarkeit, RDB gibt Backups und schnellere Starts.</p></details>
+<h3>Wie innen?</h3>
+<details><summary>Wie wählt Redis Schlüssel für die Eviction?</summary><p>Es zieht eine zufällige Stichprobe (maxmemory-samples, Standard 5) und löscht den schlechtesten nach der Policy. Das ist approximiertes LRU oder LFU.</p></details>
+<details><summary>Wie funktioniert der Ablauf eines Schlüssels?</summary><p>Passiv: Beim Zugriff auf einen abgelaufenen Schlüssel löscht Redis ihn. Aktiv: Redis prüft laufend Stichproben von Schlüsseln mit TTL und löscht abgelaufene.</p></details>
+<details><summary>Was passiert bei einem RDB-Snapshot?</summary><p>Redis macht fork(). Das Kind schreibt die Daten in eine temporäre Datei und ersetzt dann die alte. Der Elternprozess macht kein Disk-I/O. Es gilt Copy-on-Write.</p></details>
+<details><summary>Was ist ein AOF-Rewrite?</summary><p>Das Log wächst. Beim Rewrite schreibt ein Kind die kürzeste Befehlsfolge, die den aktuellen Bestand baut. Redis tauscht dann atomar. Seit 7.0 gibt es eine Base-Datei plus Incr-Dateien und ein Manifest.</p></details>
+<details><summary>Was passiert, wenn ein Schlüssel abläuft, mit AOF und Replicas?</summary><p>Der Master schreibt ein DEL ins AOF und schickt es an die Replicas. Replicas löschen nicht selbständig, sie warten auf das DEL.</p></details>
+<details><summary>Wie lädt Redis nach einem Neustart, wenn beides an ist?</summary><p>Aus dem AOF, weil es garantiert das vollständigste ist.</p></details>
+<h3>Zahlen</h3>
+<details><summary>Was ist der Standard von maxmemory?</summary><p>0, also keine Grenze, auf 64-Bit-Systemen. 32-Bit-Systeme haben implizit 3 GB.</p></details>
+<details><summary>Was sind die Standards bei LRU und LFU?</summary><p>maxmemory-samples 5. lfu-log-factor 10, lfu-decay-time 1. Der LFU-Zähler geht von 0 bis 255.</p></details>
+<details><summary>Wie viel Daten kann man mit appendfsync everysec verlieren?</summary><p>Höchstens etwa eine Sekunde Schreibzugriffe. Mit always praktisch keine, mit no entscheidet der Kernel, unter Linux oft etwa 30 Sekunden.</p></details>
+<details><summary>Wie genau läuft ein Ablauf ab?</summary><p>Seit Redis 2.6 mit einem Fehler von 0 bis 1 Millisekunde.</p></details>
+<h3>Vergleich</h3>
+<details><summary>allkeys-lru vs volatile-lru?</summary><p>allkeys-lru wählt unter allen Schlüsseln und braucht keinen TTL. volatile-lru wählt nur Schlüssel mit TTL, hat aber Speicherkosten für den TTL und verhält sich ohne TTL-Schlüssel wie noeviction.</p></details>
+<details><summary>LRU vs LFU?</summary><p>LRU löscht, was am längsten nicht benutzt wurde. LFU löscht, was am seltensten benutzt wird. LFU kann bei manchen Mustern eine bessere Trefferquote geben. Im Beispiel erreichte LFU 67.5 % gegen 66.5 %.</p></details>
+<details><summary>RDB vs AOF?</summary><p>RDB: kompakt, schneller Start, aber Verlust der letzten Minuten möglich. AOF: höchstens etwa 1 Sekunde Verlust, grösser und je nach fsync langsamer.</p></details>
+<details><summary>Eviction vs TTL?</summary><p>TTL gilt pro Schlüssel und löscht nach Zeit. Eviction greift bei vollem Speicher und löscht nach Policy, bei allkeys auch Schlüssel ohne TTL.</p></details>
+<h3>Produktion</h3>
+<details><summary>Was tun, wenn Redis „OOM command not allowed“ meldet?</summary><p>Der Speicher ist voll und die Policy ist noeviction oder volatile ohne TTL-Schlüssel. Lösung: Policy wählen (zum Beispiel allkeys-lru), TTLs setzen oder maxmemory prüfen.</p></details>
+<details><summary>Was tun, wenn die Trefferquote des Caches sinkt?</summary><p>Mit INFO stats keyspace_hits und keyspace_misses prüfen. Dann evicted_keys und expired_keys ansehen. Viele Evictions deuten auf die falsche Policy oder zu wenig Speicher, viele Expires auf zu kurze TTLs.</p></details>
+<details><summary>Szenario: Redis ist langsam, jedes Mal wenn ein Snapshot läuft. Was tun Sie?</summary><p>Der fork() kann bei grossen Datenmengen Millisekunden bis eine Sekunde stören. Ich prüfe die Datengrösse, die Häufigkeit der save-Punkte und ob AOF reicht. Eine kleinere Instanz oder Replicas für die Snapshots helfen.</p></details>
+<details><summary>Szenario: Nach einem Absturz ist das AOF abgeschnitten. Was tun Sie?</summary><p>Moderne Redis-Versionen laden es trotzdem und verwerfen den letzten unvollständigen Befehl. Ist die Datei in der Mitte beschädigt, bricht Redis ab. Dann sichere ich die Datei und nutze redis-check-aof, zuerst ohne --fix.</p></details>
+<h3>Design</h3>
+<details><summary>Wie konfigurieren Sie Redis als reinen Cache?</summary><p>maxmemory setzen, Policy allkeys-lru, TTL auf Schlüsseln, keine Persistenz oder nur RDB. Dazu etwas RAM für Puffer frei lassen.</p></details>
+<details><summary>Wie konfigurieren Sie Redis für Daten, die nicht verloren gehen dürfen?</summary><p>noeviction, damit nichts gelöscht wird. RDB und AOF mit everysec, Backups ausser Haus. Und die Daten gehören im Zweifel in eine Datenbank, Redis ist dann Kopie.</p></details>
+<details><summary>Wie mischen Sie Cache und dauerhafte Schlüssel in einer Instanz?</summary><p>Mit volatile-lru, nur Cache-Schlüssel haben TTL. Die Doku rät aber zu zwei getrennten Instanzen, wenn möglich.</p></details>
+<details><summary>Wie sichern Sie Redis?</summary><p>Die RDB-Datei darf man bei laufendem Server kopieren, sie wird atomar ersetzt. Täglich eine Kopie ausserhalb des Rechenzentrums. Bei reinem AOF vorher automatische Rewrites abschalten.</p></details>
+
+<details class="mehr"><summary>Mehr</summary>
+<h3>Gerüst</h3>
+<ul>
+  <li><b>Warum?</b> Speicher ist begrenzt, Daten sollen ablaufen oder einen Neustart überleben.</li>
+  <li><b>Wie innen?</b> Eviction: Stichprobe, schlechtester Kandidat. TTL: passiv und aktiv. RDB: fork. AOF: Log mit fsync.</li>
+  <li><b>Zahlen</b> maxmemory 0, samples 5, <code>everysec</code> etwa 1 s Verlust, Ablauf 0 bis 1 ms.</li>
+  <li><b>Vergleich</b> allkeys gegen volatile. LRU gegen LFU. RDB gegen AOF.</li>
+  <li><b>Produktion</b> OOM bei noeviction. fork-Spitzen. Abgeschnittenes AOF.</li>
+  <li><b>Design</b> Cache: allkeys-lru plus TTL. Wichtige Daten: AOF plus RDB.</li>
+</ul>
+
+<h3>Beispiel: Eviction-Policies im Modell vergleichen</h3>
+<pre>KEYS, CAP, N = 10_000, 1_000, 60_000        # Schlüssel, Cache-Grösse, Zugriffe
+weights = [1 / (i + 1) for i in range(KEYS)]  # wenige Schlüssel sind sehr beliebt
+# Nach der Hälfte wechselt die Beliebtheit auf andere Schlüssel (neue Permutation)
+
+noeviction            # voll: neue Schlüssel werden abgelehnt
+random                # zufälliges Opfer
+approx-lru, samples=1/5/10   # Stichprobe, ältester Zugriff verliert
+true-lru              # exakt, teuer
+approx-lfu, samples=5 # Stichprobe, seltenster Zugriff verliert (exakter Zähler)</pre>
+<pre>Zugriffe: 60,000, Schluessel: 10,000, Cache: 1,000 Eintraege, Beliebtheit wechselt nach der Haelfte
+noeviction             hit rate  38.5 %   evicted      0   rejected writes 35,883
+random                 hit rate  62.6 %   evicted 21,448   rejected writes      0
+approx-lru samples=1   hit rate  62.6 %   evicted 21,448   rejected writes      0
+approx-lru samples=5   hit rate  66.5 %   evicted 19,098   rejected writes      0
+approx-lru samples=10  hit rate  66.8 %   evicted 18,924   rejected writes      0
+true-lru               hit rate  66.9 %   evicted 18,844   rejected writes      0
+approx-lfu samples=5   hit rate  67.5 %   evicted 18,485   rejected writes      0</pre>
+<p class="small">Echte Ausgabe, Python 3.12.10. Es ist ein Modell, nicht Redis selbst. Der LFU-Zähler ist exakt und ohne Zerfall, anders als der Morris-Zähler in Redis. Der Pool guter Kandidaten fehlt im Modell.</p>
+<ol>
+  <li><b>noeviction</b> hat nur 38.5 % Treffer, weil der Cache mit den alten beliebten Schlüsseln gefüllt bleibt. 35 883 Schreibzugriffe wurden abgelehnt.</li>
+  <li><b>random</b> erreicht 62.6 %. Das ist der Boden für Policies mit Löschen.</li>
+  <li><b>Approximiertes LRU</b> wird mit mehr Stichproben besser: 62.6 % bei 1, 66.5 % bei 5, 66.8 % bei 10. Das echte LRU erreicht 66.9 %.</li>
+  <li>Schon mit 5 Stichproben liegt die Näherung nahe an echtem LRU, mit 10 noch näher. Das passt zur Doku: Mit 10 Stichproben nähert Redis echtes LRU an, kostet aber etwas mehr CPU.</li>
+  <li><b>LFU</b> erreicht hier 67.5 %. Bei diesem Zugriffsmuster mit stabil beliebten Schlüsseln hilft die Häufigkeit.</li>
+  <li>Nach dem Wechsel der Beliebtheit passen sich LRU und LFU an. noeviction nicht.</li>
+</ol>
+
+<h3>Vergleich</h3>
+<ul>
+  <li><b>noeviction:</b> nichts wird gelöscht, neue Schreibzugriffe schlagen fehl. Für Daten, die nicht weg dürfen.</li>
+  <li><b>allkeys-lru:</b> Standardwahl für Caches mit ungleichem Zugriff.</li>
+  <li><b>allkeys-lfu:</b> nach Häufigkeit. Gut bei stabil beliebten Schlüsseln.</li>
+  <li><b>volatile-ttl:</b> löscht Schlüssel mit der kürzesten Restzeit. Nur Schlüssel mit TTL.</li>
+  <li><b>RDB:</b> Snapshot, kompakt. <b>AOF:</b> Log, haltbarer. <b>Beides:</b> Empfehlung der Doku für hohe Sicherheit.</li>
+  <li><b>Kein Persistenz:</b> erlaubt für reine Caches.</li>
+</ul>
+
+<h3>Produktion</h3>
+<ol>
+  <li><b>OOM-Fehler:</b> Der Speicher ist voll bei <code>noeviction</code>. Lösung: Policy wählen, TTLs setzen, maxmemory und Grösse prüfen.</li>
+  <li><b>Kein Platz für Puffer:</b> maxmemory ist gleich dem ganzen RAM. Replikations- und AOF-Puffer zählen nicht mit. Lösung: RAM für Puffer frei lassen (<code>mem_not_counted_for_evict</code> in INFO).</li>
+  <li><b>fork-Spitzen:</b> Bei grossen Datenmengen kann fork() Millisekunden bis eine Sekunde stören. Lösung: weniger Snapshots, kleinere Instanzen, Snapshots auf Replicas.</li>
+  <li><b>Daten nach Absturz fehlen:</b> RDB allein verliert die letzten Minuten. Lösung: AOF mit <code>everysec</code> zusätzlich.</li>
+  <li><b>AOF abgeschnitten oder defekt:</b> Lösung: <code>redis-check-aof</code>, zuerst ohne <code>--fix</code>, Datei vorher sichern.</li>
+  <li><b>Uhr falsch:</b> Ablaufzeiten sind absolute Zeitstempel. Eine RDB-Datei auf einem Rechner mit falscher Uhr kann viele Schlüssel sofort ablaufen lassen. Lösung: Uhr per NTP stabil halten.</li>
+</ol>
+
+<h3>Diagnose: Werkzeuge und Befehle</h3>
+<ul>
+  <li><code>INFO stats</code>: <code>keyspace_hits</code>, <code>keyspace_misses</code>, <code>evicted_keys</code>, <code>expired_keys</code>. Trefferquote = hits / (hits + misses).</li>
+  <li><code>INFO memory</code>: <code>used_memory_dataset</code>, <code>mem_not_counted_for_evict</code>.</li>
+  <li><code>INFO persistence</code>: <code>aof_rewrite_in_progress</code>, <code>aof_last_bgrewrite_status</code>.</li>
+  <li><code>CONFIG GET maxmemory*</code> und <code>CONFIG SET maxmemory-policy ...</code>: Policy prüfen und im Betrieb ändern.</li>
+  <li><code>TTL key</code>: Restzeit in Sekunden. -1 heisst kein TTL.</li>
+  <li><code>redis-check-aof</code>: prüft und repariert ein AOF.</li>
+</ul>
+
+<h3>Senior-Punkte</h3>
+<div class="senior">
+<ol>
+  <li><b>Cache oder Datenspeicher?</b> Das bestimmt Policy und Persistenz. Ein Cache darf löschen, ein Speicher nicht.</li>
+  <li><b>Trefferquote messen,</b> nicht raten. <code>evicted_keys</code> und <code>expired_keys</code> zeigen, ob Policy oder TTL das Problem ist.</li>
+  <li><b>Reserve einplanen.</b> Puffer für Replikation und AOF zählen nicht zu maxmemory, und ein grosser Befehl kann das Limit kurz überschreiten.</li>
+  <li><b>RDB und AOF sind verschiedene Versprechen:</b> Backup und Startgeschwindigkeit gegen Haltbarkeit. Bei wichtigen Daten beides.</li>
+  <li><b>Backups testen.</b> Eine Kopie, die man nie wiederhergestellt hat, ist keine Sicherung.</li>
+  <li><b>Redis ersetzt keine Datenbank,</b> wenn Daten nicht verloren gehen dürfen. Es ist dann eine schnelle Kopie.</li>
+</ol>
+</div>
+
+<h3>Dein Beispiel</h3>
+</details>
+
+</body>
+</html>

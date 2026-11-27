@@ -1,0 +1,237 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Redis-Datentypen und Einsatz</title>
+<style>
+  body { font: 17px/1.55 -apple-system, system-ui, sans-serif; max-width: 760px; margin: 0 auto; padding: 16px; color: #1d1d1f; }
+  h1 { font-size: 28px; margin: 8px 0 4px; }
+  h2 { font-size: 21px; margin: 32px 0 8px; padding-top: 12px; border-top: 2px solid #e5e5ea; }
+  .kern { background: #eef6ff; border-left: 4px solid #0a66c2; padding: 10px 14px; border-radius: 6px; }
+  .senior { background: #f0faf0; border-left: 4px solid #2e7d32; padding: 10px 14px; border-radius: 6px; }
+  .trap { background: #fff4f2; border-left: 4px solid #c62828; padding: 10px 14px; border-radius: 6px; }
+  code { background: #f2f2f7; padding: 1px 5px; border-radius: 4px; font-size: 15px; }
+  pre { background: #1e1e1e; color: #e6e6e6; padding: 12px; border-radius: 8px; overflow-x: auto; font-size: 13.5px; line-height: 1.45; }
+  svg { width: 100%; height: auto; display: block; margin: 10px 0; }
+  ol li, ul li { margin: 4px 0; }
+  details { border: 1px solid #e5e5ea; border-radius: 8px; padding: 8px 12px; margin: 6px 0; }
+  summary { font-weight: 600; cursor: pointer; }
+  details p { margin: 6px 0 2px; }
+  .small { color: #6e6e73; font-size: 14px; }
+  h3 { font-size: 17px; margin: 20px 0 6px; }
+  .geruest { border: 2px solid #1d1d1f; border-radius: 6px; padding: 10px 14px; margin: 14px 0; font-size: 15px; line-height: 1.4; }
+  .geruest h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; margin: 0 0 8px; padding: 0; border: 0; }
+  .geruest dl { display: grid; grid-template-columns: 6.6em 1fr; gap: 6px 10px; margin: 0; }
+  .geruest dt { font-weight: 700; font-size: 12px; text-transform: uppercase; letter-spacing: .05em; padding-top: 1px; }
+  .geruest dd { margin: 0; }
+  .muster { border: 1px solid #e5e5ea; border-left: 4px solid #1d1d1f; border-radius: 6px; padding: 10px 14px; margin: 14px 0; }
+  .muster h3 { margin: 0 0 6px; font-size: 13px; text-transform: uppercase; letter-spacing: .06em; }
+  .muster .mq { margin: 0 0 6px; }
+</style>
+</head>
+<body>
+
+<h1>Redis-Datentypen und Einsatz</h1>
+<!-- sources: redis.io Docs (Redis data types, Strings, Hashes, Lists, Sets, Sorted sets, Streams), Befehle KEYS, SMEMBERS, PFCOUNT -->
+
+<div class="kern">
+<b>Kern:</b> Redis ist ein <b>Data Structure Server</b>. Es speichert nicht nur Strings, sondern <b>Hashes, Lists, Sets, Sorted Sets, Streams</b> und mehr, und jede Struktur hat eigene Befehle mit bekannter Komplexität. Die Wahl des Typs bestimmt Speicher und Geschwindigkeit. Die Befehle sind atomar, mehrere Befehle zusammen laufen mit <code>MULTI</code> und <code>EXEC</code>.
+</div>
+
+<div class="muster"><h3>Antwort-Muster</h3><p class="mq"><b>Frage:</b> Welchen Redis-Datentyp nehmen Sie für eine Rangliste?</p><ol>
+  <li>Mechanismus: Ein Sorted Set. Jedes Mitglied hat einen Score, Redis hält die Mitglieder nach Score sortiert.</li>
+  <li>Zahl: <code>ZADD</code> kostet O(log N). Einen Bereich lesen mit <code>ZRANGE</code> kostet O(log N + M).</li>
+  <li>Trade-off: Alles liegt im Speicher. Ein Sorted Set braucht mehr RAM als ein Hash mit denselben Daten.</li>
+  <li>Produktion: Ich lese Top-Listen mit <code>ZRANGE</code> in kleinen Bereichen und nie mit <code>KEYS</code> oder <code>SMEMBERS</code> auf grossen Mengen.</li>
+</ol></div>
+
+<h2>1. Typ wählen in 5 Schritten</h2>
+<svg viewBox="0 0 720 340" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="b" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="10" y="20" width="200" height="66" rx="10" fill="#eee" stroke="#777"/><text x="110" y="44" text-anchor="middle" font-weight="700">1. Zugriff klären</text><text x="110" y="66" text-anchor="middle" font-size="12">Was fragt die App?</text>
+  <line x1="210" y1="53" x2="248" y2="53" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="250" y="20" width="220" height="66" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="360" y="44" text-anchor="middle" font-weight="700">2. Struktur zuordnen</text><text x="360" y="66" text-anchor="middle" font-size="12">Wert, Record, Folge, Menge</text>
+  <line x1="470" y1="53" x2="508" y2="53" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="510" y="20" width="200" height="66" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="610" y="44" text-anchor="middle" font-weight="700">3. Komplexität prüfen</text><text x="610" y="66" text-anchor="middle" font-size="12">Befehle in der Doku</text>
+  <line x1="610" y1="86" x2="610" y2="134" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="440" y="136" width="270" height="66" rx="10" fill="#fff" stroke="#555"/><text x="575" y="160" text-anchor="middle" font-weight="700">4. Schlüssel entwerfen</text><text x="575" y="182" text-anchor="middle" font-size="12">user:42:profile, TTL planen</text>
+  <line x1="440" y1="169" x2="398" y2="169" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="170" y="136" width="226" height="66" rx="10" fill="#e8f5e9" stroke="#2e7d32"/><text x="283" y="160" text-anchor="middle" font-weight="700">5. Grösse begrenzen</text><text x="283" y="182" text-anchor="middle" font-size="12">kein unbegrenztes Wachsen</text>
+  <rect x="10" y="236" width="700" height="90" rx="10" fill="#f7f7fa" stroke="#999"/><text x="360" y="260" text-anchor="middle" font-weight="700">Faustregel</text><text x="360" y="282" text-anchor="middle" font-size="12">ein Wert: String · Felder eines Objekts: Hash · Warteschlange: List oder Stream</text><text x="360" y="302" text-anchor="middle" font-size="12">eindeutige Menge: Set · Rangliste: Sorted Set · eindeutige Zählung: HyperLogLog</text>
+</svg>
+<ol>
+  <li><b>Zugriff klären:</b> Welche Fragen stellt die Anwendung? Zum Beispiel „Wert zu Schlüssel“, „die Top 10“ oder „ist X schon da?“.</li>
+  <li><b>Struktur zuordnen:</b> Ein Wert ist ein String. Ein Record mit Feldern ist ein Hash. Eine Folge ist eine List oder ein Stream. Eine Menge ohne Doppelte ist ein Set. Eine sortierte Menge ist ein Sorted Set.</li>
+  <li><b>Komplexität prüfen:</b> Jede Befehlsseite nennt die Komplexität. Man vermeidet Befehle mit O(N) auf grossen Strukturen.</li>
+  <li><b>Schlüssel entwerfen:</b> Ein klares Namensschema mit Doppelpunkt, und früh klären, ob und wann der Schlüssel ablaufen soll.</li>
+  <li><b>Grösse begrenzen:</b> Eine List oder ein Set, das ewig wächst, füllt den Speicher. Man kürzt (<code>LTRIM</code>), lässt ablaufen oder teilt auf.</li>
+</ol>
+
+<h2>2. Aufbau</h2>
+<svg viewBox="0 0 720 340" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="a" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="10" y="16" width="220" height="96" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="120" y="40" text-anchor="middle" font-weight="700">String</text><text x="120" y="62" text-anchor="middle" font-size="12">Bytefolge, max. 512 MB</text><text x="120" y="82" text-anchor="middle" font-size="12">GET, SET, INCR</text><text x="120" y="100" text-anchor="middle" font-size="12">Bitmap, Bitfield darin</text>
+  <rect x="250" y="16" width="220" height="96" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="360" y="40" text-anchor="middle" font-weight="700">Hash</text><text x="360" y="62" text-anchor="middle" font-size="12">Feld-Wert-Paare</text><text x="360" y="82" text-anchor="middle" font-size="12">HGET O(1), HSET O(1)</text><text x="360" y="100" text-anchor="middle" font-size="12">Feld-TTL ab 7.4.0</text>
+  <rect x="490" y="16" width="220" height="96" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="600" y="40" text-anchor="middle" font-weight="700">List</text><text x="600" y="62" text-anchor="middle" font-size="12">Strings in Einfügereihenfolge</text><text x="600" y="82" text-anchor="middle" font-size="12">Kopf und Ende: O(1)</text><text x="600" y="100" text-anchor="middle" font-size="12">Index: O(N)</text>
+  <rect x="10" y="126" width="220" height="96" rx="10" fill="#e8f5e9" stroke="#2e7d32"/><text x="120" y="150" text-anchor="middle" font-weight="700">Set</text><text x="120" y="172" text-anchor="middle" font-size="12">eindeutige Strings, ungeordnet</text><text x="120" y="192" text-anchor="middle" font-size="12">Add, Remove, Test: O(1)</text><text x="120" y="210" text-anchor="middle" font-size="12">SMEMBERS: O(N)</text>
+  <rect x="250" y="126" width="220" height="96" rx="10" fill="#e8f5e9" stroke="#2e7d32"/><text x="360" y="150" text-anchor="middle" font-weight="700">Sorted Set</text><text x="360" y="172" text-anchor="middle" font-size="12">Mitglied + Score, sortiert</text><text x="360" y="192" text-anchor="middle" font-size="12">Skip List + Hash Table</text><text x="360" y="210" text-anchor="middle" font-size="12">ZADD: O(log N)</text>
+  <rect x="490" y="126" width="220" height="96" rx="10" fill="#e8f5e9" stroke="#2e7d32"/><text x="600" y="150" text-anchor="middle" font-weight="700">Stream</text><text x="600" y="172" text-anchor="middle" font-size="12">Append-only Log</text><text x="600" y="192" text-anchor="middle" font-size="12">Ereignisse in Reihenfolge</text><text x="600" y="210" text-anchor="middle" font-size="12">zum Weiterverarbeiten</text>
+  <rect x="10" y="236" width="700" height="90" rx="10" fill="#f7f7fa" stroke="#999"/><text x="360" y="260" text-anchor="middle" font-weight="700">Weitere Typen</text><text x="360" y="282" text-anchor="middle" font-size="12">Geospatial · JSON · Arrays · Time Series · Vector Sets</text><text x="360" y="302" text-anchor="middle" font-size="12">Probabilistisch: HyperLogLog, Bloom, Cuckoo, Count-min, t-digest, Top-K</text>
+</svg>
+<ol>
+  <li>Ein <b>String</b> ist die einfachste Form: eine Folge von Bytes. Ein Wert darf höchstens 512 MB gross sein.</li>
+  <li>Ein <b>Hash</b> ist ein Record aus Feld-Wert-Paaren, ähnlich einer Java HashMap.</li>
+  <li>Eine <b>List</b> hält Strings in Einfügereihenfolge. Kopf und Ende sind schnell.</li>
+  <li>Ein <b>Set</b> hält eindeutige Strings ohne Ordnung.</li>
+  <li>Ein <b>Sorted Set</b> hält eindeutige Strings, die nach einem Score geordnet sind.</li>
+  <li>Ein <b>Stream</b> ist ein Append-only Log von Ereignissen.</li>
+</ol>
+
+<h2>3. Details</h2>
+<ol>
+  <li><b>String:</b> Er speichert Text, Zahlen oder Binärdaten wie ein JPEG. Das Maximum ist 512 MB. <code>INCR</code> erhöht eine Zahl atomar, darum eignen sich Strings als Zähler.</li>
+  <li><b>Bitmaps und Bitfields:</b> Beides sind Strings mit Bit-Operationen. Bitmaps erlauben bitweise Befehle, Bitfields kodieren mehrere Zähler in einem Wert.</li>
+  <li><b>Hash:</b> Feld-Wert-Paare unter einem Schlüssel. <code>HGET</code> ist O(1), <code>HSET</code> ist O(1) pro Paar. Kleine Hashes sind speichersparend kodiert. Felder können seit Redis 7.4.0 einzeln ablaufen (<code>HEXPIRE</code>).</li>
+  <li><b>List:</b> Eine verkettete Liste. Einfügen und Entfernen an Kopf und Ende ist O(1), auch bei Millionen Einträgen. Der Zugriff per Index ist O(N). <code>BLPOP</code> blockiert, bis ein Element da ist. <code>LTRIM</code> hält die Liste auf feste Länge.</li>
+  <li><b>Set:</b> Hinzufügen, Entfernen und Prüfen sind O(1), unabhängig von der Grösse. <code>SMEMBERS</code> gibt alle Mitglieder zurück und ist O(N). Auf grossen Sets ist das gefährlich.</li>
+  <li><b>Sorted Set:</b> Intern ein Verbund aus Skip List und Hash Table. Haben zwei Mitglieder denselben Score, sortiert Redis sie lexikographisch. <code>ZADD</code> ist O(log N), Bereichsabfragen sind O(log N + M).</li>
+  <li><b>Stream:</b> Ein Append-only Log. Er hält Ereignisse in der Reihenfolge, in der sie auftreten, und gibt sie zur Verarbeitung weiter.</li>
+  <li><b>HyperLogLog:</b> Zählt eindeutige Elemente mit konstant etwa 12 KB. Der Standardfehler ist 0.81 %. <code>PFCOUNT</code> mit einem Schlüssel ist schnell, mit mehreren Schlüsseln langsamer, weil er vorher mischt.</li>
+  <li><b>Weitere Typen:</b> Geospatial-Indizes, JSON, Arrays, Time Series, Vector Sets und probabilistische Typen (Bloom, Cuckoo, Count-min, t-digest, Top-K). Sie gehören zu Redis Open Source, wie die Doku listet.</li>
+  <li><b>KEYS ist gefährlich:</b> Es ist O(N) über alle Schlüssel. Die Doku warnt vor dem Einsatz in Produktion. Man nutzt <code>SCAN</code> oder Sets.</li>
+  <li><b>Mehrere Befehle zusammen:</b> Ein einzelner Befehl wie INCR ist ein Schritt. Mehrere Befehle zusammen brauchen <code>MULTI</code> und <code>EXEC</code>. Ein Beispiel dafür ist <code>RPUSH</code> mit <code>EXPIRE</code> in der Doku.</li>
+</ol>
+
+<h2>4. Fallen</h2>
+<div class="trap">
+<ul>
+  <li>„Redis speichert nur Strings.“ → <b>Falsch.</b> Es hat Hashes, Lists, Sets, Sorted Sets, Streams und weitere Typen.</li>
+  <li>„<code>KEYS *</code> ist ein guter Weg, Schlüssel zu finden.“ → <b>Falsch.</b> Es ist O(N). Die Doku sagt: nicht im regulären Anwendungscode nutzen. Nimm <code>SCAN</code>.</li>
+  <li>„<code>SMEMBERS</code> ist schnell wie <code>SADD</code>.“ → <b>Falsch.</b> <code>SADD</code> ist O(1), <code>SMEMBERS</code> ist O(N) über das ganze Set.</li>
+  <li>„Eine Liste mit Zugriff <code>LINDEX</code> in einer Schleife ist effizient.“ → <b>Falsch.</b> Der Zugriff per Index ist O(N). Für Zugriff per Schlüssel nimmt man Hash oder Sorted Set.</li>
+  <li>„Ein Wert im String-Typ kann beliebig gross sein.“ → <b>Falsch.</b> Das Maximum ist 512 MB. Grosse Werte sind aber ein Zeichen für ein falsches Design.</li>
+  <li>„Ein Hash-Feld braucht keine TTL-Planung.“ → <b>Falsch.</b> Ein TTL gilt für den ganzen Schlüssel. Einzelne Felder ablaufen zu lassen geht erst seit 7.4.0 mit <code>HEXPIRE</code>.</li>
+</ul>
+</div>
+
+<h2>5. Selbsttest</h2>
+<h3>Warum?</h3>
+<details><summary>Warum hat Redis verschiedene Datentypen statt nur Strings?</summary><p>Jede Struktur hat Befehle, die auf dem Server laufen. So liest und ändert man Teile (ein Feld, einen Rang) ohne den ganzen Wert zu übertragen.</p></details>
+<details><summary>Warum ist INCR als Zähler sicher?</summary><p>INCR liest, erhöht und schreibt den Wert in einem einzigen Befehl. Zwei Clients verlieren so keine Zählung, anders als bei GET und SET nacheinander.</p></details>
+<details><summary>Warum nimmt man einen Hash statt vieler Strings für ein Objekt?</summary><p>Ein Hash bündelt die Felder unter einem Schlüssel. Man liest einzelne Felder mit HGET. Kleine Hashes sind zudem speichersparend kodiert.</p></details>
+<h3>Wie innen?</h3>
+<details><summary>Wie ist ein Sorted Set aufgebaut?</summary><p>Als Verbund aus Skip List und Hash Table. Die Skip List hält die Reihenfolge nach Score, die Hash Table findet Mitglieder direkt. Bei gleichem Score entscheidet die lexikographische Ordnung.</p></details>
+<details><summary>Wie ist eine Redis-List aufgebaut?</summary><p>Als verkettete Liste. Kopf und Ende sind O(1). Ein Zugriff per Index braucht Arbeit proportional zum Index, also O(N).</p></details>
+<details><summary>Wie funktioniert ein Stream?</summary><p>Er ist ein Append-only Log. Neue Einträge kommen ans Ende, und Konsumenten lesen sie in der Reihenfolge, in der sie auftraten.</p></details>
+<details><summary>Wie funktioniert HyperLogLog?</summary><p>Er schätzt die Zahl eindeutiger Elemente. Redis nutzt für wenige Elemente eine Sparse-Darstellung und wechselt dann zur Dense-Darstellung mit 12 288 Bytes (16 384 Zähler mit 6 Bit).</p></details>
+<details><summary>Wie wird ein Wert in einer Rangliste aktualisiert?</summary><p>ZADD mit demselben Mitglied und neuem Score ersetzt den Score. Mit ZINCRBY erhöht man ihn. Beides ist O(log N).</p></details>
+<details><summary>Wie ermöglicht man mehrere Befehle zusammen atomar?</summary><p>Mit MULTI und EXEC. Zum Beispiel RPUSH und EXPIRE im Navigation-Session-Muster der Doku. Oder mit einem Lua-Skript oder einer Funktion.</p></details>
+<h3>Zahlen</h3>
+<details><summary>Wie gross darf ein String-Wert sein?</summary><p>Höchstens 512 MB.</p></details>
+<details><summary>Wie viel Speicher braucht ein HyperLogLog?</summary><p>Etwa 12 KB (12 288 Bytes in der Dense-Darstellung), mit einem Standardfehler von 0.81 %.</p></details>
+<details><summary>Welche Komplexität haben ZADD, SADD und HGET?</summary><p>ZADD O(log N), SADD O(1), HGET O(1).</p></details>
+<details><summary>Wie schnell ist KEYS?</summary><p>O(N) über alle Schlüssel. Nach der Doku scannt es auf einem Einsteiger-Laptop 1 Million Schlüssel in etwa 40 Millisekunden. Das blockiert Redis trotzdem für diese Zeit.</p></details>
+<h3>Vergleich</h3>
+<details><summary>Hash vs String mit JSON?</summary><p>Ein Hash erlaubt Zugriff und Änderung einzelner Felder. Ein JSON-String muss man ganz lesen und schreiben. Für verschachtelte Daten gibt es zusätzlich den Typ JSON.</p></details>
+<details><summary>List vs Stream als Warteschlange?</summary><p>Eine List mit BLPOP ist einfach, ein Element geht an genau einen Leser. Ein Stream ist ein Log, das man in Reihenfolge weiterverarbeitet und nachlesen kann.</p></details>
+<details><summary>Set vs Sorted Set?</summary><p>Ein Set hat keine Ordnung, Operationen sind O(1). Ein Sorted Set ist nach Score geordnet, Operationen sind O(log N), dafür sind Ränge und Bereiche möglich.</p></details>
+<details><summary>HyperLogLog vs Set für eindeutige Zählungen?</summary><p>Ein Set zählt exakt, braucht aber Speicher pro Element. HyperLogLog braucht konstant etwa 12 KB, zählt aber ungefähr mit 0.81 % Fehler.</p></details>
+<h3>Produktion</h3>
+<details><summary>Was tun, wenn Redis plötzlich für Sekunden nicht antwortet?</summary><p>Mit SLOWLOG prüfen, ob ein O(N)-Befehl läuft, zum Beispiel KEYS oder SMEMBERS auf einem grossen Set. Lösung: SCAN, SSCAN oder kleinere Strukturen.</p></details>
+<details><summary>Was tun, wenn der Speicher durch eine Liste wächst?</summary><p>Die Liste hat keine Grenze. Lösung: LTRIM nach jedem Push, oder einen Stream mit Längenbegrenzung, oder TTL auf den Schlüssel.</p></details>
+<details><summary>Szenario: Eine Tages-Statistik zählt eindeutige Besucher mit einem Set und braucht Gigabytes. Was tun Sie?</summary><p>Ich wechsle zu HyperLogLog mit PFADD und PFCOUNT. Es braucht etwa 12 KB pro Tag bei 0.81 % Fehler. Ist die exakte Zahl nötig, bleibt das Set.</p></details>
+<details><summary>Szenario: Ein Team will Sessions als einen Hash pro Nutzer mit allen Feldern speichern, aber einzelne Felder sollen ablaufen. Was empfehlen Sie?</summary><p>Seit Redis 7.4.0 gibt es HEXPIRE für einzelne Felder. Davor gilt der TTL nur für den ganzen Schlüssel. Alternativ trennt man ablaufende Daten in einen eigenen Schlüssel.</p></details>
+<h3>Design</h3>
+<details><summary>Wie entwerfen Sie Schlüsselnamen?</summary><p>Mit Namensschema und Doppelpunkt, zum Beispiel user:42:profile. Das macht Schlüssel lesbar und gruppierbar. Dazu plane ich früh, ob und wann sie ablaufen.</p></details>
+<details><summary>Wie bauen Sie eine Top-10-Rangliste?</summary><p>Ein Sorted Set mit Punkten als Score. ZADD oder ZINCRBY für Änderungen, ZRANGE mit Rückwärts-Reihenfolge für die Top 10.</p></details>
+<details><summary>Wie bauen Sie eine begrenzte Verlaufsliste?</summary><p>Mit einer List: LPUSH neues Element, dann LTRIM auf die gewünschte Länge. So bleibt die Liste konstant gross.</p></details>
+<details><summary>Wann nehmen Sie Redis nicht?</summary><p>Wenn die Daten nicht in den Speicher passen oder komplexe Abfragen mit Joins nötig sind. Redis ist ein Speicher für Strukturen mit bekannten Zugriffen, keine relationale Datenbank.</p></details>
+
+<details class="mehr"><summary>Mehr</summary>
+<h3>Gerüst</h3>
+<ul>
+  <li><b>Warum?</b> Strukturen auf dem Server: Teile lesen und ändern, atomar, mit bekannter Komplexität.</li>
+  <li><b>Wie innen?</b> String (Bytes), Hash (Felder), List (verkettet), Set, Sorted Set (Skip List + Hash Table), Stream (Log).</li>
+  <li><b>Zahlen</b> String max. 512 MB. HyperLogLog 12 KB, 0.81 %. ZADD O(log N). SMEMBERS O(N).</li>
+  <li><b>Vergleich</b> Hash gegen JSON-String. List gegen Stream. Set gegen HyperLogLog.</li>
+  <li><b>Produktion</b> O(N)-Befehle (KEYS, SMEMBERS) blockieren. Unbegrenzte Listen füllen den RAM.</li>
+  <li><b>Design</b> Zugriff zuerst klären. Schlüsselschema, TTL, Grösse begrenzen.</li>
+</ul>
+
+<h3>Beispiel: je ein Befehl pro Typ mit redis-cli</h3>
+<pre>SET page:views 0
+INCR page:views                          # String als Zähler
+
+HSET user:42 name "Anna" city "Bern"     # Hash
+HGET user:42 city
+
+RPUSH history:42 "a" "b" "c"             # List
+LTRIM history:42 -2 -1                   # nur die letzten 2 behalten
+
+SADD tags:post:1 "redis" "cache"         # Set
+SISMEMBER tags:post:1 "redis"
+
+ZADD board 120 "anna" 95 "ben" 120 "cem" # Sorted Set
+ZRANGE board 0 -1 WITHSCORES             # aufsteigend nach Score
+
+PFADD visitors:today u1 u2 u3 u1         # HyperLogLog
+PFCOUNT visitors:today</pre>
+<p class="small">Nicht ausgeführt. Redis ist auf dieser Maschine nicht installiert.</p>
+<ol>
+  <li>Teil 1: <code>INCR</code> erhöht den String-Wert atomar.</li>
+  <li>Teil 2: Ein Hash hält die Felder <code>name</code> und <code>city</code>. <code>HGET</code> liest ein einzelnes Feld in O(1).</li>
+  <li>Teil 3: <code>LTRIM history:42 -2 -1</code> behält nur die letzten zwei Elemente. So bleibt die List begrenzt.</li>
+  <li>Teil 4: Ein Set hält jeden Tag nur einmal. <code>SISMEMBER</code> prüft die Zugehörigkeit.</li>
+  <li>Teil 5: <code>anna</code> und <code>cem</code> haben denselben Score 120. Redis ordnet sie dann lexikographisch, also zuerst <code>anna</code>, dann <code>cem</code>. <code>ben</code> mit 95 steht zuerst.</li>
+  <li>Teil 6: <code>u1</code> kommt zweimal vor. Ein HyperLogLog schätzt 3 eindeutige Elemente.</li>
+</ol>
+<p>Die Beschreibung folgt aus der Doku. Die Befehle wurden nicht ausgeführt, darum steht hier keine Ausgabe.</p>
+
+<h3>Vergleich</h3>
+<ul>
+  <li><b>String:</b> ein Wert, Zähler, Cache-Eintrag. Maximum 512 MB.</li>
+  <li><b>Hash:</b> Objekt mit Feldern, einzelne Felder lesen und ändern.</li>
+  <li><b>List:</b> Folge mit schnellem Kopf und Ende. Gut für Verlauf und einfache Queues.</li>
+  <li><b>Set:</b> Mitgliedschaft in O(1), Schnitt- und Vereinigungsmengen.</li>
+  <li><b>Sorted Set:</b> Ranglisten, Zeitleisten nach Score, Bereichsabfragen.</li>
+  <li><b>Stream:</b> Ereignis-Log zum Nachlesen und Weiterverarbeiten.</li>
+</ul>
+
+<h3>Produktion</h3>
+<ol>
+  <li><b>Blockierende Befehle:</b> <code>KEYS</code> und <code>SMEMBERS</code> auf grossen Strukturen sind O(N). Lösung: <code>SCAN</code>, <code>SSCAN</code>, <code>HSCAN</code>, <code>ZSCAN</code>.</li>
+  <li><b>Wachsende Strukturen:</b> Eine List oder ein Set ohne Grenze füllt den Speicher. Lösung: <code>LTRIM</code>, TTL, Rotation nach Zeit.</li>
+  <li><b>Grosse Werte:</b> Ein String mit vielen MB belastet Netz und Redis bei jeder Übertragung. Lösung: aufteilen oder anders speichern.</li>
+  <li><b>Hot Key:</b> Ein Schlüssel wird extrem oft gelesen. Lösung: lokal zwischenspeichern oder den Schlüssel aufteilen.</li>
+  <li><b>Fehlende Atomarität:</b> Zwei Befehle nacheinander sind nicht atomar. Lösung: <code>MULTI</code>/<code>EXEC</code> oder ein Lua-Skript.</li>
+  <li><b>Falsche Annahmen zu Ablauf:</b> Ein TTL gilt für den ganzen Schlüssel. Lösung: eigene Schlüssel oder <code>HEXPIRE</code> ab 7.4.0.</li>
+</ol>
+
+<h3>Diagnose: Werkzeuge und Befehle</h3>
+<ul>
+  <li><code>TYPE key</code>: zeigt den Typ eines Schlüssels.</li>
+  <li><code>MEMORY USAGE key</code>: zeigt den Speicher eines Schlüssels.</li>
+  <li><code>SLOWLOG GET</code>: listet langsame Befehle.</li>
+  <li><code>SCAN 0 MATCH user:* COUNT 100</code>: durchläuft Schlüssel in Stücken.</li>
+  <li><code>redis-cli --bigkeys</code>: sucht die grössten Schlüssel je Typ.</li>
+  <li><code>INFO memory</code> und <code>INFO commandstats</code>: Speicher und Befehlsstatistik.</li>
+</ul>
+
+<h3>Senior-Punkte</h3>
+<div class="senior">
+<ol>
+  <li><b>Erst den Zugriff, dann den Typ.</b> Die Befehle bestimmen die Struktur, nicht umgekehrt.</li>
+  <li><b>Komplexität pro Befehl kennen.</b> Ein O(N)-Befehl auf einer grossen Struktur blockiert alle anderen Clients.</li>
+  <li><b>Jede Struktur braucht eine Grenze:</b> Länge, TTL oder Rotation.</li>
+  <li><b>Nicht alles in einen Schlüssel.</b> Ein grosser Hash oder Set wird zum Hot Key und zum Problem beim Löschen.</li>
+  <li><b>Schlüsselschema dokumentieren.</b> Namen, Typ, TTL und Besitzer jeder Schlüsselgruppe.</li>
+  <li><b>Approximation bewusst wählen.</b> HyperLogLog spart Speicher gegen einen bekannten Fehler.</li>
+</ol>
+</div>
+
+<h3>Dein Beispiel</h3>
+</details>
+
+</body>
+</html>

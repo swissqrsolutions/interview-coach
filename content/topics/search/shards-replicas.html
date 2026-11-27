@@ -1,0 +1,245 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Elasticsearch: Shards, Replicas, Cluster</title>
+<style>
+  body { font: 17px/1.55 -apple-system, system-ui, sans-serif; max-width: 760px; margin: 0 auto; padding: 16px; color: #1d1d1f; }
+  h1 { font-size: 28px; margin: 8px 0 4px; }
+  h2 { font-size: 21px; margin: 32px 0 8px; padding-top: 12px; border-top: 2px solid #e5e5ea; }
+  .kern { background: #eef6ff; border-left: 4px solid #0a66c2; padding: 10px 14px; border-radius: 6px; }
+  .senior { background: #f0faf0; border-left: 4px solid #2e7d32; padding: 10px 14px; border-radius: 6px; }
+  .trap { background: #fff4f2; border-left: 4px solid #c62828; padding: 10px 14px; border-radius: 6px; }
+  code { background: #f2f2f7; padding: 1px 5px; border-radius: 4px; font-size: 15px; }
+  pre { background: #1e1e1e; color: #e6e6e6; padding: 12px; border-radius: 8px; overflow-x: auto; font-size: 13.5px; line-height: 1.45; }
+  svg { width: 100%; height: auto; display: block; margin: 10px 0; }
+  ol li, ul li { margin: 4px 0; }
+  details { border: 1px solid #e5e5ea; border-radius: 8px; padding: 8px 12px; margin: 6px 0; }
+  summary { font-weight: 600; cursor: pointer; }
+  details p { margin: 6px 0 2px; }
+  .small { color: #6e6e73; font-size: 14px; }
+  h3 { font-size: 17px; margin: 20px 0 6px; }
+  .geruest { border: 2px solid #1d1d1f; border-radius: 6px; padding: 10px 14px; margin: 14px 0; font-size: 15px; line-height: 1.4; }
+  .geruest h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; margin: 0 0 8px; padding: 0; border: 0; }
+  .geruest dl { display: grid; grid-template-columns: 6.6em 1fr; gap: 6px 10px; margin: 0; }
+  .geruest dt { font-weight: 700; font-size: 12px; text-transform: uppercase; letter-spacing: .05em; padding-top: 1px; }
+  .geruest dd { margin: 0; }
+  .muster { border: 1px solid #e5e5ea; border-left: 4px solid #1d1d1f; border-radius: 6px; padding: 10px 14px; margin: 14px 0; }
+  .muster h3 { margin: 0 0 6px; font-size: 13px; text-transform: uppercase; letter-spacing: .06em; }
+  .muster .mq { margin: 0 0 6px; }
+</style>
+</head>
+<body>
+
+<h1>Elasticsearch: Shards, Replicas, Cluster</h1>
+<!-- sources: Elasticsearch Reference (Clusters, nodes, and shards; Index modules settings; Reading and writing documents; _routing field; Size your shards; Cluster health API; Cluster allocation explain API; Split index API; Quorum-based decision making; Search shard routing) -->
+
+<div class="kern">
+<b>Kern:</b> Ein Elasticsearch-Index besteht aus <b>Shards</b>. Jeder Shard ist ein eigener Lucene-Index mit einem Teil der Dokumente. <b>Replicas</b> sind Kopien der <b>Primary-Shards</b> für Ausfallsicherheit und Lese-Kapazität. Die Anzahl der Primary-Shards ist nach dem Anlegen fest.
+</div>
+
+<div class="muster"><h3>Antwort-Muster</h3><p class="mq"><b>Frage:</b> Was sind Shards und Replicas?</p><ol>
+  <li>Mechanismus: Ein Dokument geht per Hash seiner ID auf genau einen Primary-Shard. Replicas sind Kopien davon auf anderen Knoten.</li>
+  <li>Zahl: Standard sind 1 Primary-Shard und 1 Replica. Ziel pro Shard sind 10 bis 50 GB.</li>
+  <li>Trade-off: Mehr Shards verteilen Last, kosten aber Speicher und Zeit pro Suche. Primaries lassen sich nicht ändern.</li>
+  <li>Produktion: Bei Status yellow oder red prüfe ich unassigned Shards mit der Allocation-Explain-API.</li>
+</ol></div>
+
+<h2>1. Ein Schreibvorgang in 6 Schritten</h2>
+<svg viewBox="0 0 720 340" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="b" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="10" y="20" width="150" height="60" rx="10" fill="#eee" stroke="#777"/><text x="85" y="44" text-anchor="middle" font-weight="700">1. Client</text><text x="85" y="64" text-anchor="middle" font-size="12">index doc-7</text>
+  <line x1="160" y1="50" x2="198" y2="50" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="200" y="20" width="170" height="60" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="285" y="44" text-anchor="middle" font-weight="700">2. Koordinator</text><text x="285" y="64" text-anchor="middle" font-size="12">beliebiger Knoten</text>
+  <line x1="370" y1="50" x2="408" y2="50" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="410" y="20" width="300" height="60" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="560" y="44" text-anchor="middle" font-weight="700">3. Routing</text><text x="560" y="64" text-anchor="middle" font-size="12">hash(_routing) % Primaries</text>
+  <line x1="560" y1="80" x2="560" y2="128" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="420" y="130" width="290" height="60" rx="10" fill="#fff" stroke="#555"/><text x="565" y="154" text-anchor="middle" font-weight="700">4. Primary-Shard</text><text x="565" y="174" text-anchor="middle" font-size="12">prüft und führt zuerst aus</text>
+  <line x1="420" y1="160" x2="378" y2="160" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="150" y="130" width="226" height="60" rx="10" fill="#e8f5e9" stroke="#2e7d32"/><text x="263" y="154" text-anchor="middle" font-weight="700">5. In-sync Replicas</text><text x="263" y="174" text-anchor="middle" font-size="12">führen dasselbe aus</text>
+  <line x1="263" y1="190" x2="263" y2="238" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="100" y="240" width="330" height="70" rx="10" fill="#0a66c2"/><text x="265" y="266" text-anchor="middle" fill="#fff" font-weight="700">6. Bestätigung an den Client</text><text x="265" y="288" text-anchor="middle" fill="#fff" font-size="12">erst wenn alle in-sync Kopien fertig sind</text>
+</svg>
+<ol>
+  <li><b>Client:</b> Er schickt ein Dokument an irgendeinen Knoten des Clusters.</li>
+  <li><b>Koordinator:</b> Dieser Knoten löst auf, zu welcher Replikationsgruppe das Dokument gehört. Jeder Knoten kennt die anderen und leitet weiter.</li>
+  <li><b>Routing:</b> <code>shard_num = hash(_routing) % num_primary_shards</code>. Standardmässig ist <code>_routing</code> die Dokument-ID.</li>
+  <li><b>Primary:</b> Der Primary-Shard validiert die Operation, führt sie lokal aus und leitet sie an die Replicas weiter.</li>
+  <li><b>Replicas:</b> Der Master pflegt die Liste der in-sync Kopien. Fällt ein Replica aus, entfernt der Master es aus der Liste.</li>
+  <li><b>Bestätigung:</b> Der Primary bestätigt erst, wenn alle in-sync Replicas die Operation ausgeführt haben.</li>
+</ol>
+<p>Beim <b>Lesen</b> reicht eine in-sync Kopie. Primary oder Replica kann antworten. Standardmässig wählt <b>Adaptive Replica Selection</b> den Knoten nach früheren Antwortzeiten.</p>
+
+<h2>2. Aufbau</h2>
+<svg viewBox="0 0 720 320" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="a" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <text x="10" y="18" font-weight="700">Index "bilder": 2 Primaries, je 1 Replica</text>
+  <rect x="10" y="30" width="220" height="130" rx="10" fill="#f7f7fa" stroke="#999"/><text x="120" y="52" text-anchor="middle" font-weight="700">Knoten A</text>
+  <rect x="24" y="64" width="90" height="40" rx="6" fill="#0a66c2"/><text x="69" y="89" text-anchor="middle" fill="#fff" font-size="13">P0</text>
+  <rect x="124" y="64" width="90" height="40" rx="6" fill="#dbe9fb" stroke="#0a66c2"/><text x="169" y="89" text-anchor="middle" font-size="13">R1</text>
+  <text x="120" y="130" text-anchor="middle" font-size="12">P = Primary · R = Replica</text>
+  <rect x="250" y="30" width="220" height="130" rx="10" fill="#f7f7fa" stroke="#999"/><text x="360" y="52" text-anchor="middle" font-weight="700">Knoten B</text>
+  <rect x="264" y="64" width="90" height="40" rx="6" fill="#0a66c2"/><text x="309" y="89" text-anchor="middle" fill="#fff" font-size="13">P1</text>
+  <rect x="364" y="64" width="90" height="40" rx="6" fill="#dbe9fb" stroke="#0a66c2"/><text x="409" y="89" text-anchor="middle" font-size="13">R0</text>
+  <text x="360" y="130" text-anchor="middle" font-size="12">jeder Shard = ein Lucene-Index</text>
+  <rect x="490" y="30" width="220" height="130" rx="10" fill="#e8f5e9" stroke="#2e7d32"/><text x="600" y="52" text-anchor="middle" font-weight="700">Master-Knoten</text><text x="600" y="78" text-anchor="middle" font-size="12">Cluster State</text><text x="600" y="98" text-anchor="middle" font-size="12">verteilt Shards</text><text x="600" y="118" text-anchor="middle" font-size="12">pflegt in-sync Liste</text>
+  <rect x="10" y="186" width="340" height="120" rx="10" fill="#fff" stroke="#555"/><text x="180" y="210" text-anchor="middle" font-weight="700">Cluster-Status</text><text x="180" y="236" text-anchor="middle" font-size="12">green: alle Shards zugewiesen</text><text x="180" y="256" text-anchor="middle" font-size="12">yellow: Replicas fehlen, Primaries da</text><text x="180" y="276" text-anchor="middle" font-size="12">red: ein Primary fehlt, Daten fehlen</text>
+  <rect x="370" y="186" width="340" height="120" rx="10" fill="#fff" stroke="#555"/><text x="540" y="210" text-anchor="middle" font-weight="700">Mehrheit (Quorum)</text><text x="540" y="236" text-anchor="middle" font-size="12">Entscheid braucht mehr als die Hälfte</text><text x="540" y="256" text-anchor="middle" font-size="12">der stimmberechtigten Master-Knoten</text><text x="540" y="276" text-anchor="middle" font-size="12">3 Knoten: ein Ausfall ist ok</text>
+</svg>
+<ol>
+  <li>Ein <b>Cluster</b> ist eine Gruppe von Knoten. Jeder Knoten kennt die anderen.</li>
+  <li>Ein <b>Index</b> besteht aus einem oder mehreren Shards. Jeder Shard ist ein eigener Lucene-Index mit einem Teil der Dokumente.</li>
+  <li>Ein <b>Primary-Shard</b> nimmt Schreibvorgänge zuerst an. Ein <b>Replica</b> ist eine Kopie davon.</li>
+  <li>Der <b>Master-Knoten</b> verwaltet den Cluster State und verteilt die Shards.</li>
+  <li>Der <b>Status</b> zeigt: green, yellow oder red.</li>
+  <li>Entscheide des Masters brauchen eine <b>Mehrheit</b> der stimmberechtigten Master-Knoten.</li>
+</ol>
+
+<h2>3. Details</h2>
+<ol>
+  <li><b>Standardwerte:</b> <code>number_of_shards</code> ist 1 (statisch). <code>number_of_replicas</code> ist 1 (dynamisch). Pro Index sind höchstens 1024 Shards erlaubt.</li>
+  <li><b>Primaries sind fest:</b> Die Zahl der Primary-Shards ist nach dem Anlegen fixiert. Die Routing-Formel nimmt Modulo dieser Zahl. Eine andere Zahl würde Dokumente auf andere Shards legen.</li>
+  <li><b>Replicas sind änderbar:</b> Man ändert <code>number_of_replicas</code> jederzeit, ohne Indexierung oder Suche zu stoppen.</li>
+  <li><b>Split-API:</b> Sie macht aus einem Index einen neuen mit mehr Primaries. Der Quell-Index muss read-only sein. Die neue Zahl muss ein Vielfaches der alten sein. Der Cluster muss green sein.</li>
+  <li><b>Custom Routing:</b> Mit <code>routing</code> bestimmt man den Shard selbst, zum Beispiel pro Kunde. Vergisst man den Wert, kann ein Dokument auf mehreren Shards landen. Mit <code>_routing.required</code> erzwingt man ihn.</li>
+  <li><b>routing_partition_size:</b> Ein Routing-Wert darf auf mehrere Shards gehen. Standard ist 1. Das hilft gegen einen Hotspot bei sehr grossen Kunden.</li>
+  <li><b>Schreiben:</b> Der Primary führt aus und leitet an in-sync Replicas weiter. Er bestätigt, wenn alle fertig sind. Fällt ein Replica aus, entfernt der Master es aus der in-sync Liste. Eine neue Kopie kann woanders entstehen.</li>
+  <li><b>Lesen:</b> Eine in-sync Kopie genügt. Mehr Replicas bringen mehr Lese-Kapazität. Standardmässig nutzt Elasticsearch Adaptive Replica Selection.</li>
+  <li><b>Shard-Grösse:</b> Die Doku empfiehlt 10 bis 50 GB pro Shard und unter 200 Millionen Dokumenten. Lucene erlaubt höchstens 2 147 483 519 Dokumente pro Shard.</li>
+  <li><b>Oversharding:</b> Zu viele Shards verschlechtern die Suche und machen den Cluster instabil. Es gibt eine Grenze von 1000 nicht eingefrorenen Shards pro Knoten.</li>
+  <li><b>Cluster-Status:</b> green heisst alle Shards zugewiesen. yellow heisst alle Primaries sind da, aber mindestens ein Replica fehlt. red heisst mindestens ein Primary fehlt, Daten sind nicht verfügbar.</li>
+  <li><b>Quorum:</b> Entscheide und Wahlen brauchen mehr als die Hälfte der stimmberechtigten Master-Knoten. Mit drei oder vier ist ein Ausfall erlaubt. Die Regel verhindert Split Brain.</li>
+</ol>
+
+<h2>4. Fallen</h2>
+<div class="trap">
+<ul>
+  <li>„Ich erhöhe die Shard-Zahl später einfach.“ → <b>Falsch.</b> Primaries sind fest. Man braucht die Split-API oder einen neuen Index mit Reindex.</li>
+  <li>„Mehr Shards sind immer schneller.“ → <b>Falsch.</b> Zu viele Shards verschlechtern die Suche und machen den Cluster instabil.</li>
+  <li>„Replicas sind nur für Ausfälle da.“ → <b>Falsch.</b> Sie bedienen auch Lese-Anfragen und erhöhen die Lese-Kapazität.</li>
+  <li>„yellow heisst, Daten sind weg.“ → <b>Falsch.</b> Bei yellow sind alle Primaries da. Nur Replicas fehlen. Erst red heisst fehlende Daten.</li>
+  <li>„Ein Cluster mit 2 Master-Knoten übersteht einen Ausfall.“ → <b>Falsch.</b> Die Mehrheit von 2 sind 2 Knoten. Erst mit 3 ist ein Ausfall erlaubt.</li>
+  <li>„Ein Schreibvorgang ist fertig, sobald der Primary ihn hat.“ → <b>Falsch.</b> Der Primary bestätigt erst, wenn alle in-sync Replicas ihn ausgeführt haben.</li>
+</ul>
+</div>
+
+<h2>5. Selbsttest</h2>
+<h3>Warum?</h3>
+<details><summary>Warum teilt man einen Index in Shards?</summary><p>Ein Index wird zu gross für einen Knoten oder zu langsam. Shards verteilen Daten und Last auf mehrere Knoten. Jeder Shard arbeitet für sich.</p></details>
+<details><summary>Warum gibt es Replicas?</summary><p>Für Ausfallsicherheit bei Hardware-Fehlern und für mehr Lese-Kapazität. Ein Replica ist eine Kopie eines Primary-Shards.</p></details>
+<details><summary>Warum lässt sich die Primary-Zahl nicht ändern?</summary><p>Die Routing-Formel nimmt Modulo der Primary-Zahl. Eine andere Zahl würde Dokumente auf andere Shards legen. Man braucht darum die Split-API oder Reindex.</p></details>
+<h3>Wie innen?</h3>
+<details><summary>Wie wird der Shard eines Dokuments bestimmt?</summary><p>shard_num = hash(_routing) % num_primary_shards. Standardmässig ist _routing die Dokument-ID.</p></details>
+<details><summary>Was passiert bei einem Schreibvorgang?</summary><p>Ein Koordinator leitet an den Primary. Der Primary führt aus und leitet an die in-sync Replicas. Er bestätigt, wenn alle fertig sind.</p></details>
+<details><summary>Was passiert, wenn ein Replica beim Schreiben ausfällt?</summary><p>Der Primary meldet es dem Master. Der Master entfernt das Replica aus der in-sync Liste. Erst danach wird bestätigt. Eine neue Kopie kann an anderer Stelle entstehen.</p></details>
+<details><summary>Wie funktioniert eine Suche über mehrere Shards?</summary><p>Der Koordinator schickt die Anfrage an eine Kopie jedes Shards. Jeder Shard liefert seine besten Treffer. Der Koordinator mischt sie und holt die Dokumente.</p></details>
+<details><summary>Was macht die Split-API?</summary><p>Sie legt aus einem Index einen neuen mit mehr Primaries an. Der Quell-Index muss read-only sein. Die neue Zahl ist ein Vielfaches der alten.</p></details>
+<details><summary>Was macht der Master-Knoten?</summary><p>Er verwaltet den Cluster State, entscheidet, welcher Shard wohin kommt, und pflegt die in-sync Liste.</p></details>
+<h3>Zahlen</h3>
+<details><summary>Welche Standardwerte haben Shards und Replicas?</summary><p>1 Primary-Shard und 1 Replica pro Primary.</p></details>
+<details><summary>Wie gross soll ein Shard sein?</summary><p>Laut Doku 10 bis 50 GB und unter 200 Millionen Dokumenten.</p></details>
+<details><summary>Wie viele Shards sind pro Index erlaubt?</summary><p>Höchstens 1024. Man kann das mit einer System-Property anheben.</p></details>
+<details><summary>Wie viele Master-Knoten braucht man und warum?</summary><p>Drei. Ein Entscheid braucht mehr als die Hälfte. Bei drei Knoten ist ein Ausfall erlaubt, bei zwei keiner.</p></details>
+<h3>Vergleich</h3>
+<details><summary>Primary vs Replica?</summary><p>Der Primary nimmt Schreibvorgänge zuerst an. Das Replica ist eine Kopie. Beide können Lese-Anfragen bedienen.</p></details>
+<details><summary>Status green, yellow, red?</summary><p>green: alle Shards zugewiesen. yellow: Primaries da, Replicas fehlen. red: mindestens ein Primary fehlt.</p></details>
+<details><summary>Split-API vs Reindex?</summary><p>Split nutzt Hard-Links auf Segmente und braucht einen read-only Index. Reindex liest und schreibt alle Dokumente neu, hat aber keine Vielfachen-Regel.</p></details>
+<details><summary>Ein grosser Index vs viele kleine Indizes?</summary><p>Ein grosser Index hat weniger Overhead pro Shard. Viele kleine Indizes mit je eigenen Shards führen schnell zu Oversharding.</p></details>
+<h3>Produktion</h3>
+<details><summary>Was tun bei Status red?</summary><p>Ein Primary fehlt. Ich prüfe mit der Allocation-Explain-API, warum der Shard nicht zugewiesen ist. Dann behebe ich die Ursache, zum Beispiel ausgefallener Knoten oder fehlender Platz.</p></details>
+<details><summary>Was tun, wenn der Cluster viele kleine Shards hat und langsam ist?</summary><p>Das ist Oversharding. Lösung: weniger Primaries pro Index, Indizes zusammenlegen oder mit Reindex neu aufbauen.</p></details>
+<details><summary>Szenario: Ein Kunde erzeugt 80 % der Daten und ein Shard ist überlastet. Was tun Sie?</summary><p>Mit Custom Routing und routing_partition_size verteilt man einen Routing-Wert auf mehrere Shards. Oder man legt für diesen Kunden einen eigenen Index an.</p></details>
+<details><summary>Szenario: Nach einem Knotenausfall ist der Status yellow. Was prüfen Sie?</summary><p>Alle Primaries sind da, Replicas fehlen. Ich schaue mit Allocation Explain, ob die Kopien neu gebaut werden oder ob Platz oder Knoten fehlen. Die Suche läuft weiter.</p></details>
+<h3>Design</h3>
+<details><summary>Wie wählen Sie die Shard-Zahl?</summary><p>Ich schätze die Datenmenge und teile durch eine Zielgrösse von 10 bis 50 GB. Für kleine Indizes reicht ein Shard. Ich teste, bevor ich wachse.</p></details>
+<details><summary>Wie viele Replicas setzen Sie?</summary><p>Mindestens 1 in Produktion. Mehr Replicas erhöhen die Lese-Kapazität und Sicherheit, kosten aber Platz und Schreibzeit.</p></details>
+<details><summary>Wie ändern Sie die Shard-Zahl eines laufenden Indexes?</summary><p>Mit der Split-API (Vielfaches, read-only) oder mit einem neuen Index und Reindex. Danach schalte ich einen Alias um.</p></details>
+<details><summary>Wie planen Sie die Master-Knoten?</summary><p>Drei stimmberechtigte Master-Knoten. So ist ein Ausfall erlaubt und es entsteht kein Split Brain.</p></details>
+
+<details class="mehr"><summary>Mehr</summary>
+<h3>Gerüst</h3>
+<ul>
+  <li><b>Warum?</b> Shards verteilen Daten und Last. Replicas geben Sicherheit und Lese-Kapazität.</li>
+  <li><b>Wie innen?</b> <code>hash(_routing) % Primaries</code>. Primary führt aus, in-sync Replicas folgen, dann Bestätigung.</li>
+  <li><b>Zahlen</b> 1 Primary, 1 Replica. 10 bis 50 GB pro Shard. Max. 1024 Shards pro Index.</li>
+  <li><b>Vergleich</b> green, yellow, red. Split gegen Reindex. Primary gegen Replica.</li>
+  <li><b>Produktion</b> red: Allocation Explain. Oversharding macht den Cluster langsam.</li>
+  <li><b>Design</b> Shard-Zahl aus Datenmenge rechnen. Drei Master-Knoten. Alias für Wechsel.</li>
+</ul>
+
+<h3>Beispiel: Routing, Split und Quorum als Modell</h3>
+<pre>def h(s): return zlib.crc32(s.encode())      # Ersatz-Hash, ES nutzt Murmur3
+ids = [f"doc-{i}" for i in range(10000)]
+
+h(i) % 5                                      # 1) Verteilung auf 5 Primaries
+h(i) % 5 != h(i) % 6                          # 2) Primaries von 5 auf 6 ohne Umbau
+h(i) % 10 % 5 != h(i) % 5                     # 3) Primaries von 5 auf 10 (Vielfaches)
+q = n // 2 + 1                                # 4) Mehrheit bei n Master-Knoten</pre>
+<pre>1) routing: shard = hash(id) % primaries, 10000 ids
+   5 primaries: {0: 2031, 1: 1981, 2: 2006, 3: 2031, 4: 1951}
+2) primaries 5 -> 6 ohne Umbau: 8316 von 10000 Dokumenten haetten einen anderen Shard (83.2 %)
+3) primaries 5 -> 10 (Split, Vielfaches): 0 Dokumente liegen auf dem falschen Shard; 4934 wandern in neue Shards 5-9
+4) Quorum: Master-faehige Knoten -> Mehrheit -> tolerierter Ausfall
+   1 Knoten: Mehrheit 1, Ausfall ok: 0
+   2 Knoten: Mehrheit 2, Ausfall ok: 0
+   3 Knoten: Mehrheit 2, Ausfall ok: 1
+   4 Knoten: Mehrheit 3, Ausfall ok: 1
+   5 Knoten: Mehrheit 3, Ausfall ok: 2
+   6 Knoten: Mehrheit 4, Ausfall ok: 2
+   7 Knoten: Mehrheit 4, Ausfall ok: 3</pre>
+<p class="small">Echte Ausgabe, Python 3.12.10. Es ist ein Modell mit Ersatz-Hash und einfachem Modulo, nicht Elasticsearch selbst. Die Split-API rechnet intern mit <code>number_of_routing_shards</code>.</p>
+<ol>
+  <li>Die 10 000 IDs verteilen sich fast gleich auf 5 Shards (etwa 2000 pro Shard). Ein guter Hash verteilt gleichmässig.</li>
+  <li>Würde man die Primary-Zahl von 5 auf 6 ändern, bekämen 83 % der Dokumente einen anderen Shard. Darum sind Primaries fest.</li>
+  <li>Bei einem Vielfachen (5 auf 10) bleibt jedes Dokument auf seinem Shard oder wandert in einen neuen. Das ist die Idee hinter der Vielfachen-Regel der Split-API.</li>
+  <li>Bei 2 Master-Knoten ist die Mehrheit 2. Es darf keiner ausfallen. Bei 3 darf einer ausfallen. Bei 4 immer noch nur einer, also bringt ein vierter Knoten für den Ausfall nichts.</li>
+</ol>
+
+<h3>Vergleich</h3>
+<ul>
+  <li><b>Primary:</b> nimmt Schreibvorgänge zuerst an. <b>Replica:</b> Kopie, bedient auch Lesezugriffe.</li>
+  <li><b>Split-API:</b> mehr Primaries, Vielfaches, read-only Quelle. <b>Reindex:</b> beliebig, kostet mehr Zeit.</li>
+  <li><b>Custom Routing:</b> Daten eines Kunden zusammen, aber Gefahr von Hotspots. <b>Standard-Routing:</b> gleichmässige Verteilung.</li>
+  <li><b>green:</b> alle Shards da. <b>yellow:</b> Replicas fehlen. <b>red:</b> Primary fehlt.</li>
+  <li><b>Wenige grosse Shards:</b> weniger Overhead, langsame Recovery. <b>Viele kleine:</b> Oversharding.</li>
+  <li><b>3 Master-Knoten:</b> ein Ausfall ok. <b>2:</b> keiner.</li>
+</ul>
+
+<h3>Produktion</h3>
+<ol>
+  <li><b>Status red:</b> Ein Primary ist nicht zugewiesen. Lösung: Allocation Explain, Ursache beheben.</li>
+  <li><b>Status yellow:</b> Replicas fehlen. Die Suche läuft, aber die Sicherheit fehlt. Lösung: Ursache klären, Kopien neu bauen lassen.</li>
+  <li><b>Oversharding:</b> Tausende kleine Shards machen Suche und Cluster langsam. Lösung: weniger Primaries, Indizes zusammenlegen.</li>
+  <li><b>Hotspot durch Routing:</b> Ein grosser Kunde füllt einen Shard. Lösung: <code>routing_partition_size</code> oder eigener Index.</li>
+  <li><b>Schreiben bleibt hängen:</b> Der Primary wartet auf Replicas. Lösung: Replica-Knoten prüfen, Master entfernt kaputte Kopien aus der Liste.</li>
+  <li><b>Fehlendes Routing bei Custom Routing:</b> Das Dokument landet auf einem anderen Shard. Lösung: <code>_routing.required</code> setzen.</li>
+</ol>
+
+<h3>Diagnose: Werkzeuge und Befehle</h3>
+<ul>
+  <li><code>GET _cluster/health</code>: Status green, yellow oder red, Zahl der unassigned Shards.</li>
+  <li><code>GET _cluster/allocation/explain</code>: erklärt, warum ein Shard nicht zugewiesen ist.</li>
+  <li><code>GET _cat/shards?v</code>: listet Shards mit Knoten und Status.</li>
+  <li><code>GET _cat/nodes?v</code>: listet Knoten.</li>
+  <li><code>GET meinindex/_settings</code>: zeigt Zahl der Shards und Replicas.</li>
+  <li><code>PUT meinindex/_settings {"index.number_of_replicas": 2}</code>: ändert Replicas im Betrieb.</li>
+</ul>
+
+<h3>Senior-Punkte</h3>
+<div class="senior">
+<ol>
+  <li><b>Die Primary-Zahl ist eine Entscheidung für die Lebenszeit des Indexes.</b> Änderung heisst Split oder Reindex.</li>
+  <li><b>Weniger ist oft mehr.</b> Ein Shard von 10 bis 50 GB ist besser als viele kleine.</li>
+  <li><b>Replicas kaufen Verfügbarkeit und Lese-Kapazität,</b> bezahlt mit Platz und Schreibzeit.</li>
+  <li><b>Drei Master-Knoten:</b> Mehrheit ist die Regel gegen Split Brain.</li>
+  <li><b>Custom Routing nur mit Plan:</b> Es hilft bei Abfragen pro Kunde, kann aber Hotspots bauen.</li>
+  <li><b>Alias vor jedem Index:</b> So wechselt man Shard-Zahl oder Analyzer ohne Ausfall.</li>
+</ol>
+</div>
+
+<h3>Dein Beispiel</h3>
+</details>
+
+</body>
+</html>

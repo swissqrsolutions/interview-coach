@@ -1,0 +1,249 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Relevanz: TF-IDF und BM25</title>
+<style>
+  body { font: 17px/1.55 -apple-system, system-ui, sans-serif; max-width: 760px; margin: 0 auto; padding: 16px; color: #1d1d1f; }
+  h1 { font-size: 28px; margin: 8px 0 4px; }
+  h2 { font-size: 21px; margin: 32px 0 8px; padding-top: 12px; border-top: 2px solid #e5e5ea; }
+  .kern { background: #eef6ff; border-left: 4px solid #0a66c2; padding: 10px 14px; border-radius: 6px; }
+  .senior { background: #f0faf0; border-left: 4px solid #2e7d32; padding: 10px 14px; border-radius: 6px; }
+  .trap { background: #fff4f2; border-left: 4px solid #c62828; padding: 10px 14px; border-radius: 6px; }
+  code { background: #f2f2f7; padding: 1px 5px; border-radius: 4px; font-size: 15px; }
+  pre { background: #1e1e1e; color: #e6e6e6; padding: 12px; border-radius: 8px; overflow-x: auto; font-size: 13.5px; line-height: 1.45; }
+  svg { width: 100%; height: auto; display: block; margin: 10px 0; }
+  ol li, ul li { margin: 4px 0; }
+  details { border: 1px solid #e5e5ea; border-radius: 8px; padding: 8px 12px; margin: 6px 0; }
+  summary { font-weight: 600; cursor: pointer; }
+  details p { margin: 6px 0 2px; }
+  .small { color: #6e6e73; font-size: 14px; }
+  h3 { font-size: 17px; margin: 20px 0 6px; }
+  .geruest { border: 2px solid #1d1d1f; border-radius: 6px; padding: 10px 14px; margin: 14px 0; font-size: 15px; line-height: 1.4; }
+  .geruest h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; margin: 0 0 8px; padding: 0; border: 0; }
+  .geruest dl { display: grid; grid-template-columns: 6.6em 1fr; gap: 6px 10px; margin: 0; }
+  .geruest dt { font-weight: 700; font-size: 12px; text-transform: uppercase; letter-spacing: .05em; padding-top: 1px; }
+  .geruest dd { margin: 0; }
+  .muster { border: 1px solid #e5e5ea; border-left: 4px solid #1d1d1f; border-radius: 6px; padding: 10px 14px; margin: 14px 0; }
+  .muster h3 { margin: 0 0 6px; font-size: 13px; text-transform: uppercase; letter-spacing: .06em; }
+  .muster .mq { margin: 0 0 6px; }
+</style>
+</head>
+<body>
+
+<h1>Relevanz: TF-IDF und BM25</h1>
+<!-- sources: Apache Lucene 10 API-Doku (BM25Similarity, ClassicSimilarity, TFIDFSimilarity), Quellcode BM25Similarity.java (Lucene 10.0.0), Elasticsearch Reference (Similarity settings, Query and filter context, Norms mapping parameter, Search API search_type) -->
+
+<div class="kern">
+<b>Kern:</b> <b>TF-IDF</b> bewertet ein Dokument mit der Häufigkeit des Wortes im Dokument (tf) mal der Seltenheit im Index (idf). <b>BM25</b> verbessert das mit <b>Sättigung</b> der Häufigkeit und sauberer <b>Längen-Normalisierung</b>. BM25 ist in Elasticsearch der Standard, mit <code>k1</code> 1.2 und <code>b</code> 0.75.
+</div>
+
+<div class="muster"><h3>Antwort-Muster</h3><p class="mq"><b>Frage:</b> Wie berechnet Elasticsearch die Relevanz?</p><ol>
+  <li>Mechanismus: Pro Query-Term idf mal normiertes tf, die Summe ist der Score. Das ist BM25.</li>
+  <li>Zahl: k1 ist 1.2 und b ist 0.75. Der tf-Teil steigt nie über 1.</li>
+  <li>Trade-off: Ein Score gilt nur im Vergleich innerhalb einer Query. Jeder Shard rechnet idf lokal.</li>
+  <li>Produktion: Bei seltsamen Scores nutze ich die Explain API. Filter setze ich in den Filter-Kontext.</li>
+</ol></div>
+
+<h2>1. Ein BM25-Score in 5 Schritten</h2>
+<svg viewBox="0 0 720 330" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="b" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="10" y="20" width="200" height="66" rx="10" fill="#eee" stroke="#777"/><text x="110" y="44" text-anchor="middle" font-weight="700">1. Terms der Anfrage</text><text x="110" y="66" text-anchor="middle" font-size="12">nach dem Analyzer</text>
+  <line x1="210" y1="53" x2="248" y2="53" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="250" y="20" width="220" height="66" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="360" y="44" text-anchor="middle" font-weight="700">2. idf pro Term</text><text x="360" y="66" text-anchor="middle" font-size="12">ln(1 + (N − n + 0,5) / (n + 0,5))</text>
+  <line x1="470" y1="53" x2="508" y2="53" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="510" y="20" width="200" height="66" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="610" y="44" text-anchor="middle" font-weight="700">3. tf-Teil</text><text x="610" y="66" text-anchor="middle" font-size="12">tf / (tf + k1·(1−b+b·dl/avgdl))</text>
+  <line x1="610" y1="86" x2="610" y2="134" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="470" y="136" width="240" height="66" rx="10" fill="#fff" stroke="#555"/><text x="590" y="160" text-anchor="middle" font-weight="700">4. Term-Score</text><text x="590" y="182" text-anchor="middle" font-size="12">boost · idf · tf-Teil</text>
+  <line x1="470" y1="169" x2="428" y2="169" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="200" y="136" width="226" height="66" rx="10" fill="#e8f5e9" stroke="#2e7d32"/><text x="313" y="160" text-anchor="middle" font-weight="700">5. Summe</text><text x="313" y="182" text-anchor="middle" font-size="12">über alle Terms = _score</text>
+  <rect x="10" y="240" width="700" height="76" rx="10" fill="#fff" stroke="#555"/><text x="360" y="266" text-anchor="middle" font-weight="700">Merken</text><text x="360" y="288" text-anchor="middle" font-size="12">N = Anzahl Dokumente · n = Dokumente mit dem Term · dl = Länge des Feldes</text><text x="360" y="306" text-anchor="middle" font-size="12">avgdl = durchschnittliche Länge des Feldes</text>
+</svg>
+<ol>
+  <li><b>Terms:</b> Der Analyzer macht aus der Anfrage Terms. Jeder Term bekommt einen eigenen Score.</li>
+  <li><b>idf:</b> <code>ln(1 + (N − n + 0.5) / (n + 0.5))</code>. Seltene Terms haben ein hohes idf. Lucene nutzt dazu <code>docCount</code> und <code>docFreq</code> des Feldes.</li>
+  <li><b>tf-Teil:</b> <code>tf / (tf + k1 · (1 − b + b · dl / avgdl))</code>. Der Wert steigt mit tf, bleibt aber unter 1. Ein längeres Feld senkt ihn.</li>
+  <li><b>Term-Score:</b> <code>boost · idf · tf-Teil</code>. Das ist die Formel im Lucene-Quellcode.</li>
+  <li><b>Summe:</b> Die Scores aller Query-Terms ergeben den <code>_score</code>.</li>
+</ol>
+<p>Das klassische TF-IDF nutzt stattdessen <code>sqrt(tf)</code>, <code>1 + ln((N + 1) / (n + 1))</code> und <code>1 / sqrt(Länge)</code>.</p>
+
+<h2>2. Aufbau</h2>
+<svg viewBox="0 0 720 320" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="a" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="10" y="20" width="220" height="130" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="120" y="44" text-anchor="middle" font-weight="700">tf: Häufigkeit</text><text x="120" y="68" text-anchor="middle" font-size="12">wie oft im Dokument</text><text x="120" y="90" text-anchor="middle" font-size="12">TF-IDF: wächst weiter</text><text x="120" y="112" text-anchor="middle" font-size="12">BM25: sättigt (k1)</text>
+  <rect x="250" y="20" width="220" height="130" rx="10" fill="#e8f5e9" stroke="#2e7d32"/><text x="360" y="44" text-anchor="middle" font-weight="700">idf: Seltenheit</text><text x="360" y="68" text-anchor="middle" font-size="12">wie selten im Index</text><text x="360" y="90" text-anchor="middle" font-size="12">selten zählt mehr</text><text x="360" y="112" text-anchor="middle" font-size="12">pro Shard berechnet</text>
+  <rect x="490" y="20" width="220" height="130" rx="10" fill="#fff" stroke="#555"/><text x="600" y="44" text-anchor="middle" font-weight="700">Länge: Norm</text><text x="600" y="68" text-anchor="middle" font-size="12">kurzes Feld zählt mehr</text><text x="600" y="90" text-anchor="middle" font-size="12">b regelt die Stärke</text><text x="600" y="112" text-anchor="middle" font-size="12">b = 0: aus</text>
+  <rect x="10" y="176" width="700" height="130" rx="10" fill="#f7f7fa" stroke="#999"/><text x="360" y="200" text-anchor="middle" font-weight="700">Wo es im System sitzt</text>
+  <text x="360" y="226" text-anchor="middle" font-size="12">Similarity ist eine Einstellung pro Feld im Mapping</text>
+  <text x="360" y="248" text-anchor="middle" font-size="12">Norms speichern die Feldlänge pro Dokument und Feld</text>
+  <text x="360" y="270" text-anchor="middle" font-size="12">Query-Kontext rechnet Scores, Filter-Kontext nicht</text>
+  <text x="360" y="292" text-anchor="middle" font-size="12">Explain API zeigt jede Zahl des Scores</text>
+</svg>
+<ol>
+  <li><b>tf:</b> Wie oft der Term im Feld steht. BM25 begrenzt den Einfluss.</li>
+  <li><b>idf:</b> Wie selten der Term im Index ist. Seltene Terms entscheiden mehr.</li>
+  <li><b>Norm:</b> Die Länge des Feldes. Kurze Felder zählen mehr.</li>
+  <li><b>Similarity:</b> BM25 ist der Standard. Man stellt k1 und b im Mapping ein.</li>
+  <li><b>Query-Kontext:</b> Klauseln in <code>query</code> rechnen einen Score. Filter-Kontext rechnet keinen.</li>
+  <li><b>Explain API:</b> Sie zeigt idf, tf, k1, b und Längen für ein Dokument.</li>
+</ol>
+
+<h2>3. Details</h2>
+<ol>
+  <li><b>TF-IDF klassisch:</b> In Lucene ist <code>tf = sqrt(freq)</code>, <code>idf = log((docCount+1)/(docFreq+1)) + 1</code> und <code>lengthNorm = 1/sqrt(length)</code>. Es gibt keine obere Grenze für tf.</li>
+  <li><b>BM25 idf:</b> <code>log(1 + (docCount − docFreq + 0.5)/(docFreq + 0.5))</code>. Durch das „1 +“ wird idf nie negativ. Ein Wort in allen Dokumenten bekommt fast 0.</li>
+  <li><b>Sättigung durch k1:</b> Der tf-Teil ist <code>tf / (tf + K)</code>. Er nähert sich 1 und überschreitet es nie. Der 10. Treffer bringt kaum mehr als der 3. <code>k1</code> bestimmt, wie schnell.</li>
+  <li><b>k1 = 0:</b> Dann kürzt sich tf weg. Es zählt nur noch idf. Grosse k1-Werte lassen wiederholte Terms länger wirken.</li>
+  <li><b>Längen-Normalisierung durch b:</b> <code>b</code> liegt zwischen 0 und 1. Bei <code>b = 0</code> zählt die Länge nicht. Bei <code>b = 1</code> voll. Der Standard ist 0.75.</li>
+  <li><b>avgdl:</b> Die durchschnittliche Feldlänge. Lucene rechnet <code>sumTotalTermFreq / docCount</code>. Sie hängt vom Shard ab.</li>
+  <li><b>Norms:</b> Elasticsearch speichert die Feldlänge als Norm, etwa ein Byte pro Dokument und Feld. Lucene rechnet mit einer Tabelle von 256 Werten. Die Länge ist darum gerundet.</li>
+  <li><b>idf pro Shard:</b> Bei <code>query_then_fetch</code> zählt jeder Shard nur seine eigenen Dokumente. Mit <code>dfs_query_then_fetch</code> nutzt die Suche globale Häufigkeiten. Das ist genauer, aber langsamer.</li>
+  <li><b>discount_overlaps:</b> Standard <code>true</code>. Tokens mit Positions-Inkrement 0, zum Beispiel Synonyme, zählen nicht für die Länge.</li>
+  <li><b>Query- und Filter-Kontext:</b> <code>must</code> und <code>should</code> in der Query rechnen Scores. <code>filter</code> und <code>must_not</code> nicht. Filter sind schneller und werden gecacht.</li>
+  <li><b>Scores vergleichen:</b> Ein <code>_score</code> ist nur innerhalb einer Query sinnvoll. Er ist keine Wahrscheinlichkeit und nicht zwischen Queries vergleichbar.</li>
+  <li><b>Genauigkeit:</b> Scores sind Fliesskommazahlen mit einfacher Genauigkeit. Sehr kleine Unterschiede sind nicht stabil.</li>
+</ol>
+
+<h2>4. Fallen</h2>
+<div class="trap">
+<ul>
+  <li>„Je öfter ein Wort vorkommt, desto höher der Score, ohne Grenze.“ → <b>Falsch.</b> BM25 sättigt. Der tf-Teil bleibt unter 1.</li>
+  <li>„BM25 ist TF-IDF mit anderem Namen.“ → <b>Falsch.</b> BM25 hat Sättigung und eine andere Längen-Normalisierung. Das klassische tf ist <code>sqrt(freq)</code>.</li>
+  <li>„Ein Score von 12 ist besser als 8 in einer anderen Suche.“ → <b>Falsch.</b> Scores sind nur innerhalb einer Query vergleichbar.</li>
+  <li>„Mit <code>b = 1</code> wird die Länge ignoriert.“ → <b>Falsch.</b> Bei <code>b = 0</code> wird sie ignoriert. Bei 1 wirkt sie voll.</li>
+  <li>„Der idf ist überall im Cluster gleich.“ → <b>Falsch.</b> Jeder Shard rechnet lokal. Bei kleinen Indizes springen die Scores.</li>
+  <li>„Filter ändern den Score.“ → <b>Falsch.</b> <code>filter</code> und <code>must_not</code> laufen im Filter-Kontext ohne Score.</li>
+</ul>
+</div>
+
+<h2>5. Selbsttest</h2>
+<h3>Warum?</h3>
+<details><summary>Warum braucht man idf?</summary><p>Ein Wort, das fast überall vorkommt, sagt wenig. Seltene Wörter trennen Dokumente besser. Darum zählen sie mehr.</p></details>
+<details><summary>Warum hat BM25 eine Sättigung?</summary><p>Ein Wort 50-mal macht ein Dokument nicht 50-mal relevanter. Der tf-Teil nähert sich einem Maximum von 1.</p></details>
+<details><summary>Warum normalisiert man nach der Länge?</summary><p>Lange Felder enthalten viele Wörter zufällig. Ein Treffer in einem kurzen Feld ist aussagekräftiger. Darum zählen kurze Felder mehr.</p></details>
+<h3>Wie innen?</h3>
+<details><summary>Wie lautet die BM25-Formel in Lucene?</summary><p>Pro Term: boost mal idf mal tf / (tf + k1 · (1 − b + b · dl / avgdl)). Die Terms werden summiert.</p></details>
+<details><summary>Wie berechnet Lucene idf bei BM25?</summary><p>log(1 + (docCount − docFreq + 0.5) / (docFreq + 0.5)). Durch das „1 +“ ist es nie negativ.</p></details>
+<details><summary>Was bewirkt k1?</summary><p>Es steuert die Sättigung von tf. Bei k1 = 0 zählt tf nicht. Je grösser k1, desto länger wirkt ein wiederholtes Wort.</p></details>
+<details><summary>Was bewirkt b?</summary><p>Es steuert die Längen-Normalisierung zwischen 0 und 1. Bei 0 zählt die Länge nicht, bei 1 voll.</p></details>
+<details><summary>Wie wird die Feldlänge gespeichert?</summary><p>Als Norm, etwa ein Byte pro Dokument und Feld. Lucene nutzt dafür eine Tabelle mit 256 Werten, die Länge ist also gerundet.</p></details>
+<details><summary>Wie berechnet Lucene avgdl?</summary><p>sumTotalTermFreq geteilt durch docCount, pro Feld und pro Shard.</p></details>
+<h3>Zahlen</h3>
+<details><summary>Welche Standardwerte haben k1 und b?</summary><p>k1 ist 1.2 und b ist 0.75. discount_overlaps ist true.</p></details>
+<details><summary>Welchen Wert erreicht der tf-Teil höchstens?</summary><p>Nie ganz 1. Bei k1 = 1.2 und mittlerer Länge sind es 0.455 bei tf 1, 0.893 bei tf 10 und 0.977 bei tf 50.</p></details>
+<details><summary>Was ist der idf bei N = 1000 und einem seltenen Wort in 1 Dokument?</summary><p>Etwa 6.5. Bei einem Wort in 500 Dokumenten sind es etwa 0.69.</p></details>
+<h3>Vergleich</h3>
+<details><summary>TF-IDF vs BM25?</summary><p>TF-IDF klassisch nutzt sqrt(tf) ohne Grenze und 1/sqrt(Länge). BM25 sättigt tf und steuert die Länge mit b. BM25 ist der Standard in Elasticsearch.</p></details>
+<details><summary>BM25 vs Vektorsuche?</summary><p>BM25 vergleicht Wörter und braucht Treffer auf Terms. Vektorsuche vergleicht Bedeutung und findet auch andere Wörter. Oft kombiniert man beide.</p></details>
+<details><summary>query_then_fetch vs dfs_query_then_fetch?</summary><p>Die erste rechnet Scores mit lokalen Häufigkeiten pro Shard, die zweite mit globalen. Die zweite ist genauer, aber meist langsamer.</p></details>
+<details><summary>Query-Kontext vs Filter-Kontext?</summary><p>Query-Kontext berechnet einen Score. Filter-Kontext gibt nur ja oder nein, ist schneller und wird gecacht.</p></details>
+<h3>Produktion</h3>
+<details><summary>Was tun, wenn ein kurzes, unpassendes Dokument zuoberst steht?</summary><p>Mit der Explain API prüfen, wie der Score entsteht. Meist wirkt die Längen-Normalisierung. Lösung: b senken oder Felder mit boost gewichten.</p></details>
+<details><summary>Was tun, wenn Scores bei einem kleinen Index springen?</summary><p>Jeder Shard rechnet idf lokal. Lösung: dfs_query_then_fetch oder weniger Shards.</p></details>
+<details><summary>Szenario: Ein Produkt mit dem Suchwort 30-mal in der Beschreibung steht vor besseren Treffern. Was tun Sie?</summary><p>BM25 sättigt zwar, aber ein langes Feld mit vielen Treffern kann trotzdem gewinnen. Ich prüfe mit Explain, senke k1 und gewichte den Titel höher.</p></details>
+<details><summary>Szenario: Die Suche hat einen Besitzer-Filter und ist langsam. Was prüfen Sie?</summary><p>Ob der Filter im Query-Kontext steht und Scores rechnet. Lösung: in den Filter-Kontext (bool filter) verschieben. Er rechnet keinen Score und wird gecacht.</p></details>
+<h3>Design</h3>
+<details><summary>Wie ändern Sie k1 und b?</summary><p>Als Similarity-Einstellung im Mapping. Ich messe vorher und nachher mit echten Suchanfragen. Standardwerte sind meist gut genug.</p></details>
+<details><summary>Wann schalten Sie Norms aus?</summary><p>Bei Feldern, die nur filtern oder aggregieren. Das spart etwa ein Byte pro Dokument und Feld. Man kann es nicht nachträglich ändern.</p></details>
+<details><summary>Wie gewichten Sie Titel gegenüber Text?</summary><p>Mit boost auf dem Titelfeld in der Query, zum Beispiel multi_match mit titel^3. Dann prüfe ich mit Explain die Wirkung.</p></details>
+<details><summary>Wie testen Sie Relevanz?</summary><p>Mit einer Liste echter Suchanfragen und erwarteten Treffern. Ich vergleiche die Reihenfolge vor und nach einer Änderung.</p></details>
+
+<details class="mehr"><summary>Mehr</summary>
+<h3>Gerüst</h3>
+<ul>
+  <li><b>Warum?</b> Treffer sortieren: seltene Wörter und kurze Felder zählen mehr, viele Wiederholungen nicht unbegrenzt.</li>
+  <li><b>Wie innen?</b> Pro Term <code>boost · idf · tf/(tf + k1·(1 − b + b·dl/avgdl))</code>, Summe über die Terms.</li>
+  <li><b>Zahlen</b> k1 1.2, b 0.75. idf ln(1 + (N − n + 0.5)/(n + 0.5)). Norm etwa 1 Byte pro Dokument und Feld.</li>
+  <li><b>Vergleich</b> Klassisches TF-IDF: sqrt(tf), 1/sqrt(Länge). BM25 sättigt. Vektorsuche für Bedeutung.</li>
+  <li><b>Produktion</b> Springende Scores bei kleinen Indizes: idf pro Shard. Filter in den Filter-Kontext.</li>
+  <li><b>Design</b> Standardwerte behalten, mit echten Anfragen messen. Explain zum Debuggen.</li>
+</ul>
+
+<h3>Beispiel: tf, Länge und idf von Hand gerechnet</h3>
+<pre>k1, b = 1.2, 0.75
+def tfn(tf, dl, avgdl, k1=k1, b=b): return tf / (tf + k1 * (1 - b + b * dl / avgdl))
+def idf(N, n): return math.log(1 + (N - n + 0.5) / (n + 0.5))
+
+# 1) tf = 1..50 bei dl = avgdl   2) dl = 5..100 bei tf = 3, avgdl = 10, mit b = 0.75 und b = 0
+# 3) idf mit N = 1000            4) k1-Wirkung   5) Score = idf * tf-Teil</pre>
+<pre>1) Saettigung, dl = avgdl
+  tf=1   BM25 tf-Teil=0.455  Classic sqrt(tf)=1.000
+  tf=2   BM25 tf-Teil=0.625  Classic sqrt(tf)=1.414
+  tf=3   BM25 tf-Teil=0.714  Classic sqrt(tf)=1.732
+  tf=5   BM25 tf-Teil=0.806  Classic sqrt(tf)=2.236
+  tf=10  BM25 tf-Teil=0.893  Classic sqrt(tf)=3.162
+  tf=50  BM25 tf-Teil=0.977  Classic sqrt(tf)=7.071
+2) Laenge, tf=3, avgdl=10
+  dl=5    b=0.75 -> 0.800   b=0 -> 0.714
+  dl=10   b=0.75 -> 0.714   b=0 -> 0.714
+  dl=20   b=0.75 -> 0.588   b=0 -> 0.714
+  dl=100  b=0.75 -> 0.244   b=0 -> 0.714
+3) idf, N=1000
+  docFreq=1     BM25 idf=6.503  Classic idf=7.216
+  docFreq=10    BM25 idf=4.557  Classic idf=5.511
+  docFreq=100   BM25 idf=2.299  Classic idf=3.294
+  docFreq=500   BM25 idf=0.693  Classic idf=1.692
+  docFreq=1000  BM25 idf=0.000  Classic idf=1.000
+4) k1 Wirkung, tf=1 vs tf=10, dl=avgdl
+  k1=0.5  tf=1 -> 0.667  tf=10 -> 0.952  Verhaeltnis=1.43
+  k1=1.2  tf=1 -> 0.455  tf=10 -> 0.893  Verhaeltnis=1.96
+  k1=3.0  tf=1 -> 0.250  tf=10 -> 0.769  Verhaeltnis=3.08
+5) selten (n=5) tf=1: 2.365   haeufig (n=500) tf=10: 0.619</pre>
+<p class="small">Echte Ausgabe, Python 3.12.10. Es ist die Lucene-Formel als Modell, nicht Elasticsearch selbst. Bei 4) ist die Zeile k1 = 0 gekürzt (dort zählt tf gar nicht).</p>
+<ol>
+  <li>Der tf-Teil von BM25 geht von 0.455 über 0.893 zu 0.977 und nähert sich 1. Das klassische <code>sqrt(tf)</code> wächst bei 50 Treffern auf 7.07.</li>
+  <li>Bei <code>b = 0.75</code> sinkt der Wert mit der Länge von 0.800 (kurz) auf 0.244 (zehnfach so lang). Bei <code>b = 0</code> bleibt er bei 0.714.</li>
+  <li>Ein Wort in 1 von 1000 Dokumenten hat idf 6.5. Ein Wort in 500 hat 0.69. Ein Wort in allen hat fast 0 (genau 0.0005), nie negativ.</li>
+  <li>Bei grösserem <code>k1</code> bringt tf = 10 gegenüber tf = 1 mehr (Verhältnis 3.08 statt 1.96). Kleineres k1 sättigt schneller.</li>
+  <li>Ein seltenes Wort einmal (2.365) schlägt ein häufiges Wort zehnmal (0.619). Das ist die Wirkung von idf.</li>
+</ol>
+
+<h3>Vergleich</h3>
+<ul>
+  <li><b>TF-IDF klassisch (Lucene Classic):</b> <code>sqrt(tf)</code>, kein Maximum, <code>1/sqrt(Länge)</code>.</li>
+  <li><b>BM25:</b> Standard in Elasticsearch. Sättigung mit <code>k1</code>, Länge mit <code>b</code>.</li>
+  <li><b>Vektorsuche:</b> Bedeutung statt Wörter. Sie kann BM25 ergänzen.</li>
+  <li><b>PostgreSQL <code>ts_rank</code>:</b> kein BM25. Es kennt kein idf über alle Dokumente.</li>
+  <li><b>Filter-Kontext:</b> kein Score, schneller, wird gecacht. <b>Query-Kontext:</b> mit Score.</li>
+  <li><b>boost:</b> gewichtet ein Feld oder eine Klausel. Das ist ein Eingriff von aussen in den Score.</li>
+</ul>
+
+<h3>Produktion</h3>
+<ol>
+  <li><b>Springende Scores bei kleinen Indizes:</b> idf wird pro Shard berechnet. Lösung: <code>dfs_query_then_fetch</code> oder weniger Shards.</li>
+  <li><b>Kurze Felder gewinnen zu oft:</b> Die Längen-Normalisierung belohnt sie. Lösung: <code>b</code> senken oder Felder gewichten.</li>
+  <li><b>Langsame Suche mit Filtern:</b> Filter stehen im Query-Kontext. Lösung: <code>bool</code> mit <code>filter</code>.</li>
+  <li><b>Speicher für Norms:</b> Etwa ein Byte pro Dokument und Feld. Lösung: <code>norms: false</code> auf reinen Filterfeldern. Das geht nur beim Anlegen oder mit Reindex.</li>
+  <li><b>Fehlinterpretation von Scores:</b> Jemand nutzt <code>_score</code> als Prozent. Lösung: Score nur zum Sortieren nutzen.</li>
+  <li><b>Tuning ohne Messung:</b> Man ändert k1 und b nach Gefühl. Lösung: Testliste mit echten Anfragen.</li>
+</ol>
+
+<h3>Diagnose: Werkzeuge und Befehle</h3>
+<ul>
+  <li><b>Explain API:</b> zeigt, wie der Score für ein Dokument entsteht (idf, tf, Längen).</li>
+  <li><code>"explain": true</code> in <code>_search</code>: gibt die Erklärung für alle Treffer.</li>
+  <li><code>search_type=dfs_query_then_fetch</code>: prüft, ob springende Scores von lokalem idf kommen.</li>
+  <li><code>GET index/_mapping</code>: zeigt Similarity und <code>norms</code> pro Feld.</li>
+  <li><code>GET _analyze</code>: zeigt, welche Terms überhaupt gerechnet werden.</li>
+  <li><b>Testliste:</b> Suchanfragen mit erwarteter Reihenfolge, vor und nach der Änderung.</li>
+</ul>
+
+<h3>Senior-Punkte</h3>
+<div class="senior">
+<ol>
+  <li><b>Standardwerte sind gut.</b> k1 und b ändert man nur mit Messung auf echten Anfragen.</li>
+  <li><b>Der Score ist relativ.</b> Nur die Reihenfolge innerhalb einer Query zählt, nie der absolute Wert.</li>
+  <li><b>Erst Analyzer, dann Score.</b> Falsche Terms ergeben falsche Scores, egal wie gut die Formel ist.</li>
+  <li><b>Filter nicht scoren.</b> Alles, was nur ein- oder ausschliesst, gehört in den Filter-Kontext.</li>
+  <li><b>Bei kleinen Indizes</b> beeinflusst die Shard-Zahl die Scores. Weniger Shards oder DFS.</li>
+  <li><b>Lexikalisch plus Vektor:</b> BM25 findet exakte Wörter, Vektoren finden Bedeutung. Beides zusammen ist oft am besten.</li>
+</ol>
+</div>
+
+<h3>Dein Beispiel</h3>
+</details>
+
+</body>
+</html>

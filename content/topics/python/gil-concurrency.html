@@ -1,0 +1,244 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GIL, Threads, Multiprocessing, asyncio</title>
+<style>
+  body { font: 17px/1.55 -apple-system, system-ui, sans-serif; max-width: 760px; margin: 0 auto; padding: 16px; color: #1d1d1f; }
+  h1 { font-size: 28px; margin: 8px 0 4px; }
+  h2 { font-size: 21px; margin: 32px 0 8px; padding-top: 12px; border-top: 2px solid #e5e5ea; }
+  .kern { background: #eef6ff; border-left: 4px solid #0a66c2; padding: 10px 14px; border-radius: 6px; }
+  .senior { background: #f0faf0; border-left: 4px solid #2e7d32; padding: 10px 14px; border-radius: 6px; }
+  .trap { background: #fff4f2; border-left: 4px solid #c62828; padding: 10px 14px; border-radius: 6px; }
+  code { background: #f2f2f7; padding: 1px 5px; border-radius: 4px; font-size: 15px; }
+  pre { background: #1e1e1e; color: #e6e6e6; padding: 12px; border-radius: 8px; overflow-x: auto; font-size: 13.5px; line-height: 1.45; }
+  svg { width: 100%; height: auto; display: block; margin: 10px 0; }
+  ol li, ul li { margin: 4px 0; }
+  details { border: 1px solid #e5e5ea; border-radius: 8px; padding: 8px 12px; margin: 6px 0; }
+  summary { font-weight: 600; cursor: pointer; }
+  details p { margin: 6px 0 2px; }
+  .small { color: #6e6e73; font-size: 14px; }
+  h3 { font-size: 17px; margin: 20px 0 6px; }
+  .geruest { border: 2px solid #1d1d1f; border-radius: 6px; padding: 10px 14px; margin: 14px 0; font-size: 15px; line-height: 1.4; }
+  .geruest h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; margin: 0 0 8px; padding: 0; border: 0; }
+  .geruest dl { display: grid; grid-template-columns: 6.6em 1fr; gap: 6px 10px; margin: 0; }
+  .geruest dt { font-weight: 700; font-size: 12px; text-transform: uppercase; letter-spacing: .05em; padding-top: 1px; }
+  .geruest dd { margin: 0; }
+  .muster { border: 1px solid #e5e5ea; border-left: 4px solid #1d1d1f; border-radius: 6px; padding: 10px 14px; margin: 14px 0; }
+  .muster h3 { margin: 0 0 6px; font-size: 13px; text-transform: uppercase; letter-spacing: .06em; }
+  .muster .mq { margin: 0 0 6px; }
+</style>
+</head>
+<body>
+
+<h1>GIL, Threads, Multiprocessing, asyncio</h1>
+<!-- sources: docs.python.org Glossar (global interpreter lock), HOWTO Free Threading Python, PEP 703, PEP 779, Doku concurrent.futures, multiprocessing, asyncio-task, sys (setswitchinterval), threading -->
+
+<div class="kern">
+<b>Kern:</b> Der <b>GIL</b> (Global Interpreter Lock) erlaubt in CPython nur einem Thread, Python-Bytecode auszuführen. Darum bringen <b>Threads</b> bei I/O etwas, bei CPU-Arbeit aber nichts. Für CPU-Arbeit nimmt man <b>Prozesse</b>, für viele I/O-Aufrufe <b>asyncio</b>.
+</div>
+
+<div class="muster"><h3>Antwort-Muster</h3><p class="mq"><b>Frage:</b> Was ist der GIL und was bedeutet er für Threads?</p><ol>
+  <li>Mechanismus: Ein Lock im Interpreter. Nur ein Thread führt gleichzeitig Bytecode aus.</li>
+  <li>Zahl: Der Thread-Wechsel wird alle 5 ms angeboten. Bei I/O gibt der Thread den GIL sofort frei.</li>
+  <li>Trade-off: Threads sind gut für I/O, nutzlos für CPU. Prozesse nutzen alle Kerne, kosten aber Start und Pickle.</li>
+  <li>Produktion: Für CPU-Last nehme ich ProcessPoolExecutor. Für tausende Verbindungen nehme ich asyncio.</li>
+</ol></div>
+
+<h2>1. Ein Thread-Wechsel in 6 Schritten</h2>
+<svg viewBox="0 0 720 330" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="b" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="10" y="20" width="200" height="60" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="110" y="45" text-anchor="middle" font-weight="700">1. Thread A hält GIL</text><text x="110" y="65" text-anchor="middle" font-size="12">führt Bytecode aus</text>
+  <line x1="210" y1="50" x2="248" y2="50" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="250" y="20" width="220" height="60" rx="10" fill="#eee" stroke="#777"/><text x="360" y="45" text-anchor="middle" font-weight="700">2. Thread B wartet</text><text x="360" y="65" text-anchor="middle" font-size="12">schläft auf dem GIL, mit Timeout</text>
+  <line x1="470" y1="50" x2="508" y2="50" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="510" y="20" width="200" height="60" rx="10" fill="#fff" stroke="#555"/><text x="610" y="45" text-anchor="middle" font-weight="700">3. Timeout: 5 ms</text><text x="610" y="65" text-anchor="middle" font-size="12">B setzt eine Anfrage</text>
+  <line x1="610" y1="80" x2="610" y2="128" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="470" y="130" width="240" height="60" rx="10" fill="#fff" stroke="#555"/><text x="590" y="155" text-anchor="middle" font-weight="700">4. A gibt GIL frei</text><text x="590" y="175" text-anchor="middle" font-size="12">am nächsten Prüfpunkt</text>
+  <line x1="470" y1="160" x2="428" y2="160" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="200" y="130" width="226" height="60" rx="10" fill="#e8f5e9" stroke="#2e7d32"/><text x="313" y="155" text-anchor="middle" font-weight="700">5. B nimmt den GIL</text><text x="313" y="175" text-anchor="middle" font-size="12">B führt Bytecode aus</text>
+  <line x1="313" y1="190" x2="313" y2="238" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="120" y="240" width="380" height="64" rx="10" fill="#0a66c2"/><text x="310" y="265" text-anchor="middle" fill="#fff" font-weight="700">6. I/O oder sleep: sofort freigeben</text><text x="310" y="286" text-anchor="middle" fill="#fff" font-size="12">kein Warten auf die 5 ms</text>
+</svg>
+<ol>
+  <li><b>Thread A hält den GIL:</b> Nur wer den GIL hat, führt Bytecode aus. Alle anderen Threads warten.</li>
+  <li><b>Thread B wartet:</b> Er wartet auf den GIL mit einem Timeout. Das Intervall steht in <code>sys.getswitchinterval()</code>.</li>
+  <li><b>Timeout läuft ab:</b> Standard sind 0.005 Sekunden. B setzt eine Anfrage, dass A abgeben soll.</li>
+  <li><b>A gibt ab:</b> A prüft die Anfrage an einem Prüfpunkt der Bytecode-Schleife. Dann lässt A den GIL los.</li>
+  <li><b>B übernimmt:</b> Welcher Thread als nächster läuft, entscheidet das Betriebssystem. Der Interpreter hat keinen eigenen Scheduler.</li>
+  <li><b>Blockierende Aufrufe:</b> Bei I/O gibt ein Thread den GIL immer frei. Auch manche C-Erweiterungen geben ihn frei, zum Beispiel bei Kompression oder Hashing.</li>
+</ol>
+<p>Bei CPU-Arbeit wechseln die Threads nur hin und her. Sie laufen nie gleichzeitig. Das zeigt das Beispiel unten.</p>
+
+<h2>2. Aufbau</h2>
+<svg viewBox="0 0 720 320" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="a" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <text x="10" y="20" font-weight="700">Threads: ein Prozess, ein GIL</text>
+  <rect x="10" y="30" width="330" height="130" rx="10" fill="#f7f7fa" stroke="#999"/>
+  <rect x="24" y="44" width="90" height="40" rx="6" fill="#dbe9fb" stroke="#0a66c2"/><text x="69" y="69" text-anchor="middle" font-size="13">Thread 1</text>
+  <rect x="124" y="44" width="90" height="40" rx="6" fill="#eee" stroke="#777"/><text x="169" y="69" text-anchor="middle" font-size="13">Thread 2</text>
+  <rect x="224" y="44" width="100" height="40" rx="6" fill="#eee" stroke="#777"/><text x="274" y="69" text-anchor="middle" font-size="13">Thread 3</text>
+  <rect x="24" y="100" width="300" height="46" rx="6" fill="#0a66c2"/><text x="174" y="120" text-anchor="middle" fill="#fff" font-weight="700">GIL + gemeinsamer Heap</text><text x="174" y="137" text-anchor="middle" fill="#fff" font-size="12">1 Thread rechnet, geteilte Objekte</text>
+  <text x="370" y="20" font-weight="700">Prozesse: je ein GIL</text>
+  <rect x="370" y="30" width="160" height="130" rx="10" fill="#f7f7fa" stroke="#999"/><text x="450" y="55" text-anchor="middle" font-size="13" font-weight="700">Prozess 1</text><text x="450" y="78" text-anchor="middle" font-size="12">eigener GIL</text><text x="450" y="98" text-anchor="middle" font-size="12">eigener Heap</text>
+  <rect x="550" y="30" width="160" height="130" rx="10" fill="#f7f7fa" stroke="#999"/><text x="630" y="55" text-anchor="middle" font-size="13" font-weight="700">Prozess 2</text><text x="630" y="78" text-anchor="middle" font-size="12">eigener GIL</text><text x="630" y="98" text-anchor="middle" font-size="12">eigener Heap</text>
+  <line x1="530" y1="130" x2="548" y2="130" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <text x="450" y="148" text-anchor="middle" font-size="12">Pickle</text>
+  <rect x="10" y="190" width="330" height="110" rx="10" fill="#e8f5e9" stroke="#2e7d32"/><text x="175" y="214" text-anchor="middle" font-weight="700">asyncio: ein Thread</text><text x="175" y="238" text-anchor="middle" font-size="12">Event Loop mit vielen Tasks</text><text x="175" y="258" text-anchor="middle" font-size="12">Task gibt bei await die Kontrolle ab</text><text x="175" y="278" text-anchor="middle" font-size="12">kooperativ, kein Preemption</text>
+  <rect x="370" y="190" width="340" height="110" rx="10" fill="#fff4f2" stroke="#c62828"/><text x="540" y="214" text-anchor="middle" font-weight="700">Free-threaded Build</text><text x="540" y="238" text-anchor="middle" font-size="12">Python 3.13+, ohne GIL</text><text x="540" y="258" text-anchor="middle" font-size="12">Threads laufen parallel</text><text x="540" y="278" text-anchor="middle" font-size="12">Extra-Kosten bei einem Thread</text>
+</svg>
+<ol>
+  <li><b>Threads</b> teilen einen Prozess und einen Heap. Sie sind billig, aber der GIL begrenzt sie.</li>
+  <li><b>Prozesse</b> haben je einen eigenen Interpreter und GIL. Daten gehen per Pickle durch eine Pipe.</li>
+  <li><b>asyncio</b> nutzt einen Thread. Tasks wechseln nur bei <code>await</code>.</li>
+  <li><b>concurrent.futures</b> bietet <code>ThreadPoolExecutor</code> und <code>ProcessPoolExecutor</code> mit gleicher Schnittstelle.</li>
+  <li><b>Free-threaded Build</b> hat keinen GIL. Er ist ein eigener Build, nicht der Standard.</li>
+  <li>Die Wahl hängt von der Last ab: I/O-bound, CPU-bound oder viele Verbindungen.</li>
+</ol>
+
+<h2>3. Details</h2>
+<ol>
+  <li><b>Warum gibt es den GIL?</b> Er macht das Objektmodell sicher gegen gleichzeitigen Zugriff. Das gilt auch für eingebaute Typen wie <code>dict</code>. Das macht den Interpreter einfacher, kostet aber Parallelität.</li>
+  <li><b>Wann wird der GIL freigegeben?</b> Bei I/O immer. Manche C-Erweiterungen geben ihn bei Kompression oder Hashing frei. Reiner Python-Code gibt ihn nur beim Wechsel alle 5 ms ab.</li>
+  <li><b>Switch Interval:</b> Standard 0.005 Sekunden. Man setzt ihn mit <code>sys.setswitchinterval</code>. Der Wert ist ein Wunsch, die echte Zeit kann länger sein.</li>
+  <li><b>Race Condition trotz GIL:</b> Der GIL schützt den Interpreter, nicht Ihre Logik. <code>x += 1</code> sind mehrere Bytecodes. Ein Wechsel dazwischen verliert Updates. Darum braucht man <code>threading.Lock</code>.</li>
+  <li><b>ThreadPoolExecutor:</b> Seit 3.13 gilt <code>min(32, process_cpu_count() + 4)</code> Worker. Vorher war es <code>cpu_count() + 4</code>. Der Default ist für I/O gedacht.</li>
+  <li><b>ProcessPoolExecutor:</b> Der Default ist <code>os.process_cpu_count()</code> seit 3.13. Auf Windows sind höchstens 61 Worker erlaubt.</li>
+  <li><b>Start Method:</b> Windows und macOS nutzen <code>spawn</code>. Linux nutzte <code>fork</code>. Seit 3.14 ist <code>forkserver</code> der Standard auf POSIX. Bei <code>spawn</code> braucht man den Guard <code>if __name__ == "__main__"</code>.</li>
+  <li><b>Pickle:</b> Argumente und Resultate gehen per Pickle zwischen Prozessen. Lambdas und lokale Funktionen lassen sich nicht pickeln. Grosse Daten zu kopieren kostet Zeit.</li>
+  <li><b>asyncio Task:</b> <code>create_task</code> startet eine Coroutine. Der Event Loop hält nur schwache Referenzen. Ohne eigene Referenz kann ein Task verschwinden. Sicherer ist <code>TaskGroup</code> (seit 3.11).</li>
+  <li><b>Blockierender Code im Loop:</b> Ein <code>time.sleep</code> oder <code>requests.get</code> in einer Coroutine stoppt alle Tasks. Lösung: <code>asyncio.to_thread</code> (seit 3.9) oder eine async-Bibliothek.</li>
+  <li><b>gather bei Fehler:</b> Der erste Fehler geht sofort an den Aufrufer. Die anderen Aufgaben laufen weiter. Mit <code>return_exceptions=True</code> kommen Fehler als Resultate zurück.</li>
+  <li><b>Free Threading:</b> Seit 3.13 gibt es einen Build ohne GIL. PEP 779 macht ihn ab 3.14 offiziell unterstützt. Er braucht Erweiterungen, die dafür markiert sind. Sonst schaltet Python den GIL wieder ein.</li>
+</ol>
+
+<h2>4. Fallen</h2>
+<div class="trap">
+<ul>
+  <li>„Threads machen CPU-Code schneller.“ → <b>Falsch.</b> Mit GIL läuft nur ein Thread gleichzeitig. Das Beispiel zeigt keinen Gewinn.</li>
+  <li>„Der GIL macht meinen Code thread-sicher.“ → <b>Falsch.</b> Er schützt nur den Interpreter. <code>x += 1</code> kann Updates verlieren.</li>
+  <li>„asyncio ist parallel.“ → <b>Falsch.</b> Es ist nebenläufig in einem Thread. Es gewinnt bei I/O, nicht bei CPU.</li>
+  <li>„Mehr Threads sind immer schneller.“ → <b>Falsch.</b> Mehr Threads kosten Speicher und Wechsel. Bei CPU-Arbeit bringen sie nichts.</li>
+  <li>„Ein Prozess-Pool hat keine Kosten.“ → <b>Falsch.</b> Start, Pickle und Kopieren der Daten kosten Zeit. Kleine Aufgaben werden langsamer.</li>
+  <li>„<code>requests.get</code> in einer Coroutine ist ok.“ → <b>Falsch.</b> Es blockiert den ganzen Event Loop.</li>
+</ul>
+</div>
+
+<h2>5. Selbsttest</h2>
+<h3>Warum?</h3>
+<details><summary>Warum gibt es den GIL?</summary><p>Er macht das Objektmodell von CPython sicher gegen gleichzeitigen Zugriff. Das vereinfacht den Interpreter. Der Preis ist fehlende Parallelität bei Python-Code.</p></details>
+<details><summary>Warum helfen Threads bei I/O trotz GIL?</summary><p>Bei I/O gibt ein Thread den GIL immer frei. Andere Threads rechnen, während einer wartet.</p></details>
+<details><summary>Warum braucht man trotz GIL ein Lock?</summary><p>Der GIL schützt nur den Interpreter. Eine Operation wie x += 1 besteht aus mehreren Bytecodes. Ein Wechsel dazwischen verliert Updates.</p></details>
+<h3>Wie innen?</h3>
+<details><summary>Wie wechselt CPython zwischen Threads?</summary><p>Ein wartender Thread setzt nach dem Switch Interval eine Anfrage. Der laufende Thread gibt den GIL an einem Prüfpunkt ab. Das Betriebssystem wählt den nächsten Thread.</p></details>
+<details><summary>Was ist das Switch Interval?</summary><p>Die gewünschte Zeitscheibe pro Thread, Standard 0.005 Sekunden. Man liest sie mit sys.getswitchinterval().</p></details>
+<details><summary>Was passiert bei einem Prozess-Pool mit einer Aufgabe?</summary><p>Die Funktion und die Argumente werden gepickelt und an einen Worker geschickt. Der Worker rechnet und schickt das Resultat gepickelt zurück.</p></details>
+<details><summary>Wie funktioniert asyncio innen?</summary><p>Ein Event Loop in einem Thread führt Tasks aus. Ein Task läuft bis zum nächsten await. Dann wählt der Loop den nächsten bereiten Task.</p></details>
+<details><summary>Was ist der Unterschied zwischen spawn und fork?</summary><p>fork kopiert den laufenden Prozess. spawn startet einen neuen Interpreter und importiert das Hauptmodul. Darum braucht spawn den Guard if __name__ == "__main__".</p></details>
+<h3>Zahlen</h3>
+<details><summary>Wie viele Worker hat ThreadPoolExecutor standardmässig?</summary><p>Seit 3.13 min(32, process_cpu_count() + 4). Vorher min(32, cpu_count() + 4).</p></details>
+<details><summary>Wie viele Worker hat ProcessPoolExecutor standardmässig?</summary><p>os.process_cpu_count() seit 3.13. Auf Windows höchstens 61.</p></details>
+<details><summary>Wie gross ist der Mehraufwand im Free-threaded Build?</summary><p>Laut Doku im Mittel etwa 1 % auf macOS aarch64 bis 8 % auf x86-64 Linux, je nach Last. Das gilt für die pyperformance-Benchmarks.</p></details>
+<details><summary>Was ist die Start Method seit 3.14 auf Linux?</summary><p>forkserver. Vorher war es fork. Windows und macOS nutzen spawn.</p></details>
+<h3>Vergleich</h3>
+<details><summary>Threads, Prozesse oder asyncio: wie wählen Sie?</summary><p>CPU-bound: Prozesse. I/O-bound mit wenigen Aufrufen: Threads. Tausende Verbindungen: asyncio. Blockierende Bibliotheken: Threads.</p></details>
+<details><summary>asyncio vs Threads bei I/O?</summary><p>Beide laufen mit einem GIL. asyncio hat weniger Speicher pro Task und Wechsel nur bei await. Dafür braucht es async-Bibliotheken im ganzen Stack.</p></details>
+<details><summary>multiprocessing vs ProcessPoolExecutor?</summary><p>ProcessPoolExecutor ist die einfache Schnittstelle mit Futures. multiprocessing gibt mehr Kontrolle, zum Beispiel Queues, Pipes und Shared Memory.</p></details>
+<details><summary>GIL-Python vs Free-threaded Build?</summary><p>Ohne GIL laufen Threads parallel. Dafür ist ein Thread etwas langsamer, und Erweiterungen müssen dafür markiert sein.</p></details>
+<h3>Produktion</h3>
+<details><summary>Was tun, wenn die CPU-Auslastung eines Python-Dienstes bei 100 % eines Kerns hängt?</summary><p>Das ist das typische GIL-Bild. Die Arbeit ist CPU-bound. Lösung: ProcessPoolExecutor, mehrere Worker-Prozesse oder ein C-Teil, der den GIL freigibt.</p></details>
+<details><summary>Was passiert, wenn man blockierenden Code in einer Coroutine aufruft?</summary><p>Der ganze Event Loop steht. Alle anderen Tasks warten. Lösung: asyncio.to_thread oder eine async-Bibliothek.</p></details>
+<details><summary>Szenario: Eine async-API wird bei einem PDF-Export für alle Nutzer langsam. Warum?</summary><p>Der Export rechnet CPU-bound im Event Loop. Der Loop kann keine anderen Tasks bedienen. Lösung: Export in einen Prozess-Pool auslagern und mit run_in_executor awaiten.</p></details>
+<details><summary>Szenario: Ein Prozess-Pool macht kleine Aufgaben langsamer als eine Schleife. Was tun Sie?</summary><p>Pickle und Start kosten mehr als die Arbeit. Lösung: Aufgaben in grosse Blöcke bündeln (chunksize) oder bei Threads bleiben.</p></details>
+<h3>Design</h3>
+<details><summary>Wie schützen Sie einen geteilten Zähler zwischen Threads?</summary><p>Mit einem threading.Lock um die Änderung. Oder besser: keinen geteilten Zustand, sondern eine Queue.</p></details>
+<details><summary>Wie vermeiden Sie verlorene Tasks in asyncio?</summary><p>Mit TaskGroup (seit 3.11). Sie hält starke Referenzen, wartet auf alle Tasks und gibt Fehler weiter.</p></details>
+<details><summary>Wie begrenzen Sie die Parallelität in asyncio?</summary><p>Mit einer asyncio.Semaphore um die Aufrufe. So schickt man nicht tausend Anfragen gleichzeitig.</p></details>
+<details><summary>Wann nutzen Sie den Free-threaded Build?</summary><p>Wenn Threads CPU-Arbeit parallel machen sollen und alle Erweiterungen dafür markiert sind. Ich prüfe vorher mit sys._is_gil_enabled(), dass der GIL wirklich aus ist.</p></details>
+
+<details class="mehr"><summary>Mehr</summary>
+<h3>Gerüst</h3>
+<ul>
+  <li><b>Warum?</b> Der GIL macht den Interpreter einfach und sicher. Der Preis ist fehlende Parallelität.</li>
+  <li><b>Wie innen?</b> Ein Lock mit Timeout. Wechsel nach 5 ms an Prüfpunkten, bei I/O sofort.</li>
+  <li><b>Zahlen</b> Switch Interval 0.005 s. ThreadPool <code>min(32, cpu + 4)</code>. Free-threaded Overhead 1 bis 8 %.</li>
+  <li><b>Vergleich</b> CPU: Prozesse. I/O: Threads oder asyncio. Ohne GIL: Free-threaded Build.</li>
+  <li><b>Produktion</b> Ein Kern bei 100 %: CPU-bound. Blockierender Aufruf im Event Loop: alles steht.</li>
+  <li><b>Design</b> Keinen geteilten Zustand. Queue statt Lock. TaskGroup statt lose Tasks.</li>
+</ul>
+
+<h3>Beispiel: CPU gegen I/O, mit Threads, Prozessen und asyncio</h3>
+<pre>def count(n):                      # reine CPU-Arbeit
+    while n: n -= 1
+
+serial:     count(N); count(N)                         # N = 20_000_000
+threads:    ThreadPoolExecutor(2).map(count, [N, N])
+processes:  ProcessPoolExecutor(2).map(count, [N, N])
+
+time.sleep(0.5) x 10: seriell, 10 Threads, asyncio.gather(10 x asyncio.sleep(0.5))
+4 Threads: je 1_000_000 mal box[0] += 1, ohne Lock</pre>
+<pre>switchinterval 0.005
+CPU serial (2 x count)       0.98 s
+CPU 2 threads                0.95 s
+CPU 2 processes              0.81 s
+10 x sleep(0.5) serial       5.00 s
+10 x sleep(0.5) 10 threads   0.50 s
+10 x sleep(0.5) asyncio      0.56 s
+counter 4 x 1_000_000 without lock: 4000000</pre>
+<p class="small">Echte Ausgabe, Python 3.12.10 auf Windows (Start Method spawn). Zeiten sind Einzelmessungen.</p>
+<ol>
+  <li>Zwei Threads brauchen 0.95 s, seriell 0.98 s. Der GIL verhindert den Gewinn bei CPU-Arbeit.</li>
+  <li>Zwei Prozesse brauchen 0.81 s. Der Gewinn ist klein, weil der Start der Prozesse auf Windows (spawn) Zeit kostet. Bei längerer Arbeit wird er grösser.</li>
+  <li>Bei <code>sleep</code> geben Threads den GIL frei. Zehn Threads brauchen 0.50 s statt 5.00 s.</li>
+  <li>asyncio schafft dasselbe in einem Thread mit 0.56 s.</li>
+  <li>Der Zähler ergab hier 4000000, also keine verlorenen Updates. Das ist Glück bei diesem Lauf und dieser Version. Die Sprache garantiert es nicht. Ein Lock bleibt Pflicht.</li>
+</ol>
+
+<h3>Vergleich</h3>
+<ul>
+  <li><b>threading:</b> billig, geteilter Speicher, gut bei blockierendem I/O. Bei CPU-Arbeit begrenzt der GIL.</li>
+  <li><b>multiprocessing:</b> echte Parallelität mit eigenem GIL je Prozess. Kosten für Start und Pickle.</li>
+  <li><b>concurrent.futures:</b> gleiche Schnittstelle für Threads und Prozesse. Gut zum Wechseln.</li>
+  <li><b>asyncio:</b> ein Thread, kooperativ, sehr viele Tasks. Braucht async-Bibliotheken.</li>
+  <li><b>Free-threaded Build:</b> Threads laufen parallel. Mehr Aufwand pro Thread und nicht jede Erweiterung ist bereit.</li>
+  <li><b>C-Erweiterungen mit GIL-Freigabe:</b> zum Beispiel Kompression oder Hashing. Dort helfen auch Threads.</li>
+</ul>
+
+<h3>Produktion</h3>
+<ol>
+  <li><b>Ein Kern bei 100 %, die anderen leer:</b> Das ist CPU-Arbeit unter dem GIL. Lösung: Prozess-Pool oder mehrere Worker-Prozesse hinter dem Server.</li>
+  <li><b>Event Loop blockiert:</b> Ein blockierender Aufruf in einer Coroutine stoppt alle Tasks. Lösung: <code>asyncio.to_thread</code> oder async-Bibliothek.</li>
+  <li><b>Verschwundene Tasks:</b> Ein <code>create_task</code> ohne Referenz kann vom Garbage Collector entfernt werden. Lösung: <code>TaskGroup</code> oder eine Menge mit Referenzen.</li>
+  <li><b>Pickle-Fehler:</b> Lambdas und lokale Funktionen gehen nicht in einen Prozess-Pool. Lösung: Funktion auf Modulebene.</li>
+  <li><b>Windows-Start hängt oder startet endlos:</b> Der Guard <code>if __name__ == "__main__"</code> fehlt. Das Hauptmodul wird in jedem Kind neu importiert.</li>
+  <li><b>Zu viele gleichzeitige Anfragen:</b> <code>gather</code> über tausende Aufrufe überlastet den Server. Lösung: <code>Semaphore</code>.</li>
+</ol>
+
+<h3>Diagnose: Werkzeuge und Befehle</h3>
+<ul>
+  <li><code>sys.getswitchinterval()</code>: zeigt das Switch Interval.</li>
+  <li><code>sys._is_gil_enabled()</code> (ab 3.13): zeigt, ob der GIL läuft. <code>python -VV</code> zeigt, ob es ein Free-threaded Build ist.</li>
+  <li><code>PYTHON_GIL</code> oder <code>-X gil</code>: steuert den GIL in einem Free-threaded Build.</li>
+  <li><code>asyncio.run(main(), debug=True)</code>: meldet langsame Callbacks im Event Loop.</li>
+  <li><b>py-spy</b> (<code>py-spy dump --pid</code>): zeigt, wo jeder Thread steht.</li>
+  <li><code>top</code> oder Task Manager: ein Kern bei 100 % deutet auf den GIL.</li>
+</ul>
+
+<h3>Senior-Punkte</h3>
+<div class="senior">
+<ol>
+  <li><b>Erst messen, ob CPU oder I/O.</b> Die Antwort bestimmt Threads, Prozesse oder asyncio.</li>
+  <li><b>Der GIL schützt nicht Ihre Logik.</b> Geteilter veränderbarer Zustand braucht Locks oder besser Queues.</li>
+  <li><b>asyncio gilt für den ganzen Stack.</b> Ein blockierender Aufruf macht den Vorteil zunichte.</li>
+  <li><b>Prozesse haben Kosten:</b> Start, Pickle, Speicher. Aufgaben bündeln.</li>
+  <li><b>Free Threading ist eine Option, kein Standard.</b> Erweiterungen und Bibliotheken müssen bereit sein. Vor dem Einsatz testen.</li>
+  <li><b>Für Web-Dienste</b> skaliert man oft mit mehreren Worker-Prozessen. Das umgeht den GIL ohne Code-Änderung.</li>
+</ol>
+</div>
+
+<h3>Dein Beispiel</h3>
+</details>
+
+</body>
+</html>
