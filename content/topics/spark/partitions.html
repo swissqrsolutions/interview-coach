@@ -19,6 +19,15 @@
   summary { font-weight: 600; cursor: pointer; }
   details p { margin: 6px 0 2px; }
   .small { color: #6e6e73; font-size: 14px; }
+  h3 { font-size: 17px; margin: 20px 0 6px; }
+  .geruest { border: 2px solid #1d1d1f; border-radius: 6px; padding: 10px 14px; margin: 14px 0; font-size: 15px; line-height: 1.4; }
+  .geruest h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; margin: 0 0 8px; padding: 0; border: 0; }
+  .geruest dl { display: grid; grid-template-columns: 6.6em 1fr; gap: 6px 10px; margin: 0; }
+  .geruest dt { font-weight: 700; font-size: 12px; text-transform: uppercase; letter-spacing: .05em; padding-top: 1px; }
+  .geruest dd { margin: 0; }
+  .muster { border: 1px solid #e5e5ea; border-left: 4px solid #1d1d1f; border-radius: 6px; padding: 10px 14px; margin: 14px 0; }
+  .muster h3 { margin: 0 0 6px; font-size: 13px; text-transform: uppercase; letter-spacing: .06em; }
+  .muster .mq { margin: 0 0 6px; }
 </style>
 </head>
 <body>
@@ -27,10 +36,39 @@
 <!-- sources: Spark · Tier 1 · Quellen: Apache Spark 3.5/4.x Doku: SQL Performance Tuning (Tuning Partitions, Partitioning Hints), Configuration, Tuning Spark (Level of Parallelism), RDD Programming Guide (coalesce/repartition), PySpark API (DataFrame.repartition, coalesce, DataFrameWriter.partitionBy) -->
 
 <div class="kern">
-<b>Kern:</b> Eine <b>Partition</b> ist ein Teil der Daten, den genau <b>ein Task</b> verarbeitet. Die Anzahl Partitionen bestimmt die <b>Parallelität</b>, die Task-Grösse und die <b>Anzahl Dateien</b> beim Schreiben. <code>repartition</code> verteilt neu mit Shuffle, <code>coalesce</code> fasst ohne Shuffle zusammen.
+<b>Kern:</b> Eine <b>Partition</b> ist ein Teil der Daten, den genau <b>ein Task</b> verarbeitet. Die Anzahl Partitionen bestimmt die <b>Parallelität</b>, die Task-Grösse und die <b>Anzahl Dateien</b> beim Schreiben. <code>repartition</code> verteilt neu mit Shuffle, und <code>coalesce</code> fasst ohne Shuffle zusammen.
 </div>
 
-<h2>1. Wo sitzen Partitionen?</h2>
+<div class="muster"><h3>Antwort-Muster</h3><p class="mq"><b>Frage:</b> Wie viele Partitionen sind richtig, und was ist der Unterschied zwischen repartition und coalesce?</p><ol>
+  <li>Mechanismus: Eine Partition ist ein Datenteil für einen Task. <code>repartition</code> verteilt per Shuffle neu, <code>coalesce</code> fasst Partitionen ohne Shuffle zusammen.</li>
+  <li>Zahl: Beim Lesen sind es standardmässig 128 MB pro Partition, nach einem Shuffle 200. Ziel sind 100–200 MB pro Partition.</li>
+  <li>Trade-off: Zu wenige Partitionen lassen Cores leer und füllen den Speicher. Zu viele erzeugen Overhead und kleine Dateien.</li>
+  <li>Produktion: Ich lasse AQE zusammenfassen und vermeide <code>coalesce(1)</code> vor dem Schreiben. Vor <code>partitionBy</code> verteile ich nach der Partitionsspalte, damit keine Small Files entstehen.</li>
+</ol></div>
+
+<h2>1. Die Reise eines Datensatzes</h2>
+<svg viewBox="0 0 720 300" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="b" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="10" y="20" width="200" height="110" rx="10" fill="#f7f7fa" stroke="#999"/><text x="110" y="42" text-anchor="middle" font-weight="700">4 Partitionen</text>
+  <rect x="25" y="55" width="40" height="60" rx="4" fill="#0a66c2"/><rect x="70" y="75" width="40" height="40" rx="4" fill="#0a66c2"/><rect x="115" y="65" width="40" height="50" rx="4" fill="#0a66c2"/><rect x="160" y="90" width="40" height="25" rx="4" fill="#0a66c2"/>
+  <line x1="210" y1="60" x2="298" y2="40" stroke="#555" stroke-width="2" marker-end="url(#b)"/><text x="250" y="36" text-anchor="middle" font-size="12">repartition(2)</text>
+  <line x1="210" y1="110" x2="298" y2="190" stroke="#555" stroke-width="2" marker-end="url(#b)"/><text x="244" y="170" text-anchor="middle" font-size="12">coalesce(2)</text>
+  <rect x="300" y="10" width="400" height="100" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="500" y="32" text-anchor="middle" font-weight="700">Shuffle: alle Zeilen neu verteilen</text>
+  <rect x="330" y="45" width="60" height="50" rx="4" fill="#0a66c2"/><rect x="400" y="45" width="60" height="50" rx="4" fill="#0a66c2"/><text x="580" y="66" text-anchor="middle" font-size="12">gleich gross</text><text x="580" y="84" text-anchor="middle" font-size="12">neue Stage, Netzwerk, Disk</text>
+  <rect x="300" y="150" width="400" height="110" rx="10" fill="#e8f5e9" stroke="#2e7d32"/><text x="500" y="172" text-anchor="middle" font-weight="700">Kein Shuffle: Nachbarn zusammenlegen</text>
+  <rect x="330" y="185" width="60" height="62" rx="4" fill="#2e7d32"/><rect x="400" y="205" width="60" height="42" rx="4" fill="#2e7d32"/><text x="580" y="206" text-anchor="middle" font-size="12">ungleich gross möglich</text><text x="580" y="224" text-anchor="middle" font-size="12">gleiche Stage, billig</text>
+  <text x="360" y="290" text-anchor="middle" font-size="12" fill="#c62828">coalesce(1) zieht die ganze Stage auf 1 Task zusammen</text>
+</svg>
+<ol>
+  <li><b>Lesen:</b> Ein Datensatz liegt in einer Parquet-Datei. Spark liest die Datei als Teil von Partition 3. Task 3 verarbeitet ihn.</li>
+  <li><b>Narrow Transformation:</b> <code>filter</code> und <code>withColumn</code> bleiben in Partition 3. Kein Datenaustausch.</li>
+  <li><b><code>repartition(2)</code>:</b> Spark schreibt den Datensatz in Shuffle-Dateien. Ein Task der nächsten Stage holt ihn ab. Die neuen Partitionen sind etwa gleich gross (<b>Round Robin</b>).</li>
+  <li><b><code>coalesce(2)</code>:</b> Kein Shuffle. Ein Task liest einfach mehrere alte Partitionen nacheinander. Der Datensatz bleibt, wo er ist.</li>
+  <li><b>Die Falle:</b> <code>coalesce</code> hat keine Stage-Grenze. Darum läuft die <b>ganze Stage davor</b> nur mit 2 Tasks. Bei <code>coalesce(1)</code> rechnet ein einziger Core alles.</li>
+  <li><b>Schreiben:</b> Der Task schreibt den Datensatz in seine Ausgabedatei. Mit <code>partitionBy("received_date")</code> landet er im Ordner seines Datums.</li>
+</ol>
+
+<h2>2. Aufbau</h2>
 <svg viewBox="0 0 720 300" font-family="-apple-system, system-ui, sans-serif" font-size="14">
   <defs><marker id="a" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
   <rect x="10" y="20" width="150" height="70" rx="8" fill="#fff" stroke="#555"/><text x="85" y="46" text-anchor="middle" font-weight="700">Dateien</text><text x="85" y="66" text-anchor="middle" font-size="12">Parquet in MinIO/S3</text>
@@ -55,29 +93,79 @@
   <li><b>repartition und coalesce</b> ändern die Anzahl Partitionen zwischen diesen Punkten.</li>
 </ol>
 
-<h2>2. Die Reise eines Datensatzes (die Geschichte zum Merken)</h2>
-<svg viewBox="0 0 720 300" font-family="-apple-system, system-ui, sans-serif" font-size="14">
-  <defs><marker id="b" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
-  <rect x="10" y="20" width="200" height="110" rx="10" fill="#f7f7fa" stroke="#999"/><text x="110" y="42" text-anchor="middle" font-weight="700">4 Partitionen</text>
-  <rect x="25" y="55" width="40" height="60" rx="4" fill="#0a66c2"/><rect x="70" y="75" width="40" height="40" rx="4" fill="#0a66c2"/><rect x="115" y="65" width="40" height="50" rx="4" fill="#0a66c2"/><rect x="160" y="90" width="40" height="25" rx="4" fill="#0a66c2"/>
-  <line x1="210" y1="60" x2="298" y2="40" stroke="#555" stroke-width="2" marker-end="url(#b)"/><text x="250" y="36" text-anchor="middle" font-size="12">repartition(2)</text>
-  <line x1="210" y1="110" x2="298" y2="190" stroke="#555" stroke-width="2" marker-end="url(#b)"/><text x="244" y="170" text-anchor="middle" font-size="12">coalesce(2)</text>
-  <rect x="300" y="10" width="400" height="100" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="500" y="32" text-anchor="middle" font-weight="700">Shuffle: alle Zeilen neu verteilen</text>
-  <rect x="330" y="45" width="60" height="50" rx="4" fill="#0a66c2"/><rect x="400" y="45" width="60" height="50" rx="4" fill="#0a66c2"/><text x="580" y="66" text-anchor="middle" font-size="12">gleich gross</text><text x="580" y="84" text-anchor="middle" font-size="12">neue Stage, Netzwerk, Disk</text>
-  <rect x="300" y="150" width="400" height="110" rx="10" fill="#e8f5e9" stroke="#2e7d32"/><text x="500" y="172" text-anchor="middle" font-weight="700">Kein Shuffle: Nachbarn zusammenlegen</text>
-  <rect x="330" y="185" width="60" height="62" rx="4" fill="#2e7d32"/><rect x="400" y="205" width="60" height="42" rx="4" fill="#2e7d32"/><text x="580" y="206" text-anchor="middle" font-size="12">ungleich gross möglich</text><text x="580" y="224" text-anchor="middle" font-size="12">gleiche Stage, billig</text>
-  <text x="360" y="290" text-anchor="middle" font-size="12" fill="#c62828">coalesce(1) zieht die ganze Stage auf 1 Task zusammen</text>
-</svg>
+<h2>3. Details, die Interviewer fragen</h2>
 <ol>
-  <li><b>Lesen:</b> Ein Datensatz liegt in einer Parquet-Datei. Spark liest die Datei als Teil von Partition 3. Task 3 verarbeitet ihn.</li>
-  <li><b>Narrow Transformation:</b> <code>filter</code> und <code>withColumn</code> bleiben in Partition 3. Kein Datenaustausch.</li>
-  <li><b><code>repartition(2)</code>:</b> Spark schreibt den Datensatz in Shuffle-Dateien. Ein Task der nächsten Stage holt ihn ab. Die neuen Partitionen sind etwa gleich gross (<b>Round Robin</b>).</li>
-  <li><b><code>coalesce(2)</code>:</b> Kein Shuffle. Ein Task liest einfach mehrere alte Partitionen nacheinander. Der Datensatz bleibt, wo er ist.</li>
-  <li><b>Die Falle:</b> <code>coalesce</code> hat keine Stage-Grenze. Darum läuft die <b>ganze Stage davor</b> nur mit 2 Tasks. Bei <code>coalesce(1)</code> rechnet ein einziger Core alles.</li>
-  <li><b>Schreiben:</b> Der Task schreibt den Datensatz in seine Ausgabedatei. Mit <code>partitionBy("received_date")</code> landet er im Ordner seines Datums.</li>
+  <li><b>Input-Split-Formel:</b> Es gilt <code>maxSplitBytes = min(maxPartitionBytes, max(openCostInBytes, bytesPerCore))</code>. <code>bytesPerCore</code> ist (Datenmenge + Dateien × 4 MB) / <code>minPartitionNum</code>. Bei wenig Daten werden Partitionen also kleiner als 128 MB.</li>
+  <li><b>openCostInBytes</b> (4 MB): Das sind die geschätzten Kosten, eine Datei zu öffnen. Damit packt Spark viele kleine Dateien in eine Partition.</li>
+  <li><b>Splittbarkeit:</b> Parquet und ORC lassen sich nach Row Groups teilen. Eine <code>.gz</code>-CSV ist nicht splittbar. Das ergibt eine Datei und einen Task.</li>
+  <li><b>spark.sql.shuffle.partitions</b> (200): Das ist die Anzahl Partitionen nach einem Shuffle in DataFrame/SQL. <b>spark.default.parallelism</b> gilt nur für RDDs.</li>
+  <li><b>repartition(n):</b> Es macht einen Round-Robin-Shuffle und gleich grosse Partitionen. Es kann erhöhen und verringern.</li>
+  <li><b>repartition(col) / repartition(n, col):</b> Es nutzt Hash-Partitionierung. Gleiche Schlüssel landen in der gleichen Partition. Bei Skew wird eine Partition riesig.</li>
+  <li><b>repartitionByRange(col):</b> Es bildet sortierte Bereiche per Sampling. Es ist gut vor sortiertem Schreiben.</li>
+  <li><b>coalesce(n):</b> Es kann nur verringern und macht keinen Shuffle. <code>coalesce(500)</code> auf 100 Partitionen bleibt 100.</li>
+  <li><b>Partitioning Hints</b> in SQL: Es gibt <code>COALESCE</code>, <code>REPARTITION</code>, <code>REPARTITION_BY_RANGE</code> und <code>REBALANCE</code>. <b>REBALANCE</b> lässt AQE zu grosse Partitionen teilen und kleine zusammenlegen.</li>
+  <li><b>partitionBy beim Schreiben:</b> Das ist eine <b>Ordnerstruktur</b> (<code>received_date=2025-01-01/</code>), keine Spark-Partition. Sie ermöglicht <b>Partition Pruning</b> beim Lesen.</li>
+  <li><b>Dateianzahl:</b> Jeder Task schreibt pro Partitionswert eine Datei. 200 Tasks × 30 Tage ergibt bis 6000 Dateien.</li>
+  <li><b>maxRecordsPerFile:</b> Diese Option teilt grosse Dateien pro Task. Sie macht nie weniger Dateien.</li>
+  <li><b>Faustregel:</b> Man nimmt 2–4 Tasks pro Core und Partitionen von ca. 100–200 MB. Laut Tuning Guide sind Tasks ab ca. 200 ms noch effizient.</li>
 </ol>
 
-<h2>3. Beispiel: Partitionen zählen und Pläne lesen</h2>
+<h2>4. Fallen</h2>
+<div class="trap">
+<ul>
+  <li>„coalesce ist immer besser als repartition, weil es keinen Shuffle hat.“ → <b>Falsch.</b> coalesce senkt die Parallelität der Stage davor. Bei teurer Rechnung ist repartition schneller.</li>
+  <li>„<code>coalesce(500)</code> erhöht auf 500 Partitionen.“ → <b>Falsch.</b> coalesce kann nur verringern.</li>
+  <li>„partitionBy steuert die Anzahl Tasks.“ → <b>Falsch.</b> Es steuert nur Ordner auf Disk. Die Tasks bestimmen die Dateianzahl.</li>
+  <li>„spark.default.parallelism steuert DataFrame-Shuffles.“ → <b>Falsch.</b> Dafür gilt <code>spark.sql.shuffle.partitions</code>.</li>
+  <li>„Mehr Partitionen sind immer schneller.“ → <b>Falsch.</b> Ab einem Punkt dominiert der Overhead pro Task.</li>
+  <li>„Eine Datei ist immer eine Partition.“ → <b>Falsch.</b> Grosse Dateien werden geteilt, kleine zusammengepackt.</li>
+</ul>
+</div>
+
+<h2>5. Selbsttest</h2>
+<h3>Warum?</h3>
+<details><summary>Warum kann coalesce(1) langsam sein?</summary><p>coalesce hat keine Stage-Grenze. Die ganze Stage davor läuft dann auf einem Task.</p></details>
+<details><summary>Was passiert bei zu wenigen Partitionen?</summary><p>Wenige grosse Tasks, freie Cores, Spill auf Disk und OOM-Risiko.</p></details>
+<details><summary>Was passiert bei zu vielen Partitionen?</summary><p>Viele winzige Tasks. Scheduling-Overhead und Driver-Last dominieren. Beim Schreiben entstehen Small Files.</p></details>
+<details><summary>Warum ist eine gzip-CSV ein Problem?</summary><p>gzip ist nicht splittbar. Eine Datei wird ein Task, egal wie gross.</p></details>
+<h3>Wie innen?</h3>
+<details><summary>Was ist eine Partition in Spark?</summary><p>Ein Teil der Daten, den genau ein Task verarbeitet. Die Anzahl Partitionen bestimmt die Parallelität.</p></details>
+<details><summary>Was macht spark.sql.files.openCostInBytes?</summary><p>Es schätzt die Kosten, eine Datei zu öffnen (4 MB). Damit packt Spark viele kleine Dateien in eine Partition.</p></details>
+<details><summary>Was ist repartitionByRange?</summary><p>Partitionierung nach sortierten Wertebereichen per Sampling. Gut für sortierte Ausgabe und Range-Abfragen.</p></details>
+<details><summary>Was ist der REBALANCE-Hint?</summary><p>Ein Shuffle, bei dem AQE zu grosse Partitionen teilt und kleine zusammenlegt. Gut vor dem Schreiben gegen Small Files und Skew.</p></details>
+<details><summary>Was macht partitionBy beim Schreiben?</summary><p>Es legt pro Wert einen Ordner an, z. B. <code>received_date=2025-01-01</code>. Leser können dann ganze Ordner überspringen.</p></details>
+<details><summary>Wie viele Dateien schreibt Spark?</summary><p>Jeder Task schreibt pro Partitionswert mindestens eine Datei. Also bis zu Tasks × Werte.</p></details>
+<details><summary>Ändert AQE ein explizites repartition(16)?</summary><p>Nein. AQE respektiert eine explizit gesetzte Zahl. Bei <code>repartition(col)</code> ohne Zahl darf AQE zusammenfassen.</p></details>
+<h3>Zahlen</h3>
+<details><summary>Wie viele Partitionen hat ein DataFrame nach dem Lesen?</summary><p>Das hängt von Datenmenge, Dateien und Cores ab. Grob: Datenmenge / 128 MB (<code>maxPartitionBytes</code>), bei wenig Daten mehr kleinere Partitionen.</p></details>
+<details><summary>Was ist spark.sql.shuffle.partitions?</summary><p>Die Anzahl Partitionen nach einem Shuffle in DataFrame/SQL. Standard 200. AQE kann sie zur Laufzeit verkleinern.</p></details>
+<details><summary>Welche Partitionsgrösse ist gut?</summary><p>Etwa 100–200 MB pro Task und 2–4 Tasks pro Core. Messen im Stages-Tab.</p></details>
+<h3>Vergleich</h3>
+<details><summary>Unterschied repartition und coalesce?</summary><p>repartition macht einen Shuffle und verteilt gleichmässig, auch nach oben. coalesce legt Partitionen ohne Shuffle zusammen und kann nur verringern.</p></details>
+<details><summary>Was ist der Unterschied zwischen partitionBy und bucketBy?</summary><p>partitionBy macht Ordner pro Wert für Pruning. bucketBy verteilt per Hash in eine feste Anzahl Dateien und spart Shuffles bei Joins.</p></details>
+<details><summary>Was ist Iceberg Hidden Partitioning?</summary><p>Die Tabelle speichert eine Transform wie <code>days(received_date)</code> in den Metadaten. Ein Filter auf <code>received_date</code> nutzt Pruning ohne eigene Datumsspalte.</p></details>
+<details><summary>repartition(n) vs repartition(col)?</summary><p>repartition(n) macht Round-Robin mit gleich grossen Partitionen. repartition(col) macht Hash-Partitionierung, gleiche Schlüssel zusammen, mit Skew-Risiko.</p></details>
+<h3>Produktion</h3>
+<details><summary>Wie sehen Sie, ob Partitionen ungleich sind?</summary><p>Im Stages-Tab Max vs Median bei Dauer und Shuffle Read. Oder <code>groupBy(spark_partition_id()).count()</code>.</p></details>
+<details><summary>Szenario: Ein täglicher Job schreibt 6000 Dateien zu je 50 KB. Was tun Sie?</summary><p>Ursache: 200 Shuffle-Tasks × viele Partitionswerte. Vor dem Schreiben nach der Partitionsspalte repartitionieren oder REBALANCE, dann bestehende Dateien kompaktieren.</p></details>
+<details><summary>Szenario: Der Job nutzt nur 2 von 64 Cores. Woran liegt es?</summary><p>Zu wenige Partitionen, z. B. nicht splittbare Dateien oder ein <code>coalesce(2)</code> am Ende. Im Stages-Tab die Task-Anzahl prüfen, dann repartition statt coalesce.</p></details>
+<details><summary>Szenario: Nach partitionBy("date") hat ein Tag eine 40-GB-Datei. Warum?</summary><p><code>repartition("date")</code> legt den ganzen Tag in einen Task. Lösung: zusätzlichen Salt-Schlüssel, <code>maxRecordsPerFile</code> oder REBALANCE.</p></details>
+<h3>Design</h3>
+<details><summary>Wann nehmen Sie repartition(col)?</summary><p>Wenn gleiche Schlüssel zusammen sein sollen, z. B. vor partitionBy-Schreiben oder mehreren Operationen auf dem gleichen Schlüssel.</p></details>
+<details><summary>Wie verhindern Sie Small Files beim Schreiben?</summary><p>Vor dem Schreiben nach der Partitionsspalte repartitionieren oder REBALANCE nutzen. Danach regelmässig kompaktieren, bei Iceberg mit <code>rewrite_data_files</code>.</p></details>
+<details><summary>Nach welcher Spalte partitioniere ich beim Schreiben?</summary><p>Nach Spalten, die oft im Filter stehen und wenige Werte haben, z. B. ein Datum. Nie nach einer ID wie message_id.</p></details>
+
+<details class="mehr"><summary>Mehr</summary>
+<h3>Gerüst</h3>
+<ul>
+  <li><b>Warum?</b> Partitionen bestimmen Parallelität, Task-Grösse und Dateianzahl. Es ist ein Grössenproblem, keine feste Zahl.</li>
+  <li><b>Wie innen?</b> Beim Lesen packt Spark Dateien nach <code>maxPartitionBytes</code> und <code>openCostInBytes</code>. <code>coalesce</code> fasst ohne Shuffle zusammen. <code>partitionBy</code> ist nur ein Ordner auf Disk.</li>
+  <li><b>Zahlen</b> maxPartitionBytes 128 MB, openCostInBytes 4 MB, shuffle.partitions 200. Ziel 100–200 MB pro Partition, 2–4 Tasks pro Core. 200 Tasks × 30 Tage = bis 6000 Dateien.</li>
+  <li><b>Vergleich</b> <code>repartition(n)</code> = Shuffle, gleich gross. <code>coalesce(n)</code> = kein Shuffle, nur verringern. <code>partitionBy</code> = Ordner, <code>bucketBy</code> = feste Hash-Buckets.</li>
+  <li><b>Produktion</b> Zu wenige Partitionen = Spill und OOM. Zu viele = Overhead. Small Files, <code>coalesce(1)</code>, gzip-CSV als ein Task.</li>
+  <li><b>Design</b> Mit AQE nicht von Hand tunen. Schreib-Layout nach dem Filter wählen. Compaction planen.</li>
+</ul>
+<h3>Beispiel: Partitionen zählen und Pläne lesen</h3>
 <pre>from pyspark.sql import functions as F
 
 df = spark.read.parquet("s3a://lake/silver/trades/")   # 10 GB, 80 Dateien à 128 MB
@@ -109,25 +197,7 @@ print(small.rdd.getNumPartitions())                     # 6) Small Files</pre>
   <li><code>repartition("schema_type")</code> verteilt per <b>Hash</b> der Spalte. Ohne Zahl gilt 200, und AQE darf zusammenfassen.</li>
   <li>Kleine Dateien kosten je 4 MB <b>openCostInBytes</b>. Darum packt Spark nur ca. 31 Dateien in eine 128-MB-Partition.</li>
 </ol>
-
-<h2>4. Details, die Interviewer fragen</h2>
-<ol>
-  <li><b>Input-Split-Formel:</b> <code>maxSplitBytes = min(maxPartitionBytes, max(openCostInBytes, bytesPerCore))</code>. <code>bytesPerCore</code> ist (Datenmenge + Dateien × 4 MB) / <code>minPartitionNum</code>. Bei wenig Daten werden Partitionen also kleiner als 128 MB.</li>
-  <li><b>openCostInBytes</b> (4 MB): geschätzte Kosten, eine Datei zu öffnen. Damit packt Spark viele kleine Dateien in eine Partition.</li>
-  <li><b>Splittbarkeit:</b> Parquet und ORC lassen sich nach Row Groups teilen. Eine <code>.gz</code>-CSV ist nicht splittbar: eine Datei, ein Task.</li>
-  <li><b>spark.sql.shuffle.partitions</b> (200): Anzahl Partitionen nach einem Shuffle in DataFrame/SQL. <b>spark.default.parallelism</b> gilt nur für RDDs.</li>
-  <li><b>repartition(n):</b> Round-Robin-Shuffle, gleich grosse Partitionen. Kann erhöhen und verringern.</li>
-  <li><b>repartition(col) / repartition(n, col):</b> Hash-Partitionierung. Gleiche Schlüssel landen in der gleichen Partition. Bei Skew wird eine Partition riesig.</li>
-  <li><b>repartitionByRange(col):</b> sortierte Bereiche per Sampling. Gut vor sortiertem Schreiben.</li>
-  <li><b>coalesce(n):</b> nur verringern, kein Shuffle. <code>coalesce(500)</code> auf 100 Partitionen bleibt 100.</li>
-  <li><b>Partitioning Hints</b> in SQL: <code>COALESCE</code>, <code>REPARTITION</code>, <code>REPARTITION_BY_RANGE</code>, <code>REBALANCE</code>. <b>REBALANCE</b> lässt AQE zu grosse Partitionen teilen und kleine zusammenlegen.</li>
-  <li><b>partitionBy beim Schreiben:</b> Das ist eine <b>Ordnerstruktur</b> (<code>received_date=2025-01-01/</code>), keine Spark-Partition. Es ermöglicht <b>Partition Pruning</b> beim Lesen.</li>
-  <li><b>Dateianzahl:</b> Jeder Task schreibt pro Partitionswert eine Datei. 200 Tasks × 30 Tage = bis 6000 Dateien.</li>
-  <li><b>maxRecordsPerFile:</b> Option, die grosse Dateien pro Task teilt. Sie macht nie weniger Dateien.</li>
-  <li><b>Faustregel:</b> 2–4 Tasks pro Core, Partitionen ca. 100–200 MB. Laut Tuning Guide sind Tasks ab ca. 200 ms noch effizient.</li>
-</ol>
-
-<h2>5. Vergleich</h2>
+<h3>Vergleich</h3>
 <ul>
   <li><b>repartition(n):</b> Shuffle, gleich gross, erhöhen und verringern, neue Stage.</li>
   <li><b>coalesce(n):</b> kein Shuffle, nur verringern, kann ungleich sein, zieht die Stage davor mit.</li>
@@ -138,8 +208,7 @@ print(small.rdd.getNumPartitions())                     # 6) Small Files</pre>
   <li><b>bucketBy (Writer):</b> feste Anzahl Hash-Buckets in einer Tabelle. Spart später Shuffles bei Joins.</li>
   <li><b>Iceberg Hidden Partitioning:</b> Transform wie <code>days(received_date)</code> in den Metadaten. Abfragen brauchen keine eigene Datumsspalte.</li>
 </ul>
-
-<h2>6. In der Produktion</h2>
+<h3>In der Produktion</h3>
 <ol>
   <li><b>Zu wenige Partitionen:</b> Wenige riesige Tasks, Cores bleiben leer, Spill auf Disk, Executor-OOM. Lösung: <code>repartition</code> erhöhen, <code>maxPartitionBytes</code> senken, AQE nutzen.</li>
   <li><b>Zu viele Partitionen:</b> Tausende Tasks mit wenigen KB. Overhead für Scheduling und Driver-Speicher dominiert. Lösung: AQE-Coalescing, <code>coalesce</code>, weniger Shuffle-Partitionen.</li>
@@ -148,8 +217,7 @@ print(small.rdd.getNumPartitions())                     # 6) Small Files</pre>
   <li><b>Riesige Datei pro Partitionswert:</b> <code>repartition("date")</code> bei einem grossen Tag gibt einen Task mit vielen GB. Lösung: <code>repartition("date", "salt")</code> oder <code>maxRecordsPerFile</code>.</li>
   <li><b>Nicht splittbare Eingabe:</b> Eine 20-GB-<code>.gz</code> wird ein einziger Task. Lösung: einmal lesen, <code>repartition</code>, als Parquet speichern.</li>
 </ol>
-
-<h2>7. Diagnose: Werkzeuge und Befehle</h2>
+<h3>Diagnose: Werkzeuge und Befehle</h3>
 <ul>
   <li><code>df.rdd.getNumPartitions()</code>: aktuelle Anzahl Partitionen.</li>
   <li><code>df.groupBy(F.spark_partition_id()).count()</code>: Zeilen pro Partition, zeigt Ungleichheit.</li>
@@ -158,8 +226,7 @@ print(small.rdd.getNumPartitions())                     # 6) Small Files</pre>
   <li><b>Spark UI, SQL-Tab:</b> Anzahl Output-Dateien und Zeilen pro Knoten.</li>
   <li><b>Iceberg-Metadaten:</b> <code>SELECT partition, file_count FROM db.trades.partitions</code> zeigt Dateien pro Partition.</li>
 </ul>
-
-<h2>8. Senior-Punkte</h2>
+<h3>Senior-Punkte</h3>
 <div class="senior">
 <ol>
   <li><b>Partitionen sind ein Grössenproblem,</b> keine Zahl. Ziel ist 100–200 MB pro Task, nicht „200“ oder „1000“.</li>
@@ -170,46 +237,8 @@ print(small.rdd.getNumPartitions())                     # 6) Small Files</pre>
   <li><b>Kosten auf Kubernetes:</b> Zu viele kleine Tasks halten Executor-Pods länger am Leben. Das kostet Knoten-Zeit.</li>
 </ol>
 </div>
-
-<h2>9. Aus dem Projekt</h2>
-<p>„Bei MATCH ist die Iceberg-Tabelle mit Hidden Partitioning nach <code>days(received_date)</code> und <code>schema_type</code> partitioniert, und gegen Small Files helfen Batch-Claims und regelmässiges <code>rewrite_data_files</code> mit <code>expire_snapshots</code>.“ <span class="small">(Prüfen und durch dein echtes Beispiel ersetzen.)</span></p>
-
-<h2>10. Fallen</h2>
-<div class="trap">
-<ul>
-  <li>„coalesce ist immer besser als repartition, weil es keinen Shuffle hat.“ → <b>Falsch.</b> coalesce senkt die Parallelität der Stage davor. Bei teurer Rechnung ist repartition schneller.</li>
-  <li>„<code>coalesce(500)</code> erhöht auf 500 Partitionen.“ → <b>Falsch.</b> coalesce kann nur verringern.</li>
-  <li>„partitionBy steuert die Anzahl Tasks.“ → <b>Falsch.</b> Es steuert nur Ordner auf Disk. Die Tasks bestimmen die Dateianzahl.</li>
-  <li>„spark.default.parallelism steuert DataFrame-Shuffles.“ → <b>Falsch.</b> Dafür gilt <code>spark.sql.shuffle.partitions</code>.</li>
-  <li>„Mehr Partitionen sind immer schneller.“ → <b>Falsch.</b> Ab einem Punkt dominiert der Overhead pro Task.</li>
-  <li>„Eine Datei ist immer eine Partition.“ → <b>Falsch.</b> Grosse Dateien werden geteilt, kleine zusammengepackt.</li>
-</ul>
-</div>
-
-<h2>11. Fragen</h2>
-<details><summary>Was ist eine Partition in Spark?</summary><p>Ein Teil der Daten, den genau ein Task verarbeitet. Die Anzahl Partitionen bestimmt die Parallelität.</p></details>
-<details><summary>Wie viele Partitionen hat ein DataFrame nach dem Lesen?</summary><p>Das hängt von Datenmenge, Dateien und Cores ab. Grob: Datenmenge / 128 MB (<code>maxPartitionBytes</code>), bei wenig Daten mehr kleinere Partitionen.</p></details>
-<details><summary>Was macht spark.sql.files.openCostInBytes?</summary><p>Es schätzt die Kosten, eine Datei zu öffnen (4 MB). Damit packt Spark viele kleine Dateien in eine Partition.</p></details>
-<details><summary>Was ist spark.sql.shuffle.partitions?</summary><p>Die Anzahl Partitionen nach einem Shuffle in DataFrame/SQL. Standard 200. AQE kann sie zur Laufzeit verkleinern.</p></details>
-<details><summary>Unterschied repartition und coalesce?</summary><p>repartition macht einen Shuffle und verteilt gleichmässig, auch nach oben. coalesce legt Partitionen ohne Shuffle zusammen und kann nur verringern.</p></details>
-<details><summary>Warum kann coalesce(1) langsam sein?</summary><p>coalesce hat keine Stage-Grenze. Die ganze Stage davor läuft dann auf einem Task.</p></details>
-<details><summary>Wann nehmen Sie repartition(col)?</summary><p>Wenn gleiche Schlüssel zusammen sein sollen, z. B. vor partitionBy-Schreiben oder mehreren Operationen auf dem gleichen Schlüssel.</p></details>
-<details><summary>Was ist repartitionByRange?</summary><p>Partitionierung nach sortierten Wertebereichen per Sampling. Gut für sortierte Ausgabe und Range-Abfragen.</p></details>
-<details><summary>Was ist der REBALANCE-Hint?</summary><p>Ein Shuffle, bei dem AQE zu grosse Partitionen teilt und kleine zusammenlegt. Gut vor dem Schreiben gegen Small Files und Skew.</p></details>
-<details><summary>Was macht partitionBy beim Schreiben?</summary><p>Es legt pro Wert einen Ordner an, z. B. <code>received_date=2025-01-01</code>. Leser können dann ganze Ordner überspringen.</p></details>
-<details><summary>Wie viele Dateien schreibt Spark?</summary><p>Jeder Task schreibt pro Partitionswert mindestens eine Datei. Also bis zu Tasks × Werte.</p></details>
-<details><summary>Wie verhindern Sie Small Files beim Schreiben?</summary><p>Vor dem Schreiben nach der Partitionsspalte repartitionieren oder REBALANCE nutzen. Danach regelmässig kompaktieren, bei Iceberg mit <code>rewrite_data_files</code>.</p></details>
-<details><summary>Was passiert bei zu wenigen Partitionen?</summary><p>Wenige grosse Tasks, freie Cores, Spill auf Disk und OOM-Risiko.</p></details>
-<details><summary>Was passiert bei zu vielen Partitionen?</summary><p>Viele winzige Tasks. Scheduling-Overhead und Driver-Last dominieren. Beim Schreiben entstehen Small Files.</p></details>
-<details><summary>Welche Partitionsgrösse ist gut?</summary><p>Etwa 100–200 MB pro Task und 2–4 Tasks pro Core. Messen im Stages-Tab.</p></details>
-<details><summary>Warum ist eine gzip-CSV ein Problem?</summary><p>gzip ist nicht splittbar. Eine Datei wird ein Task, egal wie gross.</p></details>
-<details><summary>Was ist der Unterschied zwischen partitionBy und bucketBy?</summary><p>partitionBy macht Ordner pro Wert für Pruning. bucketBy verteilt per Hash in eine feste Anzahl Dateien und spart Shuffles bei Joins.</p></details>
-<details><summary>Was ist Iceberg Hidden Partitioning?</summary><p>Die Tabelle speichert eine Transform wie <code>days(received_date)</code> in den Metadaten. Ein Filter auf <code>received_date</code> nutzt Pruning ohne eigene Datumsspalte.</p></details>
-<details><summary>Wie sehen Sie, ob Partitionen ungleich sind?</summary><p>Im Stages-Tab Max vs Median bei Dauer und Shuffle Read. Oder <code>groupBy(spark_partition_id()).count()</code>.</p></details>
-<details><summary>Ändert AQE ein explizites repartition(16)?</summary><p>Nein. AQE respektiert eine explizit gesetzte Zahl. Bei <code>repartition(col)</code> ohne Zahl darf AQE zusammenfassen.</p></details>
-<details><summary>Szenario: Ein täglicher Job schreibt 6000 Dateien zu je 50 KB. Was tun Sie?</summary><p>Ursache: 200 Shuffle-Tasks × viele Partitionswerte. Vor dem Schreiben nach der Partitionsspalte repartitionieren oder REBALANCE, dann bestehende Dateien kompaktieren.</p></details>
-<details><summary>Szenario: Der Job nutzt nur 2 von 64 Cores. Woran liegt es?</summary><p>Zu wenige Partitionen, z. B. nicht splittbare Dateien oder ein <code>coalesce(2)</code> am Ende. Im Stages-Tab die Task-Anzahl prüfen, dann repartition statt coalesce.</p></details>
-<details><summary>Szenario: Nach partitionBy("date") hat ein Tag eine 40-GB-Datei. Warum?</summary><p><code>repartition("date")</code> legt den ganzen Tag in einen Task. Lösung: zusätzlichen Salt-Schlüssel, <code>maxRecordsPerFile</code> oder REBALANCE.</p></details>
+<h3>Dein Beispiel</h3>
+</details>
 
 </body>
 </html>

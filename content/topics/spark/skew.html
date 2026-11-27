@@ -19,6 +19,15 @@
   summary { font-weight: 600; cursor: pointer; }
   details p { margin: 6px 0 2px; }
   .small { color: #6e6e73; font-size: 14px; }
+  h3 { font-size: 17px; margin: 20px 0 6px; }
+  .geruest { border: 2px solid #1d1d1f; border-radius: 6px; padding: 10px 14px; margin: 14px 0; font-size: 15px; line-height: 1.4; }
+  .geruest h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; margin: 0 0 8px; padding: 0; border: 0; }
+  .geruest dl { display: grid; grid-template-columns: 6.6em 1fr; gap: 6px 10px; margin: 0; }
+  .geruest dt { font-weight: 700; font-size: 12px; text-transform: uppercase; letter-spacing: .05em; padding-top: 1px; }
+  .geruest dd { margin: 0; }
+  .muster { border: 1px solid #e5e5ea; border-left: 4px solid #1d1d1f; border-radius: 6px; padding: 10px 14px; margin: 14px 0; }
+  .muster h3 { margin: 0 0 6px; font-size: 13px; text-transform: uppercase; letter-spacing: .06em; }
+  .muster .mq { margin: 0 0 6px; }
 </style>
 </head>
 <body>
@@ -27,31 +36,17 @@
 <!-- sources: Spark · Tier 1 · Quellen: Apache Spark 3.5/4.x Doku: SQL Performance Tuning (Adaptive Query Execution: Optimizing Skew Join, Splitting skewed shuffle partitions), Configuration, Monitoring and Instrumentation (Web UI, Stage-Details), PySpark API (functions.rand, explode, broadcast) -->
 
 <div class="kern">
-<b>Kern:</b> <b>Data Skew</b> ist eine ungleiche Verteilung der Daten auf Partitionen. Wenige Schlüssel haben sehr viele Zeilen, darum hat ein Task viel mehr Arbeit als alle anderen. Der Job ist so langsam wie dieser eine Task. <b>AQE Skew Join</b>, <b>Salting</b> und <b>Isolieren heisser Schlüssel</b> verteilen die Arbeit wieder.
+<b>Kern:</b> <b>Data Skew</b> ist eine ungleiche Verteilung der Daten auf Partitionen. Wenige Schlüssel haben sehr viele Zeilen, darum hat ein Task viel mehr Arbeit als alle anderen, und der Job ist so langsam wie dieser eine Task. <b>AQE Skew Join</b>, <b>Salting</b> und <b>Isolieren heisser Schlüssel</b> verteilen die Arbeit wieder.
 </div>
 
-<h2>1. Wo sitzt Skew?</h2>
-<svg viewBox="0 0 720 290" font-family="-apple-system, system-ui, sans-serif" font-size="14">
-  <defs><marker id="a" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
-  <rect x="10" y="20" width="160" height="70" rx="8" fill="#fff" stroke="#555"/><text x="90" y="46" text-anchor="middle" font-weight="700">Map-Stage</text><text x="90" y="66" text-anchor="middle" font-size="12">gleich grosse Tasks</text>
-  <line x1="170" y1="55" x2="218" y2="55" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
-  <rect x="220" y="20" width="190" height="70" rx="8" fill="#0a66c2" stroke="#0a66c2"/><text x="315" y="46" text-anchor="middle" fill="#fff" font-weight="700">Shuffle</text><text x="315" y="66" text-anchor="middle" fill="#fff" font-size="12">hash(key) % Partitionen</text>
-  <line x1="410" y1="55" x2="458" y2="55" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
-  <rect x="460" y="10" width="250" height="200" rx="10" fill="#f7f7fa" stroke="#999"/><text x="585" y="32" text-anchor="middle" font-weight="700">Reduce-Stage</text>
-  <rect x="480" y="160" width="30" height="30" fill="#2e7d32"/><rect x="520" y="150" width="30" height="40" fill="#2e7d32"/><rect x="560" y="50" width="30" height="140" fill="#c62828"/><rect x="600" y="165" width="30" height="25" fill="#2e7d32"/><rect x="640" y="155" width="30" height="35" fill="#2e7d32"/>
-  <text x="575" y="44" text-anchor="middle" font-size="12" fill="#c62828">heisser Schlüssel</text>
-  <rect x="10" y="130" width="400" height="80" rx="8" fill="#fff4f2" stroke="#c62828"/><text x="210" y="154" text-anchor="middle" font-weight="700">Folgen</text><text x="210" y="176" text-anchor="middle" font-size="12">ein Task läuft Stunden · Spill auf Disk · Executor-OOM</text><text x="210" y="196" text-anchor="middle" font-size="12">alle anderen Cores warten leer</text>
-  <rect x="10" y="230" width="700" height="50" rx="8" fill="#e8f5e9" stroke="#2e7d32"/><text x="360" y="252" text-anchor="middle" font-weight="700">Gegenmittel</text><text x="360" y="270" text-anchor="middle" font-size="12">AQE Skew Join · Broadcast · Salting · heisse Schlüssel getrennt · Null-Schlüssel filtern</text>
-</svg>
-<ol>
-  <li><b>Map-Stage:</b> Die Eingabe ist gleichmässig verteilt. Hier gibt es selten Skew.</li>
-  <li><b>Shuffle:</b> Spark schickt jede Zeile nach <code>hash(key) % Anzahl Partitionen</code>. Alle Zeilen eines Schlüssels landen in <b>einer</b> Partition.</li>
-  <li><b>Reduce-Stage:</b> Hat ein Schlüssel 40 % der Zeilen, bekommt ein Task 40 % der Arbeit. Das ist ein <b>Straggler</b>, ein Nachzügler-Task.</li>
-  <li><b>Betroffene Operationen:</b> <code>join</code>, <code>groupBy</code>, <code>Window</code> mit <code>partitionBy</code>, <code>repartition(col)</code>, <code>partitionBy</code> beim Schreiben.</li>
-  <li><b>Gegenmittel</b> setzen vor oder im Shuffle an: Shuffle vermeiden, Schlüssel teilen, oder heisse Schlüssel separat behandeln.</li>
-</ol>
+<div class="muster"><h3>Antwort-Muster</h3><p class="mq"><b>Frage:</b> Was ist Data Skew, und wie lösen Sie ihn?</p><ol>
+  <li>Mechanismus: Wenige Schlüssel haben sehr viele Zeilen. Ein Task bekommt viel mehr Arbeit, und die Stage wartet auf ihn.</li>
+  <li>Zahl: AQE sieht eine Partition als skewed, wenn sie grösser als 5 × Median und grösser als 256 MB ist. Dann teilt es sie in Stücke von etwa 64 MB.</li>
+  <li>Trade-off: AQE ist automatisch, hilft aber nur bei Shuffle-Joins. Salting wirkt breiter, kostet aber Code und eine grössere kleine Seite.</li>
+  <li>Produktion: Ich prüfe zuerst die Stage-Metriken und die heissen Schlüssel. Danach nehme ich die einfachste Lösung, also filtern, broadcasten oder AQE. Salting kommt zuletzt.</li>
+</ol></div>
 
-<h2>2. Die Reise eines heissen Schlüssels (die Geschichte zum Merken)</h2>
+<h2>1. Die Reise eines heissen Schlüssels</h2>
 <svg viewBox="0 0 720 300" font-family="-apple-system, system-ui, sans-serif" font-size="14">
   <defs><marker id="b" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
   <rect x="10" y="30" width="150" height="70" rx="10" fill="#fff4f2" stroke="#c62828"/><text x="85" y="56" text-anchor="middle" font-weight="700">key = "X"</text><text x="85" y="76" text-anchor="middle" font-size="12">200 Mio. Zeilen</text>
@@ -76,7 +71,97 @@
   <li><b>Join auf (key, salt):</b> Die 200 Mio. Zeilen verteilen sich auf 16 Tasks. Danach wird die Spalte <code>salt</code> gelöscht.</li>
 </ol>
 
-<h2>3. Beispiel: Skew finden und Salting bauen</h2>
+<h2>2. Aufbau</h2>
+<svg viewBox="0 0 720 290" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="a" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="10" y="20" width="160" height="70" rx="8" fill="#fff" stroke="#555"/><text x="90" y="46" text-anchor="middle" font-weight="700">Map-Stage</text><text x="90" y="66" text-anchor="middle" font-size="12">gleich grosse Tasks</text>
+  <line x1="170" y1="55" x2="218" y2="55" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="220" y="20" width="190" height="70" rx="8" fill="#0a66c2" stroke="#0a66c2"/><text x="315" y="46" text-anchor="middle" fill="#fff" font-weight="700">Shuffle</text><text x="315" y="66" text-anchor="middle" fill="#fff" font-size="12">hash(key) % Partitionen</text>
+  <line x1="410" y1="55" x2="458" y2="55" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="460" y="10" width="250" height="200" rx="10" fill="#f7f7fa" stroke="#999"/><text x="585" y="32" text-anchor="middle" font-weight="700">Reduce-Stage</text>
+  <rect x="480" y="160" width="30" height="30" fill="#2e7d32"/><rect x="520" y="150" width="30" height="40" fill="#2e7d32"/><rect x="560" y="50" width="30" height="140" fill="#c62828"/><rect x="600" y="165" width="30" height="25" fill="#2e7d32"/><rect x="640" y="155" width="30" height="35" fill="#2e7d32"/>
+  <text x="575" y="44" text-anchor="middle" font-size="12" fill="#c62828">heisser Schlüssel</text>
+  <rect x="10" y="130" width="400" height="80" rx="8" fill="#fff4f2" stroke="#c62828"/><text x="210" y="154" text-anchor="middle" font-weight="700">Folgen</text><text x="210" y="176" text-anchor="middle" font-size="12">ein Task läuft Stunden · Spill auf Disk · Executor-OOM</text><text x="210" y="196" text-anchor="middle" font-size="12">alle anderen Cores warten leer</text>
+  <rect x="10" y="230" width="700" height="50" rx="8" fill="#e8f5e9" stroke="#2e7d32"/><text x="360" y="252" text-anchor="middle" font-weight="700">Gegenmittel</text><text x="360" y="270" text-anchor="middle" font-size="12">AQE Skew Join · Broadcast · Salting · heisse Schlüssel getrennt · Null-Schlüssel filtern</text>
+</svg>
+<ol>
+  <li><b>Map-Stage:</b> Die Eingabe ist gleichmässig verteilt. Hier gibt es selten Skew.</li>
+  <li><b>Shuffle:</b> Spark schickt jede Zeile nach <code>hash(key) % Anzahl Partitionen</code>. Alle Zeilen eines Schlüssels landen in <b>einer</b> Partition.</li>
+  <li><b>Reduce-Stage:</b> Hat ein Schlüssel 40 % der Zeilen, bekommt ein Task 40 % der Arbeit. Das ist ein <b>Straggler</b>, ein Nachzügler-Task.</li>
+  <li><b>Betroffene Operationen:</b> <code>join</code>, <code>groupBy</code>, <code>Window</code> mit <code>partitionBy</code>, <code>repartition(col)</code>, <code>partitionBy</code> beim Schreiben.</li>
+  <li><b>Gegenmittel</b> setzen vor oder im Shuffle an: Shuffle vermeiden, Schlüssel teilen, oder heisse Schlüssel separat behandeln.</li>
+</ol>
+
+<h2>3. Details, die Interviewer fragen</h2>
+<ol>
+  <li><b>AQE Skew Join:</b> Eine Partition gilt als skewed, wenn sie grösser ist als <code>skewedPartitionFactor</code> (5) × Median <b>und</b> grösser als <code>skewedPartitionThresholdInBytes</code> (256 MB). Beides muss stimmen.</li>
+  <li><b>Wie AQE teilt:</b> Die grosse Partition wird in Stücke von etwa <code>advisoryPartitionSizeInBytes</code> (64 MB) geteilt. Die Partition der anderen Seite wird für jedes Stück kopiert.</li>
+  <li><b>Grenzen von AQE:</b> Laut Doku gilt es für Sort-Merge Joins. Es braucht einen Shuffle. Es hilft nicht bei <code>groupBy</code>- oder <code>Window</code>-Skew.</li>
+  <li><b>Join-Typ:</b> AQE kann nur die Seite teilen, deren Zeilen nicht erhalten bleiben müssen. Bei <code>LEFT OUTER</code> geht nur links. Bei <code>FULL OUTER</code> geht es gar nicht.</li>
+  <li><b>forceOptimizeSkewedJoin</b> (false, seit 3.3): Es erzwingt die Skew-Optimierung, auch wenn sie einen Extra-Shuffle braucht.</li>
+  <li><b>Rebalance:</b> <code>optimizeSkewsInRebalancePartitions</code> (true) teilt grosse Partitionen nach einem <code>REBALANCE</code>-Hint. Das hilft z. B. vor dem Schreiben.</li>
+  <li><b>Salt-Grösse:</b> N ist grob die Grösse des heissen Schlüssels geteilt durch die Ziel-Partitionsgrösse. Zu klein hilft nicht. Zu gross vervielfacht die kleine Seite unnötig.</li>
+  <li><b>Salt nur für heisse Schlüssel:</b> Man nutzt <code>F.when(key.isin(hot), rand*N).otherwise(0)</code>. Dann wächst die kleine Seite nur für diese Schlüssel.</li>
+  <li><b>Null-Skew:</b> Viele <code>null</code>-Schlüssel landen in einer Partition. Sie finden aber nie einen Partner. Die Lösung ist vorher filtern oder durch einen Zufallswert ersetzen.</li>
+  <li><b>Window-Skew:</b> <code>Window.partitionBy("key")</code> braucht alle Zeilen eines Schlüssels in einem Task. AQE hilft hier nicht. Salting geht nur, wenn die Funktion zerlegbar ist.</li>
+  <li><b>Skew im Input:</b> Eine riesige nicht splittbare Datei ist auch Skew. Die Lösung ist, die Dateien vorher neu zu schreiben.</li>
+</ol>
+
+<h2>4. Fallen</h2>
+<div class="trap">
+<ul>
+  <li>„Mehr Shuffle-Partitionen lösen Skew.“ → <b>Falsch.</b> Ein einzelner heisser Schlüssel bleibt immer in einer Partition.</li>
+  <li>„AQE löst jeden Skew.“ → <b>Falsch.</b> Es gilt laut Doku für Sort-Merge Joins und nicht für groupBy oder Window.</li>
+  <li>„Beim Salting salzt man beide Seiten zufällig.“ → <b>Falsch.</b> Die grosse Seite bekommt einen Zufallswert, die kleine wird für jeden Wert kopiert.</li>
+  <li>„Salting funktioniert für jede Aggregation.“ → <b>Falsch.</b> Nur für zerlegbare wie sum, count, max. <code>median</code> oder <code>count distinct</code> brauchen mehr Arbeit.</li>
+  <li>„Ein Task mit OOM braucht mehr Executor-Speicher.“ → <b>Meist falsch.</b> Die Ursache ist oft eine zu grosse Partition durch Skew.</li>
+</ul>
+</div>
+
+<h2>5. Selbsttest</h2>
+<h3>Warum?</h3>
+<details><summary>Warum macht Skew einen Job langsam?</summary><p>Die Stage ist erst fertig, wenn der letzte Task fertig ist. Alle anderen Cores warten auf den Nachzügler.</p></details>
+<details><summary>Ist mehr Executor-Speicher eine Lösung?</summary><p>Nur kurzfristig. Der Task bleibt langsam, und beim nächsten Wachstum kommt das OOM zurück.</p></details>
+<details><summary>Warum lösen mehr Shuffle-Partitionen Skew nicht?</summary><p>Ein einzelner heisser Schlüssel bleibt immer in einer Partition. Mehr Partitionen helfen nur bei vielen mittleren Schlüsseln.</p></details>
+<h3>Wie innen?</h3>
+<details><summary>Was ist Data Skew?</summary><p>Eine ungleiche Verteilung der Daten auf Partitionen. Wenige Schlüssel haben sehr viele Zeilen, und ein Task bekommt fast alle Arbeit.</p></details>
+<details><summary>Wo entsteht Skew?</summary><p>Bei jedem Shuffle nach Schlüssel: join, groupBy, Window, repartition(col), partitionBy beim Schreiben.</p></details>
+<details><summary>Wie funktioniert der AQE Skew Join?</summary><p>AQE erkennt nach dem Shuffle zu grosse Partitionen. Es teilt sie in kleinere Stücke und kopiert die passende Partition der anderen Seite.</p></details>
+<details><summary>Was ist Salting?</summary><p>Man hängt an den heissen Schlüssel eine Zufallszahl an. So verteilt sich ein Schlüssel auf mehrere Partitionen.</p></details>
+<details><summary>Wie funktioniert Salting bei einem Join?</summary><p>Die grosse Seite bekommt einen Salt 0..N−1 per rand(). Die kleine Seite wird mit explode N-mal kopiert. Dann joint man auf (key, salt).</p></details>
+<details><summary>Wie funktioniert Salting bei einer Aggregation?</summary><p>Zwei Stufen: zuerst nach (key, salt) aggregieren, dann nach key. Das geht nur bei zerlegbaren Funktionen.</p></details>
+<h3>Zahlen</h3>
+<details><summary>Wann gilt eine Partition für AQE als skewed?</summary><p>Wenn sie grösser als 5 × Median und grösser als 256 MB ist. Beide Bedingungen müssen erfüllt sein.</p></details>
+<details><summary>Was macht forceOptimizeSkewedJoin?</summary><p>Es erzwingt die AQE-Skew-Optimierung, auch wenn dafür ein zusätzlicher Shuffle nötig ist. Standard false.</p></details>
+<details><summary>Wie gross sind die Stücke, in die AQE teilt?</summary><p>Etwa advisoryPartitionSizeInBytes, standardmässig 64 MB. Die Partition der anderen Seite wird für jedes Stück kopiert.</p></details>
+<h3>Vergleich</h3>
+<details><summary>Wo hilft AQE bei Skew nicht?</summary><p>Bei groupBy und Window, ohne Shuffle, bei FULL OUTER JOIN und auf der erhaltenen Seite eines Outer Joins.</p></details>
+<details><summary>Wann ist ein Broadcast die beste Skew-Lösung?</summary><p>Wenn die andere Seite klein ist. Dann gibt es keinen Shuffle und damit keinen Skew.</p></details>
+<details><summary>AQE Skew Join vs Salting?</summary><p>AQE ist automatisch, ohne Code-Änderung, nur für Sort-Merge Joins mit Shuffle. Salting geht auch bei zerlegbaren Aggregationen, kostet aber Code und eine grössere kleine Seite.</p></details>
+<details><summary>Salting vs heisse Schlüssel isolieren?</summary><p>Isolieren ist sehr effektiv, wenn wenige Schlüssel bekannt sind, braucht aber zwei Pfade im Code. Salting wirkt auch ohne bekannte Schlüssel.</p></details>
+<h3>Produktion</h3>
+<details><summary>Wie erkennen Sie Skew in der Spark UI?</summary><p>In den Summary Metrics der Stage: Max bei Duration und Shuffle Read ist viel grösser als der Median. In der Event Timeline ein sehr langer Balken.</p></details>
+<details><summary>Wie finden Sie die heissen Schlüssel?</summary><p><code>groupBy(key).count().orderBy(desc("count"))</code> auf einer Stichprobe oder den echten Daten.</p></details>
+<details><summary>Wie prüfen Sie, dass Salting korrekt ist?</summary><p>Zeilenzahl und Summen vor und nach dem Umbau vergleichen. Ein fehlender Salt-Wert auf der kleinen Seite verliert Zeilen.</p></details>
+<details><summary>Szenario: Ein Job steht 40 Minuten bei 199/200 Tasks. Wie gehen Sie vor?</summary><p>Stage-Metriken öffnen: Max vs Median bei Shuffle Read. Heisse Schlüssel zählen. Dann: filtern, Broadcast, AQE-Schwellen prüfen, zuletzt Salting.</p></details>
+<details><summary>Szenario: Ein Executor stirbt immer mit OOM, alle anderen sind ruhig. Was vermuten Sie?</summary><p>Eine skewed Partition, die nicht in den Speicher passt. Spill und Shuffle Read dieses Tasks prüfen, dann den Skew beheben statt Speicher zu erhöhen.</p></details>
+<h3>Design</h3>
+<details><summary>Wie wählen Sie N für den Salt?</summary><p>Grösse des heissen Schlüssels geteilt durch die Ziel-Partitionsgrösse. Zu gross vervielfacht die kleine Seite unnötig.</p></details>
+<details><summary>Was heisst heisse Schlüssel isolieren?</summary><p>Man trennt die wenigen heissen Schlüssel ab und joint sie per Broadcast. Der Rest geht den normalen Weg, danach unionByName.</p></details>
+<details><summary>Was tun Sie bei Skew durch null-Schlüssel?</summary><p>null-Schlüssel finden im Inner Join nie einen Partner. Vorher filtern oder bei Outer Joins durch einen Zufallswert ersetzen.</p></details>
+<details><summary>Szenario: Ein Datensatz hat 30 % Zeilen mit participant_id = "UNKNOWN". Der Join ist langsam. Was tun Sie?</summary><p>Diese Zeilen vorher abtrennen, weil sie keinen echten Partner haben. Mit dem Fachbereich klären, warum der Upstream sie liefert.</p></details>
+
+<details class="mehr"><summary>Mehr</summary>
+<h3>Gerüst</h3>
+<ul>
+  <li><b>Warum?</b> Der Job ist so langsam wie sein grösster Task. Ein heisser Schlüssel bleibt in einer Partition.</li>
+  <li><b>Wie innen?</b> AQE teilt die grosse Partition in Stücke und kopiert die Partner-Partition. Salting hängt einen Zufallswert an den Schlüssel der grossen Seite. Die kleine Seite wird pro Wert kopiert.</li>
+  <li><b>Zahlen</b> Skewed = grösser als 5 × Median und grösser als 256 MB. AQE teilt in Stücke von etwa 64 MB.</li>
+  <li><b>Vergleich</b> AQE = automatisch, nur Shuffle-Joins. Broadcast = kein Shuffle. Salting = Code-Aufwand. Isolieren = zwei Pfade. Mehr Shuffle-Partitionen helfen nicht.</li>
+  <li><b>Produktion</b> Job hängt bei 199/200 Tasks, Executor-OOM nur bei einem Task, Platzhalter wie <code>UNKNOWN</code> oder null als Schlüssel.</li>
+  <li><b>Design</b> Zuerst messen, dann salzen. Einfachste Lösung zuerst. Skew ist oft ein Datenproblem. Mehr Speicher ist kein Fix.</li>
+</ul>
+<h3>Beispiel: Skew finden und Salting bauen</h3>
 <pre>from pyspark.sql import functions as F
 
 trades = spark.table("lake.silver.trades")
@@ -124,23 +209,7 @@ Shuffle Read Size  48 MB   55 MB   60 MB    66 MB   31 GB</pre>
   <li><b>Aggregations-Salting:</b> zuerst Teilsummen pro (key, salt), dann Summe pro key. Funktioniert nur für zerlegbare Funktionen wie <code>sum</code>, <code>count</code>, <code>max</code>.</li>
   <li><b>Isolieren:</b> Der heisse Schlüssel geht über einen Broadcast-Join ohne Shuffle. Der Rest nimmt den normalen Weg.</li>
 </ol>
-
-<h2>4. Details, die Interviewer fragen</h2>
-<ol>
-  <li><b>AQE Skew Join:</b> Eine Partition gilt als skewed, wenn sie grösser ist als <code>skewedPartitionFactor</code> (5) × Median <b>und</b> grösser als <code>skewedPartitionThresholdInBytes</code> (256 MB). Beides muss stimmen.</li>
-  <li><b>Wie AQE teilt:</b> Die grosse Partition wird in Stücke von etwa <code>advisoryPartitionSizeInBytes</code> (64 MB) geteilt. Die Partition der anderen Seite wird für jedes Stück kopiert.</li>
-  <li><b>Grenzen von AQE:</b> Laut Doku gilt es für Sort-Merge Joins. Es braucht einen Shuffle. Es hilft nicht bei <code>groupBy</code>- oder <code>Window</code>-Skew.</li>
-  <li><b>Join-Typ:</b> AQE kann nur die Seite teilen, deren Zeilen nicht erhalten bleiben müssen. Bei <code>LEFT OUTER</code> nur links, bei <code>FULL OUTER</code> gar nicht.</li>
-  <li><b>forceOptimizeSkewedJoin</b> (false, seit 3.3): erzwingt die Skew-Optimierung, auch wenn sie einen Extra-Shuffle braucht.</li>
-  <li><b>Rebalance:</b> <code>optimizeSkewsInRebalancePartitions</code> (true) teilt grosse Partitionen nach einem <code>REBALANCE</code>-Hint, z. B. vor dem Schreiben.</li>
-  <li><b>Salt-Grösse:</b> N = grob Grösse des heissen Schlüssels / Ziel-Partitionsgrösse. Zu klein hilft nicht, zu gross vervielfacht die kleine Seite unnötig.</li>
-  <li><b>Salt nur für heisse Schlüssel:</b> <code>F.when(key.isin(hot), rand*N).otherwise(0)</code>. Dann wächst die kleine Seite nur für diese Schlüssel.</li>
-  <li><b>Null-Skew:</b> Viele <code>null</code>-Schlüssel landen in einer Partition, finden aber nie einen Partner. Lösung: vorher filtern oder durch Zufallswert ersetzen.</li>
-  <li><b>Window-Skew:</b> <code>Window.partitionBy("key")</code> braucht alle Zeilen eines Schlüssels in einem Task. AQE hilft hier nicht. Salting geht nur, wenn die Funktion zerlegbar ist.</li>
-  <li><b>Skew im Input:</b> Eine riesige nicht splittbare Datei ist auch Skew. Lösung: Dateien vorher neu schreiben.</li>
-</ol>
-
-<h2>5. Vergleich</h2>
+<h3>Vergleich</h3>
 <ul>
   <li><b>AQE Skew Join:</b> automatisch, keine Code-Änderung, nur für Sort-Merge Joins mit Shuffle.</li>
   <li><b>Broadcast Join:</b> beseitigt den Shuffle ganz. Nur wenn eine Seite klein ist.</li>
@@ -149,8 +218,7 @@ Shuffle Read Size  48 MB   55 MB   60 MB    66 MB   31 GB</pre>
   <li><b>Mehr Shuffle-Partitionen:</b> hilft nur bei vielen mittleren Schlüsseln. Ein einzelner Schlüssel bleibt in einer Partition.</li>
   <li><b>Vorher filtern/aggregieren:</b> weniger Zeilen vor dem Shuffle. Oft die einfachste Lösung.</li>
 </ul>
-
-<h2>6. In der Produktion</h2>
+<h3>In der Produktion</h3>
 <ol>
   <li><b>Job hängt bei 199/200 Tasks:</b> klassischer Skew. Lösung: Stage-Metriken prüfen, AQE-Skew-Einstellungen prüfen, sonst Salting.</li>
   <li><b>Executor-OOM nur bei einem Task:</b> eine Partition passt nicht in den Speicher. Lösung: Skew beheben, nicht einfach mehr Speicher.</li>
@@ -159,8 +227,7 @@ Shuffle Read Size  48 MB   55 MB   60 MB    66 MB   31 GB</pre>
   <li><b>AQE greift nicht:</b> Die Partition liegt unter 256 MB oder der Join-Typ passt nicht. Lösung: Schwellen senken oder Salting.</li>
   <li><b>Salting bricht Ergebnisse:</b> Die kleine Seite wurde nicht für alle Salt-Werte kopiert. Zeilen fehlen. Lösung: Zeilenzahl vor und nach dem Join vergleichen.</li>
 </ol>
-
-<h2>7. Diagnose: Werkzeuge und Befehle</h2>
+<h3>Diagnose: Werkzeuge und Befehle</h3>
 <ul>
   <li><b>Spark UI, Stages-Tab → Stage-Details:</b> <b>Summary Metrics</b> mit Min/25th/Median/75th/Max für Duration, Shuffle Read Size, Spill. Max ≫ Median heisst Skew.</li>
   <li><b>Event Timeline</b> in der Stage: ein langer Balken, alle anderen kurz.</li>
@@ -169,8 +236,7 @@ Shuffle Read Size  48 MB   55 MB   60 MB    66 MB   31 GB</pre>
   <li><code>df.groupBy(F.spark_partition_id()).count()</code>: Zeilen pro Partition nach einem <code>repartition(col)</code>.</li>
   <li><b>Executors-Tab:</b> Ein Executor mit viel mehr Task-Zeit, GC-Zeit oder Shuffle Read.</li>
 </ul>
-
-<h2>8. Senior-Punkte</h2>
+<h3>Senior-Punkte</h3>
 <div class="senior">
 <ol>
   <li><b>Zuerst messen,</b> dann salzen. Viele lange Stages sind kein Skew, sondern zu wenige Partitionen.</li>
@@ -181,43 +247,8 @@ Shuffle Read Size  48 MB   55 MB   60 MB    66 MB   31 GB</pre>
   <li><b>Partitionierung auf Disk</b> nach einer schiefen Spalte erzeugt ungleiche Dateien. Spalten mit ausgeglichener Verteilung wählen.</li>
 </ol>
 </div>
-
-<h2>9. Aus dem Projekt</h2>
-<p>„Konkrete Skew-Probleme sind im Profil nicht dokumentiert; die nächste echte Erfahrung ist die MATCH-Partitionierung nach <code>days(received_date)</code> und <code>schema_type</code>, wo ein Tag oder Typ mit viel mehr Daten ungleiche Partitionen erzeugen würde – vor dem Interview in Grafana oder der Spark UI prüfen, ob Jobs Nachzügler-Tasks hatten.“ <span class="small">(Prüfen und durch dein echtes Beispiel ersetzen.)</span></p>
-
-<h2>10. Fallen</h2>
-<div class="trap">
-<ul>
-  <li>„Mehr Shuffle-Partitionen lösen Skew.“ → <b>Falsch.</b> Ein einzelner heisser Schlüssel bleibt immer in einer Partition.</li>
-  <li>„AQE löst jeden Skew.“ → <b>Falsch.</b> Es gilt laut Doku für Sort-Merge Joins und nicht für groupBy oder Window.</li>
-  <li>„Beim Salting salzt man beide Seiten zufällig.“ → <b>Falsch.</b> Die grosse Seite bekommt einen Zufallswert, die kleine wird für jeden Wert kopiert.</li>
-  <li>„Salting funktioniert für jede Aggregation.“ → <b>Falsch.</b> Nur für zerlegbare wie sum, count, max. <code>median</code> oder <code>count distinct</code> brauchen mehr Arbeit.</li>
-  <li>„Ein Task mit OOM braucht mehr Executor-Speicher.“ → <b>Meist falsch.</b> Die Ursache ist oft eine zu grosse Partition durch Skew.</li>
-</ul>
-</div>
-
-<h2>11. Fragen</h2>
-<details><summary>Was ist Data Skew?</summary><p>Eine ungleiche Verteilung der Daten auf Partitionen. Wenige Schlüssel haben sehr viele Zeilen, und ein Task bekommt fast alle Arbeit.</p></details>
-<details><summary>Warum macht Skew einen Job langsam?</summary><p>Die Stage ist erst fertig, wenn der letzte Task fertig ist. Alle anderen Cores warten auf den Nachzügler.</p></details>
-<details><summary>Wo entsteht Skew?</summary><p>Bei jedem Shuffle nach Schlüssel: join, groupBy, Window, repartition(col), partitionBy beim Schreiben.</p></details>
-<details><summary>Wie erkennen Sie Skew in der Spark UI?</summary><p>In den Summary Metrics der Stage: Max bei Duration und Shuffle Read ist viel grösser als der Median. In der Event Timeline ein sehr langer Balken.</p></details>
-<details><summary>Wie finden Sie die heissen Schlüssel?</summary><p><code>groupBy(key).count().orderBy(desc("count"))</code> auf einer Stichprobe oder den echten Daten.</p></details>
-<details><summary>Wie funktioniert der AQE Skew Join?</summary><p>AQE erkennt nach dem Shuffle zu grosse Partitionen. Es teilt sie in kleinere Stücke und kopiert die passende Partition der anderen Seite.</p></details>
-<details><summary>Wann gilt eine Partition für AQE als skewed?</summary><p>Wenn sie grösser als 5 × Median und grösser als 256 MB ist. Beide Bedingungen müssen erfüllt sein.</p></details>
-<details><summary>Wo hilft AQE bei Skew nicht?</summary><p>Bei groupBy und Window, ohne Shuffle, bei FULL OUTER JOIN und auf der erhaltenen Seite eines Outer Joins.</p></details>
-<details><summary>Was ist Salting?</summary><p>Man hängt an den heissen Schlüssel eine Zufallszahl an. So verteilt sich ein Schlüssel auf mehrere Partitionen.</p></details>
-<details><summary>Wie funktioniert Salting bei einem Join?</summary><p>Die grosse Seite bekommt einen Salt 0..N−1 per rand(). Die kleine Seite wird mit explode N-mal kopiert. Dann joint man auf (key, salt).</p></details>
-<details><summary>Wie funktioniert Salting bei einer Aggregation?</summary><p>Zwei Stufen: zuerst nach (key, salt) aggregieren, dann nach key. Das geht nur bei zerlegbaren Funktionen.</p></details>
-<details><summary>Wie wählen Sie N für den Salt?</summary><p>Grösse des heissen Schlüssels geteilt durch die Ziel-Partitionsgrösse. Zu gross vervielfacht die kleine Seite unnötig.</p></details>
-<details><summary>Was heisst heisse Schlüssel isolieren?</summary><p>Man trennt die wenigen heissen Schlüssel ab und joint sie per Broadcast. Der Rest geht den normalen Weg, danach unionByName.</p></details>
-<details><summary>Was tun Sie bei Skew durch null-Schlüssel?</summary><p>null-Schlüssel finden im Inner Join nie einen Partner. Vorher filtern oder bei Outer Joins durch einen Zufallswert ersetzen.</p></details>
-<details><summary>Wann ist ein Broadcast die beste Skew-Lösung?</summary><p>Wenn die andere Seite klein ist. Dann gibt es keinen Shuffle und damit keinen Skew.</p></details>
-<details><summary>Ist mehr Executor-Speicher eine Lösung?</summary><p>Nur kurzfristig. Der Task bleibt langsam, und beim nächsten Wachstum kommt das OOM zurück.</p></details>
-<details><summary>Was macht forceOptimizeSkewedJoin?</summary><p>Es erzwingt die AQE-Skew-Optimierung, auch wenn dafür ein zusätzlicher Shuffle nötig ist. Standard false.</p></details>
-<details><summary>Wie prüfen Sie, dass Salting korrekt ist?</summary><p>Zeilenzahl und Summen vor und nach dem Umbau vergleichen. Ein fehlender Salt-Wert auf der kleinen Seite verliert Zeilen.</p></details>
-<details><summary>Szenario: Ein Job steht 40 Minuten bei 199/200 Tasks. Wie gehen Sie vor?</summary><p>Stage-Metriken öffnen: Max vs Median bei Shuffle Read. Heisse Schlüssel zählen. Dann: filtern, Broadcast, AQE-Schwellen prüfen, zuletzt Salting.</p></details>
-<details><summary>Szenario: Ein Executor stirbt immer mit OOM, alle anderen sind ruhig. Was vermuten Sie?</summary><p>Eine skewed Partition, die nicht in den Speicher passt. Spill und Shuffle Read dieses Tasks prüfen, dann den Skew beheben statt Speicher zu erhöhen.</p></details>
-<details><summary>Szenario: Ein Datensatz hat 30 % Zeilen mit participant_id = "UNKNOWN". Der Join ist langsam. Was tun Sie?</summary><p>Diese Zeilen vorher abtrennen, weil sie keinen echten Partner haben. Mit dem Fachbereich klären, warum der Upstream sie liefert.</p></details>
+<h3>Dein Beispiel</h3>
+</details>
 
 </body>
 </html>

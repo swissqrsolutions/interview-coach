@@ -19,6 +19,15 @@
   summary { font-weight: 600; cursor: pointer; }
   details p { margin: 6px 0 2px; }
   .small { color: #6e6e73; font-size: 14px; }
+  h3 { font-size: 17px; margin: 20px 0 6px; }
+  .geruest { border: 2px solid #1d1d1f; border-radius: 6px; padding: 10px 14px; margin: 14px 0; font-size: 15px; line-height: 1.4; }
+  .geruest h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; margin: 0 0 8px; padding: 0; border: 0; }
+  .geruest dl { display: grid; grid-template-columns: 6.6em 1fr; gap: 6px 10px; margin: 0; }
+  .geruest dt { font-weight: 700; font-size: 12px; text-transform: uppercase; letter-spacing: .05em; padding-top: 1px; }
+  .geruest dd { margin: 0; }
+  .muster { border: 1px solid #e5e5ea; border-left: 4px solid #1d1d1f; border-radius: 6px; padding: 10px 14px; margin: 14px 0; }
+  .muster h3 { margin: 0 0 6px; font-size: 13px; text-transform: uppercase; letter-spacing: .06em; }
+  .muster .mq { margin: 0 0 6px; }
 </style>
 </head>
 <body>
@@ -27,10 +36,45 @@
 <!-- sources: Spark · Tier 2 · Quellen: Apache Spark 4.3 Docs (SQL Performance Tuning, EXPLAIN-Referenz, Adaptive Query Execution), Spark-Quellcode SQLConf (v4.3.0: spark.sql.codegen.*, spark.sql.cbo.enabled), Armbrust et al., „Spark SQL: Relational Data Processing in Spark“ (SIGMOD 2015) -->
 
 <div class="kern">
-<b>Kern:</b> <b>Catalyst</b> ist der Query-Optimizer von Spark SQL. Er macht aus DataFrame-Code oder SQL einen Baum, optimiert ihn mit Regeln und wählt einen physischen Plan. <b>Tungsten</b> ist die Ausführungsschicht darunter: kompaktes binäres Zeilenformat, eigene Speicherverwaltung und <b>Whole-Stage Code Generation</b>, die einen ganzen Plan-Abschnitt in eine Java-Methode kompiliert.
+<b>Kern:</b> <b>Catalyst</b> ist der Query-Optimizer von Spark SQL. Er macht aus DataFrame-Code oder SQL einen Baum, optimiert ihn mit Regeln und wählt einen physischen Plan. <b>Tungsten</b> ist die Ausführungsschicht darunter mit kompaktem binärem Zeilenformat, eigener Speicherverwaltung und <b>Whole-Stage Code Generation</b>, die einen ganzen Plan-Abschnitt in eine Java-Methode kompiliert.
 </div>
 
-<h2>1. Wo sitzen Catalyst und Tungsten?</h2>
+<div class="muster"><h3>Antwort-Muster</h3><p class="mq"><b>Frage:</b> Was machen Catalyst und Tungsten?</p><ol>
+  <li>Mechanismus: Catalyst baut aus dem Code einen Baum, optimiert ihn mit Regeln in vier Phasen und wählt den physischen Plan. Tungsten führt ihn mit UnsafeRow und Codegen aus.</li>
+  <li>Zahl: Der CBO ist standardmässig aus. Codegen schaltet sich bei mehr als 100 Feldern oder 65 535 Bytes Methodengrösse ab.</li>
+  <li>Trade-off: Eingebaute Funktionen sind optimierbar, UDFs und Lambdas sind Black Boxes. Dafür sind sie flexibler.</li>
+  <li>Produktion: Ich lese zuerst den Plan, nicht den Code. Ich prüfe, ob Filter an Parquet oder Iceberg gepusht werden und ob Codegen aktiv ist.</li>
+</ol></div>
+
+<h2>1. Die Reise einer Abfrage durch Catalyst</h2>
+<svg viewBox="0 0 720 290" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="ctb" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="10" y="20" width="140" height="60" rx="10" fill="#eee" stroke="#777"/><text x="80" y="44" text-anchor="middle" font-weight="700">1. Parsen</text><text x="80" y="64" text-anchor="middle" font-size="12">Unresolved Plan</text>
+  <line x1="150" y1="50" x2="188" y2="50" stroke="#555" stroke-width="2" marker-end="url(#ctb)"/>
+  <rect x="190" y="20" width="150" height="60" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="265" y="44" text-anchor="middle" font-weight="700">2. Analyse</text><text x="265" y="64" text-anchor="middle" font-size="12">Namen + Typen</text>
+  <line x1="340" y1="50" x2="378" y2="50" stroke="#555" stroke-width="2" marker-end="url(#ctb)"/>
+  <rect x="380" y="20" width="160" height="60" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="460" y="44" text-anchor="middle" font-weight="700">3. Optimieren</text><text x="460" y="64" text-anchor="middle" font-size="12">Pushdown, Pruning</text>
+  <line x1="540" y1="50" x2="578" y2="50" stroke="#555" stroke-width="2" marker-end="url(#ctb)"/>
+  <rect x="580" y="20" width="130" height="60" rx="10" fill="#fff" stroke="#555"/><text x="645" y="44" text-anchor="middle" font-weight="700">4. Physisch</text><text x="645" y="64" text-anchor="middle" font-size="12">Join-Strategie</text>
+  <line x1="645" y1="80" x2="645" y2="128" stroke="#555" stroke-width="2" marker-end="url(#ctb)"/>
+  <rect x="530" y="130" width="180" height="60" rx="10" fill="#0a66c2"/><text x="620" y="154" text-anchor="middle" fill="#fff" font-weight="700">5. Codegen</text><text x="620" y="174" text-anchor="middle" fill="#fff" font-size="12">*(1), *(2) …</text>
+  <line x1="530" y1="160" x2="402" y2="160" stroke="#555" stroke-width="2" marker-end="url(#ctb)"/>
+  <rect x="230" y="130" width="170" height="60" rx="10" fill="#fff3cd" stroke="#c9a227"/><text x="315" y="154" text-anchor="middle" font-weight="700">6. Ausführen</text><text x="315" y="174" text-anchor="middle" font-size="12">UnsafeRow, Tasks</text>
+  <line x1="230" y1="160" x2="162" y2="160" stroke="#555" stroke-width="2" marker-end="url(#ctb)"/>
+  <rect x="10" y="130" width="150" height="60" rx="10" fill="#e8f5e9" stroke="#2e7d32"/><text x="85" y="154" text-anchor="middle" font-weight="700">7. AQE</text><text x="85" y="174" text-anchor="middle" font-size="12">Rest neu planen</text>
+  <text x="360" y="240" text-anchor="middle" font-size="12">Python und Scala erzeugen denselben Plan. Die Sprache ändert die Geschwindigkeit nicht (ohne UDFs).</text>
+</svg>
+<ol>
+  <li><b>Parsen:</b> SQL wird zu einem Baum. DataFrame-Aufrufe bauen den Baum direkt. Noch ist unbekannt, ob <code>volume</code> existiert.</li>
+  <li><b>Analyse:</b> Der Analyzer prüft Tabelle und Spalten gegen den Katalog und setzt Typen ein.</li>
+  <li><b>Optimieren:</b> Regeln schieben <code>WHERE trade_date = …</code> unter den Join bis in den Scan. Unbenutzte Spalten fallen weg. <code>10*10</code> wird zu <code>100</code>.</li>
+  <li><b>Physischer Plan:</b> Der Planner wählt z. B. einen Broadcast Join, weil eine Seite kleiner als 10 MB geschätzt ist.</li>
+  <li><b>Codegen:</b> Scan, Filter und Projektion werden zu einer Java-Methode verschmolzen. Im Plan steht dann <code>*(1)</code>.</li>
+  <li><b>Ausführen:</b> Tasks laufen auf den Executors mit binären Zeilen.</li>
+  <li><b>AQE:</b> Nach dem Shuffle passt Spark Partitionen, Join-Strategie und Skew mit echten Zahlen an.</li>
+</ol>
+
+<h2>2. Aufbau</h2>
 <svg viewBox="0 0 720 300" font-family="-apple-system, system-ui, sans-serif" font-size="14">
   <defs><marker id="cta" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
   <rect x="10" y="20" width="130" height="56" rx="8" fill="#fff" stroke="#555"/><text x="75" y="44" text-anchor="middle" font-weight="700">SQL / DataFrame</text><text x="75" y="62" text-anchor="middle" font-size="12">Python, Scala</text>
@@ -60,35 +104,77 @@
   <li><b>AQE</b> (Adaptive Query Execution): Nach jeder Shuffle-Stage kennt Spark echte Grössen und plant den Rest neu.</li>
 </ol>
 
-<h2>2. Die Reise einer Abfrage durch Catalyst</h2>
-<svg viewBox="0 0 720 290" font-family="-apple-system, system-ui, sans-serif" font-size="14">
-  <defs><marker id="ctb" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
-  <rect x="10" y="20" width="140" height="60" rx="10" fill="#eee" stroke="#777"/><text x="80" y="44" text-anchor="middle" font-weight="700">1. Parsen</text><text x="80" y="64" text-anchor="middle" font-size="12">Unresolved Plan</text>
-  <line x1="150" y1="50" x2="188" y2="50" stroke="#555" stroke-width="2" marker-end="url(#ctb)"/>
-  <rect x="190" y="20" width="150" height="60" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="265" y="44" text-anchor="middle" font-weight="700">2. Analyse</text><text x="265" y="64" text-anchor="middle" font-size="12">Namen + Typen</text>
-  <line x1="340" y1="50" x2="378" y2="50" stroke="#555" stroke-width="2" marker-end="url(#ctb)"/>
-  <rect x="380" y="20" width="160" height="60" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="460" y="44" text-anchor="middle" font-weight="700">3. Optimieren</text><text x="460" y="64" text-anchor="middle" font-size="12">Pushdown, Pruning</text>
-  <line x1="540" y1="50" x2="578" y2="50" stroke="#555" stroke-width="2" marker-end="url(#ctb)"/>
-  <rect x="580" y="20" width="130" height="60" rx="10" fill="#fff" stroke="#555"/><text x="645" y="44" text-anchor="middle" font-weight="700">4. Physisch</text><text x="645" y="64" text-anchor="middle" font-size="12">Join-Strategie</text>
-  <line x1="645" y1="80" x2="645" y2="128" stroke="#555" stroke-width="2" marker-end="url(#ctb)"/>
-  <rect x="530" y="130" width="180" height="60" rx="10" fill="#0a66c2"/><text x="620" y="154" text-anchor="middle" fill="#fff" font-weight="700">5. Codegen</text><text x="620" y="174" text-anchor="middle" fill="#fff" font-size="12">*(1), *(2) …</text>
-  <line x1="530" y1="160" x2="402" y2="160" stroke="#555" stroke-width="2" marker-end="url(#ctb)"/>
-  <rect x="230" y="130" width="170" height="60" rx="10" fill="#fff3cd" stroke="#c9a227"/><text x="315" y="154" text-anchor="middle" font-weight="700">6. Ausführen</text><text x="315" y="174" text-anchor="middle" font-size="12">UnsafeRow, Tasks</text>
-  <line x1="230" y1="160" x2="162" y2="160" stroke="#555" stroke-width="2" marker-end="url(#ctb)"/>
-  <rect x="10" y="130" width="150" height="60" rx="10" fill="#e8f5e9" stroke="#2e7d32"/><text x="85" y="154" text-anchor="middle" font-weight="700">7. AQE</text><text x="85" y="174" text-anchor="middle" font-size="12">Rest neu planen</text>
-  <text x="360" y="240" text-anchor="middle" font-size="12">Python und Scala erzeugen denselben Plan. Die Sprache ändert die Geschwindigkeit nicht (ohne UDFs).</text>
-</svg>
+<h2>3. Details, die Interviewer fragen</h2>
 <ol>
-  <li><b>Parsen:</b> SQL wird zu einem Baum. DataFrame-Aufrufe bauen den Baum direkt. Noch ist unbekannt, ob <code>volume</code> existiert.</li>
-  <li><b>Analyse:</b> Der Analyzer prüft Tabelle und Spalten gegen den Katalog und setzt Typen ein.</li>
-  <li><b>Optimieren:</b> Regeln schieben <code>WHERE trade_date = …</code> unter den Join bis in den Scan. Unbenutzte Spalten fallen weg. <code>10*10</code> wird zu <code>100</code>.</li>
-  <li><b>Physischer Plan:</b> Der Planner wählt z. B. einen Broadcast Join, weil eine Seite kleiner als 10 MB geschätzt ist.</li>
-  <li><b>Codegen:</b> Scan, Filter und Projektion werden zu einer Java-Methode verschmolzen. Im Plan steht dann <code>*(1)</code>.</li>
-  <li><b>Ausführen:</b> Tasks laufen auf den Executors mit binären Zeilen.</li>
-  <li><b>AQE:</b> Nach dem Shuffle passt Spark Partitionen, Join-Strategie und Skew mit echten Zahlen an.</li>
+  <li><b>Vier Phasen:</b> Catalyst arbeitet in vier Phasen. Das sind Analyse, logische Optimierung, physische Planung und Codegenerierung.</li>
+  <li><b>Regelbasiert vs kostenbasiert:</b> Die meisten Optimierungen sind Regeln. Der <b>CBO</b> (Cost-Based Optimizer) nutzt Tabellen- und Spalten-Statistiken für die Join-Reihenfolge. Er ist standardmässig <b>aus</b> (<code>spark.sql.cbo.enabled = false</code>). Er braucht <code>ANALYZE TABLE … COMPUTE STATISTICS</code>.</li>
+  <li><b>Wichtige Regeln:</b> Dazu gehören <code>PushDownPredicates</code>, <code>ColumnPruning</code>, <code>ConstantFolding</code>, <code>CombineFilters</code>, <code>BooleanSimplification</code> und <code>ReorderJoin</code>. <code>InferFiltersFromConstraints</code> leitet <code>IS NOT NULL</code> für Join-Schlüssel ab.</li>
+  <li><b>Pushdown an die Quelle:</b> Filter und Spalten gehen über die DataSource-V2-API an Parquet oder Iceberg. Im Plan sieht man <code>PushedFilters</code> bzw. <code>filters</code> und <code>ReadSchema</code>.</li>
+  <li><b>Whole-Stage Codegen:</b> Im Volcano-Modell reicht man jede Zeile durch viele Operatoren. Es gibt einen virtuellen Aufruf pro Operator. Spark erzeugt stattdessen eine einzige Schleife. Das gibt weniger Aufrufe, und Werte bleiben in CPU-Registern.</li>
+  <li><b>Grenzen von Codegen:</b> Zu viele Felder (<code>spark.sql.codegen.maxFields</code>, Standard 100) schalten Codegen für den Teilbaum ab. Zu grosse Methoden (<code>hugeMethodLimit</code>, Standard 65 535 Bytes) tun das auch. HotSpot kompiliert Methoden über 8000 Bytes Bytecode nicht mit dem JIT.</li>
+  <li><b>UnsafeRow:</b> Eine Zeile ist ein zusammenhängender Byte-Block. Er enthält eine Null-Bitmap, feste Felder und variable Felder mit Offsets. Es gibt kein Java-Objekt pro Wert und kaum GC.</li>
+  <li><b>Tungsten-Speicher:</b> Spark verwaltet Seiten selbst, on-heap oder off-heap (<code>spark.memory.offHeap.enabled</code>). Sortieren und Hash-Aggregation arbeiten direkt auf diesen Bytes.</li>
+  <li><b>Explain-Modi:</b> Es gibt <code>simple</code> und <code>extended</code> (alle vier Pläne). <code>codegen</code> zeigt den erzeugten Java-Code. <code>cost</code> zeigt Statistiken. <code>formatted</code> ist lesbar mit Details.</li>
+  <li><b>Spark Connect:</b> Der Client schickt nur den ungelösten Plan an den Server. Catalyst läuft dort. Darum gibt es Analysefehler manchmal erst bei der Action.</li>
 </ol>
 
-<h2>3. Beispiel: Optimizer-Regeln sichtbar machen</h2>
+<h2>4. Fallen</h2>
+<div class="trap">
+<ul>
+  <li>„PySpark ist langsamer als Scala-Spark.“ → <b>Falsch</b> für DataFrame-Code ohne UDFs. Beide erzeugen denselben Plan.</li>
+  <li>„Der CBO ist standardmässig an.“ → <b>Falsch.</b> <code>spark.sql.cbo.enabled</code> ist <code>false</code>.</li>
+  <li>„Tungsten ist ein eigenes Produkt.“ → <b>Falsch.</b> Es ist der Name der Ausführungs-Optimierungen in Spark.</li>
+  <li>„Ein Filter nach dem Join wird nach dem Join ausgeführt.“ → <b>Falsch.</b> Catalyst schiebt ihn nach unten, wenn er nur eine Seite betrifft.</li>
+  <li>„explain() zeigt den echten Plan.“ → <b>Nur den Anfangsplan.</b> Mit AQE ändert er sich zur Laufzeit; den echten zeigt die Spark UI.</li>
+</ul>
+</div>
+
+<h2>5. Selbsttest</h2>
+<h3>Warum?</h3>
+<details><summary>Warum sind DataFrames schneller als RDDs?</summary><p>Catalyst optimiert den Plan, und Tungsten rechnet auf binären Zeilen mit Codegen. RDD-Lambdas sind Black Boxes.</p></details>
+<details><summary>Warum Whole-Stage Code Generation?</summary><p>Statt eines virtuellen Aufrufs pro Operator und Zeile gibt es eine einzige Schleife. Das spart Aufrufe, und Werte bleiben in CPU-Registern.</p></details>
+<details><summary>Warum ist der Plan die Wahrheit und nicht der Code?</summary><p>Catalyst schreibt den Plan um, schiebt Filter nach unten und prunt Spalten. Jede Performance-Diskussion beginnt mit explain und dem SQL-Tab.</p></details>
+<h3>Wie innen?</h3>
+<details><summary>Was ist Catalyst?</summary><p>Der Optimizer von Spark SQL. Er analysiert, optimiert und plant Abfragen aus SQL und DataFrames.</p></details>
+<details><summary>Welche Phasen hat Catalyst?</summary><p>Analyse, logische Optimierung, physische Planung und Codegenerierung.</p></details>
+<details><summary>Was macht der Analyzer?</summary><p>Er löst Tabellen- und Spaltennamen gegen den Katalog auf und setzt Typen. Fehlende Spalten scheitern hier.</p></details>
+<details><summary>Nennen Sie drei Optimizer-Regeln.</summary><p>Predicate Pushdown, Column Pruning und Constant Folding. Dazu z. B. CombineFilters und InferFiltersFromConstraints.</p></details>
+<details><summary>Was ist Tungsten?</summary><p>Die Ausführungsschicht: binäre UnsafeRows, eigene Speicherverwaltung und Whole-Stage Codegen.</p></details>
+<details><summary>Was ist Whole-Stage Code Generation?</summary><p>Spark verschmilzt mehrere Operatoren zu einer Java-Methode mit einer Schleife. Weniger virtuelle Aufrufe, Werte bleiben in Registern.</p></details>
+<details><summary>Was ist eine UnsafeRow?</summary><p>Eine Zeile als Byte-Block mit Null-Bitmap, festen Feldern und Offsets für variable Felder. Kein Objekt pro Wert.</p></details>
+<details><summary>Wie hängen Catalyst und AQE zusammen?</summary><p>Catalyst plant vor dem Start mit Schätzungen. AQE plant nach jeder Shuffle-Stage mit echten Grössen neu.</p></details>
+<h3>Zahlen</h3>
+<details><summary>Wann schaltet Spark Codegen ab?</summary><p>Bei mehr als 100 Feldern (codegen.maxFields) oder wenn die Methode zu gross wird (hugeMethodLimit). Dann läuft der langsamere Pfad.</p></details>
+<details><summary>Welche explain-Modi gibt es?</summary><p>simple, extended, codegen, cost und formatted.</p></details>
+<details><summary>Ist der CBO standardmässig an?</summary><p>Nein. spark.sql.cbo.enabled ist false. Er braucht ANALYZE TABLE und lohnt sich nur bei gepflegten Statistiken und vielen Joins.</p></details>
+<details><summary>Wie viele Phasen hat Catalyst?</summary><p>Vier: Analyse, logische Optimierung, physische Planung und Codegenerierung.</p></details>
+<h3>Vergleich</h3>
+<details><summary>Was ist der CBO?</summary><p>Der kostenbasierte Optimizer für Join-Reihenfolge und Strategien. Er ist standardmässig aus und braucht Statistiken aus ANALYZE TABLE.</p></details>
+<details><summary>Ist Spark SQL schneller als die DataFrame-API?</summary><p>Nein. Beide werden zum selben logischen Plan.</p></details>
+<details><summary>RDD-API vs DataFrame?</summary><p>RDD-Lambdas sind Black Boxes: kein Catalyst, keine Pushdowns, Java-Objekte statt UnsafeRow. DataFrame und SQL nutzen denselben Optimizer.</p></details>
+<details><summary>Catalyst und Tungsten vs vektorisierte Engines?</summary><p>Vektorisierte Engines wie Photon, Velox/Gluten oder DuckDB arbeiten spaltenweise in Batches mit SIMD statt mit Codegen pro Zeile. Sie sind oft schneller bei Scans und Aggregationen.</p></details>
+<h3>Produktion</h3>
+<details><summary>Woran erkennen Sie Codegen im Plan?</summary><p>Am Stern mit Nummer, z. B. *(1). Gleiche Nummer heisst gleiche generierte Methode.</p></details>
+<details><summary>Wie sehen Sie, ob ein Filter an Parquet oder Iceberg gepusht wurde?</summary><p>Im Plan unter PushedFilters bzw. filters am Scan, und ReadSchema zeigt die gelesenen Spalten.</p></details>
+<details><summary>Szenario: Ein Job braucht drei Minuten, bevor der erste Task startet. Woran liegt das?</summary><p>Wahrscheinlich ein riesiger Plan, z. B. withColumn in einer Schleife oder viele Unions. Plan verkleinern, Spalten in einem select bauen, Zwischentabellen nutzen.</p></details>
+<details><summary>Szenario: Eine Abfrage mit Datumsfilter liest trotzdem alle Partitionen. Was prüfen Sie?</summary><p>Ob der Filter eine Funktion oder einen Cast auf der Spalte hat. Im Plan fehlt er dann bei den gepushten Filtern. Filter auf die Rohspalte mit passendem Typ schreiben.</p></details>
+<details><summary>Szenario: Im Log steht, dass Whole-Stage Codegen deaktiviert wurde. Ist das schlimm?</summary><p>Die Stage läuft langsamer, aber korrekt. Ursache sind sehr breite Tabellen oder riesige Ausdrücke. Spalten reduzieren oder Logik aufteilen.</p></details>
+<h3>Design</h3>
+<details><summary>Wie schreiben Sie Code, den Catalyst versteht?</summary><p>Mit eingebauten Funktionen, Filtern auf Rohspalten und ohne UDFs im heissen Pfad.</p></details>
+<details><summary>Wann schalten Sie den CBO ein?</summary><p>Nur bei gepflegten Statistiken und vielen Joins. In den meisten Lakehouse-Jobs schlägt AQE die Statistiken.</p></details>
+<details><summary>Wie vermeiden Sie riesige Pläne?</summary><p>select mit allen Spalten auf einmal statt withColumn in einer Schleife. Dazu Zwischentabellen oder Checkpoint.</p></details>
+
+<details class="mehr"><summary>Mehr</summary>
+<h3>Gerüst</h3>
+<ul>
+  <li><b>Warum?</b> Deklarativer Code kann optimiert werden. Der Plan ist die Wahrheit, nicht der Code.</li>
+  <li><b>Wie innen?</b> Vier Phasen: Analyse, logische Optimierung, physische Planung, Codegenerierung. Tungsten speichert Zeilen als UnsafeRow und erzeugt eine Schleife pro Plan-Abschnitt.</li>
+  <li><b>Zahlen</b> CBO standardmässig aus. <code>codegen.maxFields</code> 100, <code>hugeMethodLimit</code> 65 535 Bytes. HotSpot-JIT bis 8000 Bytes. 5 explain-Modi.</li>
+  <li><b>Vergleich</b> RDD-Lambdas sind Black Boxes. DataFrame und SQL erzeugen denselben Plan. Vektorisierte Engines arbeiten spaltenweise mit SIMD.</li>
+  <li><b>Produktion</b> Filter nicht gepusht durch Cast oder UDF, Planung dauert Minuten, Codegen deaktiviert, <code>explain()</code> zeigt nur den Anfangsplan.</li>
+  <li><b>Design</b> Eingebaute Funktionen, Filter auf Rohspalten, keine UDFs im heissen Pfad. CBO nur mit gepflegten Statistiken.</li>
+</ul>
+<h3>Beispiel: Optimizer-Regeln sichtbar machen</h3>
 <pre>EXPLAIN (VERBOSE, COSTS OFF)
 SELECT name, volume * (10 * 10) AS v
 FROM (SELECT * FROM trade t JOIN participant p ON p.id = t.participant_id) j
@@ -128,29 +214,13 @@ WHERE trade_date = date '2026-11-02' AND country = 'CH' AND 1 = 1;</pre>
       +- * Filter (4)
          +- BatchScan lake.silver.participant (3)</pre>
 <p class="small">Erwartetes Ergebnis (laut Doku, nicht ausgeführt). Gekürzt. <code>*</code> markiert Operatoren in Whole-Stage Codegen.</p>
-
-<h2>4. Details, die Interviewer fragen</h2>
-<ol>
-  <li><b>Vier Phasen:</b> Analyse, logische Optimierung, physische Planung, Codegenerierung.</li>
-  <li><b>Regelbasiert vs kostenbasiert:</b> Die meisten Optimierungen sind Regeln. Der <b>CBO</b> (Cost-Based Optimizer) nutzt Tabellen- und Spalten-Statistiken für Join-Reihenfolge; er ist standardmässig <b>aus</b> (<code>spark.sql.cbo.enabled = false</code>) und braucht <code>ANALYZE TABLE … COMPUTE STATISTICS</code>.</li>
-  <li><b>Wichtige Regeln:</b> <code>PushDownPredicates</code>, <code>ColumnPruning</code>, <code>ConstantFolding</code>, <code>CombineFilters</code>, <code>BooleanSimplification</code>, <code>ReorderJoin</code>, <code>InferFiltersFromConstraints</code> (leitet <code>IS NOT NULL</code> für Join-Schlüssel ab).</li>
-  <li><b>Pushdown an die Quelle:</b> Filter und Spalten gehen über die DataSource-V2-API an Parquet oder Iceberg. Im Plan: <code>PushedFilters</code> bzw. <code>filters</code> und <code>ReadSchema</code>.</li>
-  <li><b>Whole-Stage Codegen:</b> Statt jede Zeile durch viele Operatoren (Volcano-Modell, ein virtueller Aufruf pro Operator) zu reichen, erzeugt Spark eine einzige Schleife. Weniger Aufrufe, Werte bleiben in CPU-Registern.</li>
-  <li><b>Grenzen von Codegen:</b> Zu viele Felder (<code>spark.sql.codegen.maxFields</code>, Standard 100) oder zu grosse Methoden (<code>hugeMethodLimit</code>, Standard 65 535 Bytes) schalten Codegen für den Teilbaum ab. HotSpot kompiliert Methoden über 8000 Bytes Bytecode nicht mit dem JIT.</li>
-  <li><b>UnsafeRow:</b> eine Zeile als zusammenhängender Byte-Block: Null-Bitmap, feste Felder, variable Felder mit Offsets. Kein Java-Objekt pro Wert, kaum GC.</li>
-  <li><b>Tungsten-Speicher:</b> Spark verwaltet Seiten selbst, on-heap oder off-heap (<code>spark.memory.offHeap.enabled</code>). Sortieren und Hash-Aggregation arbeiten direkt auf diesen Bytes.</li>
-  <li><b>Explain-Modi:</b> <code>simple</code>, <code>extended</code> (alle vier Pläne), <code>codegen</code> (erzeugter Java-Code), <code>cost</code> (Statistiken), <code>formatted</code> (lesbar mit Details).</li>
-  <li><b>Spark Connect:</b> Der Client schickt nur den ungelösten Plan an den Server. Catalyst läuft dort; darum gibt es Analysefehler manchmal erst bei der Action.</li>
-</ol>
-
-<h2>5. Vergleich</h2>
+<h3>Vergleich</h3>
 <ul>
   <li><b>RDD-API:</b> Lambdas sind Black Boxes. Kein Catalyst, keine Pushdowns, Java-Objekte statt UnsafeRow.</li>
   <li><b>DataFrame/SQL:</b> gleicher Optimizer, gleicher Plan, gleiche Geschwindigkeit. Die Wahl ist eine Frage der Lesbarkeit.</li>
   <li><b>Vektorisierte Engines</b> (z. B. Photon bei Databricks, Velox/Gluten, DuckDB): spaltenweise Batches mit SIMD statt Codegen pro Zeile. Oft schneller bei Scans und Aggregationen.</li>
 </ul>
-
-<h2>6. In der Produktion</h2>
+<h3>In der Produktion</h3>
 <ol>
   <li><b>Filter wird nicht gepusht:</b> Ausdruck auf der Spalte (z. B. <code>to_date(ts_string)</code>), UDF oder Cast. Lösung: Filter auf die Rohspalte mit passendem Typ.</li>
   <li><b>Planung dauert Minuten:</b> sehr lange Pläne aus Schleifen (<code>withColumn</code> in einer Schleife, viele Unions). Lösung: <code>select</code> mit allen Spalten auf einmal, Zwischentabellen, Checkpoint.</li>
@@ -158,8 +228,7 @@ WHERE trade_date = date '2026-11-02' AND country = 'CH' AND 1 = 1;</pre>
   <li><b>Falscher Join-Typ:</b> Schätzung zu gross oder zu klein, weil Statistiken fehlen. Lösung: AQE, Broadcast-Hint, aktuelle Statistiken.</li>
   <li><b>Analysefehler erst spät:</b> mit Spark Connect oder in grossen Pipelines. Lösung: früh <code>df.schema</code> prüfen, Tests mit kleinen Daten.</li>
 </ol>
-
-<h2>7. Diagnose</h2>
+<h3>Diagnose</h3>
 <ul>
   <li><code>df.explain("extended")</code>: Parsed, Analyzed, Optimized Logical und Physical Plan nebeneinander.</li>
   <li><code>df.explain("codegen")</code>: der erzeugte Java-Code pro Codegen-Stage.</li>
@@ -167,8 +236,7 @@ WHERE trade_date = date '2026-11-02' AND country = 'CH' AND 1 = 1;</pre>
   <li><b>SQL-Tab der Spark UI:</b> der ausgeführte Plan mit AQE-Änderungen und Metriken pro Operator.</li>
   <li><code>spark.sql.optimizer.excludedRules</code>: einzelne Regeln testweise abschalten, um einen Fehler einzugrenzen.</li>
 </ul>
-
-<h2>8. Senior-Punkte</h2>
+<h3>Senior-Punkte</h3>
 <div class="senior">
 <ol>
   <li><b>Schreib Code, den Catalyst versteht:</b> eingebaute Funktionen, Filter auf Rohspalten, keine UDFs im heissen Pfad.</li>
@@ -178,40 +246,8 @@ WHERE trade_date = date '2026-11-02' AND country = 'CH' AND 1 = 1;</pre>
   <li><b>Breite Tabellen und riesige Pläne</b> sind ein Design-Problem, nicht ein Tuning-Problem.</li>
 </ol>
 </div>
-
-<h2>9. Aus dem Projekt</h2>
-<p>„Bei ElCom MATCH hängt die Performance an Iceberg-Partitionierung mit Partition Pruning: Filter auf <code>received_date</code> werden über Hidden Partitioning bis in den Scan gepusht, sodass nur die betroffenen Tage gelesen werden.“ <span class="small">(Prüfen und durch dein echtes Beispiel ersetzen.)</span></p>
-
-<h2>10. Fallen</h2>
-<div class="trap">
-<ul>
-  <li>„PySpark ist langsamer als Scala-Spark.“ → <b>Falsch</b> für DataFrame-Code ohne UDFs. Beide erzeugen denselben Plan.</li>
-  <li>„Der CBO ist standardmässig an.“ → <b>Falsch.</b> <code>spark.sql.cbo.enabled</code> ist <code>false</code>.</li>
-  <li>„Tungsten ist ein eigenes Produkt.“ → <b>Falsch.</b> Es ist der Name der Ausführungs-Optimierungen in Spark.</li>
-  <li>„Ein Filter nach dem Join wird nach dem Join ausgeführt.“ → <b>Falsch.</b> Catalyst schiebt ihn nach unten, wenn er nur eine Seite betrifft.</li>
-  <li>„explain() zeigt den echten Plan.“ → <b>Nur den Anfangsplan.</b> Mit AQE ändert er sich zur Laufzeit; den echten zeigt die Spark UI.</li>
-</ul>
-</div>
-
-<h2>11. Fragen</h2>
-<details><summary>Was ist Catalyst?</summary><p>Der Optimizer von Spark SQL. Er analysiert, optimiert und plant Abfragen aus SQL und DataFrames.</p></details>
-<details><summary>Welche Phasen hat Catalyst?</summary><p>Analyse, logische Optimierung, physische Planung und Codegenerierung.</p></details>
-<details><summary>Was macht der Analyzer?</summary><p>Er löst Tabellen- und Spaltennamen gegen den Katalog auf und setzt Typen. Fehlende Spalten scheitern hier.</p></details>
-<details><summary>Nennen Sie drei Optimizer-Regeln.</summary><p>Predicate Pushdown, Column Pruning und Constant Folding. Dazu z. B. CombineFilters und InferFiltersFromConstraints.</p></details>
-<details><summary>Was ist der CBO?</summary><p>Der kostenbasierte Optimizer für Join-Reihenfolge und Strategien. Er ist standardmässig aus und braucht Statistiken aus ANALYZE TABLE.</p></details>
-<details><summary>Was ist Tungsten?</summary><p>Die Ausführungsschicht: binäre UnsafeRows, eigene Speicherverwaltung und Whole-Stage Codegen.</p></details>
-<details><summary>Was ist Whole-Stage Code Generation?</summary><p>Spark verschmilzt mehrere Operatoren zu einer Java-Methode mit einer Schleife. Weniger virtuelle Aufrufe, Werte bleiben in Registern.</p></details>
-<details><summary>Woran erkennen Sie Codegen im Plan?</summary><p>Am Stern mit Nummer, z. B. *(1). Gleiche Nummer heisst gleiche generierte Methode.</p></details>
-<details><summary>Wann schaltet Spark Codegen ab?</summary><p>Bei mehr als 100 Feldern (codegen.maxFields) oder wenn die Methode zu gross wird (hugeMethodLimit). Dann läuft der langsamere Pfad.</p></details>
-<details><summary>Was ist eine UnsafeRow?</summary><p>Eine Zeile als Byte-Block mit Null-Bitmap, festen Feldern und Offsets für variable Felder. Kein Objekt pro Wert.</p></details>
-<details><summary>Warum sind DataFrames schneller als RDDs?</summary><p>Catalyst optimiert den Plan, und Tungsten rechnet auf binären Zeilen mit Codegen. RDD-Lambdas sind Black Boxes.</p></details>
-<details><summary>Wie sehen Sie, ob ein Filter an Parquet oder Iceberg gepusht wurde?</summary><p>Im Plan unter PushedFilters bzw. filters am Scan, und ReadSchema zeigt die gelesenen Spalten.</p></details>
-<details><summary>Welche explain-Modi gibt es?</summary><p>simple, extended, codegen, cost und formatted.</p></details>
-<details><summary>Wie hängen Catalyst und AQE zusammen?</summary><p>Catalyst plant vor dem Start mit Schätzungen. AQE plant nach jeder Shuffle-Stage mit echten Grössen neu.</p></details>
-<details><summary>Ist Spark SQL schneller als die DataFrame-API?</summary><p>Nein. Beide werden zum selben logischen Plan.</p></details>
-<details><summary>Szenario: Ein Job braucht drei Minuten, bevor der erste Task startet. Woran liegt das?</summary><p>Wahrscheinlich ein riesiger Plan, z. B. withColumn in einer Schleife oder viele Unions. Plan verkleinern, Spalten in einem select bauen, Zwischentabellen nutzen.</p></details>
-<details><summary>Szenario: Eine Abfrage mit Datumsfilter liest trotzdem alle Partitionen. Was prüfen Sie?</summary><p>Ob der Filter eine Funktion oder einen Cast auf der Spalte hat. Im Plan fehlt er dann bei den gepushten Filtern. Filter auf die Rohspalte mit passendem Typ schreiben.</p></details>
-<details><summary>Szenario: Im Log steht, dass Whole-Stage Codegen deaktiviert wurde. Ist das schlimm?</summary><p>Die Stage läuft langsamer, aber korrekt. Ursache sind sehr breite Tabellen oder riesige Ausdrücke. Spalten reduzieren oder Logik aufteilen.</p></details>
+<h3>Dein Beispiel</h3>
+</details>
 
 </body>
 </html>

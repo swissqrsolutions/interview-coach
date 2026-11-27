@@ -19,6 +19,15 @@
   summary { font-weight: 600; cursor: pointer; }
   details p { margin: 6px 0 2px; }
   .small { color: #6e6e73; font-size: 14px; }
+  h3 { font-size: 17px; margin: 20px 0 6px; }
+  .geruest { border: 2px solid #1d1d1f; border-radius: 6px; padding: 10px 14px; margin: 14px 0; font-size: 15px; line-height: 1.4; }
+  .geruest h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; margin: 0 0 8px; padding: 0; border: 0; }
+  .geruest dl { display: grid; grid-template-columns: 6.6em 1fr; gap: 6px 10px; margin: 0; }
+  .geruest dt { font-weight: 700; font-size: 12px; text-transform: uppercase; letter-spacing: .05em; padding-top: 1px; }
+  .geruest dd { margin: 0; }
+  .muster { border: 1px solid #e5e5ea; border-left: 4px solid #1d1d1f; border-radius: 6px; padding: 10px 14px; margin: 14px 0; }
+  .muster h3 { margin: 0 0 6px; font-size: 13px; text-transform: uppercase; letter-spacing: .06em; }
+  .muster .mq { margin: 0 0 6px; }
 </style>
 </head>
 <body>
@@ -27,34 +36,17 @@
 <!-- sources: Spark · Tier 1 · Quellen: Apache Spark 3.5/4.x Doku: SQL Performance Tuning (Adaptive Query Execution), Configuration (spark.sql.adaptive.*), SQL Reference (EXPLAIN), Web UI (SQL-Tab) -->
 
 <div class="kern">
-<b>Kern:</b> <b>Adaptive Query Execution (AQE)</b> ist eine Optimierung in Spark SQL, die den Plan <b>während der Ausführung</b> mit echten Laufzeit-Statistiken anpasst. Sie löst das Problem falscher Schätzungen vor dem Start. AQE fasst kleine Shuffle-Partitionen zusammen, wechselt Join-Strategien und teilt skewed Partitionen. Sie ist <b>seit Spark 3.2.0 standardmässig an</b>.
+<b>Kern:</b> <b>Adaptive Query Execution (AQE)</b> ist eine Optimierung in Spark SQL, die den Plan <b>während der Ausführung</b> mit echten Laufzeit-Statistiken anpasst. Sie löst das Problem falscher Schätzungen vor dem Start, denn AQE fasst kleine Shuffle-Partitionen zusammen, wechselt Join-Strategien und teilt skewed Partitionen. Sie ist <b>seit Spark 3.2.0 standardmässig an</b>.
 </div>
 
-<h2>1. Wo sitzt AQE?</h2>
-<svg viewBox="0 0 720 290" font-family="-apple-system, system-ui, sans-serif" font-size="14">
-  <defs><marker id="a" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
-  <rect x="10" y="20" width="140" height="60" rx="8" fill="#fff" stroke="#555"/><text x="80" y="46" text-anchor="middle" font-weight="700">DataFrame/SQL</text><text x="80" y="64" text-anchor="middle" font-size="12">Code</text>
-  <line x1="150" y1="50" x2="188" y2="50" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
-  <rect x="190" y="20" width="160" height="60" rx="8" fill="#fff" stroke="#555"/><text x="270" y="46" text-anchor="middle" font-weight="700">Catalyst</text><text x="270" y="64" text-anchor="middle" font-size="12">Plan mit Schätzungen</text>
-  <line x1="350" y1="50" x2="388" y2="50" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
-  <rect x="390" y="10" width="320" height="270" rx="12" fill="#f7f7fa" stroke="#999" stroke-dasharray="5 4"/><text x="550" y="32" text-anchor="middle" font-weight="700">AdaptiveSparkPlan</text>
-  <rect x="410" y="45" width="280" height="50" rx="8" fill="#dbe9fb" stroke="#0a66c2"/><text x="550" y="67" text-anchor="middle">Query Stage 1 ausführen</text><text x="550" y="85" text-anchor="middle" font-size="12">bis zum Shuffle</text>
-  <line x1="550" y1="95" x2="550" y2="118" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
-  <rect x="410" y="120" width="280" height="50" rx="8" fill="#0a66c2" stroke="#0a66c2"/><text x="550" y="142" text-anchor="middle" fill="#fff" font-weight="700">Statistiken messen</text><text x="550" y="160" text-anchor="middle" fill="#fff" font-size="12">Bytes pro Shuffle-Partition</text>
-  <line x1="550" y1="170" x2="550" y2="193" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
-  <rect x="410" y="195" width="280" height="70" rx="8" fill="#e8f5e9" stroke="#2e7d32"/><text x="550" y="217" text-anchor="middle" font-weight="700">Rest neu planen</text><text x="550" y="237" text-anchor="middle" font-size="12">Coalesce · Join-Wechsel · Skew</text><text x="550" y="255" text-anchor="middle" font-size="12">dann nächste Stage</text>
-  <rect x="10" y="130" width="340" height="70" rx="8" fill="#fff" stroke="#555"/><text x="180" y="156" text-anchor="middle" font-weight="700">Ohne AQE</text><text x="180" y="178" text-anchor="middle" font-size="12">Plan fix vor dem Start, 200 Partitionen, Schätzungen</text>
-  <rect x="10" y="215" width="340" height="60" rx="8" fill="#fff" stroke="#555"/><text x="180" y="240" text-anchor="middle" font-weight="700">Spark UI SQL-Tab</text><text x="180" y="260" text-anchor="middle" font-size="12">zeigt den finalen Plan (isFinalPlan=true)</text>
-</svg>
-<ol>
-  <li><b>Catalyst</b>, der Optimizer, baut zuerst einen Plan. Er kennt nur Schätzungen aus Statistiken.</li>
-  <li>Mit AQE ist der oberste Knoten <b>AdaptiveSparkPlan</b>. Er teilt den Plan an jedem Shuffle in <b>Query Stages</b>.</li>
-  <li>Nach jeder Stage misst Spark die echten Bytes pro Shuffle-Partition. Das sind <b>Map Output Statistics</b>.</li>
-  <li>AQE optimiert den restlichen Plan mit diesen Zahlen neu. Erst dann startet die nächste Stage.</li>
-  <li>Im <b>SQL-Tab</b> der Spark UI sieht man den finalen Plan nach allen Änderungen.</li>
-</ol>
+<div class="muster"><h3>Antwort-Muster</h3><p class="mq"><b>Frage:</b> Was ist Adaptive Query Execution, und was macht sie?</p><ol>
+  <li>Mechanismus: AQE schneidet den Plan an Shuffles in Query Stages. Nach jeder Stage nutzt es die echten Grössen, um den Rest neu zu planen.</li>
+  <li>Zahl: Es fasst Partitionen auf eine Zielgrösse von 64 MB zusammen. Skew erkennt es bei mehr als 5 × Median und mehr als 256 MB.</li>
+  <li>Trade-off: AQE greift erst nach einem Shuffle. Was davor teuer ist, wie Scan und erste Shuffles, muss man selbst optimieren.</li>
+  <li>Produktion: Ich setze <code>shuffle.partitions</code> hoch und lasse AQE zusammenlegen. Für die Analyse lese ich den finalen Plan im SQL-Tab, nicht <code>explain()</code> vor der Ausführung.</li>
+</ol></div>
 
-<h2>2. Die Reise einer Abfrage mit AQE (die Geschichte zum Merken)</h2>
+<h2>1. Die Reise einer Abfrage mit AQE</h2>
 <svg viewBox="0 0 720 300" font-family="-apple-system, system-ui, sans-serif" font-size="14">
   <defs><marker id="b" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
   <rect x="10" y="20" width="200" height="80" rx="10" fill="#eee" stroke="#777"/><text x="110" y="46" text-anchor="middle" font-weight="700">Geplant</text><text x="110" y="66" text-anchor="middle" font-size="12">SortMergeJoin</text><text x="110" y="84" text-anchor="middle" font-size="12">200 Shuffle-Partitionen</text>
@@ -78,7 +70,104 @@
   <li><b>Fertig:</b> Der finale Plan ist im SQL-Tab sichtbar. Er unterscheidet sich vom Plan aus <code>explain()</code>.</li>
 </ol>
 
-<h2>3. Beispiel: AQE im Plan sehen</h2>
+<h2>2. Aufbau</h2>
+<svg viewBox="0 0 720 290" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="a" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="10" y="20" width="140" height="60" rx="8" fill="#fff" stroke="#555"/><text x="80" y="46" text-anchor="middle" font-weight="700">DataFrame/SQL</text><text x="80" y="64" text-anchor="middle" font-size="12">Code</text>
+  <line x1="150" y1="50" x2="188" y2="50" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="190" y="20" width="160" height="60" rx="8" fill="#fff" stroke="#555"/><text x="270" y="46" text-anchor="middle" font-weight="700">Catalyst</text><text x="270" y="64" text-anchor="middle" font-size="12">Plan mit Schätzungen</text>
+  <line x1="350" y1="50" x2="388" y2="50" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="390" y="10" width="320" height="270" rx="12" fill="#f7f7fa" stroke="#999" stroke-dasharray="5 4"/><text x="550" y="32" text-anchor="middle" font-weight="700">AdaptiveSparkPlan</text>
+  <rect x="410" y="45" width="280" height="50" rx="8" fill="#dbe9fb" stroke="#0a66c2"/><text x="550" y="67" text-anchor="middle">Query Stage 1 ausführen</text><text x="550" y="85" text-anchor="middle" font-size="12">bis zum Shuffle</text>
+  <line x1="550" y1="95" x2="550" y2="118" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="410" y="120" width="280" height="50" rx="8" fill="#0a66c2" stroke="#0a66c2"/><text x="550" y="142" text-anchor="middle" fill="#fff" font-weight="700">Statistiken messen</text><text x="550" y="160" text-anchor="middle" fill="#fff" font-size="12">Bytes pro Shuffle-Partition</text>
+  <line x1="550" y1="170" x2="550" y2="193" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="410" y="195" width="280" height="70" rx="8" fill="#e8f5e9" stroke="#2e7d32"/><text x="550" y="217" text-anchor="middle" font-weight="700">Rest neu planen</text><text x="550" y="237" text-anchor="middle" font-size="12">Coalesce · Join-Wechsel · Skew</text><text x="550" y="255" text-anchor="middle" font-size="12">dann nächste Stage</text>
+  <rect x="10" y="130" width="340" height="70" rx="8" fill="#fff" stroke="#555"/><text x="180" y="156" text-anchor="middle" font-weight="700">Ohne AQE</text><text x="180" y="178" text-anchor="middle" font-size="12">Plan fix vor dem Start, 200 Partitionen, Schätzungen</text>
+  <rect x="10" y="215" width="340" height="60" rx="8" fill="#fff" stroke="#555"/><text x="180" y="240" text-anchor="middle" font-weight="700">Spark UI SQL-Tab</text><text x="180" y="260" text-anchor="middle" font-size="12">zeigt den finalen Plan (isFinalPlan=true)</text>
+</svg>
+<ol>
+  <li><b>Catalyst</b>, der Optimizer, baut zuerst einen Plan. Er kennt nur Schätzungen aus Statistiken.</li>
+  <li>Mit AQE ist der oberste Knoten <b>AdaptiveSparkPlan</b>. Er teilt den Plan an jedem Shuffle in <b>Query Stages</b>.</li>
+  <li>Nach jeder Stage misst Spark die echten Bytes pro Shuffle-Partition. Das sind <b>Map Output Statistics</b>.</li>
+  <li>AQE optimiert den restlichen Plan mit diesen Zahlen neu. Erst dann startet die nächste Stage.</li>
+  <li>Im <b>SQL-Tab</b> der Spark UI sieht man den finalen Plan nach allen Änderungen.</li>
+</ol>
+
+<h2>3. Details, die Interviewer fragen</h2>
+<ol>
+  <li><b>Query Stage:</b> Das ist ein Teil des Plans zwischen zwei Shuffles oder Broadcasts. AQE optimiert nur an diesen Grenzen.</li>
+  <li><b>Coalescing Post Shuffle Partitions:</b> Benachbarte kleine Partitionen werden zu einem Task. Das Ziel ist <code>advisoryPartitionSizeInBytes</code> (64 MB). Die Startzahl ist <code>initialPartitionNum</code>, sonst <code>spark.sql.shuffle.partitions</code>.</li>
+  <li><b>parallelismFirst</b> (true): AQE ignoriert die 64 MB und respektiert nur <code>minPartitionSize</code> (1 MB). So bleibt die Parallelität hoch. Die Doku empfiehlt <code>false</code> auf einem ausgelasteten Cluster.</li>
+  <li><b>Sort-Merge → Broadcast:</b> Ist eine Seite nach dem Shuffle unter <code>spark.sql.adaptive.autoBroadcastJoinThreshold</code>, wird sie gebroadcastet. Der Standard ist wie bei <code>autoBroadcastJoinThreshold</code>, also 10 MB. Das ist weniger effizient als von Anfang an, aber besser als Sort-Merge.</li>
+  <li><b>Local Shuffle Reader</b> (<code>localShuffleReader.enabled</code>, true): Er liest Shuffle-Dateien ohne Netzwerk-Austausch. Das geht, wenn kein Hash-Partitioning mehr nötig ist.</li>
+  <li><b>Sort-Merge → Shuffle Hash:</b> Das passiert, wenn alle Partitionen unter <code>maxShuffledHashJoinLocalMapThreshold</code> liegen. Der Standard ist 0, also aus.</li>
+  <li><b>Skew Join:</b> Eine Partition ist skewed, wenn sie &gt; 5 × Median <b>und</b> &gt; 256 MB ist. AQE teilt sie und kopiert die Gegenseite.</li>
+  <li><b>Rebalance:</b> Nach einem <code>REBALANCE</code>-Hint teilt AQE zu grosse und vereint zu kleine Partitionen. Das ist gut vor dem Schreiben.</li>
+  <li><b>Dynamic Partition Pruning (DPP)</b> ist ein eigenes Feature. AQE nutzt es mit Broadcast-Ergebnissen. Es überspringt Partitionen der Faktentabelle.</li>
+  <li><b>Wann AQE nicht greift:</b> Es greift nicht bei Abfragen ohne Shuffle und nicht bei Streaming-Abfragen. Auch explizit gesetzte Partitionszahlen wie <code>repartition(16)</code> bleiben.</li>
+  <li><b>Empty Relation:</b> AQE erkennt leere Seiten zur Laufzeit. Es kann Joins oder Teilpläne entfernen.</li>
+  <li><b>Regeln ausschalten:</b> <code>spark.sql.adaptive.optimizer.excludedRules</code> schaltet einzelne AQE-Regeln ab, z. B. zum Debuggen.</li>
+</ol>
+
+<h2>4. Fallen</h2>
+<div class="trap">
+<ul>
+  <li>„AQE muss man einschalten.“ → <b>Falsch.</b> Seit Spark 3.2.0 ist es Standard.</li>
+  <li>„AQE kann Partitionen teilen und zusammenlegen.“ → <b>Teilweise falsch.</b> Coalescing legt nur zusammen. Teilen gibt es nur bei Skew-Join und Rebalance.</li>
+  <li>„AQE wechselt vor dem Shuffle auf Broadcast.“ → <b>Falsch.</b> Erst nach dem Shuffle, mit echten Grössen.</li>
+  <li>„<code>explain()</code> zeigt, was AQE gemacht hat.“ → <b>Falsch.</b> Vor der Ausführung steht <code>isFinalPlan=false</code>. Der finale Plan steht im SQL-Tab.</li>
+  <li>„Mit AQE ist spark.sql.shuffle.partitions egal.“ → <b>Falsch.</b> Es ist die Startzahl. Ist sie zu klein, kann AQE nicht helfen.</li>
+  <li>„AQE wirkt auch bei Structured Streaming.“ → <b>Falsch.</b> Streaming-Abfragen nutzen kein AQE.</li>
+</ul>
+</div>
+
+<h2>5. Selbsttest</h2>
+<h3>Warum?</h3>
+<details><summary>Welches Problem löst AQE?</summary><p>Falsche Schätzungen vor dem Start: falsche Partitionszahl, falsche Join-Strategie, Skew. AQE nutzt echte Grössen nach jedem Shuffle.</p></details>
+<details><summary>Warum ist der AQE-Broadcast schlechter als ein geplanter?</summary><p>Der Shuffle ist schon passiert. AQE spart nur Sort und Netzwerk-Lesen, dank Local Shuffle Reader.</p></details>
+<details><summary>Kann AQE Partitionen vergrössern?</summary><p>Beim Coalescing nur zusammenlegen. Teilen gibt es nur bei Skew-Join und nach REBALANCE.</p></details>
+<h3>Wie innen?</h3>
+<details><summary>Was ist Adaptive Query Execution?</summary><p>Eine Optimierung in Spark SQL, die den Plan zur Laufzeit mit echten Statistiken anpasst. Seit Spark 3.2.0 standardmässig an.</p></details>
+<details><summary>Was ist eine Query Stage?</summary><p>Ein Teil des Plans bis zu einem Shuffle oder Broadcast. Nach jeder Stage plant AQE neu.</p></details>
+<details><summary>Wie funktioniert das Zusammenlegen von Partitionen?</summary><p>AQE legt benachbarte kleine Shuffle-Partitionen zu einem Task zusammen. Ziel ist <code>advisoryPartitionSizeInBytes</code>, 64 MB.</p></details>
+<details><summary>Was macht parallelismFirst?</summary><p>Bei true ignoriert AQE die 64-MB-Zielgrösse und achtet nur auf 1 MB Minimum. Auf einem ausgelasteten Cluster sollte man es auf false setzen.</p></details>
+<details><summary>Wann wechselt AQE auf einen Broadcast Join?</summary><p>Wenn eine Seite nach dem Shuffle kleiner ist als der adaptive Broadcast-Threshold, standardmässig 10 MB.</p></details>
+<details><summary>Was ist der Local Shuffle Reader?</summary><p>AQE liest Shuffle-Dateien pro Mapper lokal statt über das Netzwerk. Das geht nach einem Wechsel auf Broadcast.</p></details>
+<details><summary>Wann wird ein Sort-Merge Join zum Shuffle Hash Join?</summary><p>Wenn alle Partitionen unter <code>maxShuffledHashJoinLocalMapThreshold</code> liegen. Standard 0, also aus.</p></details>
+<details><summary>Was ist der REBALANCE-Hint?</summary><p>Ein Shuffle, nach dem AQE grosse Partitionen teilt und kleine zusammenlegt. Gut vor dem Schreiben.</p></details>
+<h3>Zahlen</h3>
+<details><summary>Welche drei Hauptfunktionen hat AQE?</summary><p>Shuffle-Partitionen zusammenlegen, Join-Strategie wechseln und Skew Joins teilen.</p></details>
+<details><summary>Wie erkennt AQE Skew?</summary><p>Eine Partition ist grösser als 5 × Median und grösser als 256 MB.</p></details>
+<details><summary>Welche Zielgrösse hat AQE beim Zusammenlegen?</summary><p>advisoryPartitionSizeInBytes, 64 MB. Mit parallelismFirst=true (Standard) gilt aber nur minPartitionSize von 1 MB.</p></details>
+<details><summary>Seit welcher Version ist AQE Standard?</summary><p>Seit Spark 3.2.0.</p></details>
+<h3>Vergleich</h3>
+<details><summary>AQE vs CBO?</summary><p>CBO nutzt gespeicherte Statistiken vor dem Start. AQE misst zur Laufzeit. Beide ergänzen sich.</p></details>
+<details><summary>AQE vs statisches Planen?</summary><p>Statisch: Plan vor dem Start fix, abhängig von Schätzungen, feste 200 Shuffle-Partitionen. AQE: Plan pro Stage neu mit echten Bytes, aber im Code-Review nicht endgültig sichtbar.</p></details>
+<details><summary>AQE vs manuelles Tuning von shuffle.partitions?</summary><p>Früher war es pro Job nötig. Mit AQE reicht meist eine grosse Startzahl, die AQE zusammenlegt.</p></details>
+<h3>Produktion</h3>
+<details><summary>Woran sehen Sie, dass AQE gewirkt hat?</summary><p>Im SQL-Tab: <code>isFinalPlan=true</code>, <code>AQEShuffleRead coalesced/skewed/local</code> und Final Plan vs Initial Plan.</p></details>
+<details><summary>Wann greift AQE nicht?</summary><p>Ohne Shuffle, bei Streaming und bei explizit gesetzten Partitionszahlen.</p></details>
+<details><summary>Warum sieht explain() anders aus als der ausgeführte Plan?</summary><p>explain() zeigt den Plan vor der Ausführung. AQE ändert ihn erst während der Ausführung.</p></details>
+<details><summary>Szenario: Ein Job erzeugt nach dem Upgrade auf Spark 3.5 tausende winzige Tasks pro Stage. Was prüfen Sie?</summary><p>Ob AQE an ist und <code>parallelismFirst</code> true ist. Auf false setzen, damit die 64-MB-Zielgrösse gilt. Alte feste repartition-Zahlen prüfen.</p></details>
+<details><summary>Szenario: Eine Aggregation über 2 TB hat 200 Tasks mit je 10 GB Spill. Was tun Sie?</summary><p>AQE kann nur zusammenlegen. <code>initialPartitionNum</code> oder <code>shuffle.partitions</code> deutlich erhöhen, z. B. 2000. AQE fasst dann kleine wieder zusammen.</p></details>
+<details><summary>Szenario: Ein Join mit einer gefilterten Tabelle wird erst spät zum Broadcast. Wie verbessern Sie das?</summary><p>Filter früher anwenden, Statistiken verbessern oder bewusst <code>F.broadcast()</code> setzen. Dann entfällt der Shuffle der grossen Seite ganz.</p></details>
+<h3>Design</h3>
+<details><summary>Was ist initialPartitionNum?</summary><p>Die Start-Anzahl Shuffle-Partitionen für AQE. Ohne Wert gilt <code>spark.sql.shuffle.partitions</code>.</p></details>
+<details><summary>Wie setzen Sie shuffle.partitions mit AQE?</summary><p>Hoch, z. B. 1000, und AQE fasst zusammen. AQE kann nur zusammenlegen, nicht teilen. Ist die Startzahl zu klein, hilft es nicht.</p></details>
+<details><summary>Wann setzen Sie parallelismFirst auf false?</summary><p>Auf einem ausgelasteten Cluster. Dann gilt die 64-MB-Zielgrösse. Das spart Executor-Zeit und damit Knoten-Kosten.</p></details>
+
+<details class="mehr"><summary>Mehr</summary>
+<h3>Gerüst</h3>
+<ul>
+  <li><b>Warum?</b> Schätzungen vor dem Start sind oft falsch. AQE ersetzt sie durch echte Bytes aus den Shuffle-Statistiken.</li>
+  <li><b>Wie innen?</b> AQE schneidet den Plan in Query Stages an Shuffles und Broadcasts. Nach jeder Stage plant es den Rest neu. Es greift darum erst nach einem Shuffle.</li>
+  <li><b>Zahlen</b> Seit 3.2.0 Standard. Zielgrösse 64 MB, Skew bei &gt; 5 × Median und &gt; 256 MB. <code>parallelismFirst</code> = true, <code>minPartitionSize</code> 1 MB.</li>
+  <li><b>Vergleich</b> Statisch = Plan fix mit 200 Partitionen. AQE = Plan pro Stage neu. CBO = Statistiken vor dem Start, AQE ergänzt zur Laufzeit.</li>
+  <li><b>Produktion</b> Winzige Tasks durch <code>parallelismFirst</code>, Startzahl zu klein, Skew unter 256 MB, späte Broadcast-Umstellung, <code>explain()</code> zeigt nicht den finalen Plan.</li>
+  <li><b>Design</b> Grosse Startzahl und AQE zusammenfassen lassen. Explizite <code>repartition(n)</code> prüfen. Finalen Plan im SQL-Tab lesen.</li>
+</ul>
+<h3>Beispiel: AQE im Plan sehen</h3>
 <pre>from pyspark.sql import functions as F
 
 spark.conf.get("spark.sql.adaptive.enabled")              # 1)
@@ -121,24 +210,7 @@ res.collect()                                             # 3) Ausführung start
   <li><b>AQEShuffleRead coalesced</b> heisst: AQE hat Partitionen zusammengelegt. Bei Skew steht <code>skewed</code>, bei Broadcast-Wechsel <code>local</code>.</li>
   <li>Final Plan und Initial Plan stehen nebeneinander. So sieht man genau, was AQE geändert hat.</li>
 </ol>
-
-<h2>4. Details, die Interviewer fragen</h2>
-<ol>
-  <li><b>Query Stage:</b> ein Teil des Plans zwischen zwei Shuffles oder Broadcasts. AQE optimiert nur an diesen Grenzen.</li>
-  <li><b>Coalescing Post Shuffle Partitions:</b> benachbarte kleine Partitionen werden zu einem Task. Ziel: <code>advisoryPartitionSizeInBytes</code> (64 MB). Startzahl: <code>initialPartitionNum</code>, sonst <code>spark.sql.shuffle.partitions</code>.</li>
-  <li><b>parallelismFirst</b> (true): AQE ignoriert die 64 MB und respektiert nur <code>minPartitionSize</code> (1 MB). So bleibt die Parallelität hoch. Die Doku empfiehlt <code>false</code> auf einem ausgelasteten Cluster.</li>
-  <li><b>Sort-Merge → Broadcast:</b> Ist eine Seite nach dem Shuffle unter <code>spark.sql.adaptive.autoBroadcastJoinThreshold</code> (Standard: wie <code>autoBroadcastJoinThreshold</code>, 10 MB), wird sie gebroadcastet. Weniger effizient als von Anfang an, aber besser als Sort-Merge.</li>
-  <li><b>Local Shuffle Reader</b> (<code>localShuffleReader.enabled</code>, true): liest Shuffle-Dateien ohne Netzwerk-Austausch, wenn kein Hash-Partitioning mehr nötig ist.</li>
-  <li><b>Sort-Merge → Shuffle Hash:</b> passiert, wenn alle Partitionen unter <code>maxShuffledHashJoinLocalMapThreshold</code> liegen. Standard 0, also aus.</li>
-  <li><b>Skew Join:</b> eine Partition ist skewed, wenn sie &gt; 5 × Median <b>und</b> &gt; 256 MB ist. AQE teilt sie und kopiert die Gegenseite.</li>
-  <li><b>Rebalance:</b> Nach einem <code>REBALANCE</code>-Hint teilt AQE zu grosse und vereint zu kleine Partitionen. Gut vor dem Schreiben.</li>
-  <li><b>Dynamic Partition Pruning (DPP)</b> ist ein eigenes Feature, aber AQE nutzt es mit Broadcast-Ergebnissen. Es überspringt Partitionen der Faktentabelle.</li>
-  <li><b>Wann AQE nicht greift:</b> Abfragen ohne Shuffle, Streaming-Abfragen und explizit gesetzte Partitionszahlen wie <code>repartition(16)</code>.</li>
-  <li><b>Empty Relation:</b> AQE erkennt leere Seiten zur Laufzeit und kann Joins oder Teilpläne entfernen.</li>
-  <li><b>Regeln ausschalten:</b> <code>spark.sql.adaptive.optimizer.excludedRules</code> schaltet einzelne AQE-Regeln ab, z. B. zum Debuggen.</li>
-</ol>
-
-<h2>5. Vergleich</h2>
+<h3>Vergleich</h3>
 <ul>
   <li><b>Ohne AQE (statisch):</b> Plan vor dem Start fix, abhängig von Schätzungen. Feste 200 Shuffle-Partitionen.</li>
   <li><b>AQE:</b> Plan pro Stage neu, echte Bytes. Weniger Tuning, aber Plan im Code-Review nicht endgültig sichtbar.</li>
@@ -146,8 +218,7 @@ res.collect()                                             # 3) Ausführung start
   <li><b>Hints:</b> manuell, fix. AQE-Coalescing ignoriert aber keine expliziten Partitionszahlen.</li>
   <li><b>Manuelles Tuning von shuffle.partitions:</b> früher nötig pro Job. Mit AQE meist nur eine grosse Startzahl.</li>
 </ul>
-
-<h2>6. In der Produktion</h2>
+<h3>In der Produktion</h3>
 <ol>
   <li><b>Zu viele kleine Tasks trotz AQE:</b> <code>parallelismFirst=true</code> hält Partitionen bei 1 MB. Lösung: <code>parallelismFirst=false</code>, dann gilt die 64-MB-Zielgrösse.</li>
   <li><b>Zu wenige Partitionen nach Coalesce:</b> Grosse Aggregation, aber Startzahl 200 ist zu klein. AQE kann nur zusammenlegen, nicht teilen. Lösung: <code>initialPartitionNum</code> hoch setzen, z. B. 1000.</li>
@@ -156,8 +227,7 @@ res.collect()                                             # 3) Ausführung start
   <li><b>Ergebnis-Dateien variieren:</b> Die Dateianzahl beim Schreiben ändert sich je nach Daten. Lösung: REBALANCE-Hint oder feste repartition vor dem Schreiben, wenn Layout wichtig ist.</li>
   <li><b>Verwirrung beim Debuggen:</b> <code>explain()</code> zeigt einen anderen Plan als die Ausführung. Lösung: immer den SQL-Tab mit <code>isFinalPlan=true</code> lesen.</li>
 </ol>
-
-<h2>7. Diagnose: Werkzeuge und Befehle</h2>
+<h3>Diagnose: Werkzeuge und Befehle</h3>
 <ul>
   <li><b>Spark UI, SQL-Tab:</b> finaler Plan, <code>AQEShuffleRead</code> mit <code>coalesced</code>, <code>skewed</code> oder <code>local</code>, Anzahl Partitionen pro Knoten.</li>
   <li><code>df.explain("formatted")</code>: zeigt <code>AdaptiveSparkPlan isFinalPlan=false</code> vor der Ausführung.</li>
@@ -165,8 +235,7 @@ res.collect()                                             # 3) Ausführung start
   <li><b>Stages-Tab:</b> Anzahl Tasks pro Stage zeigt, wie stark AQE zusammengefasst hat.</li>
   <li>Zum Vergleich einmal <code>spark.sql.adaptive.enabled=false</code> setzen und Laufzeit messen.</li>
 </ul>
-
-<h2>8. Senior-Punkte</h2>
+<h3>Senior-Punkte</h3>
 <div class="senior">
 <ol>
   <li><b>AQE ersetzt Schätzungen durch Messungen.</b> Darum ist es fast immer besser. Es ist trotzdem kein Ersatz für gutes Datenlayout.</li>
@@ -177,44 +246,8 @@ res.collect()                                             # 3) Ausführung start
   <li><b>Pläne werden dynamisch.</b> Für Performance-Analysen immer den finalen Plan aus der UI oder dem History Server verwenden.</li>
 </ol>
 </div>
-
-<h2>9. Aus dem Projekt</h2>
-<p>„AQE-Tuning ist im Profil nicht dokumentiert; die nächste echte Erfahrung sind die MATCH-PySpark-Jobs mit Iceberg-Partition-Pruning – vor dem Interview die Spark-Version und im SQL-Tab prüfen, ob <code>AQEShuffleRead coalesced</code> in den Gold-Jobs auftaucht.“ <span class="small">(Prüfen und durch dein echtes Beispiel ersetzen.)</span></p>
-
-<h2>10. Fallen</h2>
-<div class="trap">
-<ul>
-  <li>„AQE muss man einschalten.“ → <b>Falsch.</b> Seit Spark 3.2.0 ist es Standard.</li>
-  <li>„AQE kann Partitionen teilen und zusammenlegen.“ → <b>Teilweise falsch.</b> Coalescing legt nur zusammen. Teilen gibt es nur bei Skew-Join und Rebalance.</li>
-  <li>„AQE wechselt vor dem Shuffle auf Broadcast.“ → <b>Falsch.</b> Erst nach dem Shuffle, mit echten Grössen.</li>
-  <li>„<code>explain()</code> zeigt, was AQE gemacht hat.“ → <b>Falsch.</b> Vor der Ausführung steht <code>isFinalPlan=false</code>. Der finale Plan steht im SQL-Tab.</li>
-  <li>„Mit AQE ist spark.sql.shuffle.partitions egal.“ → <b>Falsch.</b> Es ist die Startzahl. Ist sie zu klein, kann AQE nicht helfen.</li>
-  <li>„AQE wirkt auch bei Structured Streaming.“ → <b>Falsch.</b> Streaming-Abfragen nutzen kein AQE.</li>
-</ul>
-</div>
-
-<h2>11. Fragen</h2>
-<details><summary>Was ist Adaptive Query Execution?</summary><p>Eine Optimierung in Spark SQL, die den Plan zur Laufzeit mit echten Statistiken anpasst. Seit Spark 3.2.0 standardmässig an.</p></details>
-<details><summary>Welches Problem löst AQE?</summary><p>Falsche Schätzungen vor dem Start: falsche Partitionszahl, falsche Join-Strategie, Skew. AQE nutzt echte Grössen nach jedem Shuffle.</p></details>
-<details><summary>Was ist eine Query Stage?</summary><p>Ein Teil des Plans bis zu einem Shuffle oder Broadcast. Nach jeder Stage plant AQE neu.</p></details>
-<details><summary>Welche drei Hauptfunktionen hat AQE?</summary><p>Shuffle-Partitionen zusammenlegen, Join-Strategie wechseln und Skew Joins teilen.</p></details>
-<details><summary>Wie funktioniert das Zusammenlegen von Partitionen?</summary><p>AQE legt benachbarte kleine Shuffle-Partitionen zu einem Task zusammen. Ziel ist <code>advisoryPartitionSizeInBytes</code>, 64 MB.</p></details>
-<details><summary>Was macht parallelismFirst?</summary><p>Bei true ignoriert AQE die 64-MB-Zielgrösse und achtet nur auf 1 MB Minimum. Auf einem ausgelasteten Cluster sollte man es auf false setzen.</p></details>
-<details><summary>Was ist initialPartitionNum?</summary><p>Die Start-Anzahl Shuffle-Partitionen für AQE. Ohne Wert gilt <code>spark.sql.shuffle.partitions</code>.</p></details>
-<details><summary>Wann wechselt AQE auf einen Broadcast Join?</summary><p>Wenn eine Seite nach dem Shuffle kleiner ist als der adaptive Broadcast-Threshold, standardmässig 10 MB.</p></details>
-<details><summary>Warum ist der AQE-Broadcast schlechter als ein geplanter?</summary><p>Der Shuffle ist schon passiert. AQE spart nur Sort und Netzwerk-Lesen, dank Local Shuffle Reader.</p></details>
-<details><summary>Was ist der Local Shuffle Reader?</summary><p>AQE liest Shuffle-Dateien pro Mapper lokal statt über das Netzwerk. Das geht nach einem Wechsel auf Broadcast.</p></details>
-<details><summary>Wann wird ein Sort-Merge Join zum Shuffle Hash Join?</summary><p>Wenn alle Partitionen unter <code>maxShuffledHashJoinLocalMapThreshold</code> liegen. Standard 0, also aus.</p></details>
-<details><summary>Wie erkennt AQE Skew?</summary><p>Eine Partition ist grösser als 5 × Median und grösser als 256 MB.</p></details>
-<details><summary>Woran sehen Sie, dass AQE gewirkt hat?</summary><p>Im SQL-Tab: <code>isFinalPlan=true</code>, <code>AQEShuffleRead coalesced/skewed/local</code> und Final Plan vs Initial Plan.</p></details>
-<details><summary>Wann greift AQE nicht?</summary><p>Ohne Shuffle, bei Streaming und bei explizit gesetzten Partitionszahlen.</p></details>
-<details><summary>Kann AQE Partitionen vergrössern?</summary><p>Beim Coalescing nur zusammenlegen. Teilen gibt es nur bei Skew-Join und nach REBALANCE.</p></details>
-<details><summary>AQE vs CBO?</summary><p>CBO nutzt gespeicherte Statistiken vor dem Start. AQE misst zur Laufzeit. Beide ergänzen sich.</p></details>
-<details><summary>Was ist der REBALANCE-Hint?</summary><p>Ein Shuffle, nach dem AQE grosse Partitionen teilt und kleine zusammenlegt. Gut vor dem Schreiben.</p></details>
-<details><summary>Warum sieht explain() anders aus als der ausgeführte Plan?</summary><p>explain() zeigt den Plan vor der Ausführung. AQE ändert ihn erst während der Ausführung.</p></details>
-<details><summary>Szenario: Ein Job erzeugt nach dem Upgrade auf Spark 3.5 tausende winzige Tasks pro Stage. Was prüfen Sie?</summary><p>Ob AQE an ist und <code>parallelismFirst</code> true ist. Auf false setzen, damit die 64-MB-Zielgrösse gilt. Alte feste repartition-Zahlen prüfen.</p></details>
-<details><summary>Szenario: Eine Aggregation über 2 TB hat 200 Tasks mit je 10 GB Spill. Was tun Sie?</summary><p>AQE kann nur zusammenlegen. <code>initialPartitionNum</code> oder <code>shuffle.partitions</code> deutlich erhöhen, z. B. 2000. AQE fasst dann kleine wieder zusammen.</p></details>
-<details><summary>Szenario: Ein Join mit einer gefilterten Tabelle wird erst spät zum Broadcast. Wie verbessern Sie das?</summary><p>Filter früher anwenden, Statistiken verbessern oder bewusst <code>F.broadcast()</code> setzen. Dann entfällt der Shuffle der grossen Seite ganz.</p></details>
+<h3>Dein Beispiel</h3>
+</details>
 
 </body>
 </html>
