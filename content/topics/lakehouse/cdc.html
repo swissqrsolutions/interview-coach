@@ -19,6 +19,15 @@
   summary { font-weight: 600; cursor: pointer; }
   details p { margin: 6px 0 2px; }
   .small { color: #6e6e73; font-size: 14px; }
+  h3 { font-size: 17px; margin: 20px 0 6px; }
+  .geruest { border: 2px solid #1d1d1f; border-radius: 6px; padding: 10px 14px; margin: 14px 0; font-size: 15px; line-height: 1.4; }
+  .geruest h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; margin: 0 0 8px; padding: 0; border: 0; }
+  .geruest dl { display: grid; grid-template-columns: 6.6em 1fr; gap: 6px 10px; margin: 0; }
+  .geruest dt { font-weight: 700; font-size: 12px; text-transform: uppercase; letter-spacing: .05em; padding-top: 1px; }
+  .geruest dd { margin: 0; }
+  .muster { border: 1px solid #e5e5ea; border-left: 4px solid #1d1d1f; border-radius: 6px; padding: 10px 14px; margin: 14px 0; }
+  .muster h3 { margin: 0 0 6px; font-size: 13px; text-transform: uppercase; letter-spacing: .06em; }
+  .muster .mq { margin: 0 0 6px; }
 </style>
 </head>
 <body>
@@ -30,7 +39,42 @@
 <b>Kern:</b> <b>Change Data Capture (CDC)</b> ist das Erfassen jeder Änderung (Insert, Update, Delete) einer Datenbank als Strom von Events. Es löst das Problem, Zieltabellen aktuell zu halten, ohne immer ganze Tabellen zu kopieren. Gutes CDC liest das <b>Transaktions-Log</b> der Datenbank und sieht so auch Deletes und Zwischenstände.
 </div>
 
-<h2>1. Wo sitzt CDC?</h2>
+<div class="muster"><h3>Antwort-Muster</h3><p class="mq"><b>Frage:</b> Was ist Change Data Capture und wie funktioniert es?</p><ol>
+  <li>Mechanismus: CDC liest das Transaktions-Log der Datenbank über einen Replication Slot. Debezium macht daraus Events mit op, before und after.</li>
+  <li>Zahl: Im Beispiel sieht Log-basiertes CDC 6 Änderungen. Query-basiert sieht nur 2 Zeilen und kein Delete.</li>
+  <li>Trade-off: Log-basiert ist vollständig und belastet die Quelle wenig. Dafür braucht es Slots, Kafka Connect und Betrieb.</li>
+  <li>Produktion: Ich überwache den Slot-Lag, weil ein stehender Slot WAL hält und die Platte füllt. Ich wende Events nach LSN idempotent an.</li>
+</ol></div>
+
+<h2>1. Die Reise einer Änderung</h2>
+<svg viewBox="0 0 720 280" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="cdb" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="10" y="20" width="130" height="60" rx="10" fill="#eee" stroke="#777"/><text x="75" y="44" text-anchor="middle" font-weight="700">1. UPDATE</text><text x="75" y="64" text-anchor="middle" font-size="12">city = 'Thun'</text>
+  <line x1="140" y1="50" x2="178" y2="50" stroke="#555" stroke-width="2" marker-end="url(#cdb)"/>
+  <rect x="180" y="20" width="150" height="60" rx="10" fill="#0a66c2"/><text x="255" y="44" text-anchor="middle" fill="#fff" font-weight="700">2. WAL-Eintrag</text><text x="255" y="64" text-anchor="middle" fill="#fff" font-size="12">nach COMMIT</text>
+  <line x1="330" y1="50" x2="368" y2="50" stroke="#555" stroke-width="2" marker-end="url(#cdb)"/>
+  <rect x="370" y="20" width="160" height="60" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="450" y="44" text-anchor="middle" font-weight="700">3. Decoding</text><text x="450" y="64" text-anchor="middle" font-size="12">pgoutput → Debezium</text>
+  <line x1="530" y1="50" x2="568" y2="50" stroke="#555" stroke-width="2" marker-end="url(#cdb)"/>
+  <rect x="570" y="20" width="140" height="60" rx="10" fill="#fff" stroke="#555"/><text x="640" y="44" text-anchor="middle" font-weight="700">4. Event</text><text x="640" y="64" text-anchor="middle" font-size="12">op=u, before, after</text>
+  <line x1="640" y1="80" x2="640" y2="128" stroke="#555" stroke-width="2" marker-end="url(#cdb)"/>
+  <rect x="560" y="130" width="150" height="60" rx="10" fill="#fff" stroke="#555"/><text x="635" y="154" text-anchor="middle" font-weight="700">5. Kafka</text><text x="635" y="174" text-anchor="middle" font-size="12">Key = id</text>
+  <line x1="560" y1="160" x2="442" y2="160" stroke="#555" stroke-width="2" marker-end="url(#cdb)"/>
+  <rect x="280" y="130" width="160" height="60" rx="10" fill="#fff" stroke="#555"/><text x="360" y="154" text-anchor="middle" font-weight="700">6. Micro-Batch</text><text x="360" y="174" text-anchor="middle" font-size="12">letzte pro id (LSN)</text>
+  <line x1="280" y1="160" x2="182" y2="160" stroke="#555" stroke-width="2" marker-end="url(#cdb)"/>
+  <rect x="10" y="130" width="170" height="60" rx="10" fill="#e8f5e9" stroke="#2e7d32"/><text x="95" y="154" text-anchor="middle" font-weight="700">7. MERGE Silver</text><text x="95" y="174" text-anchor="middle" font-size="12">+ Offset committen</text>
+  <text x="360" y="240" text-anchor="middle" font-size="12">Debezium bestätigt die LSN an den Slot erst, wenn Kafka das Event hat.</text>
+</svg>
+<ol>
+  <li><b>UPDATE:</b> Eine App ändert die Stadt von Kunde 1 auf „Thun“ und macht COMMIT.</li>
+  <li><b>WAL-Eintrag:</b> Die Änderung steht im WAL mit einer <b>LSN</b> (Log Sequence Number). Sie ist eine wachsende Position im Log.</li>
+  <li><b>Logical Decoding:</b> Das Plugin <code>pgoutput</code> wandelt WAL-Bytes in logische Zeilen-Änderungen. Debezium liest sie über den Slot. Nur committete Transaktionen kommen an.</li>
+  <li><b>Event:</b> Debezium baut ein Event mit <code>op</code> (<code>c</code> create, <code>u</code> update, <code>d</code> delete, <code>r</code> Snapshot-Read, <code>t</code> truncate), <code>before</code>, <code>after</code> und <code>source</code> (LSN, Transaktions-ID).</li>
+  <li><b>Kafka:</b> Key ist der Primärschlüssel. Alle Events von Kunde 1 landen in derselben Partition, in Reihenfolge.</li>
+  <li><b>Micro-Batch:</b> Spark sammelt Events. Pro Schlüssel bleibt nur das <b>letzte</b> Event nach LSN.</li>
+  <li><b>MERGE:</b> Spark wendet es auf Silver an: Update, Insert oder Delete. Mit dem Commit merkt sich Spark den Kafka-Offset im Checkpoint.</li>
+</ol>
+
+<h2>2. Aufbau</h2>
 <svg viewBox="0 0 720 300" font-family="-apple-system, system-ui, sans-serif" font-size="14">
   <defs><marker id="cda" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
   <rect x="10" y="20" width="150" height="120" rx="10" fill="#f7f7fa" stroke="#999" stroke-dasharray="5 4"/><text x="85" y="38" text-anchor="middle" font-weight="700" font-size="13">PostgreSQL</text>
@@ -59,35 +103,76 @@
   <li><b>Bronze und Silver:</b> Bronze hält alle Events (Historie). Silver ist der aktuelle Spiegel der Quelltabelle.</li>
 </ol>
 
-<h2>2. Die Reise einer Änderung</h2>
-<svg viewBox="0 0 720 280" font-family="-apple-system, system-ui, sans-serif" font-size="14">
-  <defs><marker id="cdb" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
-  <rect x="10" y="20" width="130" height="60" rx="10" fill="#eee" stroke="#777"/><text x="75" y="44" text-anchor="middle" font-weight="700">1. UPDATE</text><text x="75" y="64" text-anchor="middle" font-size="12">city = 'Thun'</text>
-  <line x1="140" y1="50" x2="178" y2="50" stroke="#555" stroke-width="2" marker-end="url(#cdb)"/>
-  <rect x="180" y="20" width="150" height="60" rx="10" fill="#0a66c2"/><text x="255" y="44" text-anchor="middle" fill="#fff" font-weight="700">2. WAL-Eintrag</text><text x="255" y="64" text-anchor="middle" fill="#fff" font-size="12">nach COMMIT</text>
-  <line x1="330" y1="50" x2="368" y2="50" stroke="#555" stroke-width="2" marker-end="url(#cdb)"/>
-  <rect x="370" y="20" width="160" height="60" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="450" y="44" text-anchor="middle" font-weight="700">3. Decoding</text><text x="450" y="64" text-anchor="middle" font-size="12">pgoutput → Debezium</text>
-  <line x1="530" y1="50" x2="568" y2="50" stroke="#555" stroke-width="2" marker-end="url(#cdb)"/>
-  <rect x="570" y="20" width="140" height="60" rx="10" fill="#fff" stroke="#555"/><text x="640" y="44" text-anchor="middle" font-weight="700">4. Event</text><text x="640" y="64" text-anchor="middle" font-size="12">op=u, before, after</text>
-  <line x1="640" y1="80" x2="640" y2="128" stroke="#555" stroke-width="2" marker-end="url(#cdb)"/>
-  <rect x="560" y="130" width="150" height="60" rx="10" fill="#fff" stroke="#555"/><text x="635" y="154" text-anchor="middle" font-weight="700">5. Kafka</text><text x="635" y="174" text-anchor="middle" font-size="12">Key = id</text>
-  <line x1="560" y1="160" x2="442" y2="160" stroke="#555" stroke-width="2" marker-end="url(#cdb)"/>
-  <rect x="280" y="130" width="160" height="60" rx="10" fill="#fff" stroke="#555"/><text x="360" y="154" text-anchor="middle" font-weight="700">6. Micro-Batch</text><text x="360" y="174" text-anchor="middle" font-size="12">letzte pro id (LSN)</text>
-  <line x1="280" y1="160" x2="182" y2="160" stroke="#555" stroke-width="2" marker-end="url(#cdb)"/>
-  <rect x="10" y="130" width="170" height="60" rx="10" fill="#e8f5e9" stroke="#2e7d32"/><text x="95" y="154" text-anchor="middle" font-weight="700">7. MERGE Silver</text><text x="95" y="174" text-anchor="middle" font-size="12">+ Offset committen</text>
-  <text x="360" y="240" text-anchor="middle" font-size="12">Debezium bestätigt die LSN an den Slot erst, wenn Kafka das Event hat.</text>
-</svg>
+<h2>3. Details</h2>
 <ol>
-  <li><b>UPDATE:</b> Eine App ändert die Stadt von Kunde 1 auf „Thun“ und macht COMMIT.</li>
-  <li><b>WAL-Eintrag:</b> Die Änderung steht im WAL mit einer <b>LSN</b> (Log Sequence Number). Sie ist eine wachsende Position im Log.</li>
-  <li><b>Logical Decoding:</b> Das Plugin <code>pgoutput</code> wandelt WAL-Bytes in logische Zeilen-Änderungen. Debezium liest sie über den Slot. Nur committete Transaktionen kommen an.</li>
-  <li><b>Event:</b> Debezium baut ein Event mit <code>op</code> (<code>c</code> create, <code>u</code> update, <code>d</code> delete, <code>r</code> Snapshot-Read, <code>t</code> truncate), <code>before</code>, <code>after</code> und <code>source</code> (LSN, Transaktions-ID).</li>
-  <li><b>Kafka:</b> Key ist der Primärschlüssel. Alle Events von Kunde 1 landen in derselben Partition, in Reihenfolge.</li>
-  <li><b>Micro-Batch:</b> Spark sammelt Events. Pro Schlüssel bleibt nur das <b>letzte</b> Event nach LSN.</li>
-  <li><b>MERGE:</b> Spark wendet es auf Silver an: Update, Insert oder Delete. Mit dem Commit merkt sich Spark den Kafka-Offset im Checkpoint.</li>
+  <li><b>Initialer Snapshot:</b> Der Slot sieht nur Änderungen ab seiner Erstellung. Darum liest Debezium zuerst alle Zeilen (<code>op = r</code>). Standard ist <code>snapshot.mode = initial</code>. Andere Modi sind <code>no_data</code>, <code>when_needed</code> und <code>always</code>.</li>
+  <li><b>Inkrementeller Snapshot:</b> Debezium kann grosse Tabellen in Stücken nachladen, während das Streaming weiterläuft. Ein <b>Signal</b> löst das aus, zum Beispiel eine Signal-Tabelle.</li>
+  <li><b>REPLICA IDENTITY:</b> Standardmässig schreibt PostgreSQL bei Update und Delete nur den Primärschlüssel ins WAL. Mit <code>REPLICA IDENTITY FULL</code> enthält <code>before</code> alle alten Spalten. Das kostet mehr WAL.</li>
+  <li><b>Tombstone:</b> Nach einem Delete schickt Debezium ein Event mit gleichem Key und Wert <code>null</code>. Kafka <b>Log Compaction</b> löscht dann alle älteren Events zu diesem Key.</li>
+  <li><b>WAL-Wachstum:</b> Ein Slot hält WAL, bis Debezium bestätigt. Steht Debezium still, läuft die Platte voll. Schutz bieten <code>max_slot_wal_keep_size</code> und Monitoring von <code>pg_replication_slots</code>.</li>
+  <li><b>Heartbeats:</b> Ändern sich nur andere Tabellen, bestätigt Debezium keine neue LSN. <code>heartbeat.interval.ms</code> schickt regelmässig Events. So rückt der Slot weiter.</li>
+  <li><b>Reihenfolge:</b> Sie ist nur pro Kafka-Partition garantiert. Darum ist der Key der Primärschlüssel, und im Ziel ordnet man nach LSN, nicht nach Ankunft.</li>
+  <li><b>Duplikate:</b> Nach einem Neustart kann Debezium Events erneut senden (at-least-once). Darum nutzt man MERGE nach Schlüssel und LSN und nie blind INSERT.</li>
+  <li><b>Schema-Änderungen:</b> Ein <code>ALTER TABLE</code> ändert die Events. Mit einer <b>Schema Registry</b> (Avro) und Iceberg Schema Evolution kommen neue Spalten sauber an.</li>
+  <li><b>Outbox Pattern:</b> Der Service schreibt ein Event in eine Outbox-Tabelle, in derselben Transaktion wie die Daten. CDC liest die Outbox. So gibt es kein „DB geschrieben, Kafka nicht“.</li>
+  <li><b>SQL Server:</b> Dort liest ein SQL Agent Job das Log in Change-Tabellen (<code>cdc.&lt;schema&gt;_&lt;table&gt;_CT</code>). Debezium liest diese Change-Tabellen.</li>
+  <li><b>Iceberg-Ziel:</b> Viele kleine MERGEs erzeugen Delete Files. Man nutzt Merge-on-Read plus regelmässige Compaction.</li>
 </ol>
 
-<h2>3. Beispiel: Query-basiert gegen Log-basiert</h2>
+<h2>4. Fallen</h2>
+<div class="trap">
+<ul>
+  <li>„<code>WHERE updated_at &gt; letzter Lauf</code> ist CDC.“ → <b>Nur halb.</b> Es verpasst Deletes und Zwischenstände.</li>
+  <li>„Debezium liefert exactly-once.“ → <b>Falsch</b> im Normalfall. Nach Neustarts kommen Duplikate. Das Ziel muss idempotent sein.</li>
+  <li>„Der Slot ist harmlos.“ → <b>Falsch.</b> Ein inaktiver Slot hält WAL, bis die Platte voll ist.</li>
+  <li>„Reihenfolge ist in Kafka garantiert.“ → <b>Nur pro Partition.</b> Key = Primärschlüssel nötig.</li>
+  <li>„Bei Delete reicht der Key im Event.“ → Für MERGE ja. Für Historie oder Audit braucht man <code>before</code>, also <code>REPLICA IDENTITY FULL</code>.</li>
+</ul>
+</div>
+
+<h2>5. Selbsttest</h2>
+<h3>Warum?</h3>
+<details><summary>Warum braucht Debezium einen initialen Snapshot?</summary><p>Der Slot kennt nur Änderungen ab seiner Erstellung. Der Snapshot liefert den Bestand als op = r.</p></details>
+<details><summary>Warum kann CDC die Quell-DB gefährden?</summary><p>Ein stehender Slot hält WAL zurück, die Platte läuft voll. Schutz: max_slot_wal_keep_size und Monitoring.</p></details>
+<details><summary>Warum nach LSN sortieren und nicht nach Ankunft?</summary><p>Ankunft kann sich nach Retries oder über Partitionen verschieben. Die LSN ist die echte Reihenfolge der Commits.</p></details>
+<h3>Wie innen?</h3>
+<details><summary>Was ist CDC?</summary><p>Das Erfassen jeder Änderung einer Datenbank als Event-Strom. Ziele bleiben aktuell, ohne ganze Tabellen zu kopieren.</p></details>
+<details><summary>Wie funktioniert log-basiertes CDC in PostgreSQL?</summary><p>Logical Decoding liest das WAL über einen Replication Slot. Das Plugin pgoutput liefert Zeilen-Änderungen, Debezium macht daraus Events.</p></details>
+<details><summary>Was ist ein Replication Slot?</summary><p>Ein Lesezeiger im WAL. PostgreSQL behält alles WAL, das der Slot noch nicht bestätigt hat.</p></details>
+<details><summary>Was steht in einem Debezium-Event?</summary><p>op (c, u, d, r, t), before, after und source mit LSN, Transaktions-ID und Zeitstempel.</p></details>
+<details><summary>Was ist ein inkrementeller Snapshot?</summary><p>Debezium lädt eine Tabelle in Stücken nach, während das Streaming läuft. Ausgelöst per Signal.</p></details>
+<details><summary>Was bewirkt REPLICA IDENTITY FULL?</summary><p>Update- und Delete-Events enthalten alle alten Spaltenwerte im before-Feld. Kostet mehr WAL.</p></details>
+<details><summary>Was ist ein Tombstone?</summary><p>Ein Event mit gleichem Key und Wert null nach einem Delete. Kafka Log Compaction entfernt damit ältere Events zu diesem Key.</p></details>
+<details><summary>Wofür sind Heartbeats?</summary><p>Ändern sich nur nicht erfasste Tabellen, rückt der Slot sonst nicht vor. Heartbeats lassen Debezium regelmässig eine LSN bestätigen.</p></details>
+<details><summary>Wie funktioniert CDC in SQL Server?</summary><p>Ein Agent-Job liest das Transaktions-Log in Change-Tabellen mit __$operation und __$start_lsn. Debezium oder eigene Jobs lesen diese Tabellen.</p></details>
+<h3>Zahlen</h3>
+<details><summary>Wie viele Änderungen sieht Log-basiertes CDC im Beispiel?</summary><p>6 Änderungen in Reihenfolge, inklusive dem Delete von Kunde 2. Query-basiert sieht nur 2 Zeilen.</p></details>
+<details><summary>Welche op-Werte kennt Debezium?</summary><p>Fünf: <code>c</code> (create), <code>u</code> (update), <code>d</code> (delete), <code>r</code> (Snapshot-Read) und <code>t</code> (truncate).</p></details>
+<h3>Vergleich</h3>
+<details><summary>Wann wählen Sie kein CDC?</summary><p>Wenn die Daten als Dateien kommen, Tabellen klein sind oder Stunden Latenz reichen. Dann ist Batch einfacher.</p></details>
+<details><summary>Log-basiert, query-basiert oder Trigger-basiert?</summary><p>Log-basiert sieht alles mit wenig Last, braucht aber Slots und Betrieb. Query-basiert ist einfach, sieht aber keine Deletes. Trigger-basiert sieht alles, macht aber jede Schreib-Transaktion langsamer.</p></details>
+<h3>Produktion</h3>
+<details><summary>Was passiert bei einem DB-Failover?</summary><p>Vor PostgreSQL 17 war der logische Slot weg, man brauchte einen neuen Snapshot. PostgreSQL 17 kann Failover-Slots auf den Standby synchronisieren.</p></details>
+<details><summary>Szenario: Die Platte der produktiven PostgreSQL läuft voll, pg_wal ist riesig. Was prüfen Sie?</summary><p>pg_replication_slots auf inaktive Slots mit grossem Lag. Connector wieder starten oder den Slot löschen und neu snapshotten. Danach max_slot_wal_keep_size und Alarm setzen.</p></details>
+<details><summary>Szenario: Im Silver stehen manchmal alte Werte, obwohl die Quelle neuer ist. Warum?</summary><p>Events wurden nach Ankunft statt nach LSN angewendet, oder ein Duplikat kam später. Die LSN in Silver speichern und nur neuere Events anwenden.</p></details>
+<details><summary>Szenario: Der Connector war drei Tage aus, der Slot wurde gelöscht. Wie holen Sie auf?</summary><p>Neuer Slot und neuer Snapshot, am besten inkrementell. Silver per MERGE abgleichen, gelöschte Zeilen über Vergleich der Schlüssel finden.</p></details>
+<h3>Design</h3>
+<details><summary>Wie wenden Sie CDC-Events auf Iceberg an?</summary><p>Pro Schlüssel das letzte Event nach LSN wählen, dann MERGE mit Delete, Update und Insert. Merge-on-Read plus Compaction.</p></details>
+<details><summary>Was ist das Outbox Pattern?</summary><p>Daten und Event werden in derselben Transaktion geschrieben, das Event in eine Outbox-Tabelle. CDC liest die Outbox und publiziert. Kein Dual-Write-Problem.</p></details>
+<details><summary>Wie gehen Sie mit Schema-Änderungen um?</summary><p>Schema Registry mit Kompatibilitätsregeln, Iceberg Schema Evolution für neue Spalten. Breaking Changes vorher mit dem Quell-Team abstimmen.</p></details>
+<details><summary>Wie bauen Sie aus CDC eine SCD2-Historie?</summary><p>Jedes Update-Event schliesst die alte Version (valid_to) und öffnet eine neue. Die Event-Zeit oder LSN bestimmt die Reihenfolge.</p></details>
+
+<details class="mehr"><summary>Mehr</summary>
+<h3>Gerüst</h3>
+<ul>
+  <li><b>Warum?</b> Query-basiert sieht keine Deletes und keine Zwischenstände. Das Transaktions-Log sieht alles.</li>
+  <li><b>Wie innen?</b> WAL → Replication Slot → <code>pgoutput</code> → Debezium → Kafka (Key = Primärschlüssel) → MERGE. Reihenfolge nach LSN.</li>
+  <li><b>Zahlen</b> Beispiel: 6 Änderungen im Log, aber nur 2 Zeilen query-basiert. Debezium-<code>op</code>: c, u, d, r, t.</li>
+  <li><b>Vergleich</b> Log-basiert: alles, wenig Last. Query-basiert: einfach, aber ohne Deletes. Trigger: langsamer. Outbox: Fach-Events.</li>
+  <li><b>Produktion</b> Ein stehender Slot hält WAL und füllt die Platte. MERGE bricht bei doppelten Schlüsseln ab. Failover kann den Slot kosten.</li>
+  <li><b>Design</b> Immer nach LSN ordnen, nie nach Ankunft. Bronze hält alle Events. Idempotent anwenden.</li>
+</ul>
+<h3>Beispiel: Query-basiert gegen Log-basiert</h3>
 <pre>-- Kunde 1: Bern → Thun → Zürich, Kunde 2 gelöscht, Kunde 3 neu.
 -- Log per Trigger als Stand-in für das WAL (wal_level ist hier nicht 'logical').
 \echo '--- Query-basiert: WHERE updated_at &gt; High-Water Mark'
@@ -146,24 +231,7 @@ spark.sql("""
   WHEN MATCHED THEN UPDATE SET t.city = s.after.city
   WHEN NOT MATCHED AND s.op != 'd' THEN INSERT (id, city) VALUES (s.id, s.after.city)""")</pre>
 <p class="small">Erwartetes Ergebnis (laut Doku, nicht ausgeführt): ein Iceberg-Snapshot pro Batch. Ohne Dedup bricht MERGE ab, weil Iceberg pro Zielzeile nur eine passende Quellzeile erlaubt.</p>
-
-<h2>4. Details, die Interviewer fragen</h2>
-<ol>
-  <li><b>Initialer Snapshot:</b> Der Slot sieht nur Änderungen ab seiner Erstellung. Darum liest Debezium zuerst alle Zeilen (<code>op = r</code>). Standard ist <code>snapshot.mode = initial</code>. Andere Modi: <code>no_data</code>, <code>when_needed</code>, <code>always</code>.</li>
-  <li><b>Inkrementeller Snapshot:</b> Debezium kann grosse Tabellen in Stücken nachladen, während das Streaming weiterläuft. Ausgelöst über ein <b>Signal</b>, z. B. eine Signal-Tabelle.</li>
-  <li><b>REPLICA IDENTITY:</b> Standard schreibt bei Update und Delete nur den Primärschlüssel ins WAL. Mit <code>REPLICA IDENTITY FULL</code> enthält <code>before</code> alle alten Spalten. Kosten: mehr WAL.</li>
-  <li><b>Tombstone:</b> Nach einem Delete schickt Debezium ein Event mit gleichem Key und Wert <code>null</code>. Kafka <b>Log Compaction</b> löscht dann alle älteren Events zu diesem Key.</li>
-  <li><b>WAL-Wachstum:</b> Ein Slot hält WAL, bis Debezium bestätigt. Steht Debezium still, läuft die Platte voll. Schutz: <code>max_slot_wal_keep_size</code> und Monitoring von <code>pg_replication_slots</code>.</li>
-  <li><b>Heartbeats:</b> Ändern sich nur andere Tabellen, bestätigt Debezium keine neue LSN. <code>heartbeat.interval.ms</code> schickt regelmässig Events, damit der Slot weiterrückt.</li>
-  <li><b>Reihenfolge:</b> nur pro Kafka-Partition garantiert. Darum Key = Primärschlüssel und im Ziel nach LSN ordnen, nicht nach Ankunft.</li>
-  <li><b>Duplikate:</b> Nach einem Neustart kann Debezium Events erneut senden (at-least-once). Darum MERGE nach Schlüssel und LSN, nie blind INSERT.</li>
-  <li><b>Schema-Änderungen:</b> Ein <code>ALTER TABLE</code> ändert die Events. Mit einer <b>Schema Registry</b> (Avro) und Iceberg Schema Evolution kommen neue Spalten sauber an.</li>
-  <li><b>Outbox Pattern:</b> Der Service schreibt ein Event in eine Outbox-Tabelle, in derselben Transaktion wie die Daten. CDC liest die Outbox. So gibt es kein „DB geschrieben, Kafka nicht“.</li>
-  <li><b>SQL Server:</b> Dort liest ein SQL Agent Job das Log in Change-Tabellen (<code>cdc.&lt;schema&gt;_&lt;table&gt;_CT</code>). Debezium liest diese Change-Tabellen.</li>
-  <li><b>Iceberg-Ziel:</b> Viele kleine MERGEs erzeugen Delete Files. Merge-on-Read plus regelmässige Compaction.</li>
-</ol>
-
-<h2>5. Vergleich</h2>
+<h3>Vergleich</h3>
 <ul>
   <li><b>Log-basiertes CDC</b> (Debezium): sieht alles inkl. Deletes, wenig Last auf der Quelle, Reihenfolge exakt. Preis: Slots, Kafka Connect, Betrieb.</li>
   <li><b>Query-basiertes CDC</b> (<code>updated_at &gt;</code> High-Water Mark): einfach, nur SQL. Aber keine Deletes, keine Zwischenstände, braucht eine verlässliche Spalte und einen Index.</li>
@@ -171,8 +239,7 @@ spark.sql("""
   <li><b>Voller Abzug</b> (Full Load): ganze Tabelle kopieren und vergleichen. Robust für kleine Tabellen, teuer für grosse.</li>
   <li><b>Outbox</b> statt Tabellen-CDC: fachliche Events statt Zeilen-Änderungen. Gut zwischen Microservices.</li>
 </ul>
-
-<h2>6. In der Produktion</h2>
+<h3>In der Produktion</h3>
 <ol>
   <li><b>Platte der Quell-DB voll:</b> Debezium stand still, der Slot hielt WAL. Lösung: Slot-Lag alarmieren, <code>max_slot_wal_keep_size</code> setzen, toten Slot löschen und neu snapshotten.</li>
   <li><b>Failover der DB, Slot weg:</b> Vor PostgreSQL 17 gingen logische Slots beim Failover verloren. PostgreSQL 17 kann sie auf den Standby synchronisieren (<code>failover</code>-Option). Sonst: neuer Snapshot.</li>
@@ -181,8 +248,7 @@ spark.sql("""
   <li><b>Alte Werte überschreiben neue:</b> Events nach Ankunft statt nach LSN sortiert. Lösung: LSN in Silver speichern, nur neuere anwenden.</li>
   <li><b>Snapshot einer Riesentabelle dauert Tage:</b> Lösung: inkrementeller Snapshot in Stücken.</li>
 </ol>
-
-<h2>7. Diagnose</h2>
+<h3>Diagnose</h3>
 <ul>
   <li><code>SELECT slot_name, active, pg_size_pretty(pg_wal_lsn_diff(pg_current_wal_lsn(), confirmed_flush_lsn)) FROM pg_replication_slots;</code> zeigt, wie viel WAL ein Slot zurückhält.</li>
   <li><b>Kafka Connect REST:</b> <code>GET /connectors/&lt;name&gt;/status</code> zeigt, ob Connector und Tasks laufen.</li>
@@ -190,8 +256,7 @@ spark.sql("""
   <li><b>Abgleich:</b> Zeilenzahl und Prüfsumme pro Tabelle Quelle gegen Silver, z. B. täglich.</li>
   <li>SQL Server: <code>sys.dm_cdc_log_scan_sessions</code> und <code>sys.dm_cdc_errors</code>.</li>
 </ul>
-
-<h2>8. Senior-Punkte</h2>
+<h3>Senior-Punkte</h3>
 <div class="senior">
 <ol>
   <li><b>CDC verlagert Komplexität,</b> es entfernt sie nicht. Slots, Snapshots, Reihenfolge und Deletes sind die eigentliche Arbeit.</li>
@@ -202,43 +267,8 @@ spark.sql("""
   <li><b>Nicht jede Quelle braucht CDC.</b> Dateien mit Fristen oder kleine Tabellen sind mit Batch einfacher.</li>
 </ol>
 </div>
-
-<h2>9. Aus dem Projekt</h2>
-<p>„CDC habe ich nicht produktiv eingesetzt; bei ElCom MATCH kommen die Daten als Dateien, darum habe ich eine Batch-Ingestion mit atomarem Claim gebaut, statt Änderungen aus SQL Server zu streamen.“ <span class="small">(Prüfen und durch dein echtes Beispiel ersetzen.)</span></p>
-
-<h2>10. Fallen</h2>
-<div class="trap">
-<ul>
-  <li>„<code>WHERE updated_at &gt; letzter Lauf</code> ist CDC.“ → <b>Nur halb.</b> Es verpasst Deletes und Zwischenstände.</li>
-  <li>„Debezium liefert exactly-once.“ → <b>Falsch</b> im Normalfall. Nach Neustarts kommen Duplikate. Das Ziel muss idempotent sein.</li>
-  <li>„Der Slot ist harmlos.“ → <b>Falsch.</b> Ein inaktiver Slot hält WAL, bis die Platte voll ist.</li>
-  <li>„Reihenfolge ist in Kafka garantiert.“ → <b>Nur pro Partition.</b> Key = Primärschlüssel nötig.</li>
-  <li>„Bei Delete reicht der Key im Event.“ → Für MERGE ja. Für Historie oder Audit braucht man <code>before</code>, also <code>REPLICA IDENTITY FULL</code>.</li>
-</ul>
-</div>
-
-<h2>11. Fragen</h2>
-<details><summary>Was ist CDC?</summary><p>Das Erfassen jeder Änderung einer Datenbank als Event-Strom. Ziele bleiben aktuell, ohne ganze Tabellen zu kopieren.</p></details>
-<details><summary>Wie funktioniert log-basiertes CDC in PostgreSQL?</summary><p>Logical Decoding liest das WAL über einen Replication Slot. Das Plugin pgoutput liefert Zeilen-Änderungen, Debezium macht daraus Events.</p></details>
-<details><summary>Was ist ein Replication Slot?</summary><p>Ein Lesezeiger im WAL. PostgreSQL behält alles WAL, das der Slot noch nicht bestätigt hat.</p></details>
-<details><summary>Was steht in einem Debezium-Event?</summary><p>op (c, u, d, r, t), before, after und source mit LSN, Transaktions-ID und Zeitstempel.</p></details>
-<details><summary>Warum braucht Debezium einen initialen Snapshot?</summary><p>Der Slot kennt nur Änderungen ab seiner Erstellung. Der Snapshot liefert den Bestand als op = r.</p></details>
-<details><summary>Was ist ein inkrementeller Snapshot?</summary><p>Debezium lädt eine Tabelle in Stücken nach, während das Streaming läuft. Ausgelöst per Signal.</p></details>
-<details><summary>Was bewirkt REPLICA IDENTITY FULL?</summary><p>Update- und Delete-Events enthalten alle alten Spaltenwerte im before-Feld. Kostet mehr WAL.</p></details>
-<details><summary>Was ist ein Tombstone?</summary><p>Ein Event mit gleichem Key und Wert null nach einem Delete. Kafka Log Compaction entfernt damit ältere Events zu diesem Key.</p></details>
-<details><summary>Warum kann CDC die Quell-DB gefährden?</summary><p>Ein stehender Slot hält WAL zurück, die Platte läuft voll. Schutz: max_slot_wal_keep_size und Monitoring.</p></details>
-<details><summary>Wofür sind Heartbeats?</summary><p>Ändern sich nur nicht erfasste Tabellen, rückt der Slot sonst nicht vor. Heartbeats lassen Debezium regelmässig eine LSN bestätigen.</p></details>
-<details><summary>Wie wenden Sie CDC-Events auf Iceberg an?</summary><p>Pro Schlüssel das letzte Event nach LSN wählen, dann MERGE mit Delete, Update und Insert. Merge-on-Read plus Compaction.</p></details>
-<details><summary>Warum nach LSN sortieren und nicht nach Ankunft?</summary><p>Ankunft kann sich nach Retries oder über Partitionen verschieben. Die LSN ist die echte Reihenfolge der Commits.</p></details>
-<details><summary>Was ist das Outbox Pattern?</summary><p>Daten und Event werden in derselben Transaktion geschrieben, das Event in eine Outbox-Tabelle. CDC liest die Outbox und publiziert. Kein Dual-Write-Problem.</p></details>
-<details><summary>Was passiert bei einem DB-Failover?</summary><p>Vor PostgreSQL 17 war der logische Slot weg, man brauchte einen neuen Snapshot. PostgreSQL 17 kann Failover-Slots auf den Standby synchronisieren.</p></details>
-<details><summary>Wie funktioniert CDC in SQL Server?</summary><p>Ein Agent-Job liest das Transaktions-Log in Change-Tabellen mit __$operation und __$start_lsn. Debezium oder eigene Jobs lesen diese Tabellen.</p></details>
-<details><summary>Wie gehen Sie mit Schema-Änderungen um?</summary><p>Schema Registry mit Kompatibilitätsregeln, Iceberg Schema Evolution für neue Spalten. Breaking Changes vorher mit dem Quell-Team abstimmen.</p></details>
-<details><summary>Wann wählen Sie kein CDC?</summary><p>Wenn die Daten als Dateien kommen, Tabellen klein sind oder Stunden Latenz reichen. Dann ist Batch einfacher.</p></details>
-<details><summary>Wie bauen Sie aus CDC eine SCD2-Historie?</summary><p>Jedes Update-Event schliesst die alte Version (valid_to) und öffnet eine neue. Die Event-Zeit oder LSN bestimmt die Reihenfolge.</p></details>
-<details><summary>Szenario: Die Platte der produktiven PostgreSQL läuft voll, pg_wal ist riesig. Was prüfen Sie?</summary><p>pg_replication_slots auf inaktive Slots mit grossem Lag. Connector wieder starten oder den Slot löschen und neu snapshotten. Danach max_slot_wal_keep_size und Alarm setzen.</p></details>
-<details><summary>Szenario: Im Silver stehen manchmal alte Werte, obwohl die Quelle neuer ist. Warum?</summary><p>Events wurden nach Ankunft statt nach LSN angewendet, oder ein Duplikat kam später. Die LSN in Silver speichern und nur neuere Events anwenden.</p></details>
-<details><summary>Szenario: Der Connector war drei Tage aus, der Slot wurde gelöscht. Wie holen Sie auf?</summary><p>Neuer Slot und neuer Snapshot, am besten inkrementell. Silver per MERGE abgleichen, gelöschte Zeilen über Vergleich der Schlüssel finden.</p></details>
+<h3>Dein Beispiel</h3>
+</details>
 
 </body>
 </html>
