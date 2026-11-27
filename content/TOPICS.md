@@ -2,7 +2,7 @@
 
 Generated from content/syllabus.json. Priority 1 = asked in almost every interview. Mark: **Projekt** = shown in CV/Gmail · **— kein Projekt** = no project experience · **? prüfen** = unclear, you decide.
 
-437 topics · P1 267 · P2 132 · P3 38 · written 386
+437 topics · P1 267 · P2 132 · P3 38 · written 400
 
 ## Java 21 (core + advanced) (42)
 Sources: Java SE 21/25 docs (docs.oracle.com) · JVM Specification · OpenJDK source + JEPs (openjdk.org) · Oracle Java SE 21 Developer exam 1Z0-830 topics
@@ -522,7 +522,7 @@ Sources: angular.dev guides (v20) · RxJS docs
 | 1 | HttpClient und Interceptors | Projekt | ✓ |
 | 1 | Angular 14 bis 22: was ist neu | ? prüfen | ✓ |
 | 2 | Performance: trackBy, @defer, Bundle-Grösse | ? prüfen | ✓ |
-| 2 | Angular-Tests | ? prüfen |  |
+| 2 | Angular-Tests | ? prüfen | ✓ |
 
 ## Angular Signals + NgRx (9)
 Sources: angular.dev signals guide · NgRx docs (Store, Effects, Entity, SignalStore)
@@ -536,8 +536,8 @@ Sources: angular.dev signals guide · NgRx docs (Store, Effects, Entity, SignalS
 | 1 | NgRx Effects | — kein Projekt | ✓ |
 | 1 | NgRx SignalStore | — kein Projekt | ✓ |
 | 1 | Welches State Management wann? | — kein Projekt | ✓ |
-| 2 | linkedSignal und resource() | — kein Projekt |  |
-| 2 | NgRx Entity | — kein Projekt |  |
+| 2 | linkedSignal und resource() | — kein Projekt | ✓ |
+| 2 | NgRx Entity | — kein Projekt | ✓ |
 
 ## Testing (JUnit, Mockito, Playwright, Cypress) (8)
 Sources: JUnit 5 user guide · Mockito docs · Testcontainers docs · Playwright docs
@@ -547,11 +547,11 @@ Sources: JUnit 5 user guide · Mockito docs · Testcontainers docs · Playwright
 | 1 | Testpyramide und Teststrategie | Projekt | ✓ |
 | 1 | JUnit 6 und Mockito | Projekt | ✓ |
 | 1 | Testcontainers | Projekt | ✓ |
-| 2 | Mock, Stub, Spy, Fake | ? prüfen |  |
-| 2 | E2E: Playwright, Cypress, Selenium | Projekt |  |
-| 2 | TDD | ? prüfen |  |
-| 2 | Contract Testing | — kein Projekt |  |
-| 2 | Flaky Tests | Projekt |  |
+| 2 | Mock, Stub, Spy, Fake | ? prüfen | ✓ |
+| 2 | E2E: Playwright, Cypress, Selenium | Projekt | ✓ |
+| 2 | TDD | ? prüfen | ✓ |
+| 2 | Contract Testing | — kein Projekt | ✓ |
+| 2 | Flaky Tests | Projekt | ✓ |
 
 ## Design patterns + architecture styles (11)
 Sources: Design Patterns (GoF) · Hexagonal Architecture (Alistair Cockburn) · Clean Architecture (Robert C. Martin) · Domain-Driven Design (Evans)
@@ -619,7 +619,7 @@ Sources: The Scrum Guide 2020 · SAFe 6 framework
 | 1 | Schätzung und Metriken | Projekt | ✓ |
 | 1 | SAFe: ART und PI Planning | Projekt | ✓ |
 | 1 | Code Reviews | Projekt | ✓ |
-| 2 | Kanban vs Scrum | ? prüfen |  |
+| 2 | Kanban vs Scrum | ? prüfen | ✓ |
 
 ## AI-assisted development (1)
 Sources: vendor docs (GitHub Copilot, Claude Code) · company AI usage policies
@@ -676,11 +676,11 @@ Sources: NeetCode 150 / LeetCode pattern lists · Introduction to Algorithms (CL
 | 1 | Bäume: DFS, BFS, BST | — kein Projekt | ✓ |
 | 1 | Graphen: BFS, DFS, Topo-Sort | — kein Projekt | ✓ |
 | 1 | Heap und PriorityQueue | — kein Projekt | ✓ |
-| 2 | Linked Lists | — kein Projekt |  |
-| 2 | Intervalle | — kein Projekt |  |
-| 2 | Sortieralgorithmen | — kein Projekt |  |
-| 2 | Dynamic Programming: Grundidee | — kein Projekt |  |
-| 2 | Rekursion und Backtracking | — kein Projekt |  |
+| 2 | Linked Lists | — kein Projekt | ✓ |
+| 2 | Intervalle | — kein Projekt | ✓ |
+| 2 | Sortieralgorithmen | — kein Projekt | ✓ |
+| 2 | Dynamic Programming: Grundidee | — kein Projekt | ✓ |
+| 2 | Rekursion und Backtracking | — kein Projekt | ✓ |
 
 ## Git (5)
 Sources: Pro Git (git-scm.com/book) · git documentation

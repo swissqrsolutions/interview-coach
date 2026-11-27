@@ -1,0 +1,253 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Performance: trackBy, @defer, Bundle-Grösse</title>
+<style>
+  body { font: 17px/1.55 -apple-system, system-ui, sans-serif; max-width: 760px; margin: 0 auto; padding: 16px; color: #1d1d1f; }
+  h1 { font-size: 28px; margin: 8px 0 4px; }
+  h2 { font-size: 21px; margin: 32px 0 8px; padding-top: 12px; border-top: 2px solid #e5e5ea; }
+  .kern { background: #eef6ff; border-left: 4px solid #0a66c2; padding: 10px 14px; border-radius: 6px; }
+  .senior { background: #f0faf0; border-left: 4px solid #2e7d32; padding: 10px 14px; border-radius: 6px; }
+  .trap { background: #fff4f2; border-left: 4px solid #c62828; padding: 10px 14px; border-radius: 6px; }
+  code { background: #f2f2f7; padding: 1px 5px; border-radius: 4px; font-size: 15px; }
+  pre { background: #1e1e1e; color: #e6e6e6; padding: 12px; border-radius: 8px; overflow-x: auto; font-size: 13.5px; line-height: 1.45; }
+  svg { width: 100%; height: auto; display: block; margin: 10px 0; }
+  ol li, ul li { margin: 4px 0; }
+  details { border: 1px solid #e5e5ea; border-radius: 8px; padding: 8px 12px; margin: 6px 0; }
+  summary { font-weight: 600; cursor: pointer; }
+  details p { margin: 6px 0 2px; }
+  .small { color: #6e6e73; font-size: 14px; }
+  h3 { font-size: 17px; margin: 20px 0 6px; }
+  .geruest { border: 2px solid #1d1d1f; border-radius: 6px; padding: 10px 14px; margin: 14px 0; font-size: 15px; line-height: 1.4; }
+  .geruest h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; margin: 0 0 8px; padding: 0; border: 0; }
+  .geruest dl { display: grid; grid-template-columns: 6.6em 1fr; gap: 6px 10px; margin: 0; }
+  .geruest dt { font-weight: 700; font-size: 12px; text-transform: uppercase; letter-spacing: .05em; padding-top: 1px; }
+  .geruest dd { margin: 0; }
+  .muster { border: 1px solid #e5e5ea; border-left: 4px solid #1d1d1f; border-radius: 6px; padding: 10px 14px; margin: 14px 0; }
+  .muster h3 { margin: 0 0 6px; font-size: 13px; text-transform: uppercase; letter-spacing: .06em; }
+  .muster .mq { margin: 0 0 6px; }
+</style>
+</head>
+<body>
+
+<h1>Performance: trackBy, @defer, Bundle-Grösse</h1>
+<!-- sources: Angular · Quellen: angular.dev Guides „Control flow“ (@for, track), „Deferrable views“ (@defer), „Route loading strategies“, „Build“ (Budgets, Builder), „Skipping component subtrees“ (OnPush), „Zoneless“, „Runtime performance“, „Image optimization“ (NgOptimizedImage), Fehler NG0955 -->
+
+<div class="kern">
+<b>Kern:</b> Angular-<b>Performance</b> hat zwei Teile. Beim Laden zählt die <b>Bundle-Grösse</b>. Man hält sie klein mit Lazy Routes und <code>@defer</code>. Zur Laufzeit zählt, wie oft Angular prüft und wie viel DOM es ändert. Dafür sorgen <code>track</code>, OnPush und Signals.
+</div>
+
+<div class="muster"><h3>Antwort-Muster</h3><p class="mq"><b>Frage:</b> Wie machen Sie eine langsame Angular-App schneller?</p><ol>
+  <li>Mechanismus: Zuerst messe ich mit der Build-Ausgabe und den Chrome DevTools. Beim Laden teile ich Code in Chunks mit Lazy Routes und <code>@defer</code>. Zur Laufzeit begrenze ich Change Detection und DOM-Arbeit.</li>
+  <li>Zahl: Das Budget <code>initial</code> warnt standardmässig bei 500 kB und bricht bei 1 MB ab. Ein einzelner Komponenten-Stil warnt bei 4 kB und bricht bei 8 kB.</li>
+  <li>Trade-off: Mehr Chunks heissen mehr Requests, und Inhalt kommt später. Verschachteltes Lazy Loading kann schaden. Prefetch gleicht das aus.</li>
+  <li>Produktion: Ich lege Budgets in die CI. So wächst das Bundle nicht still, und ein Build bricht bei zu viel Code ab.</li>
+</ol></div>
+
+<h2>1. @defer in 7 Schritten</h2>
+<svg viewBox="0 0 720 310" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="b" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="10" y="10" width="200" height="68" rx="10" fill="#eee" stroke="#777"/><text x="110" y="32" text-anchor="middle" font-weight="700">1. Compiler</text><text x="110" y="51" text-anchor="middle" font-size="12">pro Abhängigkeit ein</text><text x="110" y="67" text-anchor="middle" font-size="12">dynamischer import()</text>
+  <rect x="260" y="10" width="200" height="68" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="360" y="32" text-anchor="middle" font-weight="700">2. Erster Render</text><text x="360" y="51" text-anchor="middle" font-size="12">@placeholder erscheint</text><text x="360" y="67" text-anchor="middle" font-size="12">(oder nichts)</text>
+  <rect x="510" y="10" width="200" height="68" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="610" y="32" text-anchor="middle" font-weight="700">3. Trigger</text><text x="610" y="51" text-anchor="middle" font-size="12">idle, viewport,</text><text x="610" y="67" text-anchor="middle" font-size="12">interaction, hover ...</text>
+  <rect x="510" y="110" width="200" height="68" rx="10" fill="#fff" stroke="#555"/><text x="610" y="132" text-anchor="middle" font-weight="700">4. prefetch</text><text x="610" y="151" text-anchor="middle" font-size="12">JavaScript früh laden,</text><text x="610" y="167" text-anchor="middle" font-size="12">Inhalt noch nicht</text>
+  <rect x="260" y="110" width="200" height="68" rx="10" fill="#fff" stroke="#555"/><text x="360" y="132" text-anchor="middle" font-weight="700">5. @loading</text><text x="360" y="151" text-anchor="middle" font-size="12">after und minimum</text><text x="360" y="167" text-anchor="middle" font-size="12">steuern die Anzeige</text>
+  <rect x="10" y="110" width="200" height="68" rx="10" fill="#e8f5e9" stroke="#2e7d32"/><text x="110" y="132" text-anchor="middle" font-weight="700">6. Fertig</text><text x="110" y="151" text-anchor="middle" font-size="12">Inhalt ersetzt</text><text x="110" y="167" text-anchor="middle" font-size="12">den Platzhalter</text>
+  <rect x="10" y="210" width="200" height="68" rx="10" fill="#0a66c2" stroke="#0a66c2"/><text x="110" y="232" text-anchor="middle" font-weight="700" fill="#fff">7. @error</text><text x="110" y="251" text-anchor="middle" font-size="12" fill="#fff">wenn das Laden</text><text x="110" y="267" text-anchor="middle" font-size="12" fill="#fff">fehlschlägt</text>
+  <line x1="210" y1="44" x2="258" y2="44" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <line x1="460" y1="44" x2="508" y2="44" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <line x1="610" y1="78" x2="610" y2="108" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <line x1="510" y1="144" x2="462" y2="144" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <line x1="260" y1="144" x2="212" y2="144" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <line x1="110" y1="178" x2="110" y2="208" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+</svg>
+<ol>
+  <li><b>Compiler:</b> Der Compiler erzeugt für jede Komponente, Directive und Pipe im Block einen dynamischen <code>import()</code>. Daraus entsteht ein eigener Chunk.</li>
+  <li><b>Erster Render:</b> Angular zeigt den <code>@placeholder</code> oder nichts. Die Abhängigkeiten des Platzhalters laden sofort.</li>
+  <li><b>Trigger:</b> Ein Trigger startet das Laden. Ohne Angabe gilt <code>on idle</code>. Mehrere Trigger mit <code>;</code> wirken wie ein ODER.</li>
+  <li><b>prefetch:</b> Ein Trigger mit <code>prefetch</code> lädt das JavaScript früher. Der Inhalt erscheint erst beim Haupt-Trigger.</li>
+  <li><b>@loading:</b> Während des Ladens zeigt <code>@loading</code> einen Zustand. <code>after</code> ist die Wartezeit vor der Anzeige. <code>minimum</code> ist die Mindestdauer. Beide Timer starten mit dem Laden.</li>
+  <li><b>Fertig:</b> Ist der Chunk da, ersetzt der Inhalt den Platzhalter.</li>
+  <li><b>@error:</b> Schlägt das Laden fehl, zeigt Angular den <code>@error</code>-Block. Seine Abhängigkeiten laden sofort.</li>
+</ol>
+<p>Auf dem Server rendert Angular nur den Platzhalter. Trigger laufen dort nicht. Der Client hydriert den Platzhalter und aktiviert danach die Trigger.</p>
+
+<h2>2. Aufbau</h2>
+<svg viewBox="0 0 720 300" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="a" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="10" y="10" width="700" height="56" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="360" y="34" text-anchor="middle" font-weight="700">Wo geht Zeit verloren?</text><text x="360" y="53" text-anchor="middle" font-size="12">Beim Laden, beim Rendern oder beim Prüfen</text>
+  <rect x="10" y="116" width="163" height="68" rx="10" fill="#fff" stroke="#555"/><text x="91.5" y="138" text-anchor="middle" font-weight="700">Laden</text><text x="91.5" y="157" text-anchor="middle" font-size="12">Bundle, Chunks,</text><text x="91.5" y="173" text-anchor="middle" font-size="12">Lazy Routes, @defer</text>
+  <line x1="91.5" y1="66" x2="91.5" y2="114" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <line x1="91.5" y1="184" x2="91.5" y2="232" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="189" y="116" width="163" height="68" rx="10" fill="#fff" stroke="#555"/><text x="270.5" y="138" text-anchor="middle" font-weight="700">Rendern</text><text x="270.5" y="157" text-anchor="middle" font-size="12">@for mit track,</text><text x="270.5" y="173" text-anchor="middle" font-size="12">weniger DOM-Arbeit</text>
+  <line x1="270.5" y1="66" x2="270.5" y2="114" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <line x1="270.5" y1="184" x2="270.5" y2="232" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="368" y="116" width="163" height="68" rx="10" fill="#fff" stroke="#555"/><text x="449.5" y="138" text-anchor="middle" font-weight="700">Prüfen</text><text x="449.5" y="157" text-anchor="middle" font-size="12">Change Detection,</text><text x="449.5" y="173" text-anchor="middle" font-size="12">OnPush, Signals</text>
+  <line x1="449.5" y1="66" x2="449.5" y2="114" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <line x1="449.5" y1="184" x2="449.5" y2="232" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="547" y="116" width="163" height="68" rx="10" fill="#fff" stroke="#555"/><text x="628.5" y="138" text-anchor="middle" font-weight="700">Bilder</text><text x="628.5" y="157" text-anchor="middle" font-size="12">NgOptimizedImage,</text><text x="628.5" y="173" text-anchor="middle" font-size="12">priority, srcset</text>
+  <line x1="628.5" y1="66" x2="628.5" y2="114" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <line x1="628.5" y1="184" x2="628.5" y2="232" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <rect x="10" y="234" width="700" height="56" rx="10" fill="#eee" stroke="#777"/><text x="360" y="258" text-anchor="middle" font-weight="700">Messen</text><text x="360" y="277" text-anchor="middle" font-size="12">Build-Ausgabe, Budgets, Chrome DevTools</text>
+</svg>
+<ol>
+  <li><b>Bundle:</b> Der Wert «Initial Total» in der Build-Ausgabe ist das JavaScript und CSS für den Start. Lazy Chunks kommen später dazu.</li>
+  <li><b>Lazy Routes:</b> <code>loadComponent</code> und <code>loadChildren</code> laden Code erst, wenn die Route aktiv wird.</li>
+  <li><b>@defer:</b> Teilt Teile einer Seite in eigene Chunks. Man steuert den Zeitpunkt mit Triggern.</li>
+  <li><b>@for und track:</b> <code>track</code> hält die Beziehung zwischen Daten und DOM-Knoten. So ändert Angular nur, was nötig ist.</li>
+  <li><b>Change Detection:</b> OnPush und Signals begrenzen, wann Angular Komponenten prüft. Zoneless ist ab Angular 21 der Standard.</li>
+  <li><b>Bilder:</b> <code>NgOptimizedImage</code> setzt Lazy Loading, Grössen und srcset richtig.</li>
+</ol>
+
+<h2>3. Details</h2>
+<ol>
+  <li><b>track in @for:</b> Jeder <code>@for</code> braucht einen <code>track</code>-Ausdruck. Er hält die Beziehung zwischen Daten und DOM-Knoten. Angular führt so die wenigsten DOM-Operationen aus. Ideal ist eine eindeutige Eigenschaft wie <code>id</code>.</li>
+  <li><b>track-Fallen:</b> <code>track $index</code> passt nur für Listen, die sich nie ändern. <code>track item</code> vergleicht mit <code>===</code> und ist der letzte Ausweg. Die Doku warnt vor deutlich langsameren Updates. Doppelte Schlüssel erzeugen den Fehler NG0955.</li>
+  <li><b>trackBy früher:</b> Bei <code>*ngFor</code> war <code>trackBy</code> eine Funktion und optional. <code>@for</code> priorisiert die Wiederverwendung von Views. Ändert sich nur eine getrackte Eigenschaft, aktualisiert Angular die Bindings und baut das Element nicht neu.</li>
+  <li><b>@defer-Trigger:</b> Standard ist <code>on idle</code> über <code>requestIdleCallback</code>. <code>viewport</code> nutzt den IntersectionObserver. <code>interaction</code> reagiert auf click oder keydown. <code>hover</code> reagiert auf mouseover und focusin. Dazu kommen <code>immediate</code>, <code>timer(500ms)</code> und <code>when</code>. <code>when</code> läuft nur einmal.</li>
+  <li><b>@defer-Voraussetzungen:</b> Die Abhängigkeiten müssen standalone sein. Sonst laden sie sofort. Wer sie ausserhalb des Blocks in derselben Datei nutzt, lädt sie auch sofort. Auch eine ViewChild-Query erzwingt das. Ein Import über ein Barrel-File (<code>index.ts</code>) kann die Komponente im Haupt-Bundle halten.</li>
+  <li><b>Platzhalter und Loading:</b> <code>@placeholder</code> hat <code>minimum</code> gegen Flackern. <code>@loading</code> hat <code>after</code> und <code>minimum</code>. Alle drei Blöcke sind optional. Eine feste Zahl als Standard nennt die Doku nicht.</li>
+  <li><b>Lazy Routes:</b> <code>loadComponent</code> lädt eine Komponente beim Aktivieren der Route. <code>loadChildren</code> lädt Kind-Routen beim Matching. Der Loader läuft im Injection Context. Die Doku rät, Landing Pages eager zu laden und den Rest lazy.</li>
+  <li><b>Budgets:</b> In <code>angular.json</code> setzt man Budgets. Standard für <code>initial</code> ist Warnung bei 500 kB und Fehler bei 1 MB. Für <code>anyComponentStyle</code> sind es 4 kB und 8 kB. Mit <code>type: "bundle"</code> und einem Namen budgetiert man einen Lazy Chunk.</li>
+  <li><b>Builder:</b> Neue Projekte nutzen <code>@angular/build:application</code>. Er baut mit esbuild. Es gibt weiterhin Builder mit webpack.</li>
+  <li><b>OnPush:</b> Angular prüft einen OnPush-Teilbaum nur bei vier Anlässen. Ein neuer Input kommt per Template-Binding (Vergleich mit <code>Object.is</code>). Ein Event tritt im Teilbaum auf. Die Komponente ist als dirty markiert, etwa per <code>markForCheck</code> oder AsyncPipe. Ein Signal im Template ändert sich.</li>
+  <li><b>Zoneless:</b> Ab Angular 21 ist zoneless der Standard. ZoneJS startet Change Detection bei jedem DOM-Event und jedem Async-Task. Es weiss nicht, ob sich Zustand geändert hat. Es kostet auch Payload und Startzeit.</li>
+  <li><b>NgOptimizedImage:</b> Mit <code>ngSrc</code> statt <code>src</code>. Das LCP-Bild bekommt <code>priority</code>. Breite und Höhe sind Pflicht ausser bei <code>fill</code>. Bilder ohne <code>priority</code> laden lazy. Platzhalter brauchen einen Image Loader.</li>
+</ol>
+
+<h2>4. Fallen</h2>
+<div class="trap">
+<ul>
+  <li>„<code>track item</code> ist schnell genug.“ → <b>Falsch.</b> Angular kann dann Daten nicht den DOM-Knoten zuordnen. Das kann deutlich langsamer sein. Besser ist <code>track item.id</code>.</li>
+  <li>„<code>track $index</code> ist immer sicher.“ → <b>Falsch.</b> Es passt nur für Listen, die sich nie ändern. Bei Einfügen oder Sortieren verschiebt es Zuordnungen.</li>
+  <li>„Alles in <code>@defer</code> wird lazy.“ → <b>Falsch.</b> Nicht standalone-Abhängigkeiten, Nutzung ausserhalb des Blocks und ViewChild-Queries laden trotzdem sofort.</li>
+  <li>„<code>@defer</code> lädt erst bei Klick.“ → <b>Falsch.</b> Ohne Trigger gilt <code>on idle</code>. Es lädt, sobald der Browser untätig ist.</li>
+  <li>„Wenn ich ein Objekt mutiere, prüft OnPush neu.“ → <b>Falsch.</b> Gleiche Referenz bedeutet gleicher Input. OnPush prüft dann nicht. Man ersetzt das Objekt oder nutzt Signals.</li>
+  <li>„Mehr Lazy Loading ist immer schneller.“ → <b>Falsch.</b> Jeder Chunk ist ein Request. Verschachteltes Lazy Loading kann den Start sogar bremsen.</li>
+</ul>
+</div>
+
+<h2>5. Selbsttest</h2>
+<h3>Warum?</h3>
+<details><summary>Warum braucht <code>@for</code> einen <code>track</code>?</summary><p>Er sagt Angular, welches Datenobjekt zu welchem DOM-Knoten gehört. Ohne diese Zuordnung müsste Angular viel DOM neu bauen.</p></details>
+<details><summary>Warum <code>@defer</code> und nicht <code>@if</code>?</summary><p>Ein <code>@if</code> versteckt nur Inhalt. Der Code der Komponente liegt trotzdem im Bundle. <code>@defer</code> macht daraus einen eigenen Chunk.</p></details>
+<details><summary>Warum Budgets in der CI?</summary><p>Bundles wachsen mit jedem Import unbemerkt. Ein Budget bricht den Build ab, bevor die Seite langsam wird.</p></details>
+<h3>Wie innen?</h3>
+<details><summary>Was macht der Compiler mit <code>@defer</code>?</summary><p>Er erzeugt für jede Abhängigkeit im Block einen dynamischen <code>import()</code>. Daraus wird ein eigener Chunk.</p></details>
+<details><summary>Wie arbeitet <code>track</code> im DOM?</summary><p>Angular hält je Schlüssel einen View. Ändert sich die Liste, vergleicht es Schlüssel. Es bewegt, ändert oder löscht Views, statt alles neu zu bauen.</p></details>
+<details><summary>Wie funktioniert eine Lazy Route?</summary><p>Ein Loader gibt per <code>import()</code> ein Promise zurück. Der Router lädt den Chunk, wenn die Route aktiv wird.</p></details>
+<details><summary>Wann prüft Angular einen OnPush-Teilbaum?</summary><p>Bei vier Anlässen. Ein neuer Input kommt per Binding. Ein Event tritt im Teilbaum auf. <code>markForCheck</code> oder AsyncPipe markiert ihn. Ein gelesenes Signal ändert sich.</p></details>
+<details><summary>Was macht <code>prefetch</code> bei <code>@defer</code>?</summary><p>Es lädt das JavaScript früher. Der Inhalt erscheint erst, wenn der Haupt-Trigger feuert. Beispiel: <code>@defer (on interaction; prefetch on idle)</code>.</p></details>
+<h3>Zahlen</h3>
+<details><summary>Wie gross darf das Initial-Bundle standardmässig sein?</summary><p>Warnung bei 500 kB, Fehler bei 1 MB.</p></details>
+<details><summary>Wie gross darf ein Komponenten-Stil sein?</summary><p>Warnung bei 4 kB, Fehler bei 8 kB (<code>anyComponentStyle</code>).</p></details>
+<details><summary>Was ist der Standard-Trigger von <code>@defer</code>?</summary><p><code>on idle</code>. Er nutzt <code>requestIdleCallback</code> und hat ein optionales Timeout in Millisekunden.</p></details>
+<details><summary>Ab welcher Version ist zoneless Standard?</summary><p>Ab Angular 21.</p></details>
+<h3>Vergleich</h3>
+<details><summary><code>@defer</code> oder Lazy Route?</summary><p>Eine Lazy Route teilt nach Seite. <code>@defer</code> teilt Teile innerhalb einer Seite. Man kombiniert beide.</p></details>
+<details><summary><code>track item.id</code> oder <code>track $index</code>?</summary><p><code>id</code> bleibt bei Umsortieren stabil. <code>$index</code> nur bei statischen Listen.</p></details>
+<details><summary><code>*ngFor</code> mit <code>trackBy</code> oder <code>@for</code>?</summary><p><code>trackBy</code> war eine optionale Funktion. Bei <code>@for</code> ist <code>track</code> ein Pflicht-Ausdruck.</p></details>
+<details><summary>OnPush oder Signals?</summary><p>OnPush überspringt Teilbäume. Signals melden genau, welche Komponente ein geänderter Wert betrifft. Sie ergänzen sich.</p></details>
+<h3>Produktion</h3>
+<details><summary>Wie misst man Laufzeit-Probleme?</summary><p>Mit dem Performance-Panel der Chrome DevTools. Dort sieht man lange Tasks und Change-Detection-Läufe.</p></details>
+<details><summary>Wie findet man zu grosse Bundles?</summary><p>In der Build-Ausgabe. Dort steht «Initial Total». Budgets lassen den Build bei Überschreitung warnen oder scheitern.</p></details>
+<details><summary>Szenario: Eine Tabelle mit 5000 Zeilen ruckelt bei jedem Reload der Daten. Was tun Sie?</summary><p>Prüfen, ob <code>track</code> eine stabile ID nutzt und nicht das Objekt. Dann Zeilen als OnPush-Komponenten bauen. Bei sehr vielen Zeilen die Anzeige begrenzen.</p></details>
+<details><summary>Szenario: Der Build bricht mit einem Budget-Fehler ab, nachdem jemand eine Chart-Bibliothek importiert hat. Was tun Sie?</summary><p>Die Bibliothek in einen Lazy Chunk legen. Zum Beispiel in eine Lazy Route oder in einen <code>@defer</code>-Block. Das Budget nicht einfach erhöhen.</p></details>
+<details><summary>Szenario: Eine Komponente im <code>@defer</code> landet doch im Haupt-Bundle. Woran denken Sie?</summary><p>An eine nicht standalone-Abhängigkeit, an einen Barrel-Import oder an eine Nutzung ausserhalb des Blocks. Auch ViewChild erzwingt das sofortige Laden.</p></details>
+<h3>Design</h3>
+<details><summary>Wo setzen Sie <code>@defer</code> ein?</summary><p>Bei schweren Teilen ausserhalb des ersten Bildschirms. Beispiele sind Charts, Kommentare oder ein Editor. Trigger ist oft <code>viewport</code> oder <code>interaction</code>.</p></details>
+<details><summary>Welche Routen lädt man eager und welche lazy?</summary><p>Die Landing Page eager, damit sie sofort da ist. Alle anderen Bereiche lazy. Wichtige Ziele lädt man per Prefetch vor.</p></details>
+<details><summary>Szenario: Das LCP-Bild lädt spät. Was prüfen Sie?</summary><p>Ob es <code>NgOptimizedImage</code> mit <code>priority</code> nutzt. Ohne <code>priority</code> lädt es lazy und kommt zu spät.</p></details>
+<details><summary>Wie hält man die Bundle-Grösse dauerhaft unter Kontrolle?</summary><p>Budgets in der CI, Code Review bei neuen Abhängigkeiten und Lazy Loading als Standard für grosse Bereiche.</p></details>
+
+<details class="mehr"><summary>Mehr</summary>
+<h3>Gerüst</h3>
+<ul>
+  <li><b>Warum?</b> Schneller laden und weniger Arbeit zur Laufzeit.</li>
+  <li><b>Wie innen?</b> Chunks durch <code>import()</code>. <code>track</code> hält Daten und DOM zusammen. OnPush und Signals begrenzen Prüfungen.</li>
+  <li><b>Zahlen</b> Initial 500 kB und 1 MB. Komponenten-Stil 4 kB und 8 kB. Standard-Trigger <code>on idle</code>. Zoneless ab 21.</li>
+  <li><b>Vergleich</b> <code>@defer</code> gegen Lazy Route. <code>track id</code> gegen <code>$index</code>. <code>trackBy</code> gegen <code>track</code>.</li>
+  <li><b>Produktion</b> Tabelle ruckelt. Budget bricht. Komponente bleibt im Haupt-Bundle.</li>
+  <li><b>Design</b> Budgets in der CI. Lazy als Standard. Messen vor dem Optimieren.</li>
+</ul>
+
+<h3>Beispiel: track, @defer und ein Budget</h3>
+<pre>&lt;!-- Liste mit stabilem Schlüssel --&gt;
+@for (o of orders(); track o.id) {
+  &lt;app-order-row [order]="o" /&gt;
+} @empty {
+  &lt;p&gt;Keine Bestellungen.&lt;/p&gt;
+}
+
+&lt;!-- schwerer Teil erst beim Scrollen laden, JS früher vorladen --&gt;
+@defer (on viewport; prefetch on idle) {
+  &lt;app-sales-chart [data]="data()" /&gt;
+} @placeholder (minimum 300ms) {
+  &lt;div class="chart-skeleton"&gt;&lt;/div&gt;
+} @loading (after 150ms; minimum 500ms) {
+  &lt;app-spinner /&gt;
+} @error {
+  &lt;p&gt;Das Diagramm konnte nicht geladen werden.&lt;/p&gt;
+}
+
+// angular.json (Budgets)
+"budgets": [
+  { "type": "initial", "maximumWarning": "500kB", "maximumError": "1MB" },
+  { "type": "anyComponentStyle", "maximumWarning": "4kB", "maximumError": "8kB" }
+]</pre>
+<p class="small">Nicht ausgeführt.</p>
+<ol>
+  <li><b>@for:</b> <code>track o.id</code> bindet jede Zeile an ihre Bestellung. Bei neuer Liste bleiben Zeilen mit gleicher ID erhalten.</li>
+  <li><b>@defer:</b> Das Diagramm lädt, wenn der Platzhalter sichtbar wird. Der Chunk wird schon im Leerlauf vorgeladen.</li>
+  <li><b>Zeiten:</b> Die Werte 300ms, 150ms und 500ms sind Beispielwerte und keine Standardwerte.</li>
+  <li><b>Budgets:</b> Die Werte entsprechen den Standardwerten der Doku. Man setzt sie ausdrücklich, damit die CI sie prüft.</li>
+</ol>
+
+<h3>Vergleich</h3>
+<ul>
+  <li><b>Lazy Route:</b> Teilt nach Seite. Gut für ganze Bereiche. Landing Page bleibt eager.</li>
+  <li><b>@defer:</b> Teilt innerhalb einer Seite. Gut für schwere Teile, die man nicht sofort braucht.</li>
+  <li><b>@if:</b> Versteckt nur. Der Code bleibt im Bundle.</li>
+  <li><b>OnPush:</b> Überspringt Teilbäume ohne Anlass. Es passt gut zu Signals.</li>
+  <li><b>Zoneless:</b> Kein ZoneJS. Angular prüft nur bei klaren Signalen wie Signal-Änderungen oder <code>markForCheck</code>.</li>
+  <li><b>NgOptimizedImage:</b> Ein Ersatz für <code>src</code>. Er setzt Lazy Loading und srcset und warnt bei fehlenden Grössen.</li>
+</ul>
+
+<h3>Produktion</h3>
+<ol>
+  <li><b>Lange Liste ruckelt:</b> Ein <code>track</code> auf dem Objekt oder auf <code>$index</code> baut zu viel DOM. Lösung: stabile ID als Schlüssel.</li>
+  <li><b>Initial-Bundle zu gross:</b> Schwere Bibliotheken sind im Start-Bundle. Lösung: Lazy Routes, <code>@defer</code> und Budgets in der CI.</li>
+  <li><b>Komponente doch im Haupt-Bundle:</b> Barrel-Import oder nicht standalone. Lösung: direkt aus der Komponenten-Datei importieren und standalone nutzen.</li>
+  <li><b>Doppelte Schlüssel:</b> Zwei Elemente mit gleichem <code>track</code>-Wert erzeugen NG0955. Lösung: einen wirklich eindeutigen Schlüssel wählen.</li>
+  <li><b>Zu spätes LCP-Bild:</b> Das wichtige Bild lädt lazy. Lösung: <code>NgOptimizedImage</code> mit <code>priority</code>.</li>
+  <li><b>Nested Lazy Loading:</b> Viele kleine Ladeschritte hintereinander. Lösung: wichtige Chunks per Prefetch laden.</li>
+</ol>
+
+<h3>Diagnose: Werkzeuge und Befehle</h3>
+<ul>
+  <li><b>Build-Ausgabe:</b> <code>ng build</code> zeigt «Initial Total» und die Lazy Chunks mit Grössen.</li>
+  <li><b>Budgets:</b> Überschreitungen erscheinen als Warnung oder Fehler im Build.</li>
+  <li><b>Chrome DevTools:</b> Das Performance-Panel zeigt lange Tasks, Scripting-Zeit und Rendering.</li>
+  <li><b>Network-Panel:</b> Zeigt, wann Chunks laden und wie gross sie sind. Man sieht, ob <code>@defer</code> wirklich nachlädt.</li>
+  <li><b>Angular DevTools:</b> Die Browser-Erweiterung zeigt Komponentenbaum und Change-Detection-Läufe.</li>
+</ul>
+
+<h3>Senior-Punkte</h3>
+<div class="senior">
+<ol>
+  <li><b>Messen vor Optimieren.:</b> Ohne Profil rät man. Zuerst Build-Ausgabe und DevTools, dann ein Eingriff.</li>
+  <li><b>Das Budget ist ein Vertrag.:</b> Ein Budget in der CI zwingt zur Entscheidung. Das geschieht, bevor das Bundle wächst.</li>
+  <li><b>Lazy ist ein Kompromiss.:</b> Weniger Start-Code kostet spätere Requests. Wichtige Ziele per Prefetch laden.</li>
+  <li><b>Stabile Schlüssel sind Design.:</b> Ein Backend, das stabile IDs liefert, macht das Frontend schneller.</li>
+  <li><b>Kleine Teilbäume.:</b> Viele kleine OnPush-Komponenten und Signals begrenzen die Arbeit genauer als eine grosse Komponente.</li>
+  <li><b>Nicht alles in <code>@defer</code>.:</b> Inhalt im ersten Bildschirm zählt für SEO und LCP. Er bleibt sofort da.</li>
+</ol>
+</div>
+
+<h3>Dein Beispiel</h3>
+</details>
+
+</body>
+</html>
