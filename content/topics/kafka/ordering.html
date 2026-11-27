@@ -19,6 +19,15 @@
   summary { font-weight: 600; cursor: pointer; }
   details p { margin: 6px 0 2px; }
   .small { color: #6e6e73; font-size: 14px; }
+  h3 { font-size: 17px; margin: 20px 0 6px; }
+  .geruest { border: 2px solid #1d1d1f; border-radius: 6px; padding: 10px 14px; margin: 14px 0; font-size: 15px; line-height: 1.4; }
+  .geruest h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; margin: 0 0 8px; padding: 0; border: 0; }
+  .geruest dl { display: grid; grid-template-columns: 6.6em 1fr; gap: 6px 10px; margin: 0; }
+  .geruest dt { font-weight: 700; font-size: 12px; text-transform: uppercase; letter-spacing: .05em; padding-top: 1px; }
+  .geruest dd { margin: 0; }
+  .muster { border: 1px solid #e5e5ea; border-left: 4px solid #1d1d1f; border-radius: 6px; padding: 10px 14px; margin: 14px 0; }
+  .muster h3 { margin: 0 0 6px; font-size: 13px; text-transform: uppercase; letter-spacing: .06em; }
+  .muster .mq { margin: 0 0 6px; }
 </style>
 </head>
 <body>
@@ -30,7 +39,42 @@
 <b>Kern:</b> Kafka garantiert Reihenfolge <b>nur innerhalb einer Partition</b>, nicht über das ganze Topic. Der <b>Key</b> einer Nachricht bestimmt die Partition. Darum ist die Wahl des Keys die eigentliche Entscheidung über Reihenfolge, Lastverteilung und Skalierung.
 </div>
 
-<h2>1. Wo sitzt die Reihenfolge?</h2>
+<div class="muster"><h3>Antwort-Muster</h3><p class="mq"><b>Frage:</b> Welche Reihenfolge garantiert Kafka, und wie nutze ich sie?</p><ol>
+  <li>Mechanismus: Der Key wird mit murmur2 gehasht, daraus folgt die Partition. Alle Events eines Keys stehen geordnet in einem Log.</li>
+  <li>Zahl: Mit Idempotenz bleibt die Reihenfolge auch bei bis zu 5 Requests in flight.</li>
+  <li>Trade-off: Mehr Reihenfolge heisst weniger Parallelität. Die Grenze ist die Partition.</li>
+  <li>Produktion: Ich nehme die Entity-ID als Key und plane die Partitionszahl früh, weil Erweitern die Zuordnung bricht.</li>
+</ol></div>
+
+<h2>1. Die Reise einer Nachricht durch den idempotenten Producer</h2>
+<svg viewBox="0 0 720 330" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="b" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker><marker id="r" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#c62828"/></marker></defs>
+  <rect x="10" y="30" width="150" height="70" rx="10" fill="#eee" stroke="#777"/><text x="85" y="58" text-anchor="middle" font-weight="700">1. send()</text><text x="85" y="78" text-anchor="middle" font-size="12">Key → Partition</text>
+  <line x1="160" y1="65" x2="198" y2="65" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="200" y="30" width="170" height="70" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="285" y="58" text-anchor="middle" font-weight="700">2. Batch</text><text x="285" y="78" text-anchor="middle" font-size="12">PID · Epoch · Seq</text>
+  <line x1="370" y1="65" x2="418" y2="65" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="420" y="30" width="140" height="70" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="490" y="58" text-anchor="middle" font-weight="700">3. In-Flight</text><text x="490" y="78" text-anchor="middle" font-size="12">max. 5 Requests</text>
+  <line x1="560" y1="65" x2="598" y2="65" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="600" y="30" width="110" height="70" rx="10" fill="#0a66c2"/><text x="655" y="58" text-anchor="middle" fill="#fff" font-weight="700">4. Leader</text><text x="655" y="78" text-anchor="middle" fill="#fff" font-size="12">prüft Seq</text>
+  <line x1="655" y1="100" x2="655" y2="158" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+  <rect x="540" y="160" width="170" height="80" rx="10" fill="#e8f5e9" stroke="#2e7d32"/><text x="625" y="184" text-anchor="middle" font-weight="700">5a. Seq passt</text><text x="625" y="204" text-anchor="middle" font-size="12">anhängen, ack</text><text x="625" y="222" text-anchor="middle" font-size="12">Duplikat → nur ack</text>
+  <rect x="250" y="160" width="250" height="80" rx="10" fill="#fff4f2" stroke="#c62828"/><text x="375" y="184" text-anchor="middle" font-weight="700">5b. Seq hat Lücke</text><text x="375" y="204" text-anchor="middle" font-size="12">Batch 1 fehlt noch → Batch 2</text><text x="375" y="222" text-anchor="middle" font-size="12">abgelehnt (OutOfOrderSequence)</text>
+  <line x1="600" y1="100" x2="500" y2="170" stroke="#c62828" stroke-width="2" marker-end="url(#r)"/>
+  <path d="M250,200 C120,200 85,160 85,102" fill="none" stroke="#c62828" stroke-width="2" stroke-dasharray="6 4" marker-end="url(#r)"/>
+  <text x="120" y="270" fill="#c62828" font-size="12">6. Producer schickt Batch 1, dann Batch 2 erneut</text>
+  <text x="120" y="290" fill="#c62828" font-size="12">→ Reihenfolge bleibt, keine Duplikate</text>
+</svg>
+<ol>
+  <li><b>send():</b> Die Anwendung ruft <code>send(record)</code> auf. Der Partitioner wählt die Partition aus dem Key.</li>
+  <li><b>Batch:</b> Der Producer sammelt Nachrichten pro Partition in einem <b>Batch</b>. Er wartet dafür bis <code>linger.ms</code> (Standard seit Kafka 4.0: 5 ms). Jeder Batch trägt <b>Producer-ID (PID)</b>, <b>Epoch</b> und eine <b>Sequence Number</b> pro Partition.</li>
+  <li><b>In-Flight:</b> Der Producer schickt bis zu <code>max.in.flight.requests.per.connection</code> Requests ohne Antwort ab. Standard: 5. Das erhöht den Durchsatz.</li>
+  <li><b>Leader prüft:</b> Der Partition-Leader merkt sich die letzten Sequenzen pro Producer. Er erwartet immer die nächste Nummer.</li>
+  <li><b>Fall a:</b> Die Nummer passt, also hängt er an. Kommt ein Batch doppelt (Retry nach verlorenem Ack), erkennt er die Nummer und schreibt nichts zweimal.</li>
+  <li><b>Fall b:</b> Batch 1 ist gescheitert, Batch 2 kommt zuerst an. Der Leader sieht eine Lücke und lehnt Batch 2 ab. Der Producer schickt beide in richtiger Reihenfolge neu.</li>
+  <li><b>Ergebnis:</b> Mit Idempotenz bleibt die Reihenfolge auch bei 5 Requests in-flight und Retries. Ohne Idempotenz kann Batch 2 vor Batch 1 landen.</li>
+</ol>
+
+<h2>2. Aufbau</h2>
 <svg viewBox="0 0 720 320" font-family="-apple-system, system-ui, sans-serif" font-size="14">
   <defs><marker id="a" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
   <rect x="10" y="40" width="130" height="70" rx="8" fill="#fff" stroke="#555"/><text x="75" y="66" text-anchor="middle" font-weight="700">Producer</text><text x="75" y="86" text-anchor="middle" font-size="12">key = "decl-1001"</text>
@@ -59,35 +103,84 @@
   <li><b>Folge:</b> Alle Events eines Keys sind geordnet. Events verschiedener Keys haben keine feste Reihenfolge zueinander.</li>
 </ol>
 
-<h2>2. Die Reise einer Nachricht durch den idempotenten Producer</h2>
-<svg viewBox="0 0 720 330" font-family="-apple-system, system-ui, sans-serif" font-size="14">
-  <defs><marker id="b" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker><marker id="r" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#c62828"/></marker></defs>
-  <rect x="10" y="30" width="150" height="70" rx="10" fill="#eee" stroke="#777"/><text x="85" y="58" text-anchor="middle" font-weight="700">1. send()</text><text x="85" y="78" text-anchor="middle" font-size="12">Key → Partition</text>
-  <line x1="160" y1="65" x2="198" y2="65" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
-  <rect x="200" y="30" width="170" height="70" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="285" y="58" text-anchor="middle" font-weight="700">2. Batch</text><text x="285" y="78" text-anchor="middle" font-size="12">PID · Epoch · Seq</text>
-  <line x1="370" y1="65" x2="418" y2="65" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
-  <rect x="420" y="30" width="140" height="70" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="490" y="58" text-anchor="middle" font-weight="700">3. In-Flight</text><text x="490" y="78" text-anchor="middle" font-size="12">max. 5 Requests</text>
-  <line x1="560" y1="65" x2="598" y2="65" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
-  <rect x="600" y="30" width="110" height="70" rx="10" fill="#0a66c2"/><text x="655" y="58" text-anchor="middle" fill="#fff" font-weight="700">4. Leader</text><text x="655" y="78" text-anchor="middle" fill="#fff" font-size="12">prüft Seq</text>
-  <line x1="655" y1="100" x2="655" y2="158" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
-  <rect x="540" y="160" width="170" height="80" rx="10" fill="#e8f5e9" stroke="#2e7d32"/><text x="625" y="184" text-anchor="middle" font-weight="700">5a. Seq passt</text><text x="625" y="204" text-anchor="middle" font-size="12">anhängen, ack</text><text x="625" y="222" text-anchor="middle" font-size="12">Duplikat → nur ack</text>
-  <rect x="250" y="160" width="250" height="80" rx="10" fill="#fff4f2" stroke="#c62828"/><text x="375" y="184" text-anchor="middle" font-weight="700">5b. Seq hat Lücke</text><text x="375" y="204" text-anchor="middle" font-size="12">Batch 1 fehlt noch → Batch 2</text><text x="375" y="222" text-anchor="middle" font-size="12">abgelehnt (OutOfOrderSequence)</text>
-  <line x1="600" y1="100" x2="500" y2="170" stroke="#c62828" stroke-width="2" marker-end="url(#r)"/>
-  <path d="M250,200 C120,200 85,160 85,102" fill="none" stroke="#c62828" stroke-width="2" stroke-dasharray="6 4" marker-end="url(#r)"/>
-  <text x="120" y="270" fill="#c62828" font-size="12">6. Producer schickt Batch 1, dann Batch 2 erneut</text>
-  <text x="120" y="290" fill="#c62828" font-size="12">→ Reihenfolge bleibt, keine Duplikate</text>
-</svg>
+<h2>3. Details, die Interviewer fragen</h2>
 <ol>
-  <li><b>send():</b> Die Anwendung ruft <code>send(record)</code> auf. Der Partitioner wählt die Partition aus dem Key.</li>
-  <li><b>Batch:</b> Der Producer sammelt Nachrichten pro Partition in einem <b>Batch</b>. Er wartet dafür bis <code>linger.ms</code> (Standard seit Kafka 4.0: 5 ms). Jeder Batch trägt <b>Producer-ID (PID)</b>, <b>Epoch</b> und eine <b>Sequence Number</b> pro Partition.</li>
-  <li><b>In-Flight:</b> Der Producer schickt bis zu <code>max.in.flight.requests.per.connection</code> Requests ohne Antwort ab. Standard: 5. Das erhöht den Durchsatz.</li>
-  <li><b>Leader prüft:</b> Der Partition-Leader merkt sich die letzten Sequenzen pro Producer. Er erwartet immer die nächste Nummer.</li>
-  <li><b>Fall a:</b> Die Nummer passt, also hängt er an. Kommt ein Batch doppelt (Retry nach verlorenem Ack), erkennt er die Nummer und schreibt nichts zweimal.</li>
-  <li><b>Fall b:</b> Batch 1 ist gescheitert, Batch 2 kommt zuerst an. Der Leader sieht eine Lücke und lehnt Batch 2 ab. Der Producer schickt beide in richtiger Reihenfolge neu.</li>
-  <li><b>Ergebnis:</b> Mit Idempotenz bleibt die Reihenfolge auch bei 5 Requests in-flight und Retries. Ohne Idempotenz kann Batch 2 vor Batch 1 landen.</li>
+  <li><b>Garantie pro Partition:</b> Nachrichten eines Producers an eine Partition stehen in Sende-Reihenfolge im Log. Ein Consumer sieht sie in Offset-Reihenfolge.</li>
+  <li><b>Kein globales Ordering:</b> Über Partitionen und Topics gibt es keine Reihenfolge. Globale Reihenfolge heisst genau eine Partition. Dann skaliert nur ein Consumer.</li>
+  <li><b>Default-Partitioner mit Key:</b> Er rechnet <code>murmur2(key) % numPartitions</code>. Der Key wird vorher serialisiert. Andere Serializer ergeben also andere Partitionen.</li>
+  <li><b>Default-Partitioner ohne Key:</b> Der <b>Sticky Partitioner</b> füllt einen Batch für eine Partition und wechselt dann. Seit KIP-794 (Kafka 3.3) wechselt er nach <code>batch.size</code> Bytes. Er bevorzugt schnelle Broker. Ohne Key gibt es keine Reihenfolge zwischen Events.</li>
+  <li><b><code>partitioner.ignore.keys=true</code>:</b> Der Producer ignoriert den Key bei der Partitionswahl. Der Key bleibt in der Nachricht, zum Beispiel für Compaction.</li>
+  <li><b>Eigener Partitioner:</b> <code>partitioner.class</code> setzt eine eigene Klasse. Typisch sind VIP-Kunden auf eigenen Partitionen. Das Risiko ist, dass alle Producer dieselbe Logik nutzen müssen.</li>
+  <li><b>Explizite Partition:</b> <code>new ProducerRecord(topic, partition, key, value)</code> umgeht den Partitioner ganz.</li>
+  <li><b>Retries und Umordnung:</b> Ohne Idempotenz kann ein Retry Batch 1 hinter Batch 2 schieben. Das gilt bei <code>retries &gt; 0</code> und <code>max.in.flight &gt; 1</code>. Früher half nur <code>max.in.flight=1</code>. Das kostete Durchsatz.</li>
+  <li><b>Idempotenter Producer:</b> Er ist seit Kafka 3.0 Standard (<code>enable.idempotence=true</code>). Er braucht <code>acks=all</code>, <code>retries &gt; 0</code> und <code>max.in.flight ≤ 5</code>. Dann bleibt die Reihenfolge erhalten. Duplikate durch Retries verschwinden.</li>
+  <li><b>Warum maximal 5:</b> Der Broker speichert pro Producer und Partition den Zustand der letzten 5 Batches. Mehr in flight kann er nicht prüfen.</li>
+  <li><b>Sequence Number:</b> Die <b>Sequence Number</b> ist ein Zähler pro Producer-ID und Partition. Eine Lücke gibt <code>OutOfOrderSequenceException</code>. Bei einer Wiederholung wird das Duplikat verworfen.</li>
+  <li><b>Grenze der Idempotenz:</b> Sie gilt nur pro Producer-Session. Startet der Producer neu, bekommt er eine neue PID. Über Neustarts schützt erst ein <code>transactional.id</code>.</li>
+  <li><b>Partitionen erweitern:</b> <code>--alter --partitions</code> ändert <code>n</code> im Modulo. Viele Keys landen auf einer neuen Partition. Verkleinern geht gar nicht.</li>
+  <li><b>Hot Key:</b> Ein <b>Hot Key</b> ist ein Key mit sehr viel Traffic. Seine Partition ist überlastet. Ihr Consumer hat Lag, die anderen sind leer. Mehr Partitionen helfen nicht, denn ein Key bleibt auf einer Partition.</li>
+  <li><b>Consumer-Seite:</b> Ein Consumer verarbeitet eine Partition sequenziell. Verarbeitet er Records parallel in einem Thread-Pool, ist die Reihenfolge weg. Die Lösung ist Parallelität pro Key, nicht pro Record.</li>
+  <li><b>Rebalancing:</b> Bei einem Rebalance wechselt eine Partition den Consumer. Der neue liest ab dem letzten Commit. Es gibt Duplikate. Die Reihenfolge pro Partition bleibt.</li>
+  <li><b>Retry-Topics brechen Reihenfolge:</b> Ein fehlerhaftes Event geht in ein Retry-Topic. Spätere Events desselben Keys laufen vorbei. Die Spring-Kafka-Doku sagt das ausdrücklich.</li>
+  <li><b>Versionsnummer im Event:</b> Eine fachliche <b>Version</b> pro Entity (zum Beispiel <code>version=7</code>) lässt den Consumer veraltete Events erkennen. Das schützt auch über Partitionen und Neustarts hinweg.</li>
 </ol>
 
-<h2>3. Beispiel: den Partitioner nachrechnen</h2>
+<h2>4. Fallen</h2>
+<div class="trap">
+<ul>
+  <li>„Kafka garantiert die Reihenfolge im Topic.“ → <b>Falsch.</b> Nur pro Partition.</li>
+  <li>„Mehr Partitionen lösen einen Hot Key.“ → <b>Falsch.</b> Ein Key landet immer auf genau einer Partition.</li>
+  <li>„Partitionen kann man später gefahrlos erhöhen.“ → <b>Falsch</b> bei Topics mit Keys. Die Key→Partition-Zuordnung ändert sich.</li>
+  <li>„Für Reihenfolge braucht man <code>max.in.flight=1</code>.“ → <b>Veraltet.</b> Mit Idempotenz reichen bis zu 5.</li>
+  <li>„Idempotenz verhindert alle Duplikate.“ → <b>Falsch.</b> Nur Retries innerhalb einer Producer-Session. Consumer-Duplikate bleiben.</li>
+  <li>„Ohne Key gibt es Round Robin pro Nachricht.“ → <b>Falsch.</b> Der Sticky Partitioner füllt Batches pro Partition.</li>
+</ul>
+</div>
+
+<h2>5. Selbsttest</h2>
+<h3>Warum?</h3>
+<details><summary>Warum kann ein Retry die Reihenfolge ändern?</summary><p>Mit mehreren Requests in flight kann Batch 1 scheitern und Batch 2 gelingen. Der Retry von Batch 1 landet dann hinter Batch 2.</p></details>
+<details><summary>Warum darf max.in.flight mit Idempotenz höchstens 5 sein?</summary><p>Der Broker speichert pro Producer und Partition nur die letzten 5 Batches. Mehr kann er nicht auf Duplikate und Lücken prüfen.</p></details>
+<details><summary>Was geht kaputt, wenn ich Partitionen hinzufüge?</summary><p>Das Modulo ändert sich, viele Keys wechseln die Partition. Alte und neue Events eines Keys liegen getrennt, die Reihenfolge bricht.</p></details>
+<details><summary>Warum helfen mehr Partitionen nicht bei einem Hot Key?</summary><p>Ein Key landet immer auf genau einer Partition. Mehr Partitionen verteilen nur andere Keys.</p></details>
+<h3>Wie innen?</h3>
+<details><summary>Welche Reihenfolge garantiert Kafka?</summary><p>Nur innerhalb einer Partition. Dort sind Nachrichten in Schreib-Reihenfolge, und Consumer lesen in Offset-Reihenfolge.</p></details>
+<details><summary>Wie bestimmt der Key die Partition?</summary><p>Der Default-Partitioner rechnet murmur2 über die serialisierten Key-Bytes, macht das Ergebnis positiv und nimmt Modulo Anzahl Partitionen.</p></details>
+<details><summary>Was passiert mit Nachrichten ohne Key?</summary><p>Der Sticky Partitioner füllt einen Batch für eine Partition und wechselt dann. Es gibt keine Reihenfolge zwischen diesen Nachrichten.</p></details>
+<details><summary>Wie verhindert der idempotente Producer Umordnung?</summary><p>Jeder Batch hat PID und Sequence Number pro Partition. Der Leader nimmt nur die erwartete nächste Nummer an und lehnt Batches nach einer Lücke ab.</p></details>
+<details><summary>Was ist eine Sequence Number im Producer?</summary><p>Ein Zähler pro Producer-ID und Partition. Der Broker erkennt damit Duplikate und Lücken.</p></details>
+<details><summary>Bricht ein Rebalance die Reihenfolge?</summary><p>Nein, pro Partition nicht. Der neue Consumer liest ab dem letzten Commit. Es können aber Duplikate entstehen.</p></details>
+<details><summary>Was macht partitioner.ignore.keys?</summary><p>Der Producer wählt die Partition ohne Key, also sticky. Der Key bleibt in der Nachricht.</p></details>
+<h3>Zahlen</h3>
+<details><summary>Welche Voraussetzungen hat die Idempotenz?</summary><p><code>acks=all</code>, <code>retries &gt; 0</code>, <code>max.in.flight ≤ 5</code>. Seit Kafka 3.0 sind das die Standardwerte.</p></details>
+<details><summary>Wie viele Keys wechseln bei 6 auf 8 Partitionen?</summary><p>Im Beispiel dieser Seite etwa 75 %. Das war ein Test mit 10000 Keys.</p></details>
+<details><summary>Kann ich Partitionen reduzieren?</summary><p>Nein. Nur über ein neues Topic und Migration.</p></details>
+<h3>Vergleich</h3>
+<details><summary>Wie bekomme ich globale Reihenfolge?</summary><p>Nur mit einer Partition. Dann arbeitet nur ein Consumer pro Gruppe, und ein Broker trägt die ganze Last.</p></details>
+<details><summary>Wie lösen Sie einen Hot Key?</summary><p>Feineren Key wählen oder den Fluss fachlich teilen. Salting verteilt die Last, opfert aber die Reihenfolge dieses Keys.</p></details>
+<details><summary>Gibt es Reihenfolge über zwei Topics?</summary><p>Nein. Braucht man sie, gehören die Events in ein Topic mit gleichem Key.</p></details>
+<h3>Produktion</h3>
+<details><summary>Was passiert bei widersprüchlicher Config?</summary><p>Ist Idempotenz explizit an, gibt es eine ConfigException. Ist sie nur Standard, schaltet Kafka sie still ab.</p></details>
+<details><summary>Wie verliert ein Consumer die Reihenfolge?</summary><p>Durch parallele Verarbeitung von Records einer Partition, z. B. in einem Thread-Pool. Oder durch Retry-Topics, an denen spätere Events vorbeilaufen.</p></details>
+<details><summary>Szenario: Ein Consumer sieht „Erklärung eingereicht“ vor „Erklärung erstellt“. Was prüfen Sie?</summary><p>Ob beide Events denselben Key haben und alle Producer ihn gleich setzen. Dann Partitionserweiterung, Retry-Topics und parallele Verarbeitung im Consumer prüfen.</p></details>
+<details><summary>Szenario: Eine Partition hat 2 Mio. Lag, die anderen null. Was tun Sie?</summary><p>Mit dem Console Consumer die Keys ansehen, wahrscheinlich ein Hot Key. Dann Key verfeinern oder fachlich aufteilen. Mehr Partitionen oder Consumer helfen nicht.</p></details>
+<h3>Design</h3>
+<details><summary>Wie wählen Sie einen Key?</summary><p>Nach der fachlichen Einheit, die geordnet sein muss, meist die Entity-ID. Dazu prüfen, ob es genug verschiedene Werte gibt und kein Key extrem viel Traffic hat.</p></details>
+<details><summary>Was bringt eine Versionsnummer im Event?</summary><p>Der Consumer erkennt veraltete oder doppelte Events und ignoriert sie. Das hilft auch über Partitionen und Neustarts hinweg.</p></details>
+<details><summary>Szenario: Das Team will das Topic von 6 auf 12 Partitionen erweitern. Was sagen Sie?</summary><p>Bei Keys wechselt ein Grossteil der Keys die Partition, die Reihenfolge bricht kurz. Entweder Producer stoppen, Consumer leer laufen lassen, dann erweitern. Oder ein neues Topic anlegen und umstellen.</p></details>
+<details><summary>Szenario: Wie skalieren Sie trotz Reihenfolge pro Fall?</summary><p>Fall-ID als Key, viele Fälle und genug Partitionen. Reihenfolge gilt pro Key, Parallelität entsteht über Partitionen.</p></details>
+
+<details class="mehr"><summary>Mehr</summary>
+<h3>Gerüst</h3>
+<ul>
+  <li><b>Warum?</b> Reihenfolge pro Key ist billig, globale Reihenfolge kostet die ganze Parallelität. Darum ordnet Kafka nur pro Partition.</li>
+  <li><b>Wie innen?</b> Partition = <code>murmur2(key) &amp; 0x7fffffff</code> modulo Partitionszahl. Idempotenter Producer prüft PID und Sequence Number.</li>
+  <li><b>Zahlen</b> Bis zu 5 Requests in flight bei Idempotenz. 6 → 8 Partitionen verschieben im Test etwa 75 % der Keys.</li>
+  <li><b>Vergleich</b> Key = Entity-ID, kein Key oder Salting. Eine Partition gibt globale Ordnung, aber nur einen Consumer.</li>
+  <li><b>Produktion</b> Hot Key überlastet eine Partition. Partitionen erweitern oder Retry-Topics brechen die Reihenfolge. Thread-Pool im Listener auch.</li>
+  <li><b>Design</b> Reihenfolge ist eine fachliche Frage. Partitionszahl früh planen. Versionsnummer im Event macht Consumer robust.</li>
+</ul>
+<h3>Beispiel: den Partitioner nachrechnen</h3>
 <pre># partitioner.py – Nachbau von Kafka Utils.murmur2 (Seed 0x9747b28c)
 def partition(key: str, n: int) -&gt; int:
     return (murmur2(key.encode()) &amp; 0x7fffffff) % n
@@ -116,30 +209,7 @@ moved keys (10000 keys, 6 -&gt; 8 partitions): 7547 = 75.5 %</pre>
 <pre># Topic von 6 auf 8 Partitionen erweitern
 $ kafka-topics.sh --bootstrap-server localhost:9092 --alter --topic declarations --partitions 8</pre>
 <p class="small">Erwartetes Ergebnis (laut Doku, nicht ausgeführt): Das Topic hat 8 Partitionen. Bestehende Daten bleiben, wo sie sind. Die Doku warnt: Bei Topics mit Keys ändert sich die Key-Zuordnung. Weniger Partitionen sind nicht möglich.</p>
-
-<h2>4. Details, die Interviewer fragen</h2>
-<ol>
-  <li><b>Garantie pro Partition:</b> Nachrichten eines Producers an eine Partition stehen in Sende-Reihenfolge im Log. Ein Consumer sieht sie in Offset-Reihenfolge.</li>
-  <li><b>Kein globales Ordering:</b> Über Partitionen und Topics gibt es keine Reihenfolge. Globale Reihenfolge heisst: genau eine Partition. Dann skaliert nur ein Consumer.</li>
-  <li><b>Default-Partitioner mit Key:</b> <code>murmur2(key) % numPartitions</code>. Der Key wird vorher serialisiert. Andere Serializer ergeben also andere Partitionen.</li>
-  <li><b>Default-Partitioner ohne Key:</b> Der <b>Sticky Partitioner</b> füllt einen Batch für eine Partition und wechselt dann. Seit KIP-794 (Kafka 3.3) wechselt er nach <code>batch.size</code> Bytes und bevorzugt schnelle Broker. Ohne Key gibt es keine Reihenfolge zwischen Events.</li>
-  <li><b><code>partitioner.ignore.keys=true</code>:</b> Der Producer ignoriert den Key bei der Partitionswahl. Der Key bleibt in der Nachricht, z. B. für Compaction.</li>
-  <li><b>Eigener Partitioner:</b> <code>partitioner.class</code> setzt eine eigene Klasse. Typisch: VIP-Kunden auf eigene Partitionen. Risiko: Alle Producer müssen dieselbe Logik nutzen.</li>
-  <li><b>Explizite Partition:</b> <code>new ProducerRecord(topic, partition, key, value)</code> umgeht den Partitioner ganz.</li>
-  <li><b>Retries und Umordnung:</b> Ohne Idempotenz, mit <code>retries &gt; 0</code> und <code>max.in.flight &gt; 1</code> kann ein Retry Batch 1 hinter Batch 2 schieben. Früher half nur <code>max.in.flight=1</code>, auf Kosten des Durchsatzes.</li>
-  <li><b>Idempotenter Producer:</b> Er ist seit Kafka 3.0 Standard (<code>enable.idempotence=true</code>). Er braucht <code>acks=all</code>, <code>retries &gt; 0</code> und <code>max.in.flight ≤ 5</code>. Dann bleibt die Reihenfolge erhalten und Duplikate durch Retries verschwinden.</li>
-  <li><b>Warum maximal 5:</b> Der Broker speichert pro Producer und Partition den Zustand der letzten 5 Batches. Mehr in-flight kann er nicht prüfen.</li>
-  <li><b>Sequence Number:</b> Die <b>Sequence Number</b> ist ein Zähler pro Producer-ID und Partition. Lücke → <code>OutOfOrderSequenceException</code>, Wiederholung → Duplikat wird verworfen.</li>
-  <li><b>Grenze der Idempotenz:</b> Sie gilt nur pro Producer-Session. Startet der Producer neu, bekommt er eine neue PID. Über Neustarts schützt erst ein <code>transactional.id</code>.</li>
-  <li><b>Partitionen erweitern:</b> <code>--alter --partitions</code> ändert <code>n</code> im Modulo. Viele Keys landen auf einer neuen Partition. Verkleinern geht gar nicht.</li>
-  <li><b>Hot Key:</b> Ein <b>Hot Key</b> ist ein Key mit sehr viel Traffic. Seine Partition ist überlastet, ihr Consumer hat Lag, die anderen sind leer. Mehr Partitionen helfen nicht, denn ein Key bleibt auf einer Partition.</li>
-  <li><b>Consumer-Seite:</b> Ein Consumer verarbeitet eine Partition sequenziell. Verarbeitet er Records parallel in einem Thread-Pool, ist die Reihenfolge weg. Lösung: Parallelität pro Key, nicht pro Record.</li>
-  <li><b>Rebalancing:</b> Bei einem Rebalance wechselt eine Partition den Consumer. Der neue liest ab dem letzten Commit. Es gibt Duplikate, aber die Reihenfolge pro Partition bleibt.</li>
-  <li><b>Retry-Topics brechen Reihenfolge:</b> Ein fehlerhaftes Event geht in ein Retry-Topic. Spätere Events desselben Keys laufen vorbei. Die Spring-Kafka-Doku sagt das ausdrücklich.</li>
-  <li><b>Versionsnummer im Event:</b> Eine fachliche <b>Version</b> pro Entity (z. B. <code>version=7</code>) lässt den Consumer veraltete Events erkennen. Das schützt auch über Partitionen und Neustarts hinweg.</li>
-</ol>
-
-<h2>5. Vergleich</h2>
+<h3>Vergleich</h3>
 <ul>
   <li><b>Key = Entity-ID</b> (z. B. Erklärungs-ID): Reihenfolge pro Entity, gute Verteilung bei vielen Entities. Der Normalfall.</li>
   <li><b>Key = Mandant oder Kanton:</b> Reihenfolge pro Mandant, aber grosse Mandanten werden Hot Keys.</li>
@@ -150,8 +220,7 @@ $ kafka-topics.sh --bootstrap-server localhost:9092 --alter --topic declarations
   <li><b>RabbitMQ / Service Bus:</b> Reihenfolge pro Queue bei einem Consumer. Service Bus <b>Sessions</b> geben Reihenfolge pro Session-ID, ähnlich wie ein Key.</li>
   <li><b>Event Hubs:</b> Partition Key wie in Kafka. Reihenfolge nur pro Partition.</li>
 </ul>
-
-<h2>6. In der Produktion</h2>
+<h3>In der Produktion</h3>
 <ol>
   <li><b>„Status DONE kam vor CREATED“:</b> Die Events hatten verschiedene Keys oder keinen Key. Lösung: Entity-ID als Key, und alle Producer dieses Topics nutzen denselben Key.</li>
   <li><b>Partitionen erweitert, danach falsche Zustände:</b> Alte und neue Events eines Keys lagen in verschiedenen Partitionen. Lösung: Partitionszahl am Anfang grosszügig wählen. Sonst neues Topic anlegen, Producer umstellen, altes Topic leer laufen lassen.</li>
@@ -161,8 +230,7 @@ $ kafka-topics.sh --bootstrap-server localhost:9092 --alter --topic declarations
   <li><b>Retry-Topic überholt:</b> Event 1 ist im Retry-Topic, Event 2 desselben Keys ist schon verarbeitet. Lösung: Blocking Retry für ordnungskritische Topics oder Versionsprüfung im Consumer.</li>
   <li><b>Verschiedene Producer-Sprachen:</b> Ein Nicht-Java-Client nutzt einen anderen Hash. Beispiel: librdkafka-Standard ist <code>consistent_random</code> (CRC32). Gleicher Key, andere Partition. Lösung: dort <code>partitioner=murmur2_random</code> setzen, das entspricht dem Java-Default.</li>
 </ol>
-
-<h2>7. Diagnose: Werkzeuge und Befehle</h2>
+<h3>Diagnose: Werkzeuge und Befehle</h3>
 <ul>
   <li><code>kafka-topics.sh --describe --topic X</code>: Anzahl Partitionen, Leader, Replikate.</li>
   <li><code>kafka-consumer-groups.sh --describe --group G</code>: Lag pro Partition. Eine Partition mit viel Lag deutet auf einen Hot Key.</li>
@@ -172,8 +240,7 @@ $ kafka-topics.sh --bootstrap-server localhost:9092 --alter --topic declarations
   <li><b>Producer-Log beim Start:</b> Die Zeile mit <code>enable.idempotence</code> zeigt die echten Werte. So sieht man stille Abschaltung.</li>
   <li><b>Consumer-Log:</b> Key, Partition, Offset und fachliche Version loggen. Dann sieht man Umordnung direkt.</li>
 </ul>
-
-<h2>8. Senior-Punkte</h2>
+<h3>Senior-Punkte</h3>
 <div class="senior">
 <ol>
   <li><b>Reihenfolge ist eine fachliche Frage.</b> Erst klären, wofür sie gilt: pro Erklärung, pro Kunde, oder gar nicht. Dann den Key daraus ableiten.</li>
@@ -184,49 +251,8 @@ $ kafka-topics.sh --bootstrap-server localhost:9092 --alter --topic declarations
   <li><b>Fehlerbehandlung entscheidet mit.</b> Non-blocking Retries und DLT geben Durchsatz, aber nehmen Reihenfolge. Für ordnungskritische Flüsse bewusst blockieren.</li>
 </ol>
 </div>
-
-<h2>9. Aus dem Projekt</h2>
-<p>„Bei DAZiT (VSP) haben Spring-Boot-Services über Kafka mehrere Fachsysteme für Steuererklärungen integriert. Für Reihenfolge pro Erklärung ist die Erklärungs-ID der passende Key.“ <span class="small">(Prüfen und durch dein echtes Beispiel ersetzen: Welchen Key und wie viele Partitionen hattet ihr wirklich?)</span></p>
-
-<h2>10. Fallen</h2>
-<div class="trap">
-<ul>
-  <li>„Kafka garantiert die Reihenfolge im Topic.“ → <b>Falsch.</b> Nur pro Partition.</li>
-  <li>„Mehr Partitionen lösen einen Hot Key.“ → <b>Falsch.</b> Ein Key landet immer auf genau einer Partition.</li>
-  <li>„Partitionen kann man später gefahrlos erhöhen.“ → <b>Falsch</b> bei Topics mit Keys. Die Key→Partition-Zuordnung ändert sich.</li>
-  <li>„Für Reihenfolge braucht man <code>max.in.flight=1</code>.“ → <b>Veraltet.</b> Mit Idempotenz reichen bis zu 5.</li>
-  <li>„Idempotenz verhindert alle Duplikate.“ → <b>Falsch.</b> Nur Retries innerhalb einer Producer-Session. Consumer-Duplikate bleiben.</li>
-  <li>„Ohne Key gibt es Round Robin pro Nachricht.“ → <b>Falsch.</b> Der Sticky Partitioner füllt Batches pro Partition.</li>
-</ul>
-</div>
-
-<h2>11. Fragen</h2>
-<details><summary>Welche Reihenfolge garantiert Kafka?</summary><p>Nur innerhalb einer Partition. Dort sind Nachrichten in Schreib-Reihenfolge, und Consumer lesen in Offset-Reihenfolge.</p></details>
-<details><summary>Wie bestimmt der Key die Partition?</summary><p>Der Default-Partitioner rechnet murmur2 über die serialisierten Key-Bytes, macht das Ergebnis positiv und nimmt Modulo Anzahl Partitionen.</p></details>
-<details><summary>Was passiert mit Nachrichten ohne Key?</summary><p>Der Sticky Partitioner füllt einen Batch für eine Partition und wechselt dann. Es gibt keine Reihenfolge zwischen diesen Nachrichten.</p></details>
-<details><summary>Wie bekomme ich globale Reihenfolge?</summary><p>Nur mit einer Partition. Dann arbeitet nur ein Consumer pro Gruppe, und ein Broker trägt die ganze Last.</p></details>
-<details><summary>Wie wählen Sie einen Key?</summary><p>Nach der fachlichen Einheit, die geordnet sein muss, meist die Entity-ID. Dazu prüfen: genug verschiedene Werte, kein Key mit extrem viel Traffic.</p></details>
-<details><summary>Was ist ein Hot Key?</summary><p>Ein Key mit sehr viel Traffic. Seine Partition und ihr Consumer sind überlastet, während andere wenig zu tun haben.</p></details>
-<details><summary>Wie lösen Sie einen Hot Key?</summary><p>Feineren Key wählen oder den Fluss fachlich teilen. Salting verteilt die Last, opfert aber die Reihenfolge dieses Keys.</p></details>
-<details><summary>Warum kann ein Retry die Reihenfolge ändern?</summary><p>Mit mehreren Requests in-flight kann Batch 1 scheitern und Batch 2 gelingen. Der Retry von Batch 1 landet dann hinter Batch 2.</p></details>
-<details><summary>Wie verhindert der idempotente Producer Umordnung?</summary><p>Jeder Batch hat PID und Sequence Number pro Partition. Der Leader nimmt nur die erwartete nächste Nummer an und lehnt Batches nach einer Lücke ab.</p></details>
-<details><summary>Warum darf max.in.flight mit Idempotenz höchstens 5 sein?</summary><p>Der Broker speichert pro Producer und Partition nur die letzten 5 Batches. Mehr kann er nicht auf Duplikate und Lücken prüfen.</p></details>
-<details><summary>Welche Voraussetzungen hat die Idempotenz?</summary><p><code>acks=all</code>, <code>retries &gt; 0</code>, <code>max.in.flight ≤ 5</code>. Seit Kafka 3.0 sind das die Standardwerte.</p></details>
-<details><summary>Was passiert bei widersprüchlicher Config?</summary><p>Ist Idempotenz explizit an, gibt es eine ConfigException. Ist sie nur Standard, schaltet Kafka sie still ab.</p></details>
-<details><summary>Was ist eine Sequence Number im Producer?</summary><p>Ein Zähler pro Producer-ID und Partition. Der Broker erkennt damit Duplikate und Lücken.</p></details>
-<details><summary>Schützt die Idempotenz über einen Producer-Neustart?</summary><p>Nein. Ein Neustart bringt eine neue PID. Dafür braucht es eine <code>transactional.id</code>.</p></details>
-<details><summary>Was passiert, wenn ich Partitionen hinzufüge?</summary><p>Das Modulo ändert sich, viele Keys wechseln die Partition. Alte und neue Events eines Keys liegen getrennt, die Reihenfolge bricht.</p></details>
-<details><summary>Kann ich Partitionen reduzieren?</summary><p>Nein. Nur über ein neues Topic und Migration.</p></details>
-<details><summary>Wie verliert ein Consumer die Reihenfolge?</summary><p>Durch parallele Verarbeitung von Records einer Partition, z. B. in einem Thread-Pool. Oder durch Retry-Topics, an denen spätere Events vorbeilaufen.</p></details>
-<details><summary>Bricht ein Rebalance die Reihenfolge?</summary><p>Nein, pro Partition nicht. Der neue Consumer liest ab dem letzten Commit. Es können aber Duplikate entstehen.</p></details>
-<details><summary>Brechen non-blocking Retries die Reihenfolge?</summary><p>Ja. Das fehlerhafte Event wartet im Retry-Topic, spätere Events desselben Keys laufen vorbei.</p></details>
-<details><summary>Was bringt eine Versionsnummer im Event?</summary><p>Der Consumer erkennt veraltete oder doppelte Events und ignoriert sie. Das hilft auch über Partitionen und Neustarts hinweg.</p></details>
-<details><summary>Was macht partitioner.ignore.keys?</summary><p>Der Producer wählt die Partition ohne Key, also sticky. Der Key bleibt in der Nachricht.</p></details>
-<details><summary>Wie skaliert man trotz Reihenfolge?</summary><p>Viele Keys und genug Partitionen. Reihenfolge gilt pro Key, Parallelität entsteht über Partitionen.</p></details>
-<details><summary>Gibt es Reihenfolge über zwei Topics?</summary><p>Nein. Braucht man sie, gehören die Events in ein Topic mit gleichem Key.</p></details>
-<details><summary>Szenario: Ein Consumer sieht „Erklärung eingereicht“ vor „Erklärung erstellt“. Was prüfen Sie?</summary><p>Ob beide Events denselben Key haben und alle Producer ihn gleich setzen. Dann Partitionserweiterung, Retry-Topics und parallele Verarbeitung im Consumer prüfen.</p></details>
-<details><summary>Szenario: Das Team will das Topic von 6 auf 12 Partitionen erweitern. Was sagen Sie?</summary><p>Bei Keys wechselt ein Grossteil der Keys die Partition, die Reihenfolge bricht kurz. Entweder Producer stoppen, Consumer leer laufen lassen, dann erweitern. Oder ein neues Topic anlegen und umstellen.</p></details>
-<details><summary>Szenario: Eine Partition hat 2 Mio. Lag, die anderen null. Was tun Sie?</summary><p>Mit dem Console Consumer die Keys ansehen, wahrscheinlich ein Hot Key. Dann Key verfeinern oder fachlich aufteilen. Mehr Partitionen oder Consumer helfen nicht.</p></details>
+<h3>Dein Beispiel</h3>
+</details>
 
 </body>
 </html>

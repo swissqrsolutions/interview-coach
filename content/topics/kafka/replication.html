@@ -19,6 +19,15 @@
   summary { font-weight: 600; cursor: pointer; }
   details p { margin: 6px 0 2px; }
   .small { color: #6e6e73; font-size: 14px; }
+  h3 { font-size: 17px; margin: 20px 0 6px; }
+  .geruest { border: 2px solid #1d1d1f; border-radius: 6px; padding: 10px 14px; margin: 14px 0; font-size: 15px; line-height: 1.4; }
+  .geruest h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; margin: 0 0 8px; padding: 0; border: 0; }
+  .geruest dl { display: grid; grid-template-columns: 6.6em 1fr; gap: 6px 10px; margin: 0; }
+  .geruest dt { font-weight: 700; font-size: 12px; text-transform: uppercase; letter-spacing: .05em; padding-top: 1px; }
+  .geruest dd { margin: 0; }
+  .muster { border: 1px solid #e5e5ea; border-left: 4px solid #1d1d1f; border-radius: 6px; padding: 10px 14px; margin: 14px 0; }
+  .muster h3 { margin: 0 0 6px; font-size: 13px; text-transform: uppercase; letter-spacing: .06em; }
+  .muster .mq { margin: 0 0 6px; }
 </style>
 </head>
 <body>
@@ -27,34 +36,17 @@
 <!-- sources: Kafka · Tier 1 · Quellen: Apache Kafka 4.x Documentation (Design: Replication, Unclean leader election, Availability and Durability Guarantees; Operations: Eligible Leader Replicas, Rack awareness; Broker Configs: min.insync.replicas, unclean.leader.election.enable, replica.lag.time.max.ms, default.replication.factor, broker.rack; Producer Configs: acks), KIP-392, KIP-966, Microsoft Learn (Event Hubs: Availability and consistency) -->
 
 <div class="kern">
-<b>Kern:</b> <b>Replikation</b> ist das Kopieren jeder Partition auf mehrere Broker, damit ein Broker-Ausfall keine Daten verliert. Ein <b>Leader</b> nimmt alle Writes an, <b>Follower</b> kopieren von ihm. Mit <code>acks=all</code> und <code>min.insync.replicas</code> entscheidet man, wie viele Kopien ein Write braucht: also zwischen <b>Durability</b> und <b>Availability</b>.
+<b>Kern:</b> <b>Replikation</b> ist das Kopieren jeder Partition auf mehrere Broker, damit ein Broker-Ausfall keine Daten verliert. Ein <b>Leader</b> nimmt alle Writes an, <b>Follower</b> kopieren von ihm. Mit <code>acks=all</code> und <code>min.insync.replicas</code> entscheidet man, wie viele Kopien ein Write braucht, also zwischen <b>Durability</b> und <b>Availability</b>.
 </div>
 
-<h2>1. Wo sitzt die Replikation?</h2>
-<svg viewBox="0 0 720 320" font-family="-apple-system, system-ui, sans-serif" font-size="14">
-  <defs><marker id="a" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
-  <rect x="200" y="8" width="320" height="50" rx="8" fill="#f7f7fa" stroke="#999"/><text x="360" y="30" text-anchor="middle" font-weight="700">KRaft Controller Quorum</text><text x="360" y="48" text-anchor="middle" font-size="12">Metadaten: Leader, ISR, ELR pro Partition</text>
-  <rect x="10" y="110" width="210" height="130" rx="10" fill="#fff" stroke="#555"/><text x="115" y="132" text-anchor="middle" font-weight="700">Broker 1 · rack=zone-1</text>
-  <rect x="30" y="148" width="170" height="70" rx="6" fill="#0a66c2"/><text x="115" y="176" text-anchor="middle" fill="#fff" font-weight="700">P0 Leader</text><text x="115" y="196" text-anchor="middle" fill="#fff" font-size="12">Offsets 0 … 120</text>
-  <rect x="255" y="110" width="210" height="130" rx="10" fill="#fff" stroke="#555"/><text x="360" y="132" text-anchor="middle" font-weight="700">Broker 2 · rack=zone-2</text>
-  <rect x="275" y="148" width="170" height="70" rx="6" fill="#dbe9fb" stroke="#0a66c2"/><text x="360" y="176" text-anchor="middle" font-weight="700">P0 Follower</text><text x="360" y="196" text-anchor="middle" font-size="12">in ISR · bis 120</text>
-  <rect x="500" y="110" width="210" height="130" rx="10" fill="#fff" stroke="#555"/><text x="605" y="132" text-anchor="middle" font-weight="700">Broker 3 · rack=zone-3</text>
-  <rect x="520" y="148" width="170" height="70" rx="6" fill="#eee" stroke="#c62828"/><text x="605" y="176" text-anchor="middle" font-weight="700">P0 Follower</text><text x="605" y="196" text-anchor="middle" font-size="12" fill="#c62828">nicht in ISR · bis 80</text>
-  <line x1="275" y1="183" x2="202" y2="183" stroke="#555" stroke-width="2" marker-end="url(#a)"/><text x="238" y="176" text-anchor="middle" font-size="11">Fetch</text>
-  <path d="M560,240 C560,290 115,290 115,222" fill="none" stroke="#555" stroke-width="2" marker-end="url(#a)"/><text x="360" y="300" text-anchor="middle" font-size="12">Fetch (hängt nach)</text>
-  <line x1="520" y1="40" x2="640" y2="108" stroke="#999" stroke-width="1.5" stroke-dasharray="4 3" marker-end="url(#a)"/>
-  <text x="20" y="80" font-size="12">Replication Factor 3 · ISR = {1, 2} · min.insync.replicas = 2</text>
-</svg>
-<ol>
-  <li><b>Replication Factor (RF):</b> die Anzahl Kopien pro Partition, Leader inklusive. Beispiel: RF 3 = ein Leader und zwei Follower.</li>
-  <li><b>Leader:</b> Er nimmt alle Writes an und bedient standardmässig auch die Reads.</li>
-  <li><b>Follower:</b> Er holt neue Daten per <b>Fetch</b> vom Leader, wie ein Consumer. Er schreibt sie in sein eigenes Log.</li>
-  <li><b>ISR</b> (<b>In-Sync Replicas</b>): die Replikate, die aktuell genug sind. Broker 3 hängt nach und ist darum nicht in der ISR.</li>
-  <li><b>KRaft Controller:</b> Er speichert pro Partition Leader, ISR und ELR. Er wählt einen neuen Leader, wenn ein Broker ausfällt.</li>
-  <li><b>Rack:</b> <code>broker.rack</code> sagt Kafka, wo ein Broker steht. Kafka verteilt Replikate dann über Racks oder Availability Zones.</li>
-</ol>
+<div class="muster"><h3>Antwort-Muster</h3><p class="mq"><b>Frage:</b> Wie macht Kafka Daten bei einem Broker-Ausfall sicher?</p><ol>
+  <li>Mechanismus: Jede Partition hat einen Leader und Follower. Ein Write gilt als committed, wenn alle Mitglieder der ISR ihn haben.</li>
+  <li>Zahl: Ich nutze Replication Factor 3 und <code>min.insync.replicas=2</code>. Der Standard für min ISR ist nur 1.</li>
+  <li>Trade-off: Fällt die ISR unter 2, lehnt Kafka Writes lieber ab, als Daten zu riskieren.</li>
+  <li>Produktion: Dazu kommen <code>acks=all</code> und ausgeschaltete Unclean Leader Election.</li>
+</ol></div>
 
-<h2>2. Die Reise eines Writes mit acks=all</h2>
+<h2>1. Die Reise eines Writes mit acks=all</h2>
 <svg viewBox="0 0 720 340" font-family="-apple-system, system-ui, sans-serif" font-size="14">
   <defs><marker id="b" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker><marker id="r" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#c62828"/></marker></defs>
   <rect x="10" y="30" width="130" height="70" rx="10" fill="#eee" stroke="#777"/><text x="75" y="58" text-anchor="middle" font-weight="700">1. Producer</text><text x="75" y="78" text-anchor="middle" font-size="12">acks=all</text>
@@ -84,7 +76,107 @@
   <li><b>Consumer:</b> Er sieht nur Nachrichten unter der HW. So liest er nie etwas, das bei einem Leader-Wechsel verschwinden kann.</li>
 </ol>
 
-<h2>3. Beispiel: ISR beim Ausfall von Brokern beobachten</h2>
+<h2>2. Aufbau</h2>
+<svg viewBox="0 0 720 320" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="a" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="200" y="8" width="320" height="50" rx="8" fill="#f7f7fa" stroke="#999"/><text x="360" y="30" text-anchor="middle" font-weight="700">KRaft Controller Quorum</text><text x="360" y="48" text-anchor="middle" font-size="12">Metadaten: Leader, ISR, ELR pro Partition</text>
+  <rect x="10" y="110" width="210" height="130" rx="10" fill="#fff" stroke="#555"/><text x="115" y="132" text-anchor="middle" font-weight="700">Broker 1 · rack=zone-1</text>
+  <rect x="30" y="148" width="170" height="70" rx="6" fill="#0a66c2"/><text x="115" y="176" text-anchor="middle" fill="#fff" font-weight="700">P0 Leader</text><text x="115" y="196" text-anchor="middle" fill="#fff" font-size="12">Offsets 0 … 120</text>
+  <rect x="255" y="110" width="210" height="130" rx="10" fill="#fff" stroke="#555"/><text x="360" y="132" text-anchor="middle" font-weight="700">Broker 2 · rack=zone-2</text>
+  <rect x="275" y="148" width="170" height="70" rx="6" fill="#dbe9fb" stroke="#0a66c2"/><text x="360" y="176" text-anchor="middle" font-weight="700">P0 Follower</text><text x="360" y="196" text-anchor="middle" font-size="12">in ISR · bis 120</text>
+  <rect x="500" y="110" width="210" height="130" rx="10" fill="#fff" stroke="#555"/><text x="605" y="132" text-anchor="middle" font-weight="700">Broker 3 · rack=zone-3</text>
+  <rect x="520" y="148" width="170" height="70" rx="6" fill="#eee" stroke="#c62828"/><text x="605" y="176" text-anchor="middle" font-weight="700">P0 Follower</text><text x="605" y="196" text-anchor="middle" font-size="12" fill="#c62828">nicht in ISR · bis 80</text>
+  <line x1="275" y1="183" x2="202" y2="183" stroke="#555" stroke-width="2" marker-end="url(#a)"/><text x="238" y="176" text-anchor="middle" font-size="11">Fetch</text>
+  <path d="M560,240 C560,290 115,290 115,222" fill="none" stroke="#555" stroke-width="2" marker-end="url(#a)"/><text x="360" y="300" text-anchor="middle" font-size="12">Fetch (hängt nach)</text>
+  <line x1="520" y1="40" x2="640" y2="108" stroke="#999" stroke-width="1.5" stroke-dasharray="4 3" marker-end="url(#a)"/>
+  <text x="20" y="80" font-size="12">Replication Factor 3 · ISR = {1, 2} · min.insync.replicas = 2</text>
+</svg>
+<ol>
+  <li><b>Replication Factor (RF):</b> die Anzahl Kopien pro Partition, Leader inklusive. Beispiel: RF 3 = ein Leader und zwei Follower.</li>
+  <li><b>Leader:</b> Er nimmt alle Writes an und bedient standardmässig auch die Reads.</li>
+  <li><b>Follower:</b> Er holt neue Daten per <b>Fetch</b> vom Leader, wie ein Consumer. Er schreibt sie in sein eigenes Log.</li>
+  <li><b>ISR</b> (<b>In-Sync Replicas</b>): die Replikate, die aktuell genug sind. Broker 3 hängt nach und ist darum nicht in der ISR.</li>
+  <li><b>KRaft Controller:</b> Er speichert pro Partition Leader, ISR und ELR. Er wählt einen neuen Leader, wenn ein Broker ausfällt.</li>
+  <li><b>Rack:</b> <code>broker.rack</code> sagt Kafka, wo ein Broker steht. Kafka verteilt Replikate dann über Racks oder Availability Zones.</li>
+</ol>
+
+<h2>3. Details, die Interviewer fragen</h2>
+<ol>
+  <li><b>acks:</b> <code>0</code> wartet auf nichts. <code>1</code> wartet auf den Leader. <code>all</code> (= <code>-1</code>) wartet auf alle aktuellen ISR-Mitglieder. Es wartet nicht auf alle Replikate.</li>
+  <li><b>min.insync.replicas:</b> Das ist die Mindestgrösse der ISR für einen Write mit <code>acks=all</code>. Der Standard ist 1. Bei <code>acks=0</code> oder <code>1</code> hat sie keine Wirkung.</li>
+  <li><b>Warum 1 als Standard gefährlich ist:</b> Mit min ISR 1 kann die ISR nur noch aus dem Leader bestehen. Dann ist <code>acks=all</code> praktisch <code>acks=1</code>.</li>
+  <li><b>Wann ein Follower die ISR verlässt:</b> Hat er <code>replica.lag.time.max.ms</code> (Standard 30 s) nicht bis zur LEO aufgeholt, entfernt ihn der Leader. In KRaft muss er auch eine aktive Session beim Controller haben.</li>
+  <li><b>Committed:</b> Eine Nachricht ist committed, wenn alle ISR-Mitglieder sie haben. Kafka garantiert, dass sie nicht verloren geht, solange ein ISR-Mitglied lebt.</li>
+  <li><b>High Watermark vs LEO:</b> LEO ist das Ende des Logs eines Replikats. HW ist das Minimum der LEOs in der ISR. Consumer lesen nur bis zur HW.</li>
+  <li><b>Leader Epoch:</b> Das ist eine Nummer, die bei jedem Leader-Wechsel steigt. Ein Follower nutzt sie, um sein Log nach einem Wechsel korrekt zu kürzen.</li>
+  <li><b>Leader-Wahl:</b> Fällt der Leader aus, wählt der Controller ein Mitglied der ISR. So ist kein committed Write verloren.</li>
+  <li><b>Unclean Leader Election:</b> Ist kein ISR-Mitglied mehr da, kann ein nicht synchrones Replikat Leader werden. Das ist nur mit <code>unclean.leader.election.enable=true</code> erlaubt (Standard false). Der Preis ist Datenverlust.</li>
+  <li><b>ELR (Eligible Leader Replicas):</b> Sie sind seit Kafka 4.0 verfügbar. Ab 4.1 sind sie für neue Cluster standardmässig aktiv. Der Controller merkt sich Replikate, die beim Schrumpfen unter min ISR noch aktuell waren. Sie dürfen später sauber Leader werden.</li>
+  <li><b>Rack Awareness:</b> Mit <code>broker.rack</code> legt Kafka Replikate einer Partition in verschiedene Racks oder Zonen. Ein Zonen-Ausfall nimmt dann nur ein Replikat.</li>
+  <li><b>Follower Fetching (KIP-392):</b> Mit <code>replica.selector.class=RackAwareReplicaSelector</code> und <code>client.rack</code> lesen Consumer vom nächsten Replikat. Das spart Traffic zwischen Zonen.</li>
+  <li><b>Preferred Leader:</b> Das erste Replikat in der Liste ist der bevorzugte Leader. <code>auto.leader.rebalance.enable</code> holt die Leitung nach einem Neustart zurück. So verteilt sich die Last.</li>
+  <li><b>Replikation ersetzt fsync:</b> Kafka schreibt in den Page Cache und ruft standardmässig kein fsync pro Nachricht auf. Die Durability kommt aus mehreren Kopien auf verschiedenen Maschinen.</li>
+  <li><b>Daten-Replikation vs Metadaten:</b> Partitionsdaten nutzen das ISR-Modell. Die Metadaten im KRaft-Quorum nutzen Raft mit Mehrheit.</li>
+  <li><b>RF ändern:</b> Man ändert den RF mit <code>kafka-reassign-partitions.sh</code>, nicht mit <code>--alter</code>. Interne Topics wie <code>__consumer_offsets</code> brauchen auch RF 3.</li>
+</ol>
+
+<h2>4. Fallen</h2>
+<div class="trap">
+<ul>
+  <li>„<code>acks=all</code> heisst: alle Replikate haben die Nachricht.“ → <b>Falsch.</b> Alle aktuellen <b>ISR</b>-Mitglieder. Das kann nur der Leader sein.</li>
+  <li>„<code>acks=all</code> allein reicht für Durability.“ → <b>Falsch.</b> Erst mit <code>min.insync.replicas ≥ 2</code>.</li>
+  <li>„min.insync.replicas gilt für alle Producer.“ → <b>Falsch.</b> Nur für <code>acks=all</code>.</li>
+  <li>„RF 2 mit min ISR 2 ist sicher und verfügbar.“ → <b>Falsch.</b> Ein Broker weg, und Writes stoppen.</li>
+  <li>„Consumer lesen alles, was der Leader hat.“ → <b>Falsch.</b> Nur bis zur High Watermark.</li>
+  <li>„Followers verteilen die Read-Last automatisch.“ → <b>Falsch.</b> Standardmässig liest man vom Leader. Follower Fetching muss man einschalten.</li>
+</ul>
+</div>
+
+<h2>5. Selbsttest</h2>
+<h3>Warum?</h3>
+<details><summary>Warum RF 3 und min ISR 2?</summary><p>Ein Broker darf ausfallen, und Writes gehen weiter. Jeder bestätigte Write liegt trotzdem auf mindestens zwei Maschinen.</p></details>
+<details><summary>Warum macht Kafka kein fsync pro Nachricht?</summary><p>Wegen der Leistung. Die Durability kommt aus mehreren Kopien auf verschiedenen Brokern, nicht aus der Platte eines Brokers.</p></details>
+<details><summary>Was geht kaputt, wenn min ISR 1 ist und die ISR nur noch aus dem Leader besteht?</summary><p>Der Write gelingt mit nur einer Kopie. Fällt dieser Broker aus, ist die Nachricht verloren.</p></details>
+<details><summary>Warum lesen Consumer nur bis zur High Watermark?</summary><p>Nachrichten darüber liegen noch nicht auf allen ISR-Mitgliedern. Bei einem Leader-Wechsel könnten sie verschwinden.</p></details>
+<h3>Wie innen?</h3>
+<details><summary>Was machen Leader und Follower?</summary><p>Der Leader nimmt alle Writes an und bedient die Reads. Follower holen per Fetch die Daten vom Leader und halten eine Kopie.</p></details>
+<details><summary>Was ist die ISR?</summary><p>Die In-Sync Replicas: Leader plus alle Follower, die aktuell genug sind. Nur sie dürfen sauber Leader werden.</p></details>
+<details><summary>Was ist die High Watermark?</summary><p>Der höchste Offset, den alle ISR-Mitglieder haben. Nachrichten darunter sind committed. Consumer lesen nur bis dahin.</p></details>
+<details><summary>Was ist der Unterschied zwischen LEO und HW?</summary><p>LEO ist das Log-Ende eines Replikats. Die HW ist das Minimum der LEOs in der ISR.</p></details>
+<details><summary>Was ist die Leader Epoch?</summary><p>Ein Zähler, der bei jedem Leader-Wechsel steigt. Follower kürzen damit ihr Log korrekt und vermeiden abweichende Daten.</p></details>
+<details><summary>Was ist Unclean Leader Election?</summary><p>Ein Replikat ausserhalb der ISR wird Leader, wenn kein ISR-Mitglied lebt. Die Partition ist wieder verfügbar, aber Nachrichten gehen verloren. Standard: aus.</p></details>
+<details><summary>Was sind Eligible Leader Replicas?</summary><p>Seit Kafka 4.0 (ab 4.1 Standard für neue Cluster). Der Controller merkt sich Replikate, die beim Schrumpfen unter min ISR noch vollständig waren. Sie dürfen ohne Datenverlust Leader werden.</p></details>
+<details><summary>Was ist ein Preferred Leader?</summary><p>Das erste Replikat der Liste. Kafka gibt ihm nach Neustarts die Leitung zurück, damit die Last gleich verteilt bleibt.</p></details>
+<h3>Zahlen</h3>
+<details><summary>Was ist der Replication Factor?</summary><p>Die Anzahl Kopien jeder Partition, Leader inklusive. In Produktion meist 3.</p></details>
+<details><summary>Wann fliegt ein Follower aus der ISR?</summary><p>Wenn er länger als <code>replica.lag.time.max.ms</code> (30 s) nicht bis zum Log-Ende aufholt. In KRaft auch ohne aktive Controller-Session.</p></details>
+<details><summary>Was ist der Standard von min.insync.replicas?</summary><p>1. Darum ist <code>acks=all</code> allein noch keine Durability. Man setzt min ISR auf 2.</p></details>
+<h3>Vergleich</h3>
+<details><summary>Was bedeuten acks=0, 1 und all?</summary><p>0: keine Bestätigung. 1: der Leader hat geschrieben. all: alle ISR-Mitglieder haben geschrieben.</p></details>
+<details><summary>Wie unterscheidet sich Kafkas ISR von einem Raft-Quorum?</summary><p>Raft braucht eine Mehrheit, zum Beispiel 2 von 3. Kafka braucht alle ISR-Mitglieder, aber die ISR passt sich dynamisch an.</p></details>
+<details><summary>Wie repliziert Event Hubs?</summary><p>Microsoft repliziert intern, mit Availability Zones. Man wählt Tier und eventuell Geo-Replikation, aber keine RF.</p></details>
+<h3>Produktion</h3>
+<details><summary>Was macht min.insync.replicas?</summary><p>Es legt fest, wie gross die ISR mindestens sein muss, damit ein Write mit acks=all gelingt. Sonst gibt es NotEnoughReplicasException.</p></details>
+<details><summary>Welche Metrik überwachen Sie zuerst?</summary><p>UnderReplicatedPartitions. Dazu UnderMinIsrPartitionCount und OfflinePartitionsCount.</p></details>
+<details><summary>Szenario: Nach einem Broker-Crash fehlen Nachrichten, die der Producer als gesendet geloggt hat. Was prüfen Sie?</summary><p>acks (1 statt all), min.insync.replicas (1), und ob Unclean Leader Election an war. Dann auf RF 3, min ISR 2, acks=all umstellen.</p></details>
+<details><summary>Szenario: Während einer Wartung bekommen alle Producer NotEnoughReplicasException. Warum?</summary><p>Die ISR ist unter min ISR gefallen, z. B. ein Broker in Wartung und einer hängt nach. Wartung stoppen, Follower aufholen lassen, nächstes Mal erst bei UnderReplicatedPartitions = 0 neu starten.</p></details>
+<h3>Design</h3>
+<details><summary>Kann ein Consumer von einem Follower lesen?</summary><p>Ja, mit KIP-392: <code>RackAwareReplicaSelector</code> auf dem Broker und <code>client.rack</code> im Consumer. Das spart Traffic zwischen Zonen.</p></details>
+<details><summary>Was ist Rack Awareness?</summary><p>Mit <code>broker.rack</code> verteilt Kafka die Replikate einer Partition auf verschiedene Racks oder Zonen. Ein Zonen-Ausfall trifft dann nur eine Kopie.</p></details>
+<details><summary>Wie ändern Sie den Replication Factor eines Topics?</summary><p>Mit <code>kafka-reassign-partitions.sh</code> und einem neuen Replikat-Plan. <code>kafka-topics.sh --alter</code> kann das nicht.</p></details>
+<details><summary>Szenario: Eine Partition ist offline, der einzige verbleibende Broker ist nicht in der ISR. Was tun Sie?</summary><p>Erst versuchen, einen ISR-Broker zurückzubringen. Unclean Election nur mit Zustimmung der Fachseite, denn Daten gehen verloren. Danach die Ursache der fehlenden Redundanz beheben.</p></details>
+
+<details class="mehr"><summary>Mehr</summary>
+<h3>Gerüst</h3>
+<ul>
+  <li><b>Warum?</b> Mehrere Kopien auf verschiedenen Maschinen geben Haltbarkeit, ohne fsync pro Nachricht.</li>
+  <li><b>Wie innen?</b> Follower fetchen vom Leader. Die High Watermark ist das Minimum der LEOs in der ISR. Consumer lesen nur bis dahin.</li>
+  <li><b>Zahlen</b> RF 3, <code>min.insync.replicas=2</code>, <code>replica.lag.time.max.ms</code> 30 s. Standard für min ISR ist 1.</li>
+  <li><b>Vergleich</b> ISR-Modell: alle ISR müssen bestätigen, die ISR passt sich an. Raft braucht eine Mehrheit (2 von 3).</li>
+  <li><b>Produktion</b> <code>NotEnoughReplicasException</code> bei zu kleiner ISR. ISR flattert bei GC oder Netz. UnderReplicatedPartitions muss 0 sein.</li>
+  <li><b>Design</b> <code>acks=all</code>, min ISR 2, Unclean Election aus, <code>broker.rack</code> pro Zone. Unclean Election ist eine Fachentscheidung.</li>
+</ul>
+<h3>Beispiel: ISR beim Ausfall von Brokern beobachten</h3>
 <pre># Topic mit RF 3 und min ISR 2 anlegen
 $ kafka-topics.sh --bootstrap-server b1:9092 --create --topic payments \
     --partitions 1 --replication-factor 3 --config min.insync.replicas=2
@@ -109,28 +201,7 @@ Producer: org.apache.kafka.common.errors.NotEnoughReplicasException
   <li>Fällt Broker 2 auch aus, ist die ISR <code>1</code>. Writes mit <code>acks=all</code> werden abgelehnt. Reads bis zur HW gehen weiter.</li>
   <li>Ein Producer mit <code>acks=1</code> würde weiter schreiben. Fällt dann Broker 1 aus, sind diese Daten weg.</li>
 </ol>
-
-<h2>4. Details, die Interviewer fragen</h2>
-<ol>
-  <li><b>acks:</b> <code>0</code> wartet auf nichts. <code>1</code> wartet auf den Leader. <code>all</code> (= <code>-1</code>) wartet auf alle aktuellen ISR-Mitglieder, nicht auf alle Replikate.</li>
-  <li><b>min.insync.replicas:</b> Die Mindestgrösse der ISR für einen Write mit <code>acks=all</code>. Standard: 1. Bei <code>acks=0</code> oder <code>1</code> hat sie keine Wirkung.</li>
-  <li><b>Warum 1 als Standard gefährlich ist:</b> Mit min ISR 1 kann die ISR nur noch aus dem Leader bestehen. Dann ist <code>acks=all</code> praktisch <code>acks=1</code>.</li>
-  <li><b>Wann ein Follower die ISR verlässt:</b> Hat er <code>replica.lag.time.max.ms</code> (Standard 30 s) nicht bis zur LEO aufgeholt, entfernt ihn der Leader. In KRaft muss er auch eine aktive Session beim Controller haben.</li>
-  <li><b>Committed:</b> Eine Nachricht ist committed, wenn alle ISR-Mitglieder sie haben. Kafka garantiert: Committed-Nachrichten gehen nicht verloren, solange ein ISR-Mitglied lebt.</li>
-  <li><b>High Watermark vs LEO:</b> LEO ist das Ende des Logs eines Replikats. HW ist das Minimum der LEOs in der ISR. Consumer lesen nur bis zur HW.</li>
-  <li><b>Leader Epoch:</b> Eine Nummer, die bei jedem Leader-Wechsel steigt. Ein Follower nutzt sie, um sein Log nach einem Wechsel korrekt zu kürzen.</li>
-  <li><b>Leader-Wahl:</b> Fällt der Leader aus, wählt der Controller ein Mitglied der ISR. So ist kein committed Write verloren.</li>
-  <li><b>Unclean Leader Election:</b> Ist kein ISR-Mitglied mehr da, kann ein nicht synchrones Replikat Leader werden. Das ist nur mit <code>unclean.leader.election.enable=true</code> erlaubt (Standard: false). Preis: Datenverlust.</li>
-  <li><b>ELR (Eligible Leader Replicas):</b> Seit Kafka 4.0 verfügbar, ab 4.1 für neue Cluster standardmässig aktiv. Der Controller merkt sich Replikate, die beim Schrumpfen unter min ISR noch aktuell waren. Sie dürfen später sauber Leader werden.</li>
-  <li><b>Rack Awareness:</b> Mit <code>broker.rack</code> legt Kafka Replikate einer Partition in verschiedene Racks oder Zonen. Ein Zonen-Ausfall nimmt dann nur ein Replikat.</li>
-  <li><b>Follower Fetching (KIP-392):</b> Mit <code>replica.selector.class=RackAwareReplicaSelector</code> und <code>client.rack</code> lesen Consumer vom nächsten Replikat. Das spart Traffic zwischen Zonen.</li>
-  <li><b>Preferred Leader:</b> Das erste Replikat in der Liste ist der bevorzugte Leader. <code>auto.leader.rebalance.enable</code> holt die Leitung nach einem Neustart zurück und verteilt so die Last.</li>
-  <li><b>Replikation ersetzt fsync:</b> Kafka schreibt in den Page Cache und ruft standardmässig kein fsync pro Nachricht. Die Durability kommt aus mehreren Kopien auf verschiedenen Maschinen.</li>
-  <li><b>Daten-Replikation vs Metadaten:</b> Partitionsdaten nutzen das ISR-Modell. Die Metadaten im KRaft-Quorum nutzen Raft mit Mehrheit.</li>
-  <li><b>RF ändern:</b> RF ändert man mit <code>kafka-reassign-partitions.sh</code>, nicht mit <code>--alter</code>. Interne Topics wie <code>__consumer_offsets</code> brauchen auch RF 3.</li>
-</ol>
-
-<h2>5. Vergleich</h2>
+<h3>Vergleich</h3>
 <ul>
   <li><b>RF 3, min ISR 2, acks=all:</b> der Standard für wichtige Daten. Ein Broker darf ausfallen, ohne Verlust und ohne Write-Stopp.</li>
   <li><b>RF 3, min ISR 1, acks=all:</b> Writes gehen fast immer. Bei einer ISR von 1 kann ein zweiter Ausfall Daten kosten.</li>
@@ -140,8 +211,7 @@ Producer: org.apache.kafka.common.errors.NotEnoughReplicasException
   <li><b>Kafka ISR vs Raft/Quorum (z. B. RabbitMQ Quorum Queues):</b> Raft braucht eine Mehrheit (2 von 3). Kafka braucht alle ISR-Mitglieder, aber die ISR passt sich dynamisch an.</li>
   <li><b>Event Hubs:</b> Microsoft repliziert selbst, mit Availability Zones. Man stellt kein RF und kein min ISR ein.</li>
 </ul>
-
-<h2>6. In der Produktion</h2>
+<h3>In der Produktion</h3>
 <ol>
   <li><b>Daten weg nach Broker-Ausfall:</b> Ursache oft <code>acks=1</code> oder min ISR 1. Lösung: <code>acks=all</code>, <code>min.insync.replicas=2</code>, RF 3, Unclean Election aus.</li>
   <li><b>Producer bekommen NotEnoughReplicas:</b> Zwei von drei Brokern sind weg oder hängen nach. Lösung: Broker reparieren. Nicht schnell min ISR auf 1 setzen, ausser die Fachseite akzeptiert das Risiko bewusst.</li>
@@ -151,8 +221,7 @@ Producer: org.apache.kafka.common.errors.NotEnoughReplicasException
   <li><b>Hohe Cloud-Kosten:</b> Replikation und Consumer-Reads über Zonen kosten Traffic. Lösung: Follower Fetching mit <code>client.rack</code>.</li>
   <li><b>Interne Topics mit RF 1:</b> In Test-Setups angelegt, dann in Produktion übernommen. Ein Broker-Ausfall stoppt dann Consumer Groups. Lösung: RF der internen Topics prüfen.</li>
 </ol>
-
-<h2>7. Diagnose: Werkzeuge und Metriken</h2>
+<h3>Diagnose: Werkzeuge und Metriken</h3>
 <ul>
   <li><code>kafka-topics.sh --describe --under-replicated-partitions</code>: Partitionen mit ISR kleiner als RF.</li>
   <li><code>kafka-topics.sh --describe --under-min-isr-partitions</code> und <code>--at-min-isr-partitions</code>: wo Writes gefährdet sind.</li>
@@ -163,8 +232,7 @@ Producer: org.apache.kafka.common.errors.NotEnoughReplicasException
   <li><code>kafka-leader-election.sh --election-type preferred</code>: Leitung an bevorzugte Leader zurückgeben.</li>
   <li><b>Producer-Metrik</b> <code>record-error-rate</code> und Logs mit <code>NotEnoughReplicas</code>.</li>
 </ul>
-
-<h2>8. Senior-Punkte</h2>
+<h3>Senior-Punkte</h3>
 <div class="senior">
 <ol>
   <li><b>Durability ist eine Kette.</b> RF 3, min ISR 2, <code>acks=all</code>, Unclean Election aus. Fehlt ein Glied, ist die Garantie weg.</li>
@@ -175,46 +243,8 @@ Producer: org.apache.kafka.common.errors.NotEnoughReplicasException
   <li><b>Managed Service ändert die Frage.</b> Bei Event Hubs entscheidet man nicht über RF, sondern über Tier, Zonen und Geo-Replikation.</li>
 </ol>
 </div>
-
-<h2>9. Aus dem Projekt</h2>
-<p>„Bei DAZiT habe ich Kafka aus Sicht der Spring-Boot-Services genutzt; bei DigiSanté repliziert Event Hubs als Managed Service selbst, dort war die Frage Tier und Netzwerk, nicht RF.“ <span class="small">(Prüfen und durch dein echtes Beispiel ersetzen. Das Profil enthält keine Broker-Werte für DAZiT. Ehrlich sagen, wer den Cluster betrieben hat, und RF 3 / min ISR 2 als eigene Empfehlung begründen.)</span></p>
-
-<h2>10. Fallen</h2>
-<div class="trap">
-<ul>
-  <li>„<code>acks=all</code> heisst: alle Replikate haben die Nachricht.“ → <b>Falsch.</b> Alle aktuellen <b>ISR</b>-Mitglieder. Das kann nur der Leader sein.</li>
-  <li>„<code>acks=all</code> allein reicht für Durability.“ → <b>Falsch.</b> Erst mit <code>min.insync.replicas ≥ 2</code>.</li>
-  <li>„min.insync.replicas gilt für alle Producer.“ → <b>Falsch.</b> Nur für <code>acks=all</code>.</li>
-  <li>„RF 2 mit min ISR 2 ist sicher und verfügbar.“ → <b>Falsch.</b> Ein Broker weg, und Writes stoppen.</li>
-  <li>„Consumer lesen alles, was der Leader hat.“ → <b>Falsch.</b> Nur bis zur High Watermark.</li>
-  <li>„Followers verteilen die Read-Last automatisch.“ → <b>Falsch.</b> Standardmässig liest man vom Leader. Follower Fetching muss man einschalten.</li>
-</ul>
-</div>
-
-<h2>11. Fragen</h2>
-<details><summary>Was ist der Replication Factor?</summary><p>Die Anzahl Kopien jeder Partition, Leader inklusive. In Produktion meist 3.</p></details>
-<details><summary>Was machen Leader und Follower?</summary><p>Der Leader nimmt alle Writes an und bedient die Reads. Follower holen per Fetch die Daten vom Leader und halten eine Kopie.</p></details>
-<details><summary>Was ist die ISR?</summary><p>Die In-Sync Replicas: Leader plus alle Follower, die aktuell genug sind. Nur sie dürfen sauber Leader werden.</p></details>
-<details><summary>Wann fliegt ein Follower aus der ISR?</summary><p>Wenn er länger als <code>replica.lag.time.max.ms</code> (30 s) nicht bis zum Log-Ende aufholt. In KRaft auch ohne aktive Controller-Session.</p></details>
-<details><summary>Was ist die High Watermark?</summary><p>Der höchste Offset, den alle ISR-Mitglieder haben. Nachrichten darunter sind committed. Consumer lesen nur bis dahin.</p></details>
-<details><summary>Was ist der Unterschied zwischen LEO und HW?</summary><p>LEO ist das Log-Ende eines Replikats. Die HW ist das Minimum der LEOs in der ISR.</p></details>
-<details><summary>Was bedeuten acks=0, 1 und all?</summary><p>0: keine Bestätigung. 1: der Leader hat geschrieben. all: alle ISR-Mitglieder haben geschrieben.</p></details>
-<details><summary>Was macht min.insync.replicas?</summary><p>Es legt fest, wie gross die ISR mindestens sein muss, damit ein Write mit acks=all gelingt. Sonst gibt es NotEnoughReplicasException.</p></details>
-<details><summary>Warum RF 3 und min ISR 2?</summary><p>Ein Broker darf ausfallen, und Writes gehen weiter. Jeder bestätigte Write liegt trotzdem auf mindestens zwei Maschinen.</p></details>
-<details><summary>Was passiert bei acks=all, wenn die ISR nur noch 1 ist und min ISR 1?</summary><p>Der Write gelingt mit nur einer Kopie. Fällt dieser Broker aus, ist die Nachricht verloren.</p></details>
-<details><summary>Was ist Unclean Leader Election?</summary><p>Ein Replikat ausserhalb der ISR wird Leader, wenn kein ISR-Mitglied lebt. Die Partition ist wieder verfügbar, aber Nachrichten gehen verloren. Standard: aus.</p></details>
-<details><summary>Was sind Eligible Leader Replicas?</summary><p>Seit Kafka 4.0 (ab 4.1 Standard für neue Cluster). Der Controller merkt sich Replikate, die beim Schrumpfen unter min ISR noch vollständig waren. Sie dürfen ohne Datenverlust Leader werden.</p></details>
-<details><summary>Was ist Rack Awareness?</summary><p>Mit <code>broker.rack</code> verteilt Kafka die Replikate einer Partition auf verschiedene Racks oder Zonen. Ein Zonen-Ausfall trifft dann nur eine Kopie.</p></details>
-<details><summary>Kann ein Consumer von einem Follower lesen?</summary><p>Ja, mit KIP-392: <code>RackAwareReplicaSelector</code> auf dem Broker und <code>client.rack</code> im Consumer. Das spart Traffic zwischen Zonen.</p></details>
-<details><summary>Warum macht Kafka kein fsync pro Nachricht?</summary><p>Wegen der Leistung. Die Durability kommt aus mehreren Kopien auf verschiedenen Brokern, nicht aus der Platte eines Brokers.</p></details>
-<details><summary>Was ist der Leader Epoch?</summary><p>Ein Zähler, der bei jedem Leader-Wechsel steigt. Follower kürzen damit ihr Log korrekt und vermeiden abweichende Daten.</p></details>
-<details><summary>Wie ändern Sie den Replication Factor eines Topics?</summary><p>Mit <code>kafka-reassign-partitions.sh</code> und einem neuen Replikat-Plan. <code>kafka-topics.sh --alter</code> kann das nicht.</p></details>
-<details><summary>Was ist ein Preferred Leader?</summary><p>Das erste Replikat der Liste. Kafka gibt ihm nach Neustarts die Leitung zurück, damit die Last gleich verteilt bleibt.</p></details>
-<details><summary>Welche Metrik überwachen Sie zuerst?</summary><p>UnderReplicatedPartitions. Dazu UnderMinIsrPartitionCount und OfflinePartitionsCount.</p></details>
-<details><summary>Wie repliziert Event Hubs?</summary><p>Microsoft repliziert intern, mit Availability Zones. Man wählt Tier und eventuell Geo-Replikation, aber keine RF.</p></details>
-<details><summary>Szenario: Nach einem Broker-Crash fehlen Nachrichten, die der Producer als gesendet geloggt hat. Was prüfen Sie?</summary><p>acks (1 statt all), min.insync.replicas (1), und ob Unclean Leader Election an war. Dann auf RF 3, min ISR 2, acks=all umstellen.</p></details>
-<details><summary>Szenario: Während einer Wartung bekommen alle Producer NotEnoughReplicasException. Warum?</summary><p>Die ISR ist unter min ISR gefallen, z. B. ein Broker in Wartung und einer hängt nach. Wartung stoppen, Follower aufholen lassen, nächstes Mal erst bei UnderReplicatedPartitions = 0 neu starten.</p></details>
-<details><summary>Szenario: Eine Partition ist offline, der einzige verbleibende Broker ist nicht in der ISR. Was tun Sie?</summary><p>Erst versuchen, einen ISR-Broker zurückzubringen. Unclean Election nur mit Zustimmung der Fachseite, denn Daten gehen verloren. Danach die Ursache der fehlenden Redundanz beheben.</p></details>
+<h3>Dein Beispiel</h3>
+</details>
 
 </body>
 </html>

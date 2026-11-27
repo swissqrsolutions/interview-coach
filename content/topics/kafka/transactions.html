@@ -19,6 +19,15 @@
   summary { font-weight: 600; cursor: pointer; }
   details p { margin: 6px 0 2px; }
   .small { color: #6e6e73; font-size: 14px; }
+  h3 { font-size: 17px; margin: 20px 0 6px; }
+  .geruest { border: 2px solid #1d1d1f; border-radius: 6px; padding: 10px 14px; margin: 14px 0; font-size: 15px; line-height: 1.4; }
+  .geruest h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; margin: 0 0 8px; padding: 0; border: 0; }
+  .geruest dl { display: grid; grid-template-columns: 6.6em 1fr; gap: 6px 10px; margin: 0; }
+  .geruest dt { font-weight: 700; font-size: 12px; text-transform: uppercase; letter-spacing: .05em; padding-top: 1px; }
+  .geruest dd { margin: 0; }
+  .muster { border: 1px solid #e5e5ea; border-left: 4px solid #1d1d1f; border-radius: 6px; padding: 10px 14px; margin: 14px 0; }
+  .muster h3 { margin: 0 0 6px; font-size: 13px; text-transform: uppercase; letter-spacing: .06em; }
+  .muster .mq { margin: 0 0 6px; }
 </style>
 </head>
 <body>
@@ -27,33 +36,17 @@
 <!-- sources: Kafka · Tier 2 · Quellen: Apache Kafka 4.4 Documentation (Design: Using Transactions, Operations: Transaction Protocol, Producer/Consumer/Broker Configs), KafkaProducer Javadoc, KIP-98, KIP-447, KIP-664, KIP-890, KIP-939, Spring for Apache Kafka Reference (Transactions). Grundlagen zu Exactly-once: Seite „Delivery Semantics“. -->
 
 <div class="kern">
-<b>Kern:</b> Eine <b>Kafka-Transaktion</b> schreibt mehrere Nachrichten in mehrere Partitionen <b>atomar</b>: alle sichtbar oder keine. Sie kann auch die <b>Consumer-Offsets</b> im selben Schritt committen. So entsteht <b>Read-Process-Write</b> ohne Duplikate, aber nur innerhalb von Kafka.
+<b>Kern:</b> Eine <b>Kafka-Transaktion</b> schreibt mehrere Nachrichten in mehrere Partitionen <b>atomar</b>, es werden also alle sichtbar oder keine. Sie kann auch die <b>Consumer-Offsets</b> im selben Schritt committen. So entsteht <b>Read-Process-Write</b> ohne Duplikate, aber nur innerhalb von Kafka.
 </div>
 
-<h2>1. Wo sitzt die Transaktion?</h2>
-<svg viewBox="0 0 720 310" font-family="-apple-system, system-ui, sans-serif" font-size="14">
-  <defs><marker id="a" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
-  <rect x="10" y="120" width="170" height="80" rx="10" fill="#0a66c2"/><text x="95" y="150" text-anchor="middle" fill="#fff" font-weight="700">Producer</text><text x="95" y="170" text-anchor="middle" fill="#fff" font-size="12">transactional.id</text><text x="95" y="186" text-anchor="middle" fill="#fff" font-size="12">= "vsp-enricher-0"</text>
-  <rect x="270" y="10" width="200" height="80" rx="10" fill="#fff" stroke="#555"/><text x="370" y="38" text-anchor="middle" font-weight="700">Transaction Coordinator</text><text x="370" y="58" text-anchor="middle" font-size="12">ein Broker, Leader der</text><text x="370" y="74" text-anchor="middle" font-size="12">Partition in __transaction_state</text>
-  <rect x="540" y="10" width="170" height="80" rx="10" fill="#eee" stroke="#777"/><text x="625" y="40" text-anchor="middle">__transaction_state</text><text x="625" y="60" text-anchor="middle" font-size="12">50 Partitionen, RF 3</text><text x="625" y="76" text-anchor="middle" font-size="12">Zustand jeder Tx</text>
-  <rect x="270" y="130" width="200" height="60" rx="10" fill="#fff" stroke="#555"/><text x="370" y="156" text-anchor="middle">Topic B (Ausgabe)</text><text x="370" y="176" text-anchor="middle" font-size="12">Daten + Commit-Marker</text>
-  <rect x="270" y="230" width="200" height="60" rx="10" fill="#fff" stroke="#555"/><text x="370" y="256" text-anchor="middle">__consumer_offsets</text><text x="370" y="276" text-anchor="middle" font-size="12">Offsets + Commit-Marker</text>
-  <rect x="540" y="160" width="170" height="80" rx="10" fill="#e8f5e9" stroke="#2e7d32"/><text x="625" y="190" text-anchor="middle" font-weight="700">Consumer</text><text x="625" y="210" text-anchor="middle" font-size="12">read_committed</text><text x="625" y="226" text-anchor="middle" font-size="12">liest bis LSO</text>
-  <line x1="180" y1="140" x2="268" y2="60" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
-  <line x1="470" y1="50" x2="538" y2="50" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
-  <line x1="180" y1="160" x2="268" y2="160" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
-  <line x1="180" y1="185" x2="268" y2="255" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
-  <line x1="470" y1="165" x2="538" y2="190" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
-</svg>
-<ol>
-  <li>Der <b>transaktionale Producer</b> hat eine feste <code>transactional.id</code>. Sie überlebt Neustarts.</li>
-  <li>Der <b>Transaction Coordinator</b> ist ein Broker. Er ist Leader der Partition von <code>__transaction_state</code>, die zum Hash der <code>transactional.id</code> passt.</li>
-  <li><code>__transaction_state</code> speichert den Zustand jeder Transaktion. Standard: 50 Partitionen, RF 3, min ISR 2.</li>
-  <li>Die Daten landen sofort in den Ziel-Partitionen. Sie sind nur noch <b>nicht sichtbar</b> für <code>read_committed</code>-Consumer.</li>
-  <li>Am Ende schreibt der Coordinator <b>Transaktions-Marker</b> (Commit oder Abort) in jede beteiligte Partition.</li>
-</ol>
+<div class="muster"><h3>Antwort-Muster</h3><p class="mq"><b>Frage:</b> Wie funktioniert eine Kafka-Transaktion, und was deckt sie ab?</p><ol>
+  <li>Mechanismus: Der Producer meldet Partitionen und Offsets beim Coordinator an und schreibt die Daten sofort. Beim Commit schreibt der Coordinator Marker in jede Partition.</li>
+  <li>Zahl: Eine Transaktion bricht nach <code>transaction.timeout.ms</code> (60 s) ab.</li>
+  <li>Trade-off: Das gilt nur in Kafka. Es kostet zusätzliche Requests, Marker und Wartezeit für <code>read_committed</code>-Leser.</li>
+  <li>Produktion: Mit einer DB nehme ich Outbox oder einen idempotenten Consumer.</li>
+</ol></div>
 
-<h2>2. Die Reise einer Transaktion (die Geschichte zum Merken)</h2>
+<h2>1. Die Reise einer Transaktion</h2>
 <svg viewBox="0 0 720 300" font-family="-apple-system, system-ui, sans-serif" font-size="14">
   <defs><marker id="b" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker><marker id="r" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#c62828"/></marker></defs>
   <rect x="10" y="20" width="150" height="64" rx="10" fill="#eee" stroke="#777"/><text x="85" y="46" text-anchor="middle" font-weight="700">1. init</text><text x="85" y="66" text-anchor="middle" font-size="12">PID + Epoch holen</text>
@@ -81,7 +74,102 @@
   <li><b>Abort:</b> Bei einem Fehler ruft die App <code>abortTransaction()</code>. Läuft <code>transaction.timeout.ms</code> (Standard 60 s) ab, bricht der Coordinator selbst ab. Die Daten bleiben im Log, werden aber übersprungen.</li>
 </ol>
 
-<h2>3. Beispiel: Read-Process-Write mit Transaktion</h2>
+<h2>2. Aufbau</h2>
+<svg viewBox="0 0 720 310" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="a" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="10" y="120" width="170" height="80" rx="10" fill="#0a66c2"/><text x="95" y="150" text-anchor="middle" fill="#fff" font-weight="700">Producer</text><text x="95" y="170" text-anchor="middle" fill="#fff" font-size="12">transactional.id</text><text x="95" y="186" text-anchor="middle" fill="#fff" font-size="12">= "vsp-enricher-0"</text>
+  <rect x="270" y="10" width="200" height="80" rx="10" fill="#fff" stroke="#555"/><text x="370" y="38" text-anchor="middle" font-weight="700">Transaction Coordinator</text><text x="370" y="58" text-anchor="middle" font-size="12">ein Broker, Leader der</text><text x="370" y="74" text-anchor="middle" font-size="12">Partition in __transaction_state</text>
+  <rect x="540" y="10" width="170" height="80" rx="10" fill="#eee" stroke="#777"/><text x="625" y="40" text-anchor="middle">__transaction_state</text><text x="625" y="60" text-anchor="middle" font-size="12">50 Partitionen, RF 3</text><text x="625" y="76" text-anchor="middle" font-size="12">Zustand jeder Tx</text>
+  <rect x="270" y="130" width="200" height="60" rx="10" fill="#fff" stroke="#555"/><text x="370" y="156" text-anchor="middle">Topic B (Ausgabe)</text><text x="370" y="176" text-anchor="middle" font-size="12">Daten + Commit-Marker</text>
+  <rect x="270" y="230" width="200" height="60" rx="10" fill="#fff" stroke="#555"/><text x="370" y="256" text-anchor="middle">__consumer_offsets</text><text x="370" y="276" text-anchor="middle" font-size="12">Offsets + Commit-Marker</text>
+  <rect x="540" y="160" width="170" height="80" rx="10" fill="#e8f5e9" stroke="#2e7d32"/><text x="625" y="190" text-anchor="middle" font-weight="700">Consumer</text><text x="625" y="210" text-anchor="middle" font-size="12">read_committed</text><text x="625" y="226" text-anchor="middle" font-size="12">liest bis LSO</text>
+  <line x1="180" y1="140" x2="268" y2="60" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <line x1="470" y1="50" x2="538" y2="50" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <line x1="180" y1="160" x2="268" y2="160" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <line x1="180" y1="185" x2="268" y2="255" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+  <line x1="470" y1="165" x2="538" y2="190" stroke="#555" stroke-width="2" marker-end="url(#a)"/>
+</svg>
+<ol>
+  <li>Der <b>transaktionale Producer</b> hat eine feste <code>transactional.id</code>. Sie überlebt Neustarts.</li>
+  <li>Der <b>Transaction Coordinator</b> ist ein Broker. Er ist Leader der Partition von <code>__transaction_state</code>, die zum Hash der <code>transactional.id</code> passt.</li>
+  <li><code>__transaction_state</code> speichert den Zustand jeder Transaktion. Standard: 50 Partitionen, RF 3, min ISR 2.</li>
+  <li>Die Daten landen sofort in den Ziel-Partitionen. Sie sind nur noch <b>nicht sichtbar</b> für <code>read_committed</code>-Consumer.</li>
+  <li>Am Ende schreibt der Coordinator <b>Transaktions-Marker</b> (Commit oder Abort) in jede beteiligte Partition.</li>
+</ol>
+
+<h2>3. Details, die Interviewer fragen</h2>
+<ol>
+  <li><b>Zustände im Coordinator:</b> <code>Empty</code>, <code>Ongoing</code>, <code>PrepareCommit</code>, <code>PrepareAbort</code>, <code>CompleteCommit</code>, <code>CompleteAbort</code>, <code>Dead</code> und <code>PrepareEpochFence</code>.</li>
+  <li><b>Kontroll-Records:</b> Ein Transaktions-Marker ist ein eigener Record im Log. Er belegt einen Offset. Darum sieht der Consumer in einem transaktionalen Topic Offset-Lücken.</li>
+  <li><b>Last Stable Offset (LSO):</b> Das ist der erste Offset einer noch offenen Transaktion. <code>read_committed</code>-Consumer lesen nur bis dorthin. Eine lange offene Transaktion blockiert also alle Leser dieser Partition.</li>
+  <li><b>Aborted Transaction Index:</b> Jedes Segment hat eine <code>.txnindex</code>-Datei. Der Broker liefert damit die Liste abgebrochener Transaktionen mit. Der Consumer filtert sie selbst heraus.</li>
+  <li><b>Timeouts:</b> <code>transaction.timeout.ms</code> im Producer hat den Standard 60 000. Der Broker erlaubt höchstens <code>transaction.max.timeout.ms</code> (Standard 15 Minuten). Der Coordinator prüft alle 10 s auf abgelaufene Transaktionen.</li>
+  <li><b>Ablauf der ID:</b> Eine unbenutzte <code>transactional.id</code> verfällt nach <code>transactional.id.expiration.ms</code> (Standard 7 Tage).</li>
+  <li><b>KIP-890 (Server-Side Defense):</b> Seit Kafka 4.0 ist das neue Protokoll auf dem Server Standard (<code>transaction.version=2</code>). Clients ab 4.0 erhöhen die Epoch bei <b>jeder</b> Transaktion. Das verhindert, dass ein verspäteter Retry in die nächste Transaktion rutscht.</li>
+  <li><b>Hängende Transaktion:</b> Der Coordinator hat die Transaktion vergessen. Die Partition sieht sie aber noch offen. Der LSO bleibt stehen. KIP-890 soll das verhindern. KIP-664 gibt das Werkzeug <code>kafka-transactions.sh find-hanging</code> und <code>abort</code>.</li>
+  <li><b>Kosten:</b> Pro Transaktion kommen Anmelde-Requests und Marker in jede Partition dazu. Darum lieber viele Nachrichten pro Transaktion als eine.</li>
+  <li><b>Spring Kafka:</b> <code>spring.kafka.producer.transaction-id-prefix</code> aktiviert Transaktionen. Der <code>KafkaTransactionManager</code> verbindet sie mit <code>@Transactional</code>. Ein Listener-Container startet die Transaktion selbst und schickt die Offsets mit.</li>
+  <li><b>Zwei-Phasen-Commit (KIP-939):</b> Kafka kann Teilnehmer an einem externen 2PC werden. Dafür gibt es <code>prepareTransaction()</code> und <code>completeTransaction(...)</code>. Es braucht den Broker-Schalter <code>transaction.two.phase.commit.enable</code> (Standard <code>false</code>). Dazu kommt ein eigenes ACL-Recht.</li>
+</ol>
+
+<h2>4. Fallen</h2>
+<div class="trap">
+<ul>
+  <li>„Mit Transaktionen ist das Schreiben in meine DB exactly-once.“ → <b>Falsch.</b> Nur Kafka-Partitionen und Offsets sind in der Transaktion.</li>
+  <li>„Abgebrochene Nachrichten werden gelöscht.“ → <b>Falsch.</b> Sie bleiben im Log. <code>read_committed</code>-Consumer überspringen sie.</li>
+  <li>„Transaktionen sind Standard.“ → <b>Falsch.</b> Nur Idempotenz ist Standard. Transaktionen brauchen <code>transactional.id</code>, und Consumer stehen auf <code>read_uncommitted</code>.</li>
+  <li>„Nach abortTransaction() geht es automatisch weiter.“ → <b>Falsch.</b> Die App muss die Consumer-Position selbst zurücksetzen.</li>
+  <li>„Eine zufällige transactional.id pro Start ist gut.“ → <b>Falsch.</b> Dann fenct niemand den alten Zombie. Die ID muss stabil sein.</li>
+  <li>„Offsets committe ich nach der Transaktion mit commitSync.“ → <b>Falsch.</b> Sie gehören mit <code>sendOffsetsToTransaction</code> in die Transaktion.</li>
+</ul>
+</div>
+
+<h2>5. Selbsttest</h2>
+<h3>Warum?</h3>
+<details><summary>Warum kann eine offene Transaktion andere Consumer bremsen?</summary><p>Der LSO bleibt am Anfang der offenen Transaktion stehen. Auch fertige Nachrichten dahinter sind für <code>read_committed</code> nicht sichtbar.</p></details>
+<details><summary>Warum consumer.groupMetadata() in sendOffsetsToTransaction?</summary><p>Seit KIP-447 fenct der Broker damit Zombies nach einem Rebalance über die Gruppen-Generation. So braucht man nicht mehr einen Producer pro Partition.</p></details>
+<details><summary>Warum muss die transactional.id stabil sein?</summary><p>Nur dann fenct die neue Instanz die alte. Eine zufällige ID pro Start lässt den Zombie unbehelligt.</p></details>
+<details><summary>Was geht kaputt, wenn die Anwendung nach abortTransaction() die Position nicht zurücksetzt?</summary><p>Der Consumer liest hinter die abgebrochenen Records. Sie werden nie neu verarbeitet und gehen verloren.</p></details>
+<h3>Wie innen?</h3>
+<details><summary>Was ist eine Kafka-Transaktion?</summary><p>Atomares Schreiben in mehrere Partitionen plus Offsets. Alles wird sichtbar oder nichts. Gedacht für Read-Process-Write innerhalb von Kafka.</p></details>
+<details><summary>Welche API-Aufrufe gehören dazu?</summary><p><code>initTransactions</code>, <code>beginTransaction</code>, <code>send</code>, <code>sendOffsetsToTransaction</code>, dann <code>commitTransaction</code> oder <code>abortTransaction</code>.</p></details>
+<details><summary>Was macht initTransactions()?</summary><p>Meldet die <code>transactional.id</code> an, holt Producer-ID und höhere Epoch und beendet offene Transaktionen dieser ID. Alte Instanzen sind danach gefenct.</p></details>
+<details><summary>Wo speichert Kafka den Transaktionszustand?</summary><p>Im internen Topic <code>__transaction_state</code>. Standard: 50 Partitionen, RF 3, min ISR 2.</p></details>
+<details><summary>Welche Zustände hat eine Transaktion im Coordinator?</summary><p>Empty, Ongoing, PrepareCommit oder PrepareAbort, dann CompleteCommit oder CompleteAbort. Dazu Dead und PrepareEpochFence.</p></details>
+<details><summary>Ab wann ist ein Commit sicher?</summary><p>Sobald PrepareCommit in <code>__transaction_state</code> steht. Danach schreibt der Coordinator die Marker auch nach einem Crash fertig.</p></details>
+<details><summary>Was ist ein Transaktions-Marker?</summary><p>Ein Kontroll-Record (COMMIT oder ABORT) in jeder beteiligten Partition. Er belegt einen Offset.</p></details>
+<details><summary>Warum sieht ein transaktionales Topic Offset-Lücken?</summary><p>Marker belegen Offsets, und abgebrochene Records werden übersprungen. Code darf nie mit „Offset + 1“ rechnen.</p></details>
+<details><summary>Was bedeutet read_committed genau?</summary><p>Der Consumer liest nur bis zum Last Stable Offset und überspringt abgebrochene Transaktionen. Standard ist <code>read_uncommitted</code>.</p></details>
+<h3>Zahlen</h3>
+<details><summary>Was passiert bei transaction.timeout.ms?</summary><p>Der Coordinator bricht die Transaktion ab und erhöht die Epoch. Der Producer bekommt beim nächsten Schritt einen Fehler. Standard 60 s, Broker-Maximum 15 min.</p></details>
+<details><summary>Wie viele Partitionen hat __transaction_state?</summary><p>50 im Standard, mit RF 3 und min ISR 2.</p></details>
+<details><summary>Was kosten Transaktionen?</summary><p>Zusätzliche Requests und Marker pro Partition und Transaktion, plus Wartezeit für Leser. Mit grossen Batches pro Transaktion ist der Aufwand klein.</p></details>
+<h3>Vergleich</h3>
+<details><summary>Idempotenter Producer oder Transaktion?</summary><p>Idempotent verhindert Duplikate pro Partition und Session. Die Transaktion ist atomar über Partitionen und Offsets, aber nur in Kafka.</p></details>
+<details><summary>Transaktion oder Outbox?</summary><p>Kafka zu Kafka: Transaktion. DB-Änderung plus Event: Outbox, weil die DB-Transaktion beides atomar macht.</p></details>
+<details><summary>Was ist KIP-939?</summary><p>Kafka als Teilnehmer an einem externen Zwei-Phasen-Commit: <code>prepareTransaction</code> und <code>completeTransaction</code>. Braucht <code>transaction.two.phase.commit.enable=true</code> auf dem Broker.</p></details>
+<h3>Produktion</h3>
+<details><summary>Was ist eine hängende Transaktion?</summary><p>Eine Partition sieht eine offene Transaktion, die nie endet. Der LSO steht still. Finden mit <code>kafka-transactions.sh find-hanging</code>, beenden mit <code>abort</code>.</p></details>
+<details><summary>Welche Fehler sind fatal?</summary><p>Laut Javadoc u. a. <code>ProducerFencedException</code>, <code>OutOfOrderSequenceException</code>, <code>AuthorizationException</code>. Dann Producer schliessen. Andere <code>KafkaException</code>: abort und neu versuchen.</p></details>
+<details><summary>Szenario: Alle Consumer eines Topics stehen still, der Producer läuft. Was prüfen Sie?</summary><p>Eine offene oder hängende Transaktion hält den LSO. <code>kafka-transactions.sh list</code>, <code>describe-producers</code> und <code>find-hanging</code> nutzen, dann gezielt abbrechen.</p></details>
+<details><summary>Szenario: Nach dem Skalieren auf 3 Pods gibt es ständig ProducerFencedException. Warum?</summary><p>Die Pods teilen sich eine <code>transactional.id</code> und fencen sich gegenseitig. Lösung: ID pro Pod eindeutig machen.</p></details>
+<h3>Design</h3>
+<details><summary>Wie wählen Sie die transactional.id?</summary><p>Stabil und eindeutig pro Instanz, z. B. Präfix plus StatefulSet-Index. Nie zufällig pro Start.</p></details>
+<details><summary>Was hat KIP-890 geändert?</summary><p>Server-seitiger Schutz seit Kafka 4.0: Epoch-Erhöhung pro Transaktion und Prüfung beim Anmelden der Partition. Verhindert hängende Transaktionen und verspätete Duplikate.</p></details>
+<details><summary>Wie macht Spring Kafka Transaktionen?</summary><p>Mit <code>transaction-id-prefix</code> und <code>KafkaTransactionManager</code>. Der Listener-Container startet die Transaktion und sendet die Offsets mit.</p></details>
+<details><summary>Szenario: Das Team will Transaktionen, damit Kafka und PostgreSQL immer zusammenpassen. Was sagen Sie?</summary><p>Kafka-Transaktionen decken PostgreSQL nicht ab. Besser Outbox-Pattern oder idempotentes Upsert im Consumer. 2PC mit KIP-939 nur, wenn es wirklich nötig ist.</p></details>
+
+<details class="mehr"><summary>Mehr</summary>
+<h3>Gerüst</h3>
+<ul>
+  <li><b>Warum?</b> Mehrere Partitionen und die Input-Offsets werden atomar geschrieben. Das gibt Read-Process-Write ohne Duplikate.</li>
+  <li><b>Wie innen?</b> Der Coordinator speichert den Zustand in <code>__transaction_state</code>. Die Daten liegen sofort im Log. Marker machen sie sichtbar.</li>
+  <li><b>Zahlen</b> <code>transaction.timeout.ms</code> 60 s, Broker-Maximum 15 min. <code>__transaction_state</code> hat 50 Partitionen.</li>
+  <li><b>Vergleich</b> Idempotent: pro Partition. Transaktion: über Partitionen, nur Kafka. Mit DB nimmt man Outbox oder Idempotenz.</li>
+  <li><b>Produktion</b> Offene Transaktion hält den LSO, alle Leser stehen. Gleiche <code>transactional.id</code> auf zwei Pods gibt Fencing.</li>
+  <li><b>Design</b> Eine Transaktion pro Batch, nicht pro Nachricht. <code>transactional.id</code> stabil pro Instanz. Alle Leser auf <code>read_committed</code>.</li>
+</ul>
+<h3>Beispiel: Read-Process-Write mit Transaktion</h3>
 <pre>props.put("transactional.id", "vsp-enricher-" + instanceId);   // stabil pro Instanz
 props.put("transaction.timeout.ms", "60000");
 consumerProps.put("isolation.level", "read_committed");
@@ -115,23 +203,7 @@ CoordinatorId  TransactionalId  ProducerId  ProducerEpoch  TransactionState  Tra
   <li>Nach einem Abort muss die App die Consumer-Position selbst zurücksetzen. Sonst überspringt sie die Nachrichten.</li>
   <li><code>describe</code> zeigt Zustand, Dauer und beteiligte Partitionen. Hier ist <code>__consumer_offsets</code> dabei, weil Offsets in der Transaktion sind.</li>
 </ol>
-
-<h2>4. Details, die Interviewer fragen</h2>
-<ol>
-  <li><b>Zustände im Coordinator:</b> <code>Empty</code>, <code>Ongoing</code>, <code>PrepareCommit</code>, <code>PrepareAbort</code>, <code>CompleteCommit</code>, <code>CompleteAbort</code>, <code>Dead</code>, <code>PrepareEpochFence</code>.</li>
-  <li><b>Kontroll-Records:</b> Ein Transaktions-Marker ist ein eigener Record im Log. Er belegt einen Offset. Darum hat ein transaktionales Topic Offset-Lücken für den Consumer.</li>
-  <li><b>Last Stable Offset (LSO):</b> der erste Offset einer noch offenen Transaktion. <code>read_committed</code>-Consumer lesen nur bis dorthin. Eine lange offene Transaktion blockiert also alle Leser dieser Partition.</li>
-  <li><b>Aborted Transaction Index:</b> Jedes Segment hat eine <code>.txnindex</code>-Datei. Der Broker liefert damit die Liste abgebrochener Transaktionen mit. Der Consumer filtert sie selbst heraus.</li>
-  <li><b>Timeouts:</b> <code>transaction.timeout.ms</code> im Producer (Standard 60 000). Der Broker erlaubt höchstens <code>transaction.max.timeout.ms</code> (Standard 15 Minuten). Der Coordinator prüft alle 10 s auf abgelaufene Transaktionen.</li>
-  <li><b>Ablauf der ID:</b> Eine unbenutzte <code>transactional.id</code> verfällt nach <code>transactional.id.expiration.ms</code> (Standard 7 Tage).</li>
-  <li><b>KIP-890 (Server-Side Defense):</b> Seit Kafka 4.0 ist das neue Protokoll auf dem Server Standard (<code>transaction.version=2</code>). Clients ab 4.0 erhöhen die Epoch bei <b>jeder</b> Transaktion. Das verhindert, dass ein verspäteter Retry in die nächste Transaktion rutscht.</li>
-  <li><b>Hängende Transaktion:</b> Eine Transaktion, die der Coordinator vergessen hat, die Partition aber noch offen sieht. Der LSO bleibt stehen. KIP-890 soll das verhindern; KIP-664 gibt das Werkzeug <code>kafka-transactions.sh find-hanging</code> und <code>abort</code>.</li>
-  <li><b>Kosten:</b> Pro Transaktion kommen Anmelde-Requests und Marker in jede Partition dazu. Darum lieber viele Nachrichten pro Transaktion als eine.</li>
-  <li><b>Spring Kafka:</b> <code>spring.kafka.producer.transaction-id-prefix</code> aktiviert Transaktionen. Der <code>KafkaTransactionManager</code> verbindet sie mit <code>@Transactional</code>. Ein Listener-Container startet die Transaktion selbst und schickt die Offsets mit.</li>
-  <li><b>Zwei-Phasen-Commit (KIP-939):</b> Kafka kann Teilnehmer an einem externen 2PC werden: <code>prepareTransaction()</code> und <code>completeTransaction(...)</code>. Dafür braucht es den Broker-Schalter <code>transaction.two.phase.commit.enable</code> (Standard <code>false</code>) und ein eigenes ACL-Recht.</li>
-</ol>
-
-<h2>5. Vergleich</h2>
+<h3>Vergleich</h3>
 <ul>
   <li><b>Idempotenter Producer:</b> keine Duplikate pro Partition und Session. Keine Atomarität über Partitionen. Standard seit Kafka 3.0.</li>
   <li><b>Kafka-Transaktion:</b> atomar über mehrere Partitionen und Offsets. Nur innerhalb eines Kafka-Clusters.</li>
@@ -140,8 +212,7 @@ CoordinatorId  TransactionalId  ProducerId  ProducerEpoch  TransactionState  Tra
   <li><b>Idempotenter Consumer:</b> Duplikate erkennen statt verhindern, z. B. mit einer Tabelle verarbeiteter IDs. Einfach und robust für externe Systeme.</li>
   <li><b>XA / 2PC über DB und Kafka:</b> mit KIP-939 möglich, aber komplex. Selten die erste Wahl.</li>
 </ul>
-
-<h2>6. In der Produktion</h2>
+<h3>In der Produktion</h3>
 <ol>
   <li><b>Consumer bleiben stehen, Lag wächst, aber keine Fehler:</b> Eine offene oder hängende Transaktion hält den LSO fest. Lösung: <code>kafka-transactions.sh list</code> und <code>find-hanging</code>, notfalls <code>abort</code>. Timeouts der Producer prüfen.</li>
   <li><b>ProducerFencedException nach Rolling Update:</b> Zwei Pods nutzen dieselbe <code>transactional.id</code>. Lösung: ID pro Instanz eindeutig, z. B. aus dem StatefulSet-Namen oder einem Präfix plus Pod-Index.</li>
@@ -150,8 +221,7 @@ CoordinatorId  TransactionalId  ProducerId  ProducerEpoch  TransactionState  Tra
   <li><b>Consumer sieht abgebrochene Daten:</b> <code>isolation.level</code> ist noch <code>read_uncommitted</code> (Standard). Lösung: <code>read_committed</code> in allen nachgelagerten Consumern.</li>
   <li><b>Lange Verarbeitung pro Batch:</b> Die Transaktion läuft in den Timeout und wird abgebrochen. Lösung: kleinere Batches (<code>max.poll.records</code>) oder Timeout passend erhöhen.</li>
 </ol>
-
-<h2>7. Diagnose: Werkzeuge und Befehle</h2>
+<h3>Diagnose: Werkzeuge und Befehle</h3>
 <ul>
   <li><code>kafka-transactions.sh list</code>: alle bekannten Transaktionen mit Zustand.</li>
   <li><code>kafka-transactions.sh describe --transactional-id X</code>: Zustand, Dauer, Partitionen.</li>
@@ -161,8 +231,7 @@ CoordinatorId  TransactionalId  ProducerId  ProducerEpoch  TransactionState  Tra
   <li>Consumer-Metrik <code>records-lag-max</code>: Bei <code>read_committed</code> wird Lag bis zum LSO gemessen. Wächst er ohne Last, an hängende Transaktionen denken.</li>
   <li>Producer-Logs mit <code>transactional.id</code>: Meldungen zu Epoch und Fencing.</li>
 </ul>
-
-<h2>8. Senior-Punkte</h2>
+<h3>Senior-Punkte</h3>
 <div class="senior">
 <ol>
   <li><b>Transaktionen lösen nur Kafka → Kafka.</b> Sobald eine DB, eine REST-API oder ein Mailversand dazukommt, braucht es Idempotenz im Ziel.</li>
@@ -173,46 +242,8 @@ CoordinatorId  TransactionalId  ProducerId  ProducerEpoch  TransactionState  Tra
   <li><b>Upgrade-Plan:</b> Mit Kafka 4.x und KIP-890 auf aktuelle Clients gehen. Erst dann wirkt der volle Schutz.</li>
 </ol>
 </div>
-
-<h2>9. Aus dem Projekt</h2>
-<p>„In DAZiT habe ich Microservices mit Kafka integriert. Bei MATCH löse ich dasselbe Problem ohne Kafka: Ein Lauf schreibt <code>DELETE WHERE message_id = X</code> und <code>APPEND</code> in einer Iceberg-Transaktion, und Statistiken werden pro Tag ersetzt statt addiert. So sind Retries sicher.“ <span class="small">(Prüfen und durch dein echtes Beispiel ersetzen. Ob ihr in DAZiT Kafka-Transaktionen genutzt habt, steht nicht im Profil.)</span></p>
-
-<h2>10. Fallen</h2>
-<div class="trap">
-<ul>
-  <li>„Mit Transaktionen ist das Schreiben in meine DB exactly-once.“ → <b>Falsch.</b> Nur Kafka-Partitionen und Offsets sind in der Transaktion.</li>
-  <li>„Abgebrochene Nachrichten werden gelöscht.“ → <b>Falsch.</b> Sie bleiben im Log. <code>read_committed</code>-Consumer überspringen sie.</li>
-  <li>„Transaktionen sind Standard.“ → <b>Falsch.</b> Nur Idempotenz ist Standard. Transaktionen brauchen <code>transactional.id</code>, und Consumer stehen auf <code>read_uncommitted</code>.</li>
-  <li>„Nach abortTransaction() geht es automatisch weiter.“ → <b>Falsch.</b> Die App muss die Consumer-Position selbst zurücksetzen.</li>
-  <li>„Eine zufällige transactional.id pro Start ist gut.“ → <b>Falsch.</b> Dann fenct niemand den alten Zombie. Die ID muss stabil sein.</li>
-  <li>„Offsets committe ich nach der Transaktion mit commitSync.“ → <b>Falsch.</b> Sie gehören mit <code>sendOffsetsToTransaction</code> in die Transaktion.</li>
-</ul>
-</div>
-
-<h2>11. Fragen</h2>
-<details><summary>Was ist eine Kafka-Transaktion?</summary><p>Atomares Schreiben in mehrere Partitionen plus Offsets. Alles wird sichtbar oder nichts. Gedacht für Read-Process-Write innerhalb von Kafka.</p></details>
-<details><summary>Welche API-Aufrufe gehören dazu?</summary><p><code>initTransactions</code>, <code>beginTransaction</code>, <code>send</code>, <code>sendOffsetsToTransaction</code>, dann <code>commitTransaction</code> oder <code>abortTransaction</code>.</p></details>
-<details><summary>Was macht initTransactions()?</summary><p>Meldet die <code>transactional.id</code> an, holt Producer-ID und höhere Epoch und beendet offene Transaktionen dieser ID. Alte Instanzen sind danach gefenct.</p></details>
-<details><summary>Wo speichert Kafka den Transaktionszustand?</summary><p>Im internen Topic <code>__transaction_state</code>. Standard: 50 Partitionen, RF 3, min ISR 2.</p></details>
-<details><summary>Welche Zustände hat eine Transaktion im Coordinator?</summary><p>Empty, Ongoing, PrepareCommit oder PrepareAbort, dann CompleteCommit oder CompleteAbort. Dazu Dead und PrepareEpochFence.</p></details>
-<details><summary>Ab wann ist ein Commit sicher?</summary><p>Sobald PrepareCommit in <code>__transaction_state</code> steht. Danach schreibt der Coordinator die Marker auch nach einem Crash fertig.</p></details>
-<details><summary>Was ist ein Transaktions-Marker?</summary><p>Ein Kontroll-Record (COMMIT oder ABORT) in jeder beteiligten Partition. Er belegt einen Offset.</p></details>
-<details><summary>Was bedeutet read_committed genau?</summary><p>Der Consumer liest nur bis zum Last Stable Offset und überspringt abgebrochene Transaktionen. Standard ist <code>read_uncommitted</code>.</p></details>
-<details><summary>Warum kann eine offene Transaktion andere Consumer bremsen?</summary><p>Der LSO bleibt am Anfang der offenen Transaktion stehen. Auch fertige Nachrichten dahinter sind für <code>read_committed</code> nicht sichtbar.</p></details>
-<details><summary>Was passiert bei transaction.timeout.ms?</summary><p>Der Coordinator bricht die Transaktion ab und erhöht die Epoch. Der Producer bekommt beim nächsten Schritt einen Fehler. Standard 60 s, Broker-Maximum 15 min.</p></details>
-<details><summary>Welche Fehler sind fatal?</summary><p>Laut Javadoc u. a. <code>ProducerFencedException</code>, <code>OutOfOrderSequenceException</code>, <code>AuthorizationException</code>. Dann Producer schliessen. Andere <code>KafkaException</code>: abort und neu versuchen.</p></details>
-<details><summary>Warum consumer.groupMetadata() in sendOffsetsToTransaction?</summary><p>Seit KIP-447 fenct der Broker damit Zombies nach einem Rebalance über die Gruppen-Generation. So braucht man nicht mehr einen Producer pro Partition.</p></details>
-<details><summary>Wie wählen Sie die transactional.id?</summary><p>Stabil und eindeutig pro Instanz, z. B. Präfix plus StatefulSet-Index. Nie zufällig pro Start.</p></details>
-<details><summary>Was hat KIP-890 geändert?</summary><p>Server-seitiger Schutz seit Kafka 4.0: Epoch-Erhöhung pro Transaktion und Prüfung beim Anmelden der Partition. Verhindert hängende Transaktionen und verspätete Duplikate.</p></details>
-<details><summary>Was ist eine hängende Transaktion?</summary><p>Eine Partition sieht eine offene Transaktion, die nie endet. Der LSO steht still. Finden mit <code>kafka-transactions.sh find-hanging</code>, beenden mit <code>abort</code>.</p></details>
-<details><summary>Was kosten Transaktionen?</summary><p>Zusätzliche Requests und Marker pro Partition und Transaktion, plus Wartezeit für Leser. Mit grossen Batches pro Transaktion ist der Aufwand klein.</p></details>
-<details><summary>Wie macht Spring Kafka Transaktionen?</summary><p>Mit <code>transaction-id-prefix</code> und <code>KafkaTransactionManager</code>. Der Listener-Container startet die Transaktion und sendet die Offsets mit.</p></details>
-<details><summary>Was ist KIP-939?</summary><p>Kafka als Teilnehmer an einem externen Zwei-Phasen-Commit: <code>prepareTransaction</code> und <code>completeTransaction</code>. Braucht <code>transaction.two.phase.commit.enable=true</code> auf dem Broker.</p></details>
-<details><summary>Transaktion oder Outbox?</summary><p>Kafka zu Kafka: Transaktion. DB-Änderung plus Event: Outbox, weil die DB-Transaktion beides atomar macht.</p></details>
-<details><summary>Warum sieht ein transaktionales Topic Offset-Lücken?</summary><p>Marker belegen Offsets, und abgebrochene Records werden übersprungen. Code darf nie mit „Offset + 1“ rechnen.</p></details>
-<details><summary>Szenario: Alle Consumer eines Topics stehen still, der Producer läuft. Was prüfen Sie?</summary><p>Eine offene oder hängende Transaktion hält den LSO. <code>kafka-transactions.sh list</code>, <code>describe-producers</code> und <code>find-hanging</code> nutzen, dann gezielt abbrechen.</p></details>
-<details><summary>Szenario: Nach dem Skalieren auf 3 Pods gibt es ständig ProducerFencedException. Warum?</summary><p>Die Pods teilen sich eine <code>transactional.id</code> und fencen sich gegenseitig. Lösung: ID pro Pod eindeutig machen.</p></details>
-<details><summary>Szenario: Das Team will Transaktionen, damit Kafka und PostgreSQL immer zusammenpassen. Was sagen Sie?</summary><p>Kafka-Transaktionen decken PostgreSQL nicht ab. Besser Outbox-Pattern oder idempotentes Upsert im Consumer. 2PC mit KIP-939 nur, wenn es wirklich nötig ist.</p></details>
+<h3>Dein Beispiel</h3>
+</details>
 
 </body>
 </html>
