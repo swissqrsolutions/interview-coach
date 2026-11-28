@@ -1,0 +1,291 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SQL Server für PostgreSQL-Entwickler</title>
+<style>
+  body { font: 17px/1.55 -apple-system, system-ui, sans-serif; max-width: 760px; margin: 0 auto; padding: 16px; color: #1d1d1f; }
+  h1 { font-size: 28px; margin: 8px 0 4px; }
+  h2 { font-size: 21px; margin: 32px 0 8px; padding-top: 12px; border-top: 2px solid #e5e5ea; }
+  .kern { background: #eef6ff; border-left: 4px solid #0a66c2; padding: 10px 14px; border-radius: 6px; }
+  .senior { background: #f0faf0; border-left: 4px solid #2e7d32; padding: 10px 14px; border-radius: 6px; }
+  .trap { background: #fff4f2; border-left: 4px solid #c62828; padding: 10px 14px; border-radius: 6px; }
+  code { background: #f2f2f7; padding: 1px 5px; border-radius: 4px; font-size: 15px; }
+  pre { background: #1e1e1e; color: #e6e6e6; padding: 12px; border-radius: 8px; overflow-x: auto; font-size: 13.5px; line-height: 1.45; }
+  svg { width: 100%; height: auto; display: block; margin: 10px 0; }
+  ol li, ul li { margin: 4px 0; }
+  details { border: 1px solid #e5e5ea; border-radius: 8px; padding: 8px 12px; margin: 6px 0; }
+  summary { font-weight: 600; cursor: pointer; }
+  details p { margin: 6px 0 2px; }
+  .small { color: #6e6e73; font-size: 14px; }
+  h3 { font-size: 17px; margin: 20px 0 6px; }
+  .geruest { border: 2px solid #1d1d1f; border-radius: 6px; padding: 10px 14px; margin: 14px 0; font-size: 15px; line-height: 1.4; }
+  .geruest h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; margin: 0 0 8px; padding: 0; border: 0; }
+  .geruest dl { display: grid; grid-template-columns: 6.6em 1fr; gap: 6px 10px; margin: 0; }
+  .geruest dt { font-weight: 700; font-size: 12px; text-transform: uppercase; letter-spacing: .05em; padding-top: 1px; }
+  .geruest dd { margin: 0; }
+  .muster { border: 1px solid #e5e5ea; border-left: 4px solid #1d1d1f; border-radius: 6px; padding: 10px 14px; margin: 14px 0; }
+  .muster h3 { margin: 0 0 6px; font-size: 13px; text-transform: uppercase; letter-spacing: .06em; }
+  .muster .mq { margin: 0 0 6px; }
+</style>
+</head>
+<body>
+
+<body>
+<h1>SQL Server für PostgreSQL-Entwickler</h1>
+<!-- sources: learn.microsoft.com T-SQL OUTPUT clause, SET TRANSACTION ISOLATION LEVEL, TRY...CATCH, SET XACT_ABORT, SCOPE_IDENTITY, ORDER BY (OFFSET FETCH), postgresql.org Doku (Transaction Isolation, INSERT RETURNING) -->
+<div class="kern">
+<b>Kern:</b> <b>SQL Server</b> spricht <b>T-SQL</b>, einen SQL-Dialekt mit Variablen, Batches und Fehlerbehandlung. Das Standard-Verhalten bei Nebenläufigkeit ist <b>sperrenbasiert</b>, nicht MVCC wie bei PostgreSQL. Die <b>OUTPUT-Klausel</b> liefert die geänderten Zeilen zurück und ersetzt dort <code>RETURNING</code>.
+</div>
+<div class="muster"><h3>Antwort-Muster</h3><p class="mq"><b>Frage:</b> Wie unterscheidet sich SQL Server von PostgreSQL im Alltag?</p><ol>
+  <li>Mechanismus: T-SQL schreibt Batches mit Variablen. <code>OUTPUT</code> gibt <code>INSERTED</code> und <code>DELETED</code> zurück, wo PostgreSQL <code>RETURNING</code> nutzt.</li>
+  <li>Zahl: Standard ist READ COMMITTED mit Shared Locks. Mit <code>READ_COMMITTED_SNAPSHOT ON</code> nutzt SQL Server Row Versioning. In Azure SQL Database ist das der Standard.</li>
+  <li>Trade-off: Sperren blockieren Leser, Row Versioning kostet Platz in tempdb. Dafür blockieren Leser und Schreiber sich nicht mehr.</li>
+  <li>Produktion: Ich prüfe die Isolation der Datenbank, nehme <code>THROW</code> und <code>XACT_ABORT ON</code> und hole Identity-Werte per <code>OUTPUT</code>.</li>
+</ol></div>
+<h2>1. Ein INSERT mit OUTPUT in 7 Schritten</h2>
+<svg viewBox="0 0 730 292" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+<defs><marker id="b" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+<rect x="10" y="10" width="210" height="64" rx="10" fill="#dbe9fb" stroke="#0a66c2"/>
+<text x="115" y="34" text-anchor="middle" font-size="14" font-weight="700">1. Batch läuft</text>
+<text x="115" y="53" text-anchor="middle" font-size="12">INSERT mit OUTPUT</text>
+<rect x="260" y="10" width="210" height="64" rx="10" fill="#dbe9fb" stroke="#0a66c2"/>
+<text x="365" y="34" text-anchor="middle" font-size="14" font-weight="700">2. Zeilen schreiben</text>
+<text x="365" y="53" text-anchor="middle" font-size="12">in die Zieltabelle</text>
+<line x1="220" y1="42" x2="258" y2="42" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+<rect x="510" y="10" width="210" height="64" rx="10" fill="#fff" stroke="#555"/>
+<text x="615" y="34" text-anchor="middle" font-size="14" font-weight="700">3. Identity</text>
+<text x="615" y="53" text-anchor="middle" font-size="12">Wert wird vergeben</text>
+<line x1="470" y1="42" x2="508" y2="42" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+<rect x="510" y="114" width="210" height="64" rx="10" fill="#e8f5e9" stroke="#2e7d32"/>
+<text x="615" y="138" text-anchor="middle" font-size="14" font-weight="700">4. inserted füllen</text>
+<text x="615" y="157" text-anchor="middle" font-size="12">Werte nach der Änderung</text>
+<line x1="615" y1="74" x2="615" y2="112" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+<rect x="260" y="114" width="210" height="64" rx="10" fill="#e8f5e9" stroke="#2e7d32"/>
+<text x="365" y="138" text-anchor="middle" font-size="14" font-weight="700">5. OUTPUT liefert</text>
+<text x="365" y="157" text-anchor="middle" font-size="12">an Client oder INTO</text>
+<line x1="510" y1="146" x2="472" y2="146" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+<rect x="10" y="114" width="210" height="64" rx="10" fill="#eee" stroke="#777"/>
+<text x="115" y="138" text-anchor="middle" font-size="14" font-weight="700">6. Trigger</text>
+<text x="115" y="157" text-anchor="middle" font-size="12">laufen danach</text>
+<line x1="260" y1="146" x2="222" y2="146" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+<rect x="10" y="218" width="210" height="64" rx="10" fill="#0a66c2" stroke="#0a66c2"/>
+<text x="115" y="242" text-anchor="middle" font-size="14" font-weight="700" fill="#fff">7. COMMIT</text>
+<text x="115" y="261" text-anchor="middle" font-size="12" fill="#fff">oder ROLLBACK</text>
+<line x1="115" y1="178" x2="115" y2="216" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+</svg>
+<ol>
+  <li><b>Batch läuft:</b> Der Client schickt einen Batch mit <code>INSERT ... OUTPUT ...</code>.</li>
+  <li><b>Zeilen schreiben:</b> SQL Server schreibt die Zeilen in die Zieltabelle. Es hält dafür exklusive Locks bis zum Ende der Transaktion.</li>
+  <li><b>Identity:</b> Die Spalte mit <code>IDENTITY</code> bekommt ihren Wert. Er wird nie zurückgerollt, also entstehen Lücken.</li>
+  <li><b>inserted füllen:</b> Die Pseudotabelle <code>INSERTED</code> hat die Werte nach der Änderung. <code>DELETED</code> hat die Werte davor. Beide gibt es vor den Triggern.</li>
+  <li><b>OUTPUT liefert:</b> Ohne <code>INTO</code> gehen die Zeilen an den Client. Mit <code>INTO</code> landen sie in einer Tabellenvariable oder Tabelle.</li>
+  <li><b>Trigger:</b> Danach laufen die Trigger. Sie sehen schon die Änderung.</li>
+  <li><b>Ende:</b> <code>COMMIT</code> macht alles dauerhaft. Bei <code>ROLLBACK</code> ist alles weg. Die schon gelieferten OUTPUT-Zeilen sind dann trotzdem beim Client angekommen.</li>
+</ol>
+<h2>2. Aufbau</h2>
+<svg viewBox="0 0 730 346" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+<defs><marker id="t" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+<rect x="10" y="10" width="200" height="326" rx="10" fill="#dbe9fb" stroke="#0a66c2"/>
+<text x="110" y="158" text-anchor="middle" font-size="14" font-weight="700">SQL Server</text>
+<text x="110" y="177" text-anchor="middle" font-size="12">T-SQL, Batches,</text>
+<text x="110" y="192" text-anchor="middle" font-size="12">Sperren oder Versionen</text>
+<rect x="270" y="10" width="450" height="46" rx="8" fill="#fff" stroke="#555"/>
+<text x="495" y="29" text-anchor="middle" font-size="13" font-weight="700">T-SQL</text>
+<text x="495" y="47" text-anchor="middle" font-size="12">Variablen · BEGIN...END · TRY...CATCH · THROW</text>
+<line x1="210" y1="173" x2="268" y2="33" stroke="#555" stroke-width="2" marker-end="url(#t)"/>
+<rect x="270" y="66" width="450" height="46" rx="8" fill="#e8f5e9" stroke="#2e7d32"/>
+<text x="495" y="85" text-anchor="middle" font-size="13" font-weight="700">OUTPUT-Klausel</text>
+<text x="495" y="103" text-anchor="middle" font-size="12">INSERTED und DELETED · INTO @tabelle · $action bei MERGE</text>
+<line x1="210" y1="173" x2="268" y2="89" stroke="#555" stroke-width="2" marker-end="url(#t)"/>
+<rect x="270" y="122" width="450" height="46" rx="8" fill="#e8f5e9" stroke="#2e7d32"/>
+<text x="495" y="141" text-anchor="middle" font-size="13" font-weight="700">Isolation</text>
+<text x="495" y="159" text-anchor="middle" font-size="12">READ COMMITTED mit Locks oder mit Row Versioning</text>
+<line x1="210" y1="173" x2="268" y2="145" stroke="#555" stroke-width="2" marker-end="url(#t)"/>
+<rect x="270" y="178" width="450" height="46" rx="8" fill="#fff" stroke="#555"/>
+<text x="495" y="197" text-anchor="middle" font-size="13" font-weight="700">Identity</text>
+<text x="495" y="215" text-anchor="middle" font-size="12">IDENTITY · SCOPE_IDENTITY · @@IDENTITY · IDENT_CURRENT</text>
+<line x1="210" y1="173" x2="268" y2="201" stroke="#555" stroke-width="2" marker-end="url(#t)"/>
+<rect x="270" y="234" width="450" height="46" rx="8" fill="#fff" stroke="#555"/>
+<text x="495" y="253" text-anchor="middle" font-size="13" font-weight="700">Paging</text>
+<text x="495" y="271" text-anchor="middle" font-size="12">ORDER BY ... OFFSET ... FETCH · TOP</text>
+<line x1="210" y1="173" x2="268" y2="257" stroke="#555" stroke-width="2" marker-end="url(#t)"/>
+<rect x="270" y="290" width="450" height="46" rx="8" fill="#eee" stroke="#777"/>
+<text x="495" y="309" text-anchor="middle" font-size="13" font-weight="700">Fehler</text>
+<text x="495" y="327" text-anchor="middle" font-size="12">XACT_ABORT · XACT_STATE · ERROR_MESSAGE()</text>
+<line x1="210" y1="173" x2="268" y2="313" stroke="#555" stroke-width="2" marker-end="url(#t)"/>
+</svg>
+<ol>
+  <li>Ein <b>Batch</b> ist eine Gruppe von T-SQL-Anweisungen, die zusammen an den Server gehen.</li>
+  <li><b>INSERTED</b> und <b>DELETED</b> sind Pseudotabellen mit den neuen und den alten Zeilen.</li>
+  <li><b>READ_COMMITTED_SNAPSHOT</b> ist eine Datenbank-Option. Sie ändert, wie READ COMMITTED liest.</li>
+  <li><b>IDENTITY</b> ist eine Spalte mit automatischem Wert. Sie entspricht grob einer PostgreSQL-Sequence.</li>
+  <li><b>TRY...CATCH</b> fängt Fehler. <b>THROW</b> gibt sie weiter.</li>
+  <li><b>tempdb</b> hält Row Versions. Das kostet Platz und I/O.</li>
+</ol>
+<h2>3. Details</h2>
+<ol>
+  <li><b>OUTPUT-Klausel:</b> Sie gibt Werte aus jeder von <code>INSERT</code>, <code>UPDATE</code>, <code>DELETE</code> oder <code>MERGE</code> betroffenen Zeile zurück. Man nutzt <code>INSERTED.spalte</code> für den neuen Wert und <code>DELETED.spalte</code> für den alten. Bei <code>INSERT</code> geht nur <code>INSERTED</code>, bei <code>DELETE</code> nur <code>DELETED</code>.</li>
+  <li><b>OUTPUT INTO:</b> Das Ziel kann eine Tabellenvariable oder eine Tabelle sein. Die Tabelle darf keine aktiven Trigger haben und nicht an einem Fremdschlüssel teilnehmen. Ohne <code>INTO</code> darf das Ziel der Änderung keinen aktiven Trigger für diese Aktion haben.</li>
+  <li><b>OUTPUT bei Fehler:</b> Ein Befehl mit OUTPUT liefert Zeilen an den Client, auch wenn er einen Fehler hat und zurückgerollt wird. Man darf das Ergebnis bei einem Fehler nicht benutzen.</li>
+  <li><b>OUTPUT-Reihenfolge:</b> SQL Server garantiert keine Reihenfolge der gelieferten Zeilen. Für ein Queue-Muster braucht man ein <code>WHERE</code>, das die Reihenfolge festlegt. Mit <code>READPAST</code> überspringen konkurrierende Leser gesperrte Zeilen.</li>
+  <li><b>$action bei MERGE:</b> In einem <code>MERGE</code> gibt <code>$action</code> für jede Zeile <code>INSERT</code>, <code>UPDATE</code> oder <code>DELETE</code> zurück. Das ist nützlich für Audit und Logging.</li>
+  <li><b>Standard-Isolation:</b> READ COMMITTED ist der Standard. Mit <code>READ_COMMITTED_SNAPSHOT OFF</code> (Standard bei SQL Server) nimmt eine Abfrage Shared Locks. Sie wartet auf Zeilen, die ein anderer Schreiber geändert hat. Mit <code>ON</code> liest sie per Row Versioning einen konsistenten Stand vom Anweisungsstart und nimmt keine Locks.</li>
+  <li><b>RCSI aktivieren:</b> Beim Setzen der Option darf nur die Verbindung mit dem <code>ALTER DATABASE</code> in der Datenbank sein. In Azure SQL Database und in SQL database in Fabric ist die Option standardmässig an. Mit dem Hint <code>READCOMMITTEDLOCK</code> verlangt man trotzdem Locks.</li>
+  <li><b>SNAPSHOT:</b> Eine SNAPSHOT-Transaktion sieht den Stand vom Transaktionsstart. Dafür muss <code>ALLOW_SNAPSHOT_ISOLATION</code> an sein. Man kann nicht mitten in einer Transaktion auf SNAPSHOT wechseln. Das bricht die Transaktion ab.</li>
+  <li><b>REPEATABLE READ und SERIALIZABLE:</b> REPEATABLE READ hält Shared Locks bis zum Ende und lässt Phantome zu. SERIALIZABLE nimmt Range Locks und wirkt wie <code>HOLDLOCK</code>. Beide senken die Parallelität. Schreibende Locks gelten in jeder Stufe bis zum Ende.</li>
+  <li><b>READ UNCOMMITTED und NOLOCK:</b> Die Stufe liest auch nicht committete Daten (Dirty Reads). Der Hint <code>NOLOCK</code> wirkt wie diese Stufe für eine Tabelle. In PostgreSQL gibt es das nicht. READ UNCOMMITTED verhält sich dort wie READ COMMITTED.</li>
+  <li><b>Fehler und Transaktionen:</b> <code>TRY...CATCH</code> fängt Fehler mit Schweregrad über 10, die die Verbindung nicht schliessen. <code>XACT_ABORT ON</code> rollt bei einem Laufzeitfehler die ganze Transaktion zurück. Der Standard ist OFF, in Triggern ON. <code>THROW</code> beachtet XACT_ABORT, <code>RAISERROR</code> nicht. <code>XACT_STATE() = -1</code> heisst, die Transaktion kann nur noch zurückgerollt werden.</li>
+  <li><b>Identity:</b> <code>SCOPE_IDENTITY()</code> gibt den letzten Wert im gleichen Scope zurück. <code>@@IDENTITY</code> gibt den letzten Wert der Session über alle Scopes zurück, also auch aus Triggern. Nimm <code>SCOPE_IDENTITY</code> oder <code>OUTPUT</code>.</li>
+  <li><b>Paging:</b> <code>OFFSET ... FETCH</code> braucht <code>ORDER BY</code>. Man kann es nicht mit <code>TOP</code> in derselben Abfrage mischen. Bei <code>TOP</code> nutzt man immer <code>ORDER BY</code>, sonst ist die Auswahl nicht vorhersagbar.</li>
+</ol>
+<h2>4. Fallen</h2>
+<div class="trap">
+<ul>
+  <li>„READ COMMITTED liest in SQL Server immer wie in PostgreSQL.“ → <b>Falsch.</b> Standardmässig nimmt SQL Server Shared Locks. Eine Abfrage kann auf einen Schreiber warten. Erst <code>READ_COMMITTED_SNAPSHOT ON</code> liest per Row Versioning.</li>
+  <li>„<code>@@IDENTITY</code> ist der richtige Weg für die neue ID.“ → <b>Falsch.</b> Es kann den Wert aus einem Trigger liefern. <code>SCOPE_IDENTITY()</code> oder <code>OUTPUT INSERTED.id</code> sind richtig.</li>
+  <li>„Wenn ein Befehl mit OUTPUT scheitert, hat der Client nichts bekommen.“ → <b>Falsch.</b> Der Client bekommt die Zeilen auch bei Fehler und Rollback. Das Ergebnis ist dann unbrauchbar.</li>
+  <li>„<code>TRY...CATCH</code> fängt jeden Fehler.“ → <b>Falsch.</b> Nicht Warnungen bis Schweregrad 10, nicht Fehler ab Schweregrad 20 die die Verbindung beenden, und nicht Kompilierfehler auf derselben Ebene.</li>
+  <li>„<code>SET XACT_ABORT</code> ist standardmässig an.“ → <b>Falsch.</b> Der Standard ist OFF. In Triggern ist er ON.</li>
+  <li>„<code>NOLOCK</code> macht Abfragen einfach schneller und sicher.“ → <b>Falsch.</b> Es erlaubt Dirty Reads. Zeilen können erscheinen oder verschwinden. Besser Row Versioning nutzen.</li>
+</ul>
+</div>
+<h2>5. Selbsttest</h2>
+<h3>Warum?</h3>
+<details><summary>Warum gibt es <code>OUTPUT</code>?</summary><p>Man braucht oft die geänderten Zeilen, zum Beispiel die neue Identity, den alten Wert oder gelöschte Daten. OUTPUT liefert sie im selben Befehl.</p></details>
+<details><summary>Warum blockieren Leser in SQL Server standardmässig?</summary><p>Mit <code>READ_COMMITTED_SNAPSHOT OFF</code> nehmen Abfragen Shared Locks. Sie warten auf Zeilen mit exklusivem Lock.</p></details>
+<details><summary>Warum <code>THROW</code> statt <code>RAISERROR</code>?</summary><p>THROW beachtet <code>XACT_ABORT</code>. Neue Anwendungen sollen THROW nutzen.</p></details>
+<h3>Wie innen?</h3>
+<details><summary>Was sind <code>INSERTED</code> und <code>DELETED</code>?</summary><p>Pseudotabellen mit den Zeilen nach und vor der Änderung. Sie sind bei OUTPUT sichtbar, bevor Trigger laufen.</p></details>
+<details><summary>Wie funktioniert READ COMMITTED mit Row Versioning?</summary><p>Jede Anweisung bekommt einen konsistenten Stand vom Anweisungsstart. Locks schützen die Daten nicht vor Updates anderer.</p></details>
+<details><summary>Wie funktioniert SNAPSHOT?</summary><p>Die Transaktion sieht den Stand vom Transaktionsstart. Leser und Schreiber blockieren sich nicht.</p></details>
+<details><summary>Wie arbeitet <code>OUTPUT INTO</code>?</summary><p>Die Zeilen werden in eine Tabellenvariable oder Tabelle geschrieben, statt an den Client.</p></details>
+<details><summary>Was macht <code>XACT_ABORT ON</code>?</summary><p>Bei einem Laufzeitfehler wird die ganze Transaktion zurückgerollt.</p></details>
+<details><summary>Was ist eine nicht committbare Transaktion?</summary><p>Ein Fehler in einem TRY-Block hat sie ungültig gemacht. <code>XACT_STATE()</code> ist -1. Sie kann nur noch lesen oder zurückrollen.</p></details>
+<h3>Zahlen</h3>
+<details><summary>Welcher Wert gilt für <code>READ_COMMITTED_SNAPSHOT</code> bei SQL Server und bei Azure SQL Database?</summary><p>Bei SQL Server ist er OFF, bei Azure SQL Database ON.</p></details>
+<details><summary>Ab welcher Schwere fängt <code>TRY...CATCH</code> Fehler?</summary><p>Bei Schweregrad über 10. Fehler ab 20, die die Verbindung beenden, fängt es nicht.</p></details>
+<details><summary>Seit wann gibt es <code>OFFSET ... FETCH</code>?</summary><p>Seit SQL Server 2012.</p></details>
+<h3>Vergleich</h3>
+<details><summary>OUTPUT vs <code>RETURNING</code>?</summary><p>Beide liefern geänderte Zeilen. OUTPUT unterscheidet <code>INSERTED</code> und <code>DELETED</code> und kann in eine Tabelle schreiben. PostgreSQL <code>RETURNING</code> gibt die Spalten aus.</p></details>
+<details><summary>IDENTITY vs Sequence?</summary><p>Beide vergeben Nummern ohne Rollback. IDENTITY gehört zur Spalte. Eine Sequence ist ein eigenes Objekt.</p></details>
+<details><summary>SQL Server READ COMMITTED vs PostgreSQL READ COMMITTED?</summary><p>Beide verhindern Dirty Reads. SQL Server nutzt standardmässig Locks, PostgreSQL immer Versionen.</p></details>
+<details><summary><code>TOP</code> vs <code>OFFSET FETCH</code>?</summary><p>TOP begrenzt nur. OFFSET FETCH kann zusätzlich Zeilen überspringen. Man mischt sie nicht.</p></details>
+<h3>Produktion</h3>
+<details><summary>Was tun bei blockierten Abfragen auf einer Berichtsdatenbank?</summary><p>Row Versioning prüfen, also <code>READ_COMMITTED_SNAPSHOT</code>. Dann blockieren Leser und Schreiber sich nicht. Tempdb wird dafür grösser.</p></details>
+<details><summary>Was tun bei Lücken in Identity-Werten?</summary><p>Sie sind normal, denn Rollbacks geben Werte nicht zurück. Man akzeptiert sie.</p></details>
+<details><summary>Szenario: Eine Abfrage hängt, weil ein anderer Job schreibt. Was tun Sie?</summary><p>Ich prüfe Blocker und Isolation. Ich ziehe RCSI oder SNAPSHOT in Betracht und kürze die schreibende Transaktion.</p></details>
+<details><summary>Szenario: Nach einem Fehler meldet die Anwendung, die Transaktion könne nicht committet werden. Warum?</summary><p>Sie ist uncommittable, <code>XACT_STATE() = -1</code>. Der CATCH-Block muss <code>ROLLBACK</code> machen.</p></details>
+<details><summary>Szenario: Mehrere Worker holen Jobs aus einer Tabelle und blockieren sich. Was tun Sie?</summary><p>Ich nutze <code>DELETE TOP (1) ... WITH (READPAST) OUTPUT DELETED.*</code>. So überspringt jeder Worker gesperrte Zeilen.</p></details>
+<h3>Design</h3>
+<details><summary>Wie holt man die neue ID sicher?</summary><p>Mit <code>OUTPUT INSERTED.id</code> oder <code>SCOPE_IDENTITY()</code>. Nicht mit <code>@@IDENTITY</code>.</p></details>
+<details><summary>Wann nimmt man <code>OUTPUT INTO</code>?</summary><p>Wenn man die Zeilen im selben Batch weiter nutzen will, zum Beispiel für Audit oder Folge-Inserts.</p></details>
+<details><summary>Wie schreibt man Fehlerbehandlung in T-SQL?</summary><p><code>SET XACT_ABORT ON</code>, <code>BEGIN TRY</code> mit Transaktion, im CATCH <code>ROLLBACK</code> und <code>THROW</code>.</p></details>
+<details><summary>Wie macht man Paging?</summary><p><code>ORDER BY</code> mit einer eindeutigen Spalte und <code>OFFSET ... FETCH</code>. Für stabile Seiten Snapshot oder Serializable in einer Transaktion.</p></details>
+<details><summary>Wann SERIALIZABLE?</summary><p>Wenn Phantome nicht erlaubt sind. Range Locks senken die Parallelität, also nur wenn nötig.</p></details>
+
+<details class="mehr"><summary>Mehr</summary>
+<h3>Gerüst</h3>
+<ul>
+  <li><b>Warum?</b> Gleiche relationale Ideen, anderer Dialekt, andere Standard-Mechanik.</li>
+  <li><b>Wie innen?</b> T-SQL-Batches. <code>OUTPUT</code> über <code>INSERTED</code> und <code>DELETED</code>. Locks oder Row Versioning.</li>
+  <li><b>Zahlen</b> RCSI: SQL Server OFF, Azure SQL Database ON. TRY...CATCH bei Schweregrad über 10. OFFSET FETCH seit 2012.</li>
+  <li><b>Vergleich</b> OUTPUT gegen RETURNING. IDENTITY gegen Sequence. Locks gegen MVCC.</li>
+  <li><b>Produktion</b> Blockierte Leser, Lücken bei Identity, uncommittable Transaktionen, NOLOCK-Fehler.</li>
+  <li><b>Design</b> OUTPUT für IDs, THROW und XACT_ABORT, RCSI prüfen.</li>
+</ul>
+
+<h3>Beispiel: OUTPUT, RETURNING und Fehlerbehandlung</h3>
+<pre>-- T-SQL: Queue-Muster mit OUTPUT
+DELETE TOP (1) FROM dbo.job_queue WITH (READPAST)
+OUTPUT DELETED.job_id, DELETED.payload
+WHERE status = 'new';
+
+-- T-SQL: Identity zurückholen, in eine Tabellenvariable
+DECLARE @neu TABLE (id INT, name NVARCHAR(50));
+INSERT dbo.kunde (name)
+OUTPUT INSERTED.id, INSERTED.name INTO @neu
+VALUES (N'Muster AG');
+SELECT * FROM @neu;
+
+-- T-SQL: UPDATE mit altem und neuem Wert
+UPDATE dbo.konto
+SET saldo = saldo - 100
+OUTPUT DELETED.saldo AS alt, INSERTED.saldo AS neu
+WHERE id = 1;
+
+-- PostgreSQL: das Gleiche mit RETURNING
+INSERT INTO kunde (name) VALUES ('Muster AG') RETURNING id, name;
+UPDATE konto SET saldo = saldo - 100 WHERE id = 1 RETURNING saldo;
+
+-- Fehlerbehandlung
+SET XACT_ABORT ON;
+BEGIN TRY
+  BEGIN TRANSACTION;
+  -- ... Änderungen ...
+  COMMIT;
+END TRY
+BEGIN CATCH
+  IF @@TRANCOUNT &gt; 0 ROLLBACK;
+  THROW;   -- Fehler weitergeben
+END CATCH;</pre>
+<p class="small">Nicht ausgeführt.</p>
+<ol>
+  <li>Block 1: <code>DELETE TOP (1) ... WITH (READPAST) OUTPUT DELETED.*</code> nimmt einen Job aus der Queue und gibt ihn zurück. So steht es im Muster der Microsoft-Doku.</li>
+  <li>Block 2: <code>OUTPUT ... INTO @neu</code> schreibt die Zeilen in eine Tabellenvariable statt an den Client.</li>
+  <li>Block 3: <code>DELETED.saldo</code> ist der alte Wert und <code>INSERTED.saldo</code> der neue.</li>
+  <li>Block 4: In PostgreSQL liefert <code>RETURNING</code> die geänderten Spalten.</li>
+  <li>Block 5: <code>SET XACT_ABORT ON</code>, Transaktion im TRY, <code>ROLLBACK</code> und <code>THROW</code> im CATCH.</li>
+  <li>Die Ausgabe habe ich nicht gemessen. Es lief kein SQL Server.</li>
+</ol>
+
+<h3>Vergleich</h3>
+<ul>
+  <li><b>OUTPUT:</b> <code>INSERTED</code> und <code>DELETED</code>, optional <code>INTO</code>.</li>
+  <li><b>RETURNING (PostgreSQL):</b> gibt Spalten der geänderten Zeilen aus.</li>
+  <li><b>Locks (SQL Server Standard):</b> Leser warten auf Schreiber.</li>
+  <li><b>Row Versioning (RCSI, SNAPSHOT):</b> Leser lesen alte Versionen aus tempdb.</li>
+  <li><b>MVCC (PostgreSQL):</b> immer Versionen, alte Zeilen bleiben im Heap bis VACUUM.</li>
+  <li><b>THROW:</b> neu, beachtet XACT_ABORT. <b>RAISERROR:</b> älter, nicht.</li>
+  <li><b>SCOPE_IDENTITY:</b> nur der eigene Scope. <b>@@IDENTITY:</b> alle Scopes der Session.</li>
+  <li><b>TOP:</b> Begrenzung. <b>OFFSET FETCH:</b> Paging.</li>
+</ul>
+
+<h3>Produktion</h3>
+<ol>
+  <li><b>Blockierte Leser:</b> Standard-READ-COMMITTED mit Locks. Lösung: RCSI oder SNAPSHOT, und kurze Schreib-Transaktionen.</li>
+  <li><b>tempdb wächst:</b> Row Versioning hält alte Versionen. Lösung: lange Transaktionen beenden und tempdb überwachen.</li>
+  <li><b>Falsche ID nach INSERT:</b> <code>@@IDENTITY</code> nahm den Wert aus einem Trigger. Lösung: <code>SCOPE_IDENTITY()</code> oder OUTPUT.</li>
+  <li><b>OUTPUT mit Trigger:</b> Ohne <code>INTO</code> geht es nicht, wenn die Zieltabelle einen aktiven Trigger hat. Lösung: <code>OUTPUT INTO</code>.</li>
+  <li><b>Halbe Transaktion nach Fehler:</b> <code>XACT_ABORT</code> ist OFF. Lösung: ON setzen oder im CATCH sauber zurückrollen.</li>
+  <li><b>Seiten springen beim Paging:</b> Sortierung nicht eindeutig oder Daten ändern sich. Lösung: eindeutige Sortierspalte und Snapshot.</li>
+</ol>
+
+<h3>Diagnose: Werkzeuge und Befehle</h3>
+<ul>
+  <li><code>sys.dm_exec_requests</code> und <code>sys.dm_tran_locks</code>: zeigen Blocker und Locks.</li>
+  <li><code>sp_whoisactive</code> (Community-Tool) oder Activity Monitor: wer blockiert wen.</li>
+  <li><code>sys.databases</code> mit <code>is_read_committed_snapshot_on</code> und <code>snapshot_isolation_state</code>: zeigt die Isolation-Optionen.</li>
+  <li><code>DBCC USEROPTIONS</code>: zeigt Session-Optionen wie die Isolation.</li>
+  <li>Showplan (Execution Plan) in SSMS: zeigt Scans, Seeks und Warnungen.</li>
+  <li><code>@@TRANCOUNT</code> und <code>XACT_STATE()</code>: zeigen den Zustand der Transaktion.</li>
+</ul>
+
+<h3>Senior-Punkte</h3>
+<div class="senior">
+<ol>
+  <li><b>Standard-Isolation ist eine Datenbank-Entscheidung.</b> Wer von PostgreSQL kommt, erwartet Versionen und bekommt Locks.</li>
+  <li><b>OUTPUT spart Roundtrips</b> und ist die sichere Art, an IDs zu kommen.</li>
+  <li><b>Row Versioning hat einen Preis.</b> Es braucht tempdb und kostet I/O. Es lohnt sich bei vielen Lesern.</li>
+  <li><b>Fehlerbehandlung ist Pflicht:</b> XACT_ABORT, TRY...CATCH, THROW, und XACT_STATE im CATCH.</li>
+  <li><b>NOLOCK ist kein Tuning.</b> Es tauscht Korrektheit gegen Tempo.</li>
+  <li><b>Portierbarkeit planen.</b> OUTPUT, TOP und IDENTITY haben in PostgreSQL andere Formen.</li>
+</ol>
+</div>
+
+<h3>Dein Beispiel</h3>
+</details>
+
+</body>
+</html>

@@ -2,7 +2,7 @@
 
 Generated from content/syllabus.json. Priority 1 = asked in almost every interview. Mark: **Projekt** = shown in CV/Gmail · **— kein Projekt** = no project experience · **? prüfen** = unclear, you decide.
 
-437 topics · P1 267 · P2 132 · P3 38 · written 405
+437 topics · P1 267 · P2 132 · P3 38 · written 430
 
 ## Java 21 (core + advanced) (42)
 Sources: Java SE 21/25 docs (docs.oracle.com) · JVM Specification · OpenJDK source + JEPs (openjdk.org) · Oracle Java SE 21 Developer exam 1Z0-830 topics
@@ -165,18 +165,18 @@ Sources: kotlinlang.org docs
 
 | P | Topic | Project | Written |
 |---|---|---|---|
-| 3 | Kotlin-Grundlagen und Null Safety | Projekt |  |
-| 3 | Data Classes und Extension Functions | Projekt |  |
-| 3 | Coroutines | — kein Projekt |  |
-| 3 | Interop mit Java | Projekt |  |
+| 3 | Kotlin-Grundlagen und Null Safety | Projekt | ✓ |
+| 3 | Data Classes und Extension Functions | Projekt | ✓ |
+| 3 | Coroutines | — kein Projekt | ✓ |
+| 3 | Interop mit Java | Projekt | ✓ |
 
 ## Go (Golang) (2)
 Sources: go.dev documentation, Effective Go
 
 | P | Topic | Project | Written |
 |---|---|---|---|
-| 3 | Goroutines und Channels | Projekt |  |
-| 3 | Interfaces und Error Handling in Go | Projekt |  |
+| 3 | Goroutines und Channels | Projekt | ✓ |
+| 3 | Interfaces und Error Handling in Go | Projekt | ✓ |
 
 ## gRPC + Protobuf (3)
 Sources: grpc.io docs · protobuf.dev
@@ -199,11 +199,11 @@ Sources: Microsoft Learn: .NET, C#, EF Core, Blazor
 
 | P | Topic | Project | Written |
 |---|---|---|---|
-| 3 | .NET und C# für Java-Entwickler | Projekt |  |
-| 3 | async/await in .NET | ? prüfen |  |
-| 3 | BackgroundService und Worker | Projekt |  |
-| 3 | Entity Framework Core | ? prüfen |  |
-| 3 | Blazor | Projekt |  |
+| 3 | .NET und C# für Java-Entwickler | Projekt | ✓ |
+| 3 | async/await in .NET | ? prüfen | ✓ |
+| 3 | BackgroundService und Worker | Projekt | ✓ |
+| 3 | Entity Framework Core | ? prüfen | ✓ |
+| 3 | Blazor | Projekt | ✓ |
 
 ## JSF / PrimeFaces (7)
 Sources: Jakarta Faces 4 specification · PrimeFaces documentation
@@ -215,8 +215,8 @@ Sources: Jakarta Faces 4 specification · PrimeFaces documentation
 | 2 | Ajax und Partial Rendering | Projekt | ✓ |
 | 2 | PrimeFaces-Komponenten und Lazy DataTable | Projekt | ✓ |
 | 2 | Migration RichFaces zu PrimeFaces / Jakarta Faces | Projekt | ✓ |
-| 3 | ViewState: client vs server | ? prüfen |  |
-| 3 | Converter und Validatoren | Projekt |  |
+| 3 | ViewState: client vs server | ? prüfen | ✓ |
+| 3 | Converter und Validatoren | Projekt | ✓ |
 
 ## Python (8)
 Sources: docs.python.org · pandas and pytest docs
@@ -229,8 +229,8 @@ Sources: docs.python.org · pandas and pytest docs
 | 2 | GIL, Threads, Multiprocessing, asyncio | ? prüfen | ✓ |
 | 2 | pandas-Grundlagen | ? prüfen | ✓ |
 | 2 | pytest | Projekt | ✓ |
-| 3 | Type Hints | ? prüfen |  |
-| 3 | venv, pip, Packaging | ? prüfen |  |
+| 3 | Type Hints | ? prüfen | ✓ |
+| 3 | venv, pip, Packaging | ? prüfen | ✓ |
 
 ## PostgreSQL + SQL (21)
 Sources: PostgreSQL 16/17 documentation · Use The Index, Luke (Markus Winand)
@@ -264,8 +264,8 @@ Sources: Oracle Database SQL and PL/SQL docs
 
 | P | Topic | Project | Written |
 |---|---|---|---|
-| 3 | Oracle vs PostgreSQL | — kein Projekt |  |
-| 3 | PL/SQL: Prozeduren, Packages, Cursors | — kein Projekt |  |
+| 3 | Oracle vs PostgreSQL | — kein Projekt | ✓ |
+| 3 | PL/SQL: Prozeduren, Packages, Cursors | — kein Projekt | ✓ |
 
 ## Hibernate / JPA + Flyway (9)
 Sources: Hibernate ORM 6 user guide · Jakarta Persistence 3 spec · Vlad Mihalcea articles · Flyway docs
@@ -287,7 +287,7 @@ Sources: Microsoft Learn: SQL Server T-SQL
 
 | P | Topic | Project | Written |
 |---|---|---|---|
-| 3 | SQL Server für PostgreSQL-Entwickler, OUTPUT-Klausel | Projekt |  |
+| 3 | SQL Server für PostgreSQL-Entwickler | Projekt | ✓ |
 
 ## Apache Spark / PySpark (17)
 Sources: Apache Spark 3.5/4 documentation · Databricks Spark developer exam topics
@@ -382,7 +382,7 @@ Sources: Apache Airflow 2/3 documentation
 | 2 | DAGs, Operators, Tasks | — kein Projekt | ✓ |
 | 2 | Scheduler und Executors | — kein Projekt | ✓ |
 | 2 | Backfill und idempotente DAGs | — kein Projekt | ✓ |
-| 3 | XCom und Sensors | — kein Projekt |  |
+| 3 | XCom und Sensors | — kein Projekt | ✓ |
 
 ## dbt (3)
 Sources: docs.getdbt.com
@@ -391,7 +391,7 @@ Sources: docs.getdbt.com
 |---|---|---|---|
 | 2 | dbt-Models und Materializations | — kein Projekt | ✓ |
 | 2 | Tests, Sources, Lineage | — kein Projekt | ✓ |
-| 3 | Incremental Models und Snapshots | — kein Projekt |  |
+| 3 | Incremental Models und Snapshots | — kein Projekt | ✓ |
 
 ## Databricks (3)
 Sources: Databricks and Delta Lake docs
@@ -400,7 +400,7 @@ Sources: Databricks and Delta Lake docs
 |---|---|---|---|
 | 2 | Delta Lake | — kein Projekt | ✓ |
 | 2 | Databricks vs eigener Stack: Spark, Iceberg, Nessie | — kein Projekt | ✓ |
-| 3 | Unity Catalog und Workspaces | — kein Projekt |  |
+| 3 | Unity Catalog und Workspaces | — kein Projekt | ✓ |
 
 ## Azure (15)
 Sources: Microsoft Learn: AZ-204 and AZ-305 skills outlines · Azure Architecture Center
@@ -453,7 +453,7 @@ Sources: Red Hat OpenShift documentation
 
 | P | Topic | Project | Written |
 |---|---|---|---|
-| 3 | OpenShift vs Kubernetes: Routes, SCC, Operators | — kein Projekt |  |
+| 3 | OpenShift vs Kubernetes: Routes, SCC, Operators | — kein Projekt | ✓ |
 
 ## Terraform, Helm, ArgoCD (5)
 Sources: Terraform docs · Helm docs · Argo CD docs · OpenGitOps principles
@@ -588,7 +588,7 @@ Sources: Camunda 7 and 8 docs · BPMN 2.0 spec
 
 | P | Topic | Project | Written |
 |---|---|---|---|
-| 3 | BPMN-Grundlagen | — kein Projekt |  |
+| 3 | BPMN-Grundlagen | — kein Projekt | ✓ |
 | 3 | Process Engine, External Tasks, Camunda 7 vs 8 | — kein Projekt |  |
 
 ## Solace, Hazelcast, RabbitMQ (3)
@@ -605,8 +605,8 @@ Sources: PostGIS docs · OGC WMS/WFS standards · GeoServer docs
 
 | P | Topic | Project | Written |
 |---|---|---|---|
-| 3 | PostGIS: Geometrie-Typen, SRID, räumliche Indizes | Projekt |  |
-| 3 | GIS-Dienste: WMS, WFS, GeoServer | — kein Projekt |  |
+| 3 | PostGIS: Geometrie-Typen, SRID, räumliche Indizes | Projekt | ✓ |
+| 3 | GIS-Dienste: WMS, WFS, GeoServer | — kein Projekt | ✓ |
 
 ## Scrum / SAFe / agile (7)
 Sources: The Scrum Guide 2020 · SAFe 6 framework

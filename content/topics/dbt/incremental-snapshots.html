@@ -1,0 +1,297 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Incremental Models und Snapshots</title>
+<style>
+  body { font: 17px/1.55 -apple-system, system-ui, sans-serif; max-width: 760px; margin: 0 auto; padding: 16px; color: #1d1d1f; }
+  h1 { font-size: 28px; margin: 8px 0 4px; }
+  h2 { font-size: 21px; margin: 32px 0 8px; padding-top: 12px; border-top: 2px solid #e5e5ea; }
+  .kern { background: #eef6ff; border-left: 4px solid #0a66c2; padding: 10px 14px; border-radius: 6px; }
+  .senior { background: #f0faf0; border-left: 4px solid #2e7d32; padding: 10px 14px; border-radius: 6px; }
+  .trap { background: #fff4f2; border-left: 4px solid #c62828; padding: 10px 14px; border-radius: 6px; }
+  code { background: #f2f2f7; padding: 1px 5px; border-radius: 4px; font-size: 15px; }
+  pre { background: #1e1e1e; color: #e6e6e6; padding: 12px; border-radius: 8px; overflow-x: auto; font-size: 13.5px; line-height: 1.45; }
+  svg { width: 100%; height: auto; display: block; margin: 10px 0; }
+  ol li, ul li { margin: 4px 0; }
+  details { border: 1px solid #e5e5ea; border-radius: 8px; padding: 8px 12px; margin: 6px 0; }
+  summary { font-weight: 600; cursor: pointer; }
+  details p { margin: 6px 0 2px; }
+  .small { color: #6e6e73; font-size: 14px; }
+  h3 { font-size: 17px; margin: 20px 0 6px; }
+  .geruest { border: 2px solid #1d1d1f; border-radius: 6px; padding: 10px 14px; margin: 14px 0; font-size: 15px; line-height: 1.4; }
+  .geruest h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; margin: 0 0 8px; padding: 0; border: 0; }
+  .geruest dl { display: grid; grid-template-columns: 6.6em 1fr; gap: 6px 10px; margin: 0; }
+  .geruest dt { font-weight: 700; font-size: 12px; text-transform: uppercase; letter-spacing: .05em; padding-top: 1px; }
+  .geruest dd { margin: 0; }
+  .muster { border: 1px solid #e5e5ea; border-left: 4px solid #1d1d1f; border-radius: 6px; padding: 10px 14px; margin: 14px 0; }
+  .muster h3 { margin: 0 0 6px; font-size: 13px; text-transform: uppercase; letter-spacing: .06em; }
+  .muster .mq { margin: 0 0 6px; }
+</style>
+</head>
+<body>
+
+<body>
+<h1>Incremental Models und Snapshots</h1>
+<!-- sources: docs.getdbt.com (Incremental models, Incremental strategy, Microbatch incremental models, Snapshots) -->
+<div class="kern">
+<b>Kern:</b> Ein <b>Incremental Model</b> verarbeitet bei jedem Lauf nur neue oder geänderte Daten und fügt sie der bestehenden Tabelle hinzu. Die <b>Strategie</b> (append, merge, delete+insert, insert_overwrite, microbatch) bestimmt, wie dbt schreibt. Ein <b>Snapshot</b> hält die Historie einer veränderlichen Quelle als Zeilen mit <code>dbt_valid_from</code> und <code>dbt_valid_to</code> fest.
+</div>
+<div class="muster"><h3>Antwort-Muster</h3><p class="mq"><b>Frage:</b> Wie funktioniert ein Incremental Model, und wann nimmt man einen Snapshot?</p><ol>
+  <li>Mechanismus: <code>is_incremental()</code> ist wahr, wenn die Tabelle existiert, kein <code>--full-refresh</code> läuft und das Model incremental ist.</li>
+  <li>Zahl: <code>lookback</code> bei microbatch ist standardmässig 1. Ab dbt 1.9 gibt es microbatch und die YAML-Snapshots.</li>
+  <li>Trade-off: Incremental spart Zeit, aber Fehler bleiben in alten Zeilen. Ein Snapshot speichert Historie, kann aber nicht neu gebaut werden.</li>
+  <li>Produktion: Ich nehme für späte Daten ein Fenster mit <code>merge</code> oder <code>lookback</code> und baue grosse Modelle gelegentlich mit full refresh neu.</li>
+</ol></div>
+<h2>1. Ein Incremental-Lauf in 7 Schritten</h2>
+<svg viewBox="0 0 730 292" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+<defs><marker id="b" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+<rect x="10" y="10" width="210" height="64" rx="10" fill="#dbe9fb" stroke="#0a66c2"/>
+<text x="115" y="34" text-anchor="middle" font-size="14" font-weight="700">1. dbt run</text>
+<text x="115" y="53" text-anchor="middle" font-size="12">Model ist incremental</text>
+<rect x="260" y="10" width="210" height="64" rx="10" fill="#eee" stroke="#777"/>
+<text x="365" y="34" text-anchor="middle" font-size="14" font-weight="700">2. is_incremental()</text>
+<text x="365" y="53" text-anchor="middle" font-size="12">Tabelle da, kein full refresh</text>
+<line x1="220" y1="42" x2="258" y2="42" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+<rect x="510" y="10" width="210" height="64" rx="10" fill="#dbe9fb" stroke="#0a66c2"/>
+<text x="615" y="34" text-anchor="middle" font-size="14" font-weight="700">3. SQL bauen</text>
+<text x="615" y="53" text-anchor="middle" font-size="12">Filter mit {{ this }}</text>
+<line x1="470" y1="42" x2="508" y2="42" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+<rect x="510" y="114" width="210" height="64" rx="10" fill="#e8f5e9" stroke="#2e7d32"/>
+<text x="615" y="138" text-anchor="middle" font-size="14" font-weight="700">4. Strategie</text>
+<text x="615" y="157" text-anchor="middle" font-size="12">append, merge, delete+insert</text>
+<line x1="615" y1="74" x2="615" y2="112" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+<rect x="260" y="114" width="210" height="64" rx="10" fill="#fff" stroke="#555"/>
+<text x="365" y="138" text-anchor="middle" font-size="14" font-weight="700">5. Schema prüfen</text>
+<text x="365" y="157" text-anchor="middle" font-size="12">on_schema_change</text>
+<line x1="510" y1="146" x2="472" y2="146" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+<rect x="10" y="114" width="210" height="64" rx="10" fill="#e8f5e9" stroke="#2e7d32"/>
+<text x="115" y="138" text-anchor="middle" font-size="14" font-weight="700">6. Schreiben</text>
+<text x="115" y="157" text-anchor="middle" font-size="12">Zieltabelle aktualisiert</text>
+<line x1="260" y1="146" x2="222" y2="146" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+<rect x="10" y="218" width="210" height="64" rx="10" fill="#0a66c2" stroke="#0a66c2"/>
+<text x="115" y="242" text-anchor="middle" font-size="14" font-weight="700" fill="#fff">7. Test</text>
+<text x="115" y="261" text-anchor="middle" font-size="12" fill="#fff">Tests laufen danach</text>
+<line x1="115" y1="178" x2="115" y2="216" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+</svg>
+<ol>
+  <li><b>dbt run:</b> dbt wählt das Model. Es ist mit <code>materialized='incremental'</code> konfiguriert.</li>
+  <li><b>is_incremental():</b> Das Makro ist wahr, wenn die Tabelle schon existiert, kein <code>--full-refresh</code> gesetzt ist und das Model incremental ist. Sonst baut dbt die Tabelle komplett.</li>
+  <li><b>SQL bauen:</b> Beim inkrementellen Lauf gilt der Filter im <code>{% if is_incremental() %}</code>-Block. Er nutzt <code>{{ this }}</code>, die Zieltabelle.</li>
+  <li><b>Strategie:</b> Die Strategie entscheidet, wie die neuen Zeilen in die Tabelle kommen.</li>
+  <li><b>Schema prüfen:</b> Hat das Model neue oder fehlende Spalten, entscheidet <code>on_schema_change</code>. Standard ist <code>ignore</code>.</li>
+  <li><b>Schreiben:</b> dbt führt das SQL der Strategie aus und aktualisiert die Zieltabelle.</li>
+  <li><b>Test:</b> Danach laufen Tests wie <code>unique</code> und <code>not_null</code> auf dem Ergebnis.</li>
+</ol>
+<h2>2. Aufbau</h2>
+<svg viewBox="0 0 730 346" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+<defs><marker id="t" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+<rect x="10" y="10" width="200" height="326" rx="10" fill="#dbe9fb" stroke="#0a66c2"/>
+<text x="110" y="166" text-anchor="middle" font-size="14" font-weight="700">Incremental und Snapshots</text>
+<text x="110" y="185" text-anchor="middle" font-size="12">Strategien und Historie</text>
+<rect x="270" y="10" width="450" height="46" rx="8" fill="#e8f5e9" stroke="#2e7d32"/>
+<text x="495" y="29" text-anchor="middle" font-size="13" font-weight="700">Strategien</text>
+<text x="495" y="47" text-anchor="middle" font-size="12">append · merge · delete+insert · insert_overwrite · microbatch</text>
+<line x1="210" y1="173" x2="268" y2="33" stroke="#555" stroke-width="2" marker-end="url(#t)"/>
+<rect x="270" y="66" width="450" height="46" rx="8" fill="#fff" stroke="#555"/>
+<text x="495" y="85" text-anchor="middle" font-size="13" font-weight="700">unique_key</text>
+<text x="495" y="103" text-anchor="middle" font-size="12">aktualisiert bestehende Zeilen · Liste für mehrere Spalten</text>
+<line x1="210" y1="173" x2="268" y2="89" stroke="#555" stroke-width="2" marker-end="url(#t)"/>
+<rect x="270" y="122" width="450" height="46" rx="8" fill="#fff" stroke="#555"/>
+<text x="495" y="141" text-anchor="middle" font-size="13" font-weight="700">on_schema_change</text>
+<text x="495" y="159" text-anchor="middle" font-size="12">ignore · fail · append_new_columns · sync_all_columns</text>
+<line x1="210" y1="173" x2="268" y2="145" stroke="#555" stroke-width="2" marker-end="url(#t)"/>
+<rect x="270" y="178" width="450" height="46" rx="8" fill="#e8f5e9" stroke="#2e7d32"/>
+<text x="495" y="197" text-anchor="middle" font-size="13" font-weight="700">microbatch</text>
+<text x="495" y="215" text-anchor="middle" font-size="12">event_time · begin · batch_size · lookback · concurrent_batches</text>
+<line x1="210" y1="173" x2="268" y2="201" stroke="#555" stroke-width="2" marker-end="url(#t)"/>
+<rect x="270" y="234" width="450" height="46" rx="8" fill="#dbe9fb" stroke="#0a66c2"/>
+<text x="495" y="253" text-anchor="middle" font-size="13" font-weight="700">Snapshot</text>
+<text x="495" y="271" text-anchor="middle" font-size="12">timestamp oder check · unique_key · dbt_valid_from, dbt_valid_to</text>
+<line x1="210" y1="173" x2="268" y2="257" stroke="#555" stroke-width="2" marker-end="url(#t)"/>
+<rect x="270" y="290" width="450" height="46" rx="8" fill="#eee" stroke="#777"/>
+<text x="495" y="309" text-anchor="middle" font-size="13" font-weight="700">hard_deletes</text>
+<text x="495" y="327" text-anchor="middle" font-size="12">ignore · invalidate · new_record (ab dbt 1.9)</text>
+<line x1="210" y1="173" x2="268" y2="313" stroke="#555" stroke-width="2" marker-end="url(#t)"/>
+</svg>
+<ol>
+  <li>Ein <b>Incremental Model</b> ist eine Tabelle, die dbt bei jedem Lauf ergänzt.</li>
+  <li>Die <b>Strategie</b> ist der Algorithmus zum Schreiben. Nicht jede Datenbank unterstützt jede Strategie.</li>
+  <li>Der <b>unique_key</b> sagt, welche Zeilen schon da sind und ersetzt werden.</li>
+  <li><b>Microbatch</b> teilt einen Lauf in Zeit-Batches nach <code>event_time</code>.</li>
+  <li>Ein <b>Snapshot</b> ist eine Tabelle mit Historie, mit den Spalten <code>dbt_valid_from</code> und <code>dbt_valid_to</code>.</li>
+  <li>Die <b>Strategie des Snapshots</b> ist <code>timestamp</code> oder <code>check</code>.</li>
+</ol>
+<h2>3. Details</h2>
+<ol>
+  <li><b>is_incremental():</b> Es ist nur wahr, wenn alle drei Bedingungen stimmen. Die Tabelle existiert, <code>--full-refresh</code> fehlt, und das Model ist incremental. Das SQL muss in beiden Fällen gültig sein.</li>
+  <li><b>unique_key:</b> Er sorgt dafür, dass bestehende Zeilen aktualisiert statt nur angehängt werden. Ohne <code>unique_key</code> ist es bei den meisten Adaptern ein reines Anhängen. Mehrere Spalten gibt man als Liste an. Die Spalten dürfen keine NULL enthalten, sonst entstehen Duplikate.</li>
+  <li><b>merge:</b> Es fügt Zeilen mit neuem Schlüssel ein und aktualisiert Zeilen mit bekanntem Schlüssel. Das entspricht SCD1, also Überschreiben ohne Historie. Ohne <code>unique_key</code> verhält es sich wie append.</li>
+  <li><b>delete+insert:</b> Es löscht die Zeilen mit passendem <code>unique_key</code> und fügt sie neu ein. Das ersetzt Zeilen komplett. Es kann bei grossen Daten weniger effizient sein. Es verfolgt keine Historie.</li>
+  <li><b>insert_overwrite:</b> Es nutzt keinen <code>unique_key</code>, weil es ganze Partitionen ersetzt und keine einzelnen Zeilen.</li>
+  <li><b>Strategien pro Adapter:</b> Postgres unterstützt append, merge, delete+insert und microbatch. Snowflake und Databricks unterstützen zusätzlich insert_overwrite. BigQuery unterstützt merge, insert_overwrite und microbatch. Man prüft die Tabelle der Doku.</li>
+  <li><b>on_schema_change:</b> <code>ignore</code> ist der Standard. Neue Spalten erscheinen dann nicht, und gelöschte Spalten lassen den Lauf scheitern. <code>fail</code> bricht ab. <code>append_new_columns</code> fügt neue Spalten hinzu. <code>sync_all_columns</code> fügt hinzu und entfernt, auch bei Typänderungen. Keine Option füllt alte Zeilen nach.</li>
+  <li><b>full refresh:</b> <code>dbt run --full-refresh</code> löscht die Zieltabelle und baut sie komplett neu. Die Config <code>full_refresh</code> hat Vorrang vor dem Flag.</li>
+  <li><b>Microbatch:</b> Ab dbt 1.9 verfügbar. Pflicht sind <code>event_time</code>, <code>begin</code> und <code>batch_size</code> (hour, day, month oder year). <code>lookback</code> ist standardmässig 1 und verarbeitet frühere Batches für späte Daten. Jeder Batch ist unabhängig und idempotent.</li>
+  <li><b>Microbatch-Backfill:</b> Man gibt <code>--event-time-start</code> und <code>--event-time-end</code> an. Beide gehören zusammen. Für Microbatch setzt man am besten <code>full_refresh: false</code>.</li>
+  <li><b>Snapshot-Strategien:</b> <code>timestamp</code> nutzt eine <code>updated_at</code>-Spalte und ist empfohlen. <code>check</code> vergleicht die Spalten aus <code>check_cols</code>, am besten eine explizite Liste. Beide brauchen einen <code>unique_key</code>.</li>
+  <li><b>Snapshot-Spalten:</b> <code>dbt_valid_from</code> und <code>dbt_valid_to</code> zeigen die Gültigkeit. Aktuelle Zeilen haben <code>dbt_valid_to</code> NULL, ausser <code>dbt_valid_to_current</code> ist gesetzt, zum Beispiel auf 9999-12-31. Dazu kommen <code>dbt_scd_id</code> und <code>dbt_updated_at</code>.</li>
+  <li><b>hard_deletes:</b> Ab dbt 1.9 ersetzt es <code>invalidate_hard_deletes</code>. <code>ignore</code> ist der Standard. <code>invalidate</code> schliesst die Zeile. <code>new_record</code> legt eine neue Zeile mit <code>dbt_is_deleted</code> an und hält die Historie lückenlos.</li>
+  <li><b>Snapshot-Betrieb:</b> Snapshots ignorieren <code>--full-refresh</code>. Sie laufen sinnvoll stündlich bis täglich. Man kann sie nicht neu bauen. Neue Spalten der Quelle fügt dbt hinzu, entfernte Spalten löscht es nicht.</li>
+</ol>
+<h2>4. Fallen</h2>
+<div class="trap">
+<ul>
+  <li>„Ein Incremental Model prüft alte Zeilen auf Änderungen.“ → <b>Falsch.</b> Es verarbeitet nur, was der Filter und die Strategie erlauben. Ohne <code>unique_key</code> wird nur angehängt.</li>
+  <li>„<code>merge</code> ohne <code>unique_key</code> aktualisiert Zeilen.“ → <b>Falsch.</b> Es verhält sich dann wie append.</li>
+  <li>„<code>on_schema_change</code> füllt neue Spalten in alten Zeilen.“ → <b>Falsch.</b> Keine Option füllt alte Zeilen nach.</li>
+  <li>„Ein Snapshot lässt sich mit <code>--full-refresh</code> neu bauen.“ → <b>Falsch.</b> Snapshots ignorieren das Flag. Die Historie bleibt.</li>
+  <li>„<code>delete+insert</code> speichert Historie.“ → <b>Falsch.</b> Es ersetzt Zeilen und verfolgt keine Historie. Dafür nimmt man einen Snapshot.</li>
+  <li>„Microbatch läuft immer in einem Stück.“ → <b>Falsch.</b> dbt teilt den Lauf nach <code>event_time</code> und <code>batch_size</code> in einzelne Batches.</li>
+</ul>
+</div>
+<h2>5. Selbsttest</h2>
+<h3>Warum?</h3>
+<details><summary>Warum Incremental statt table?</summary><p>Ein Table baut alles neu. Incremental verarbeitet nur Neues und spart bei grossen Tabellen Zeit und Kosten.</p></details>
+<details><summary>Warum ein Snapshot?</summary><p>Quellsysteme überschreiben Werte. Ein Snapshot hält frühere Stände fest, mit Gültigkeitszeiten.</p></details>
+<details><summary>Warum braucht ein Snapshot einen <code>unique_key</code>?</summary><p>Damit dbt erkennt, welche Zeile dieselbe Entität ist, wenn sie sich ändert.</p></details>
+<h3>Wie innen?</h3>
+<details><summary>Wann ist <code>is_incremental()</code> wahr?</summary><p>Die Tabelle existiert, <code>--full-refresh</code> fehlt, und das Model ist incremental.</p></details>
+<details><summary>Was macht <code>merge</code>?</summary><p>Es fügt neue Schlüssel ein und aktualisiert bekannte. Das ist SCD1-Verhalten.</p></details>
+<details><summary>Was macht <code>delete+insert</code>?</summary><p>Es löscht Zeilen mit passendem Schlüssel und fügt sie neu ein.</p></details>
+<details><summary>Wie arbeitet microbatch?</summary><p>dbt teilt den Lauf nach <code>event_time</code> und <code>batch_size</code> in Batches. Jeder Batch ist unabhängig und idempotent.</p></details>
+<details><summary>Wie erkennt ein Snapshot Änderungen?</summary><p>Mit <code>timestamp</code> über <code>updated_at</code>, mit <code>check</code> über Vergleich der <code>check_cols</code>.</p></details>
+<details><summary>Was passiert bei einem gelöschten Quellsatz im Snapshot?</summary><p>Das steuert <code>hard_deletes</code>. Standard <code>ignore</code> tut nichts. <code>invalidate</code> schliesst die Zeile. <code>new_record</code> legt eine neue Zeile an.</p></details>
+<h3>Zahlen</h3>
+<details><summary>Welchen Standard hat <code>lookback</code> bei microbatch?</summary><p>1.</p></details>
+<details><summary>Welche <code>batch_size</code>-Werte gibt es?</summary><p>hour, day, month und year.</p></details>
+<details><summary>Ab welcher dbt-Version gibt es microbatch und <code>hard_deletes</code>?</summary><p>Ab dbt 1.9.</p></details>
+<h3>Vergleich</h3>
+<details><summary><code>merge</code> vs <code>delete+insert</code>?</summary><p>merge aktualisiert Zeilen in einem Schritt. delete+insert löscht und fügt neu ein, was bei grossen Daten weniger effizient sein kann.</p></details>
+<details><summary><code>timestamp</code> vs <code>check</code>?</summary><p>timestamp nutzt <code>updated_at</code> und ist empfohlen. check vergleicht Spalten und braucht <code>check_cols</code>.</p></details>
+<details><summary>Incremental vs Snapshot?</summary><p>Incremental ergänzt Daten und überschreibt mit merge. Ein Snapshot behält alte Versionen als Zeilen.</p></details>
+<details><summary><code>insert_overwrite</code> vs <code>merge</code>?</summary><p>insert_overwrite ersetzt ganze Partitionen und kennt keinen <code>unique_key</code>. merge arbeitet mit Zeilen.</p></details>
+<h3>Produktion</h3>
+<details><summary>Was tun bei späten Daten?</summary><p>Ein Fenster mit Puffer im Filter, oder bei microbatch <code>lookback</code> erhöhen. Mit <code>merge</code> ersetzen späte Zeilen alte.</p></details>
+<details><summary>Was tun bei einer Logik-Änderung?</summary><p>Alle alten Zeilen sind betroffen. Man baut mit <code>--full-refresh</code> neu.</p></details>
+<details><summary>Szenario: Eine neue Spalte erscheint nicht in der Tabelle. Warum?</summary><p><code>on_schema_change</code> steht auf dem Standard <code>ignore</code>. Ich setze <code>append_new_columns</code>. Alte Zeilen bleiben leer.</p></details>
+<details><summary>Szenario: Ein incremental Model hat Duplikate. Was prüfen Sie?</summary><p>Ob ein <code>unique_key</code> gesetzt ist, ob er NULL enthält und ob die Strategie append ist.</p></details>
+<details><summary>Szenario: Ein Snapshot hat versehentlich schlechte Daten gespeichert. Was tun Sie?</summary><p>Er lässt sich nicht neu bauen. Ich korrigiere die Zeilen gezielt oder stelle ein Backup her. Darum Rechte einschränken und ein eigenes Schema nutzen.</p></details>
+<h3>Design</h3>
+<details><summary>Wann microbatch?</summary><p>Bei grossen Event-Daten mit Zeitspalte. Batches sind unabhängig und lassen sich gezielt neu laden.</p></details>
+<details><summary>Wie wählt man die Snapshot-Strategie?</summary><p>timestamp, wenn es ein verlässliches <code>updated_at</code> gibt. Sonst check mit einer expliziten Spaltenliste.</p></details>
+<details><summary>Wo legt man Snapshots ab?</summary><p>In einem eigenen Schema mit eingeschränkten Rechten, weil sie nicht neu gebaut werden können.</p></details>
+<details><summary>Wie hält man Historie ohne Lücken bei Löschungen?</summary><p>Mit <code>hard_deletes: new_record</code>.</p></details>
+<details><summary>Wie oft läuft <code>dbt snapshot</code>?</summary><p>Die Doku empfiehlt zwischen stündlich und täglich.</p></details>
+
+<details class="mehr"><summary>Mehr</summary>
+<h3>Gerüst</h3>
+<ul>
+  <li><b>Warum?</b> Weniger Rechenarbeit durch inkrementelles Laden, und Historie für veränderliche Quellen.</li>
+  <li><b>Wie innen?</b> <code>is_incremental()</code> plus Filter mit <code>{{ this }}</code>, Strategie schreibt. Snapshot schliesst alte Zeilen mit <code>dbt_valid_to</code>.</li>
+  <li><b>Zahlen</b> <code>lookback</code> Standard 1. batch_size hour bis year. Microbatch und <code>hard_deletes</code> ab dbt 1.9.</li>
+  <li><b>Vergleich</b> merge gegen delete+insert gegen insert_overwrite. timestamp gegen check.</li>
+  <li><b>Produktion</b> Duplikate ohne Schlüssel, späte Daten, schleichende Schema-Änderungen, nicht wiederherstellbare Snapshots.</li>
+  <li><b>Design</b> unique_key mit merge, Fenster oder lookback, eigenes Schema für Snapshots.</li>
+</ul>
+
+<h3>Beispiel: microbatch, merge und Snapshot</h3>
+<pre>-- models/fct_events.sql : Incremental mit microbatch
+{{ config(
+    materialized='incremental',
+    incremental_strategy='microbatch',
+    event_time='session_start',
+    begin='2024-01-01',
+    batch_size='day',
+    lookback=3
+) }}
+select * from {{ ref('stg_sessions') }}
+
+-- models/fct_orders.sql : Incremental mit merge
+{{ config(
+    materialized='incremental',
+    incremental_strategy='merge',
+    unique_key='order_id',
+    on_schema_change='append_new_columns'
+) }}
+select * from {{ ref('stg_orders') }}
+{% if is_incremental() %}
+where updated_at &gt;= (select coalesce(max(updated_at), '1900-01-01') from {{ this }})
+{% endif %}
+
+# snapshots/orders_snapshot.yml : Snapshot (dbt 1.9 und neuer)
+snapshots:
+  - name: orders_snapshot
+    relation: source('shop', 'orders')
+    config:
+      schema: snapshots
+      unique_key: id
+      strategy: timestamp
+      updated_at: updated_at
+      hard_deletes: new_record
+
+# Befehle
+dbt run --select fct_orders
+dbt run --select fct_orders --full-refresh
+dbt run --event-time-start "2024-09-01" --event-time-end "2024-09-04"
+dbt snapshot --select orders_snapshot</pre>
+<p class="small">Nicht ausgeführt. dbt ist hier nicht installiert.</p>
+<ol>
+  <li>Das erste Model nutzt microbatch mit Tagen und <code>lookback=3</code>. dbt baut die letzten drei Tage neu.</li>
+  <li>Das zweite Model nutzt <code>merge</code> mit <code>unique_key</code>. Der Filter holt nur neuere Zeilen.</li>
+  <li><code>on_schema_change='append_new_columns'</code> fügt neue Spalten hinzu.</li>
+  <li>Der Snapshot nutzt <code>timestamp</code> mit <code>updated_at</code> und <code>hard_deletes: new_record</code>.</li>
+  <li>Mit <code>--full-refresh</code> wird die Tabelle neu gebaut. Der Snapshot ignoriert das Flag.</li>
+  <li><code>--event-time-start</code> und <code>--event-time-end</code> laden einen Zeitraum gezielt neu.</li>
+</ol>
+
+<h3>Vergleich</h3>
+<ul>
+  <li><b>append:</b> nur anfügen, ohne Schlüssel.</li>
+  <li><b>merge:</b> einfügen oder aktualisieren nach Schlüssel.</li>
+  <li><b>delete+insert:</b> löschen und neu einfügen.</li>
+  <li><b>insert_overwrite:</b> Partitionen ersetzen.</li>
+  <li><b>microbatch:</b> Zeit-Batches, einzeln wiederholbar.</li>
+  <li><b>Snapshot timestamp:</b> nach <code>updated_at</code>.</li>
+  <li><b>Snapshot check:</b> nach Spaltenwerten.</li>
+  <li><b>table:</b> baut alles neu, einfach, aber teuer bei Grösse.</li>
+</ul>
+
+<h3>Produktion</h3>
+<ol>
+  <li><b>Duplikate:</b> Kein <code>unique_key</code> oder NULL im Schlüssel. Lösung: Schlüssel setzen, NULL ausschliessen.</li>
+  <li><b>Fehlende späte Zeilen:</b> Filter zu eng. Lösung: Puffer oder <code>lookback</code>.</li>
+  <li><b>Neue Spalte fehlt:</b> <code>on_schema_change</code> auf ignore. Lösung: <code>append_new_columns</code>.</li>
+  <li><b>Alte Zeilen falsch:</b> Logik geändert. Lösung: full refresh oder gezielter Backfill.</li>
+  <li><b>Snapshot beschädigt:</b> nicht neu baubar. Lösung: Rechte begrenzen, eigenes Schema, Backup.</li>
+  <li><b>Lücken in der Historie:</b> Löschungen nicht erfasst. Lösung: <code>hard_deletes: new_record</code>.</li>
+</ol>
+
+<h3>Diagnose: Werkzeuge und Befehle</h3>
+<ul>
+  <li><code>dbt run --select modell</code> und <code>dbt compile</code>: zeigt das kompilierte SQL.</li>
+  <li><code>target/run</code> und <code>target/compiled</code>: enthalten das ausgeführte SQL.</li>
+  <li><code>dbt run --full-refresh --select modell</code>: baut neu und vergleicht Ergebnisse.</li>
+  <li><code>dbt test</code>: prüft <code>unique</code> und <code>not_null</code> auf dem Schlüssel.</li>
+  <li><code>dbt snapshot --select name</code>: führt einen Snapshot aus.</li>
+  <li>SQL in der Datenbank: <code>select unique_key, count(*) ... group by ... having count(*) &gt; 1</code> findet Duplikate.</li>
+</ul>
+
+<h3>Senior-Punkte</h3>
+<div class="senior">
+<ol>
+  <li><b>Incremental ist eine Optimierung mit Preis.</b> Fehler bleiben in alten Zeilen, bis man neu baut.</li>
+  <li><b>Schlüssel und Filter sind der Vertrag.</b> Beide müssen zur Quelle passen.</li>
+  <li><b>Späte Daten einplanen.</b> Fenster oder <code>lookback</code> von Anfang an.</li>
+  <li><b>Microbatch macht Backfills billig,</b> weil Batches unabhängig sind.</li>
+  <li><b>Snapshots sind nicht ersetzbar.</b> Sie schützen Historie, die die Quelle nicht mehr hat.</li>
+  <li><b>Erst table, dann incremental.</b> Die Komplexität lohnt sich nur bei echter Grösse.</li>
+</ol>
+</div>
+
+<h3>Dein Beispiel</h3>
+</details>
+
+</body>
+</html>

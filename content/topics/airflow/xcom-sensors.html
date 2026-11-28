@@ -1,0 +1,283 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>XCom und Sensors</title>
+<style>
+  body { font: 17px/1.55 -apple-system, system-ui, sans-serif; max-width: 760px; margin: 0 auto; padding: 16px; color: #1d1d1f; }
+  h1 { font-size: 28px; margin: 8px 0 4px; }
+  h2 { font-size: 21px; margin: 32px 0 8px; padding-top: 12px; border-top: 2px solid #e5e5ea; }
+  .kern { background: #eef6ff; border-left: 4px solid #0a66c2; padding: 10px 14px; border-radius: 6px; }
+  .senior { background: #f0faf0; border-left: 4px solid #2e7d32; padding: 10px 14px; border-radius: 6px; }
+  .trap { background: #fff4f2; border-left: 4px solid #c62828; padding: 10px 14px; border-radius: 6px; }
+  code { background: #f2f2f7; padding: 1px 5px; border-radius: 4px; font-size: 15px; }
+  pre { background: #1e1e1e; color: #e6e6e6; padding: 12px; border-radius: 8px; overflow-x: auto; font-size: 13.5px; line-height: 1.45; }
+  svg { width: 100%; height: auto; display: block; margin: 10px 0; }
+  ol li, ul li { margin: 4px 0; }
+  details { border: 1px solid #e5e5ea; border-radius: 8px; padding: 8px 12px; margin: 6px 0; }
+  summary { font-weight: 600; cursor: pointer; }
+  details p { margin: 6px 0 2px; }
+  .small { color: #6e6e73; font-size: 14px; }
+  h3 { font-size: 17px; margin: 20px 0 6px; }
+  .geruest { border: 2px solid #1d1d1f; border-radius: 6px; padding: 10px 14px; margin: 14px 0; font-size: 15px; line-height: 1.4; }
+  .geruest h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; margin: 0 0 8px; padding: 0; border: 0; }
+  .geruest dl { display: grid; grid-template-columns: 6.6em 1fr; gap: 6px 10px; margin: 0; }
+  .geruest dt { font-weight: 700; font-size: 12px; text-transform: uppercase; letter-spacing: .05em; padding-top: 1px; }
+  .geruest dd { margin: 0; }
+  .muster { border: 1px solid #e5e5ea; border-left: 4px solid #1d1d1f; border-radius: 6px; padding: 10px 14px; margin: 14px 0; }
+  .muster h3 { margin: 0 0 6px; font-size: 13px; text-transform: uppercase; letter-spacing: .06em; }
+  .muster .mq { margin: 0 0 6px; }
+</style>
+</head>
+<body>
+
+<body>
+<h1>XCom und Sensors</h1>
+<!-- sources: airflow.apache.org Doku (XComs, Sensors, Deferring and Triggers, Release Notes 3.4.0) -->
+<div class="kern">
+<b>Kern:</b> <b>XCom</b> ist der Weg, kleine Werte zwischen Tasks zu schicken. Sie liegen standardmässig in der <b>Metadaten-Datenbank</b>. Ein <b>Sensor</b> ist ein Operator, der auf ein Ereignis wartet, und er tut das im Modus <b>poke</b>, <b>reschedule</b> oder <b>deferrable</b>.
+</div>
+<div class="muster"><h3>Antwort-Muster</h3><p class="mq"><b>Frage:</b> Wie geben Tasks Daten weiter, und was ist der Unterschied zwischen poke und reschedule?</p><ol>
+  <li>Mechanismus: Eine Task schreibt per <code>xcom_push</code> in die Metadaten-Datenbank, die nächste liest per <code>xcom_pull</code>.</li>
+  <li>Zahl: Der Rückgabewert geht unter dem Key <code>return_value</code> in die DB. Der Sensor-Modus <code>poke</code> ist der Standard.</li>
+  <li>Trade-off: poke hält einen Worker-Slot die ganze Zeit. reschedule gibt ihn zwischen den Prüfungen frei, kostet aber jeden Start neu.</li>
+  <li>Produktion: Ich schicke nur kleine Werte per XCom, grosse Daten gehen in einen Speicher. Lange Waits laufen deferrable.</li>
+</ol></div>
+<h2>1. XCom und Sensor in 7 Schritten</h2>
+<svg viewBox="0 0 730 292" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+<defs><marker id="b" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+<rect x="10" y="10" width="210" height="64" rx="10" fill="#dbe9fb" stroke="#0a66c2"/>
+<text x="115" y="34" text-anchor="middle" font-size="14" font-weight="700">1. Task läuft</text>
+<text x="115" y="53" text-anchor="middle" font-size="12">gibt einen Wert zurück</text>
+<rect x="260" y="10" width="210" height="64" rx="10" fill="#e8f5e9" stroke="#2e7d32"/>
+<text x="365" y="34" text-anchor="middle" font-size="14" font-weight="700">2. Push</text>
+<text x="365" y="53" text-anchor="middle" font-size="12">BaseXCom schreibt in die DB</text>
+<line x1="220" y1="42" x2="258" y2="42" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+<rect x="510" y="10" width="210" height="64" rx="10" fill="#dbe9fb" stroke="#0a66c2"/>
+<text x="615" y="34" text-anchor="middle" font-size="14" font-weight="700">3. Sensor startet</text>
+<text x="615" y="53" text-anchor="middle" font-size="12">hält einen Worker-Slot</text>
+<line x1="470" y1="42" x2="508" y2="42" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+<rect x="510" y="114" width="210" height="64" rx="10" fill="#fff" stroke="#555"/>
+<text x="615" y="138" text-anchor="middle" font-size="14" font-weight="700">4. Poke</text>
+<text x="615" y="157" text-anchor="middle" font-size="12">prüfen, dann schlafen</text>
+<line x1="615" y1="74" x2="615" y2="112" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+<rect x="260" y="114" width="210" height="64" rx="10" fill="#e8f5e9" stroke="#2e7d32"/>
+<text x="365" y="138" text-anchor="middle" font-size="14" font-weight="700">5. Bedingung wahr</text>
+<text x="365" y="157" text-anchor="middle" font-size="12">Sensor ist success</text>
+<line x1="510" y1="146" x2="472" y2="146" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+<rect x="10" y="114" width="210" height="64" rx="10" fill="#dbe9fb" stroke="#0a66c2"/>
+<text x="115" y="138" text-anchor="middle" font-size="14" font-weight="700">6. Pull</text>
+<text x="115" y="157" text-anchor="middle" font-size="12">nächste Task liest den Wert</text>
+<line x1="260" y1="146" x2="222" y2="146" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+<rect x="10" y="218" width="210" height="64" rx="10" fill="#0a66c2" stroke="#0a66c2"/>
+<text x="115" y="242" text-anchor="middle" font-size="14" font-weight="700" fill="#fff">7. Retry</text>
+<text x="115" y="261" text-anchor="middle" font-size="12" fill="#fff">XComs werden gelöscht</text>
+<line x1="115" y1="178" x2="115" y2="216" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+</svg>
+<ol>
+  <li><b>Task läuft:</b> Eine Task gibt einen Wert zurück. Viele Operatoren pushen ihn automatisch, wenn <code>do_xcom_push</code> an ist. Das ist der Standard.</li>
+  <li><b>Push:</b> Der Standard-Backend <code>BaseXCom</code> schreibt den Wert in die Airflow-Datenbank. Der Key heisst <code>return_value</code>.</li>
+  <li><b>Sensor startet:</b> Im Modus <code>poke</code> belegt der Sensor einen Worker-Slot für die ganze Laufzeit.</li>
+  <li><b>Poke:</b> Der Sensor prüft die Bedingung. Ist sie falsch, schläft er <code>poke_interval</code> Sekunden und prüft wieder.</li>
+  <li><b>Bedingung wahr:</b> Der Sensor endet mit success. Läuft er in den <code>timeout</code>, schlägt er fehl, oder er wird mit <code>soft_fail</code> übersprungen.</li>
+  <li><b>Pull:</b> Die nächste Task holt den Wert mit <code>xcom_pull</code> oder über ihr Argument bei TaskFlow.</li>
+  <li><b>Retry:</b> Schlägt die erste Task fehl, werden ihre XComs bei jedem Retry gelöscht. So bleibt die Task idempotent.</li>
+</ol>
+<h2>2. Aufbau</h2>
+<svg viewBox="0 0 730 346" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+<defs><marker id="t" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+<rect x="10" y="10" width="200" height="326" rx="10" fill="#dbe9fb" stroke="#0a66c2"/>
+<text x="110" y="166" text-anchor="middle" font-size="14" font-weight="700">XCom und Sensors</text>
+<text x="110" y="185" text-anchor="middle" font-size="12">Daten und Warten</text>
+<rect x="270" y="10" width="450" height="46" rx="8" fill="#e8f5e9" stroke="#2e7d32"/>
+<text x="495" y="29" text-anchor="middle" font-size="13" font-weight="700">XCom</text>
+<text x="495" y="47" text-anchor="middle" font-size="12">xcom_push und xcom_pull · Key return_value · do_xcom_push</text>
+<line x1="210" y1="173" x2="268" y2="33" stroke="#555" stroke-width="2" marker-end="url(#t)"/>
+<rect x="270" y="66" width="450" height="46" rx="8" fill="#e8f5e9" stroke="#2e7d32"/>
+<text x="495" y="85" text-anchor="middle" font-size="13" font-weight="700">XCom-Backend</text>
+<text x="495" y="103" text-anchor="middle" font-size="12">BaseXCom speichert in der DB · eigenes Backend über xcom_backend</text>
+<line x1="210" y1="173" x2="268" y2="89" stroke="#555" stroke-width="2" marker-end="url(#t)"/>
+<rect x="270" y="122" width="450" height="46" rx="8" fill="#fff" stroke="#555"/>
+<text x="495" y="141" text-anchor="middle" font-size="13" font-weight="700">Sensor poke</text>
+<text x="495" y="159" text-anchor="middle" font-size="12">Standard · belegt den Slot die ganze Zeit</text>
+<line x1="210" y1="173" x2="268" y2="145" stroke="#555" stroke-width="2" marker-end="url(#t)"/>
+<rect x="270" y="178" width="450" height="46" rx="8" fill="#fff" stroke="#555"/>
+<text x="495" y="197" text-anchor="middle" font-size="13" font-weight="700">Sensor reschedule</text>
+<text x="495" y="215" text-anchor="middle" font-size="12">gibt den Slot zwischen den Prüfungen frei</text>
+<line x1="210" y1="173" x2="268" y2="201" stroke="#555" stroke-width="2" marker-end="url(#t)"/>
+<rect x="270" y="234" width="450" height="46" rx="8" fill="#dbe9fb" stroke="#0a66c2"/>
+<text x="495" y="253" text-anchor="middle" font-size="13" font-weight="700">Deferrable</text>
+<text x="495" y="271" text-anchor="middle" font-size="12">Triggerer · async · defer() und next_method</text>
+<line x1="210" y1="173" x2="268" y2="257" stroke="#555" stroke-width="2" marker-end="url(#t)"/>
+<rect x="270" y="290" width="450" height="46" rx="8" fill="#eee" stroke="#777"/>
+<text x="495" y="309" text-anchor="middle" font-size="13" font-weight="700">Parameter</text>
+<text x="495" y="327" text-anchor="middle" font-size="12">poke_interval · timeout · soft_fail · exponential_backoff</text>
+<line x1="210" y1="173" x2="268" y2="313" stroke="#555" stroke-width="2" marker-end="url(#t)"/>
+</svg>
+<ol>
+  <li>Ein <b>XCom</b> ist ein Eintrag mit Key, Wert und der Task, die ihn schrieb.</li>
+  <li>Das <b>XCom-Backend</b> bestimmt, wo der Wert liegt. Standard ist die Metadaten-Datenbank.</li>
+  <li>Ein <b>Sensor</b> ist ein Operator, der wiederholt prüft.</li>
+  <li>Der <b>Worker-Slot</b> ist ein Platz auf einem Worker. Ein Sensor kann ihn belegen.</li>
+  <li>Der <b>Triggerer</b> ist ein eigener Prozess für Deferrable Operatoren.</li>
+  <li>Eine <b>Trigger</b>-Klasse wartet asynchron auf ein Ereignis.</li>
+</ol>
+<h2>3. Details</h2>
+<ol>
+  <li><b>Push und Pull:</b> Tasks pushen und pullen XComs mit <code>xcom_push</code> und <code>xcom_pull</code> über die Task Instance. Mit TaskFlow geschieht das über Rückgabewerte und Argumente.</li>
+  <li><b>return_value:</b> Viele Operatoren pushen ihr Ergebnis unter dem Key <code>return_value</code>, wenn <code>do_xcom_push</code> <code>True</code> ist. Das ist der Standard. Der Key steht als Konstante <code>XCOM_RETURN_KEY</code> in <code>BaseXCom</code>.</li>
+  <li><b>Nur kleine Werte:</b> Der Standard-Backend speichert in der Airflow-Datenbank. Das passt für kleine Werte. Die Doku sagt, man soll keine grossen Werte wie DataFrames übergeben. Grosse Daten gehören in Speicher wie S3 oder eine Datenbank. Per XCom geht nur der Pfad.</li>
+  <li><b>Eigener Backend:</b> Man setzt <code>xcom_backend</code> in der Konfiguration. Die Klasse muss <code>BaseXCom</code> erweitern. So kann ein Backend grosse Werte in einen Objektspeicher legen.</li>
+  <li><b>Neu in 3.4:</b> Laut Release Notes 3.4.0 liegen neue XCom-Zeilen in einer eigenen Tabelle <code>xcom_v2</code>. Ein eigener Backend, der <code>serialize_value</code> überschreibt, muss auch <code>store_value</code> und <code>load_value</code> umsetzen.</li>
+  <li><b>Serialisierung:</b> Ein XCom kann jeden serialisierbaren Wert haben, auch Objekte mit <code>@dataclass</code> oder <code>@attr.define</code>.</li>
+  <li><b>Templates:</b> In Templates holt man Werte mit <code>task_instance.xcom_pull(task_ids='foo', key='table_name')</code>.</li>
+  <li><b>Retry löscht:</b> Schlug die erste Task fehl, werden ihre XComs bei jedem Retry gelöscht. Das macht den Lauf idempotent.</li>
+  <li><b>poke und reschedule:</b> <code>poke</code> ist der Standard. Der Sensor belegt den Slot die ganze Zeit und schläft zwischen den Prüfungen. <code>reschedule</code> gibt den Slot nach jeder Prüfung frei. Der Sensor wird nach <code>poke_interval</code> neu angesetzt. Für häufige Prüfungen nimmt man poke, für seltene reschedule.</li>
+  <li><b>timeout und soft_fail:</b> <code>poke_interval</code> ist die Zeit zwischen zwei Prüfungen. <code>timeout</code> ist die längste Laufzeit und zählt ab dem ersten Versuch. Mit <code>soft_fail=True</code> wird der Sensor bei Timeout SKIPPED statt FAILED.</li>
+  <li><b>exponential_backoff:</b> Ist er an, wächst der Abstand zwischen den Prüfungen exponentiell. <code>max_wait</code> ist die obere Grenze in Sekunden.</li>
+  <li><b>Deferrable:</b> Ein Deferrable Operator gibt seinen Worker-Slot beim Warten frei. <code>self.defer(trigger, method_name, kwargs, timeout)</code> löst eine besondere Exception aus und übergibt an den Triggerer. Der lokale Zustand geht verloren. Nur <code>method_name</code> und <code>kwargs</code> bleiben.</li>
+  <li><b>Triggerer:</b> Triggers laufen als asynchroner Code in einem Prozess, mit <code>async def run</code>. Blockierender Code würde alle anderen anhalten. Feuert der Trigger, setzt der Scheduler die Task neu an, und Airflow ruft die Methode mit <code>context</code> und <code>event</code> auf.</li>
+  <li><b>Triggerer-HA:</b> Man kann mehrere Triggerer betreiben. Fällt einer aus, wartet Airflow etwa 2,1 mal <code>triggerer.job_heartbeat_sec</code> und plant die Triggers auf einem anderen Triggerer neu. Standardkapazität ist 1000 Triggers pro Triggerer.</li>
+</ol>
+<h2>4. Fallen</h2>
+<div class="trap">
+<ul>
+  <li>„XCom ist ein guter Weg, einen DataFrame weiterzugeben.“ → <b>Falsch.</b> Er ist für kleine Werte. Grosse Daten gehören in einen Speicher, per XCom geht nur der Pfad.</li>
+  <li>„Ein poke-Sensor kostet nichts, wenn er nur wartet.“ → <b>Falsch.</b> Er belegt die ganze Zeit einen Worker-Slot. Viele Sensoren können alle Slots füllen.</li>
+  <li>„<code>timeout</code> gilt pro Prüfung.“ → <b>Falsch.</b> Er gilt ab dem ersten Versuch für den ganzen Sensor.</li>
+  <li>„Mit <code>soft_fail</code> ist der Sensor bei Timeout grün.“ → <b>Falsch.</b> Er ist <code>SKIPPED</code>. Abhängige Tasks laufen dann normal nicht.</li>
+  <li>„Ein Deferrable Operator behält seine Variablen.“ → <b>Falsch.</b> Beim <code>defer()</code> geht der lokale Zustand verloren. Nur <code>method_name</code> und <code>kwargs</code> bleiben.</li>
+  <li>„In einem Trigger darf ich <code>time.sleep</code> nutzen.“ → <b>Falsch.</b> Er blockiert den ganzen Triggerer. Man nutzt <code>asyncio.sleep</code>.</li>
+</ul>
+</div>
+<h2>5. Selbsttest</h2>
+<h3>Warum?</h3>
+<details><summary>Warum teilen Tasks standardmässig keine Daten?</summary><p>Sie laufen oft auf verschiedenen Workern und Hosts. Darum gibt es XCom als kleinen, zentralen Kanal.</p></details>
+<details><summary>Warum gibt es den Modus reschedule?</summary><p>Ein poke-Sensor belegt einen Slot. reschedule gibt ihn zwischen den Prüfungen frei.</p></details>
+<details><summary>Warum Deferrable Operatoren?</summary><p>Sie warten im Triggerer mit wenig Ressourcen. Ein Worker-Slot wird nicht belegt.</p></details>
+<h3>Wie innen?</h3>
+<details><summary>Wo liegt ein XCom?</summary><p>Standardmässig in der Airflow-Metadaten-Datenbank. Ein eigener Backend kann anderswo speichern.</p></details>
+<details><summary>Wie kommt der Rückgabewert in ein XCom?</summary><p>Mit <code>do_xcom_push=True</code> (Standard) pusht der Operator den Wert unter dem Key <code>return_value</code>.</p></details>
+<details><summary>Wie funktioniert poke?</summary><p>Der Sensor hält den Slot, prüft, schläft <code>poke_interval</code> Sekunden und prüft wieder.</p></details>
+<details><summary>Wie funktioniert reschedule?</summary><p>Nach jeder Prüfung gibt der Sensor den Slot frei und wird nach <code>poke_interval</code> neu angesetzt.</p></details>
+<details><summary>Wie arbeitet <code>defer()</code>?</summary><p>Es löst eine Exception aus. Der Triggerer führt den Trigger aus. Beim Ereignis ruft Airflow <code>next_method</code> mit <code>context</code> und <code>event</code> auf.</p></details>
+<details><summary>Was passiert, wenn ein Triggerer ausfällt?</summary><p>Airflow wartet etwa 2,1 mal <code>triggerer.job_heartbeat_sec</code> und plant die Triggers auf einem anderen Triggerer neu.</p></details>
+<h3>Zahlen</h3>
+<details><summary>Was ist der Standard-Modus eines Sensors?</summary><p><code>poke</code>.</p></details>
+<details><summary>Wie viele Triggers hat ein Triggerer standardmässig?</summary><p>Eine Kapazität von 1000.</p></details>
+<details><summary>Wie heisst der Standard-Key für Rückgabewerte?</summary><p><code>return_value</code>.</p></details>
+<h3>Vergleich</h3>
+<details><summary>poke vs reschedule vs deferrable?</summary><p>poke hält den Slot. reschedule gibt ihn frei, startet aber jedes Mal neu. deferrable wartet im Triggerer.</p></details>
+<details><summary>XCom vs externer Speicher?</summary><p>XCom ist für kleine Werte in der DB. Ein Speicher wie S3 ist für grosse Daten, XCom trägt nur den Pfad.</p></details>
+<details><summary><code>BaseXCom</code> vs eigener Backend?</summary><p>BaseXCom speichert in der DB. Ein eigener Backend kann zum Beispiel einen Objektspeicher nutzen.</p></details>
+<details><summary>Sensor vs Operator?</summary><p>Ein Sensor wartet auf ein Ereignis. Ein Operator führt eine Aktion aus.</p></details>
+<h3>Produktion</h3>
+<details><summary>Was tun, wenn die Metadaten-DB durch XComs wächst?</summary><p>Grosse Werte aus XCom entfernen und nur Pfade übergeben. Alte XComs aufräumen oder einen eigenen Backend nutzen.</p></details>
+<details><summary>Was tun bei vielen wartenden Sensoren?</summary><p>Auf reschedule oder deferrable wechseln, damit sie keine Slots halten.</p></details>
+<details><summary>Szenario: Alle Worker-Slots sind voll und neue Tasks starten nicht. Warum?</summary><p>Viele poke-Sensoren halten Slots. Ich stelle sie auf reschedule oder deferrable.</p></details>
+<details><summary>Szenario: Ein Deferrable-Sensor bleibt hängen, obwohl das Ereignis eintrat. Was prüfen Sie?</summary><p>Ob der Triggerer läuft, und ob der Trigger blockierenden Code hat. Die Triggerer-Logs zeigen Warnungen.</p></details>
+<details><summary>Szenario: Eine Task liest ein XCom, aber der Wert fehlt nach einem Retry. Warum?</summary><p>Bei jedem Retry der ersten Task werden ihre XComs gelöscht. Die Task muss den Wert neu schreiben.</p></details>
+<h3>Design</h3>
+<details><summary>Wie übergibt man grosse Ergebnisse?</summary><p>In einen Speicher schreiben und den Pfad per XCom übergeben.</p></details>
+<details><summary>Welchen Modus für einen Sensor, der alle 5 Stunden prüft?</summary><p>reschedule oder deferrable. poke würde den Slot fünf Stunden halten.</p></details>
+<details><summary>Wie begrenzt man eine endlose Wartezeit?</summary><p>Mit <code>timeout</code>. Mit <code>soft_fail</code> wird der Sensor bei Timeout übersprungen.</p></details>
+<details><summary>Wie schreibt man einen eigenen Trigger?</summary><p>Asynchron mit <code>async def run</code> und <code>asyncio.sleep</code>. Nichts Blockierendes aufrufen.</p></details>
+<details><summary>Wann <code>exponential_backoff</code>?</summary><p>Wenn eine frühe Prüfung wahrscheinlich ist und spätere seltener nötig sind. Mit <code>max_wait</code> als Grenze.</p></details>
+
+<details class="mehr"><summary>Mehr</summary>
+<h3>Gerüst</h3>
+<ul>
+  <li><b>Warum?</b> Kleine Werte zwischen Tasks teilen und effizient auf Ereignisse warten.</li>
+  <li><b>Wie innen?</b> XCom in der Metadaten-DB mit Key <code>return_value</code>. Sensor mit poke, reschedule oder defer an den Triggerer.</li>
+  <li><b>Zahlen</b> Standard-Modus poke. Triggerer-Kapazität 1000. Heartbeat-Wartezeit etwa 2,1 mal <code>job_heartbeat_sec</code>.</li>
+  <li><b>Vergleich</b> poke gegen reschedule gegen deferrable. XCom gegen Speicher.</li>
+  <li><b>Produktion</b> Volle Slots durch Sensoren, grosse XComs, blockierende Triggers.</li>
+  <li><b>Design</b> Kleine XComs, Pfade statt Daten, deferrable für lange Waits.</li>
+</ul>
+
+<h3>Beispiel: Sensor mit reschedule und ein XCom</h3>
+<pre>from airflow.sdk import dag, task
+from airflow.providers.standard.sensors.filesystem import FileSensor
+
+@dag(schedule="@daily")
+def lieferung():
+    warte = FileSensor(
+        task_id="warte_auf_datei",
+        filepath="/daten/eingang/lieferung.csv",
+        poke_interval=300,        # alle 5 Minuten prüfen
+        timeout=6 * 3600,         # nach 6 Stunden aufgeben
+        mode="reschedule",        # Slot zwischen den Prüfungen freigeben
+        soft_fail=True,           # bei Timeout SKIPPED statt FAILED
+    )
+
+    @task
+    def zaehle():
+        return {"zeilen": 1200}   # Rückgabewert wird als XCom (return_value) gespeichert
+
+    @task
+    def melde(info: dict):        # xcom_pull passiert automatisch
+        print(info["zeilen"])
+
+    warte &gt;&gt; melde(zaehle())
+
+lieferung()</pre>
+<p class="small">Nicht ausgeführt. Airflow ist hier nicht installiert.</p>
+<ol>
+  <li><code>FileSensor</code> prüft alle 300 Sekunden, ob die Datei da ist.</li>
+  <li><code>mode="reschedule"</code> gibt den Slot zwischen den Prüfungen frei.</li>
+  <li><code>timeout</code> begrenzt die Wartezeit. <code>soft_fail=True</code> macht daraus SKIPPED statt FAILED.</li>
+  <li><code>zaehle</code> gibt ein dict zurück. Airflow speichert es als XCom unter <code>return_value</code>.</li>
+  <li><code>melde(zaehle())</code> übergibt den Wert. Airflow macht das <code>xcom_pull</code> selbst.</li>
+  <li>Die Importpfade stammen aus meinem Wissen und sind nicht gegen eine Installation geprüft.</li>
+</ol>
+
+<h3>Vergleich</h3>
+<ul>
+  <li><b>poke:</b> Standard, hält den Slot.</li>
+  <li><b>reschedule:</b> gibt den Slot frei, neuer Start pro Prüfung.</li>
+  <li><b>deferrable:</b> async im Triggerer, Slot frei.</li>
+  <li><b>XCom:</b> klein, in der DB.</li>
+  <li><b>Eigener Backend:</b> andere Ablage, Klasse von <code>BaseXCom</code>.</li>
+  <li><b>Asset-Trigger:</b> wartet nicht, sondern startet bei Ereignis. Siehe die Seite zu Dags und Operatoren.</li>
+  <li><b>TaskFlow:</b> XCom über Rückgabewerte und Argumente.</li>
+  <li><b>Templates:</b> <code>xcom_pull</code> im Text.</li>
+</ul>
+
+<h3>Produktion</h3>
+<ol>
+  <li><b>Metadaten-DB wächst:</b> Zu grosse XComs. Lösung: Pfade statt Daten, Backend wechseln, aufräumen.</li>
+  <li><b>Slots voll:</b> Viele poke-Sensoren. Lösung: reschedule oder deferrable.</li>
+  <li><b>Sensor fällt nach langer Zeit durch:</b> <code>timeout</code> zu klein. Lösung: Wert und <code>soft_fail</code> prüfen.</li>
+  <li><b>Triggerer hängt:</b> Blockierender Code im Trigger. Lösung: async umsetzen, Warnungen im Log lesen.</li>
+  <li><b>XCom fehlt:</b> Retry hat es gelöscht oder die Task schrieb nichts. Lösung: Wert erneut schreiben.</li>
+  <li><b>Upgrade auf 3.4 bricht Backend:</b> Eigener Backend ohne <code>store_value</code> und <code>load_value</code>. Lösung: beide umsetzen.</li>
+</ol>
+
+<h3>Diagnose: Werkzeuge und Befehle</h3>
+<ul>
+  <li>Admin-UI: Task Instance, Reiter XCom zeigt Key und Wert.</li>
+  <li>Task-Log eines Sensors: zeigt jede Prüfung und die Wartezeit.</li>
+  <li>Triggerer-Log: zeigt Warnungen zu blockierendem Code.</li>
+  <li><code>PYTHONASYNCIODEBUG=1</code>: aktiviert zusätzliche Prüfungen für asynchronen Code im Triggerer.</li>
+  <li>Pools und Slot-Belegung in der Admin-UI: zeigen, wer Slots hält.</li>
+  <li>Tabellengrösse der XComs in der Metadaten-DB: zeigt Wachstum.</li>
+</ul>
+
+<h3>Senior-Punkte</h3>
+<div class="senior">
+<ol>
+  <li><b>XCom ist ein Kanal für Metadaten,</b> nicht für Daten.</li>
+  <li><b>Ein wartender Sensor ist teuer,</b> wenn er einen Slot hält. Deferrable ist die ressourcenschonende Form.</li>
+  <li><b>Timeouts gehören immer dazu.</b> Ein Sensor ohne Grenze ist ein Leck.</li>
+  <li><b>Triggers sind asynchroner Code.</b> Ein blockierender Aufruf trifft alle.</li>
+  <li><b>Idempotenz zuerst.</b> Retries löschen XComs, also schreibt jede Task ihre Werte neu.</li>
+  <li><b>Backend-Wechsel ist ein Upgrade-Thema.</b> Release Notes lesen, besonders bei 3.4.</li>
+</ol>
+</div>
+
+<h3>Dein Beispiel</h3>
+</details>
+
+</body>
+</html>

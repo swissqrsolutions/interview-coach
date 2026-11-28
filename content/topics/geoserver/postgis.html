@@ -1,0 +1,275 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PostGIS: Geometrie-Typen, SRID, räumliche Indizes</title>
+<style>
+  body { font: 17px/1.55 -apple-system, system-ui, sans-serif; max-width: 760px; margin: 0 auto; padding: 16px; color: #1d1d1f; }
+  h1 { font-size: 28px; margin: 8px 0 4px; }
+  h2 { font-size: 21px; margin: 32px 0 8px; padding-top: 12px; border-top: 2px solid #e5e5ea; }
+  .kern { background: #eef6ff; border-left: 4px solid #0a66c2; padding: 10px 14px; border-radius: 6px; }
+  .senior { background: #f0faf0; border-left: 4px solid #2e7d32; padding: 10px 14px; border-radius: 6px; }
+  .trap { background: #fff4f2; border-left: 4px solid #c62828; padding: 10px 14px; border-radius: 6px; }
+  code { background: #f2f2f7; padding: 1px 5px; border-radius: 4px; font-size: 15px; }
+  pre { background: #1e1e1e; color: #e6e6e6; padding: 12px; border-radius: 8px; overflow-x: auto; font-size: 13.5px; line-height: 1.45; }
+  svg { width: 100%; height: auto; display: block; margin: 10px 0; }
+  ol li, ul li { margin: 4px 0; }
+  details { border: 1px solid #e5e5ea; border-radius: 8px; padding: 8px 12px; margin: 6px 0; }
+  summary { font-weight: 600; cursor: pointer; }
+  details p { margin: 6px 0 2px; }
+  .small { color: #6e6e73; font-size: 14px; }
+  h3 { font-size: 17px; margin: 20px 0 6px; }
+  .geruest { border: 2px solid #1d1d1f; border-radius: 6px; padding: 10px 14px; margin: 14px 0; font-size: 15px; line-height: 1.4; }
+  .geruest h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; margin: 0 0 8px; padding: 0; border: 0; }
+  .geruest dl { display: grid; grid-template-columns: 6.6em 1fr; gap: 6px 10px; margin: 0; }
+  .geruest dt { font-weight: 700; font-size: 12px; text-transform: uppercase; letter-spacing: .05em; padding-top: 1px; }
+  .geruest dd { margin: 0; }
+  .muster { border: 1px solid #e5e5ea; border-left: 4px solid #1d1d1f; border-radius: 6px; padding: 10px 14px; margin: 14px 0; }
+  .muster h3 { margin: 0 0 6px; font-size: 13px; text-transform: uppercase; letter-spacing: .06em; }
+  .muster .mq { margin: 0 0 6px; }
+</style>
+</head>
+<body>
+
+<body>
+<h1>PostGIS: Geometrie-Typen, SRID, räumliche Indizes</h1>
+<!-- sources: postgis.net Doku (Data Management: geometry, geography, spatial_ref_sys, geometry_columns, Spatial Indexes: GiST, SP-GiST, BRIN, Bounding Boxes), postgresql.org Doku (Index-Typen) -->
+<div class="kern">
+<b>Kern:</b> <b>PostGIS</b> erweitert PostgreSQL um räumliche Typen und Funktionen. <b>geometry</b> rechnet auf einer Ebene, <b>geography</b> auf einer Kugel in Metern, und die <b>SRID</b> sagt, in welchem Koordinatensystem die Zahlen stehen. Ein <b>GiST-Index</b> speichert Bounding Boxes und macht räumliche Abfragen schnell.
+</div>
+<div class="muster"><h3>Antwort-Muster</h3><p class="mq"><b>Frage:</b> Was ist der Unterschied zwischen geometry und geography, und was ist eine SRID?</p><ol>
+  <li>Mechanismus: geometry rechnet planar in der Einheit des SRID. geography rechnet auf der Kugel und liefert Meter.</li>
+  <li>Zahl: SRID 4326 ist WGS84 (lon/lat). SRID 0 ist eine Ebene ohne Einheit. Eine geography-Spalte ohne SRID bekommt 4326.</li>
+  <li>Trade-off: geography ist genauer über grosse Strecken, hat aber weniger Funktionen und kostet mehr CPU.</li>
+  <li>Produktion: Ich lege einen GiST-Index an, mache VACUUM ANALYZE und nutze ST_DWithin statt ST_Distance im WHERE.</li>
+</ol></div>
+<h2>1. Eine Umkreissuche in 6 Schritten</h2>
+<svg viewBox="0 0 730 188" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+<defs><marker id="b" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+<rect x="10" y="10" width="210" height="64" rx="10" fill="#dbe9fb" stroke="#0a66c2"/>
+<text x="115" y="34" text-anchor="middle" font-size="14" font-weight="700">1. Abfrage</text>
+<text x="115" y="53" text-anchor="middle" font-size="12">ST_DWithin(geog, punkt, 1000)</text>
+<rect x="260" y="10" width="210" height="64" rx="10" fill="#eee" stroke="#777"/>
+<text x="365" y="34" text-anchor="middle" font-size="14" font-weight="700">2. Planner</text>
+<text x="365" y="53" text-anchor="middle" font-size="12">wählt den GiST-Index</text>
+<line x1="220" y1="42" x2="258" y2="42" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+<rect x="510" y="10" width="210" height="64" rx="10" fill="#dbe9fb" stroke="#0a66c2"/>
+<text x="615" y="34" text-anchor="middle" font-size="14" font-weight="700">3. Index sucht</text>
+<text x="615" y="53" text-anchor="middle" font-size="12">R-Tree über Boxen</text>
+<line x1="470" y1="42" x2="508" y2="42" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+<rect x="510" y="114" width="210" height="64" rx="10" fill="#e8f5e9" stroke="#2e7d32"/>
+<text x="615" y="138" text-anchor="middle" font-size="14" font-weight="700">4. Primärfilter</text>
+<text x="615" y="157" text-anchor="middle" font-size="12">Kandidaten per Box</text>
+<line x1="615" y1="74" x2="615" y2="112" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+<rect x="260" y="114" width="210" height="64" rx="10" fill="#e8f5e9" stroke="#2e7d32"/>
+<text x="365" y="138" text-anchor="middle" font-size="14" font-weight="700">5. Sekundärfilter</text>
+<text x="365" y="157" text-anchor="middle" font-size="12">exakte Prüfung</text>
+<line x1="510" y1="146" x2="472" y2="146" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+<rect x="10" y="114" width="210" height="64" rx="10" fill="#0a66c2" stroke="#0a66c2"/>
+<text x="115" y="138" text-anchor="middle" font-size="14" font-weight="700" fill="#fff">6. Ergebnis</text>
+<text x="115" y="157" text-anchor="middle" font-size="12" fill="#fff">Zeilen an den Client</text>
+<line x1="260" y1="146" x2="222" y2="146" stroke="#555" stroke-width="2" marker-end="url(#b)"/>
+</svg>
+<ol>
+  <li><b>Abfrage:</b> <code>WHERE ST_DWithin(geog, punkt, 1000)</code> fragt nach allen Zeilen im Umkreis von 1000 Metern.</li>
+  <li><b>Planner:</b> PostgreSQL schätzt mit Statistiken, ob der Index lohnt. Darum braucht man nach dem Laden <code>VACUUM ANALYZE</code>.</li>
+  <li><b>Index sucht:</b> Der GiST-Index ist ein R-Tree. Er speichert nur die Bounding Box jeder Geometrie.</li>
+  <li><b>Primärfilter:</b> Der Index liefert Kandidaten, deren Box zur Suchbox passt. Der Operator <code>&amp;&amp;</code> prüft Box gegen Box.</li>
+  <li><b>Sekundärfilter:</b> Für jeden Kandidaten prüft eine genaue Funktion, ob die echte Form passt.</li>
+  <li><b>Ergebnis:</b> Die Zeilen, die beide Filter bestehen, gehen an den Client.</li>
+</ol>
+<h2>2. Aufbau</h2>
+<svg viewBox="0 0 730 346" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+<defs><marker id="t" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+<rect x="10" y="10" width="200" height="326" rx="10" fill="#dbe9fb" stroke="#0a66c2"/>
+<text x="110" y="158" text-anchor="middle" font-size="14" font-weight="700">PostGIS</text>
+<text x="110" y="177" text-anchor="middle" font-size="12">räumliche Typen</text>
+<text x="110" y="192" text-anchor="middle" font-size="12">und Indizes</text>
+<rect x="270" y="10" width="450" height="46" rx="8" fill="#fff" stroke="#555"/>
+<text x="495" y="29" text-anchor="middle" font-size="13" font-weight="700">geometry</text>
+<text x="495" y="47" text-anchor="middle" font-size="12">planare Geometrie · Einheit des SRID · viele Funktionen</text>
+<line x1="210" y1="173" x2="268" y2="33" stroke="#555" stroke-width="2" marker-end="url(#t)"/>
+<rect x="270" y="66" width="450" height="46" rx="8" fill="#fff" stroke="#555"/>
+<text x="495" y="85" text-anchor="middle" font-size="13" font-weight="700">geography</text>
+<text x="495" y="103" text-anchor="middle" font-size="12">Kugel · Meter · nur lon/lat-SRIDs · Standard 4326</text>
+<line x1="210" y1="173" x2="268" y2="89" stroke="#555" stroke-width="2" marker-end="url(#t)"/>
+<rect x="270" y="122" width="450" height="46" rx="8" fill="#e8f5e9" stroke="#2e7d32"/>
+<text x="495" y="141" text-anchor="middle" font-size="13" font-weight="700">spatial_ref_sys</text>
+<text x="495" y="159" text-anchor="middle" font-size="12">Tabelle der SRIDs · srid, auth_name, auth_srid, srtext, proj4text</text>
+<line x1="210" y1="173" x2="268" y2="145" stroke="#555" stroke-width="2" marker-end="url(#t)"/>
+<rect x="270" y="178" width="450" height="46" rx="8" fill="#eee" stroke="#777"/>
+<text x="495" y="197" text-anchor="middle" font-size="13" font-weight="700">geometry_columns</text>
+<text x="495" y="215" text-anchor="middle" font-size="12">View über die Kataloge · srid, type, coord_dimension</text>
+<line x1="210" y1="173" x2="268" y2="201" stroke="#555" stroke-width="2" marker-end="url(#t)"/>
+<rect x="270" y="234" width="450" height="46" rx="8" fill="#e8f5e9" stroke="#2e7d32"/>
+<text x="495" y="253" text-anchor="middle" font-size="13" font-weight="700">GiST-Index</text>
+<text x="495" y="271" text-anchor="middle" font-size="12">R-Tree auf Bounding Boxes · Primärfilter</text>
+<line x1="210" y1="173" x2="268" y2="257" stroke="#555" stroke-width="2" marker-end="url(#t)"/>
+<rect x="270" y="290" width="450" height="46" rx="8" fill="#eee" stroke="#777"/>
+<text x="495" y="309" text-anchor="middle" font-size="13" font-weight="700">SP-GiST und BRIN</text>
+<text x="495" y="327" text-anchor="middle" font-size="12">Alternativen · BRIN klein, für sortierte Daten</text>
+<line x1="210" y1="173" x2="268" y2="313" stroke="#555" stroke-width="2" marker-end="url(#t)"/>
+</svg>
+<ol>
+  <li><b>geometry</b> speichert Punkte, Linien und Flächen als Zahlen in einer Ebene.</li>
+  <li><b>geography</b> speichert lon/lat auf einer Kugel und misst in Metern.</li>
+  <li>Die <b>SRID</b> ist ein Verweis auf <code>spatial_ref_sys</code>. Dort steht die Definition des Koordinatensystems.</li>
+  <li>Eine <b>typmod</b>-Spalte wie <code>geometry(Point, 4326)</code> legt Typ und SRID fest.</li>
+  <li><code>geometry_columns</code> und <code>geography_columns</code> sind Views mit den Spalten und ihren SRIDs.</li>
+  <li>Der <b>GiST-Index</b> hängt an der Spalte und speichert Boxen.</li>
+</ol>
+<h2>3. Details</h2>
+<ol>
+  <li><b>geometry:</b> Es nutzt kartesische Mathematik auf einer Ebene. Die kürzeste Linie ist gerade. Das ist einfach und schnell. Über grosse Gebiete der Erde wird es ungenau.</li>
+  <li><b>geography:</b> Es nutzt eine Kugel und Grosskreisbögen. Es ist über die Erde genauer, hat aber weniger Funktionen und kostet mehr CPU. Messfunktionen liefern Meter. Bei geometry mit SRID 4326 sind die Zahlen Grad und nicht Meter.</li>
+  <li><b>SRID:</b> Die SRID nennt das Koordinatensystem. SRID 0 ist eine Ebene ohne Einheit. SRID 4326 ist WGS84 mit lon/lat. Eine geography-Spalte ohne SRID bekommt 4326.</li>
+  <li><b>geography und Projektionen:</b> geography nimmt nur Koordinatensysteme mit lon/lat. Eine projizierte SRID wie 26910 (UTM) gibt einen Fehler. Eine geometry mit SRID 4326 lässt sich automatisch nach geography umwandeln.</li>
+  <li><b>spatial_ref_sys:</b> Die Tabelle hat die Spalten <code>srid</code>, <code>auth_name</code>, <code>auth_srid</code>, <code>srtext</code> und <code>proj4text</code>. Sie enthält mehr als 3000 gängige Definitionen. Man kann eigene Zeilen einfügen.</li>
+  <li><b>Typmod:</b> <code>geometry(Point, 4326)</code> verbietet andere Typen und andere SRIDs. Die Spalte erscheint dann richtig in <code>geometry_columns</code>. Bei Z, M oder ZM hängt man ein Suffix an den Typ.</li>
+  <li><b>GiST:</b> PostGIS baut einen R-Tree auf GiST. Der Index speichert nur die Bounding Box jeder Geometrie. Er ist darum ein Primärfilter. Danach prüft ein zweiter Schritt die echte Form.</li>
+  <li><b>Bounding Box und &amp;&amp;:</b> Die Box ist das kleinste Rechteck um die Koordinaten. Der Operator <code>&amp;&amp;</code> prüft, ob sich zwei Boxen überlappen. Eine Box kann sich überlappen, obwohl die Formen sich nicht berühren.</li>
+  <li><b>ST_DWithin statt ST_Distance:</b> <code>ST_DWithin(a, b, 1000)</code> fragt, ob zwei Objekte nah genug sind. Bei geography ist die Distanz in Metern. <code>ST_Distance</code> im <code>WHERE</code> berechnet für jede Zeile eine Distanz.</li>
+  <li><b>Index anlegen:</b> <code>CREATE INDEX name ON tabelle USING GIST (spalte)</code> baut einen 2D-Index. Auf einer Produktionsdatenbank nimmt man <code>CREATE INDEX CONCURRENTLY</code>, damit Schreiben nicht blockiert. Danach <code>VACUUM ANALYZE</code>, damit der Planner Statistiken hat.</li>
+  <li><b>nD-Index:</b> Für n-dimensionale Daten nutzt man die Operator-Klasse <code>gist_geometry_ops_nd</code>. Ohne sie ist der Index nur 2D.</li>
+  <li><b>SP-GiST und BRIN:</b> SP-GiST ist ein Space-Partitioned-Baum und eine Alternative zu GiST. BRIN speichert eine Box pro Blockbereich. Er ist viel kleiner und schneller zu bauen, aber meist langsamer beim Lesen, und er braucht räumlich sortierte Daten. Er hat keine kNN-Unterstützung.</li>
+</ol>
+<h2>4. Fallen</h2>
+<div class="trap">
+<ul>
+  <li>„geometry mit SRID 4326 liefert Distanzen in Metern.“ → <b>Falsch.</b> Es liefert Grad. Meter gibt es bei geography oder nach einer Projektion.</li>
+  <li>„Der GiST-Index findet genau die passenden Formen.“ → <b>Falsch.</b> Er kennt nur Bounding Boxes. Ein zweiter Schritt prüft die echte Form.</li>
+  <li>„<code>ST_Distance(a, b) &lt; 1000</code> nutzt den Index.“ → <b>Falsch.</b> Die Distanz wird pro Zeile berechnet. <code>ST_DWithin</code> ist die richtige Form.</li>
+  <li>„SRID ist nur eine Zahl ohne Bedeutung.“ → <b>Falsch.</b> Sie verweist auf ein Koordinatensystem in <code>spatial_ref_sys</code>. Falsche SRID heisst falsche Position.</li>
+  <li>„geography kann jede SRID.“ → <b>Falsch.</b> Nur Systeme mit lon/lat. Eine projizierte SRID wie 26910 gibt einen Fehler.</li>
+  <li>„Nach dem Index ist keine Pflege nötig.“ → <b>Falsch.</b> Man braucht <code>VACUUM ANALYZE</code> für Statistiken. BRIN braucht sogar manuelle Pflege.</li>
+</ul>
+</div>
+<h2>5. Selbsttest</h2>
+<h3>Warum?</h3>
+<details><summary>Warum gibt es zwei Typen, geometry und geography?</summary><p>geometry ist einfach, schnell und hat viele Funktionen. geography ist über grosse Strecken genauer und misst in Metern.</p></details>
+<details><summary>Warum braucht ein Punkt eine SRID?</summary><p>Die Zahlen sind ohne Koordinatensystem nicht eindeutig. Die SRID nennt das System.</p></details>
+<details><summary>Warum speichert der Index nur Boxen?</summary><p>Boxen sind klein und schnell zu vergleichen. Das macht den Index kompakt. Die genaue Prüfung folgt danach.</p></details>
+<h3>Wie innen?</h3>
+<details><summary>Wie ist der räumliche Index gebaut?</summary><p>Ein R-Tree, implementiert auf GiST. Er speichert die Bounding Box jeder Geometrie.</p></details>
+<details><summary>Was sind Primär- und Sekundärfilter?</summary><p>Der Primärfilter ist der Index mit Boxen. Der Sekundärfilter ist die genaue Prüfung der echten Form.</p></details>
+<details><summary>Was prüft <code>&amp;&amp;</code>?</summary><p>Ob sich die Bounding Boxes zweier Geometrien überlappen.</p></details>
+<details><summary>Was steht in <code>spatial_ref_sys</code>?</summary><p>Die Definition jedes Koordinatensystems, mit <code>srid</code>, <code>auth_name</code>, <code>auth_srid</code>, <code>srtext</code> und <code>proj4text</code>.</p></details>
+<details><summary>Was ist <code>geometry_columns</code>?</summary><p>Ein View über die Systemkataloge. Er zeigt Tabelle, Spalte, SRID, Typ und Dimension.</p></details>
+<details><summary>Was bedeutet <code>geometry(Point, 4326)</code>?</summary><p>Die Spalte nimmt nur Punkte mit SRID 4326. Das ist eine typmod.</p></details>
+<h3>Zahlen</h3>
+<details><summary>Welche SRID hat WGS84 mit lon/lat?</summary><p>4326.</p></details>
+<details><summary>Welche SRID gilt für eine Ebene ohne Einheit?</summary><p>0.</p></details>
+<details><summary>Wie viele SRIDs bringt <code>spatial_ref_sys</code> mit?</summary><p>Mehr als 3000 gängige Definitionen.</p></details>
+<h3>Vergleich</h3>
+<details><summary>geometry vs geography?</summary><p>geometry ist planar, schnell und hat viele Funktionen. geography ist sphärisch, in Metern, genauer, aber teurer.</p></details>
+<details><summary>GiST vs BRIN?</summary><p>GiST ist ein R-Tree und schnell beim Lesen. BRIN ist viel kleiner, braucht sortierte Daten und ist meist langsamer beim Lesen.</p></details>
+<details><summary>GiST vs SP-GiST?</summary><p>Beide speichern Boxen. SP-GiST teilt den Raum in Teile, GiST nutzt überlappende Bereiche.</p></details>
+<details><summary><code>ST_DWithin</code> vs <code>ST_Distance</code>?</summary><p>ST_DWithin ist eine Ja-Nein-Prüfung auf Umkreis. ST_Distance gibt eine Zahl zurück und eignet sich zum Sortieren und Anzeigen.</p></details>
+<h3>Produktion</h3>
+<details><summary>Was tun, wenn eine räumliche Abfrage langsam ist?</summary><p>Prüfen, ob der GiST-Index da ist und genutzt wird. <code>VACUUM ANALYZE</code> laufen lassen. <code>ST_DWithin</code> statt <code>ST_Distance</code> im WHERE nutzen.</p></details>
+<details><summary>Wie legt man einen Index auf einer Live-Tabelle an?</summary><p>Mit <code>CREATE INDEX CONCURRENTLY</code>. Das blockiert Schreiben nicht.</p></details>
+<details><summary>Szenario: Punkte in der Schweiz erscheinen auf der Karte in Afrika. Was prüfen Sie?</summary><p>Die Reihenfolge der Koordinaten. Für lon/lat gehört der Längengrad zuerst. Danach die SRID.</p></details>
+<details><summary>Szenario: Eine Umkreissuche macht einen Seq Scan. Was tun Sie?</summary><p>Ich prüfe, ob der Index auf derselben Spalte und demselben Typ liegt wie die Abfrage. Dann lasse ich ANALYZE laufen und prüfe den Plan mit EXPLAIN.</p></details>
+<details><summary>Szenario: Eine riesige, nach Zeit geladene Messtabelle braucht einen kleinen Index. Was nehmen Sie?</summary><p>Einen BRIN-Index, wenn die Daten räumlich sortiert sind. Sonst GiST. BRIN braucht manuelle Pflege.</p></details>
+<h3>Design</h3>
+<details><summary>Wann nimmt man geography?</summary><p>Wenn Distanzen in Metern über grosse Gebiete zählen, zum Beispiel weltweite Orte.</p></details>
+<details><summary>Wann nimmt man geometry?</summary><p>Wenn man mit einem projizierten System und vielen Funktionen arbeitet, oder lokale Daten hat.</p></details>
+<details><summary>Wie wählt man die SRID?</summary><p>Für Speicherung und Austausch oft 4326. Für Messungen in Metern ein projiziertes System der Region.</p></details>
+<details><summary>Wie begrenzt man falsche Daten in der Spalte?</summary><p>Mit einer typmod-Spalte wie <code>geometry(Polygon, 2056)</code>. Sie erzwingt Typ und SRID.</p></details>
+<details><summary>Wann hilft ein nD-Index?</summary><p>Bei 3D- oder 4D-Abfragen. Dafür nimmt man <code>gist_geometry_ops_nd</code>.</p></details>
+
+<details class="mehr"><summary>Mehr</summary>
+<h3>Gerüst</h3>
+<ul>
+  <li><b>Warum?</b> Räumliche Abfragen in SQL, mit Index und korrekten Koordinatensystemen.</li>
+  <li><b>Wie innen?</b> geometry planar, geography sphärisch. SRID verweist auf <code>spatial_ref_sys</code>. GiST ist ein R-Tree auf Boxen mit Primär- und Sekundärfilter.</li>
+  <li><b>Zahlen</b> 4326 ist WGS84. 0 ist unbekannt. Mehr als 3000 SRIDs in <code>spatial_ref_sys</code>. BRIN mit 128 Seiten pro Bereich als Standard.</li>
+  <li><b>Vergleich</b> geometry gegen geography. GiST gegen BRIN. ST_DWithin gegen ST_Distance.</li>
+  <li><b>Produktion</b> Seq Scan ohne Index, fehlende Statistiken, falsche Koordinatenreihenfolge, falsche SRID.</li>
+  <li><b>Design</b> Typmod-Spalten, GiST mit VACUUM ANALYZE, ST_DWithin im WHERE.</li>
+</ul>
+
+<h3>Beispiel: Tabelle, Index und Umkreissuche</h3>
+<pre>CREATE EXTENSION postgis;
+
+-- geography: Kugel, Meter, nur lon/lat (SRID 4326)
+CREATE TABLE ort (
+  id   serial PRIMARY KEY,
+  name text,
+  geog geography(Point, 4326)
+);
+INSERT INTO ort (name, geog)
+VALUES ('Zuerich HB', ST_SetSRID(ST_MakePoint(8.5402, 47.3779), 4326)::geography);
+
+-- räumlicher Index: R-Tree auf GiST
+CREATE INDEX ort_geog_gix ON ort USING GIST (geog);
+VACUUM ANALYZE ort;
+
+-- alle Orte im Umkreis von 1000 Metern
+SELECT name
+FROM ort
+WHERE ST_DWithin(geog, ST_SetSRID(ST_MakePoint(8.5417, 47.3769), 4326)::geography, 1000);
+
+-- geometry: Ebene, Einheit des SRID (bei 4326: Grad)
+SELECT srid, auth_name, auth_srid FROM spatial_ref_sys WHERE srid IN (0, 4326);
+SELECT f_table_name, f_geometry_column, srid, type FROM geometry_columns;</pre>
+<p class="small">Nicht ausgeführt.</p>
+<ol>
+  <li><code>geography(Point, 4326)</code> legt Typ und SRID fest. Eine geography-Spalte nimmt nur lon/lat.</li>
+  <li><code>ST_MakePoint(8.5402, 47.3779)</code> nimmt zuerst den Längengrad (x), dann den Breitengrad (y).</li>
+  <li><code>USING GIST</code> baut den R-Tree. <code>VACUUM ANALYZE</code> gibt dem Planner Statistiken.</li>
+  <li><code>ST_DWithin(..., 1000)</code> sucht im Umkreis von 1000 Metern, weil es um geography geht.</li>
+  <li>Die letzten beiden Abfragen zeigen die SRID-Definition und die registrierten Spalten.</li>
+  <li>Ich habe keine Ausgabe gemessen. Es lief keine Datenbank mit PostGIS.</li>
+</ol>
+
+<h3>Vergleich</h3>
+<ul>
+  <li><b>geometry:</b> Ebene, Einheit des SRID, viele Funktionen.</li>
+  <li><b>geography:</b> Kugel, Meter, nur lon/lat, weniger Funktionen.</li>
+  <li><b>GiST:</b> R-Tree auf Boxen, schnell beim Lesen.</li>
+  <li><b>SP-GiST:</b> Raumaufteilung, Alternative zu GiST.</li>
+  <li><b>BRIN:</b> eine Box pro Blockbereich, klein, für sortierte Daten, keine kNN.</li>
+  <li><b>B-Tree:</b> für Gleichheit und Bereich auf normalen Spalten, nicht für Geometrien.</li>
+  <li><b>ST_DWithin:</b> Umkreis-Prüfung.</li>
+  <li><b>ST_Distance:</b> Zahl für Anzeige und Sortierung.</li>
+</ul>
+
+<h3>Produktion</h3>
+<ol>
+  <li><b>Seq Scan statt Index:</b> Der Index fehlt oder passt nicht zur Abfrage. Lösung: GiST anlegen, ANALYZE, Plan prüfen.</li>
+  <li><b>Falsche Positionen:</b> Koordinaten vertauscht oder falsche SRID. Lösung: Reihenfolge lon/lat und SRID prüfen.</li>
+  <li><b>Distanzen in Grad:</b> geometry mit 4326 gemessen. Lösung: geography nutzen oder projizieren.</li>
+  <li><b>Index blockiert Schreiben:</b> Er wurde ohne CONCURRENTLY gebaut. Lösung: <code>CREATE INDEX CONCURRENTLY</code>.</li>
+  <li><b>Alte Statistiken:</b> Der Planner wählt schlechte Pläne. Lösung: <code>VACUUM ANALYZE</code>.</li>
+  <li><b>BRIN findet zu viel:</b> Die Daten sind nicht räumlich sortiert. Lösung: sortieren oder GiST nehmen.</li>
+</ol>
+
+<h3>Diagnose: Werkzeuge und Befehle</h3>
+<ul>
+  <li><code>EXPLAIN (ANALYZE, BUFFERS)</code>: zeigt, ob der Index genutzt wird.</li>
+  <li><code>SELECT * FROM geometry_columns</code>: zeigt Spalten, SRID und Typ.</li>
+  <li><code>SELECT * FROM spatial_ref_sys WHERE srid = 4326</code>: zeigt die Definition.</li>
+  <li><code>ST_SRID(geom)</code>: zeigt die SRID eines Werts.</li>
+  <li><code>SELECT PostGIS_Full_Version()</code>: zeigt die Version von PostGIS und den Bibliotheken.</li>
+  <li><code>pg_stat_user_indexes</code>: zeigt, wie oft ein Index gelesen wurde.</li>
+</ul>
+
+<h3>Senior-Punkte</h3>
+<div class="senior">
+<ol>
+  <li><b>Die SRID ist Teil der Daten.</b> Ohne sie sind Koordinaten wertlos.</li>
+  <li><b>Der Index ist nur ein Filter.</b> Er findet Kandidaten, die genaue Prüfung kommt danach.</li>
+  <li><b>ST_DWithin ist die Standard-Form</b> für Umkreissuchen. Distanzen im WHERE sind ein Warnzeichen.</li>
+  <li><b>geography ist bequem, geometry ist mächtig.</b> Die Wahl hängt von Gebiet und Funktionen ab.</li>
+  <li><b>Typmod-Spalten sind Verträge.</b> Sie halten falsche Typen und SRIDs aus der Tabelle.</li>
+  <li><b>Pflege gehört dazu.</b> VACUUM ANALYZE, und bei BRIN manuelle Pflege.</li>
+</ol>
+</div>
+
+<h3>Dein Beispiel</h3>
+</details>
+
+</body>
+</html>
