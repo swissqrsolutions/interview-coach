@@ -1,0 +1,242 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RabbitMQ: Exchanges, Queues, Routing</title>
+<style>
+  body { font: 17px/1.55 -apple-system, system-ui, sans-serif; max-width: 760px; margin: 0 auto; padding: 16px; color: #1d1d1f; }
+  h1 { font-size: 28px; margin: 8px 0 4px; }
+  h2 { font-size: 21px; margin: 32px 0 8px; padding-top: 12px; border-top: 2px solid #e5e5ea; }
+  .kern { background: #eef6ff; border-left: 4px solid #0a66c2; padding: 10px 14px; border-radius: 6px; }
+  .senior { background: #f0faf0; border-left: 4px solid #2e7d32; padding: 10px 14px; border-radius: 6px; }
+  .trap { background: #fff4f2; border-left: 4px solid #c62828; padding: 10px 14px; border-radius: 6px; }
+  code { background: #f2f2f7; padding: 1px 5px; border-radius: 4px; font-size: 15px; }
+  pre { background: #1e1e1e; color: #e6e6e6; padding: 12px; border-radius: 8px; overflow-x: auto; font-size: 13.5px; line-height: 1.45; }
+  svg { width: 100%; height: auto; display: block; margin: 10px 0; }
+  ol li, ul li { margin: 4px 0; }
+  details { border: 1px solid #e5e5ea; border-radius: 8px; padding: 8px 12px; margin: 6px 0; }
+  summary { font-weight: 600; cursor: pointer; }
+  details p { margin: 6px 0 2px; }
+  .small { color: #6e6e73; font-size: 14px; }
+  h3 { font-size: 17px; margin: 20px 0 6px; }
+  .geruest { border: 2px solid #1d1d1f; border-radius: 6px; padding: 10px 14px; margin: 14px 0; font-size: 15px; line-height: 1.4; }
+  .geruest h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; margin: 0 0 8px; padding: 0; border: 0; }
+  .geruest dl { display: grid; grid-template-columns: 6.6em 1fr; gap: 6px 10px; margin: 0; }
+  .geruest dt { font-weight: 700; font-size: 12px; text-transform: uppercase; letter-spacing: .05em; padding-top: 1px; }
+  .geruest dd { margin: 0; }
+  .muster { border: 1px solid #e5e5ea; border-left: 4px solid #1d1d1f; border-radius: 6px; padding: 10px 14px; margin: 14px 0; }
+  .muster h3 { margin: 0 0 6px; font-size: 13px; text-transform: uppercase; letter-spacing: .06em; }
+  .muster .mq { margin: 0 0 6px; }
+</style>
+</head>
+<body>
+
+<h1>RabbitMQ: Exchanges, Queues, Routing</h1>
+<!-- sources: RabbitMQ Dokumentation Stand 4.4 (rabbitmq.com/docs: Exchanges, Quorum Queues, Streams, Consumer Acknowledgements and Publisher Confirms, Dead Letter Exchanges) -->
+
+<div class="kern">
+<b>Kern:</b> <b>RabbitMQ</b> ist ein Message Broker. Ein Producer sendet an einen <b>Exchange</b>, nie direkt an eine Queue. Der Exchange verteilt die Nachricht nach <b>Bindings</b> und <b>Routing Key</b> an <b>Queues</b>. Consumer holen sie dort ab und bestätigen mit einem <b>Ack</b>.
+</div>
+
+<div class="muster"><h3>Antwort-Muster</h3><p class="mq"><b>Frage:</b> Wie kommt eine Nachricht in RabbitMQ vom Producer zum Consumer?</p><ol>
+  <li>Mechanismus: Der Producer sendet an einen Exchange. Der Exchange vergleicht den Routing Key mit den Bindings und kopiert die Nachricht in alle passenden Queues.</li>
+  <li>Zahl: Quorum Queues replizieren mit Raft, Standard sind 3 Replikas. Das Delivery Limit ist seit 4.0 standardmässig 20.</li>
+  <li>Trade-off: Ein Ack pro Nachricht gibt Sicherheit, kostet aber Durchsatz. Ein hoher Prefetch hilft dem Durchsatz, bringt aber ungleiche Verteilung.</li>
+  <li>Produktion: Ich nehme Quorum Queues, manuelle Acks, Publisher Confirms und eine Dead Letter Queue für Giftnachrichten.</li>
+</ol></div>
+
+<h2>1. Eine Nachricht in 7 Schritten</h2>
+<svg viewBox="0 0 480 370" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="r1" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="10" y="10" width="220" height="56" rx="10" fill="#eee" stroke="#777"/><text x="120" y="33" text-anchor="middle" font-weight="700">1. publish</text><text x="120" y="52" text-anchor="middle" font-size="12">Exchange + Routing Key</text>
+  <rect x="250" y="10" width="220" height="56" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="360" y="33" text-anchor="middle" font-weight="700">2. Exchange</text><text x="360" y="52" text-anchor="middle" font-size="12">prüft die Bindings</text>
+  <line x1="230" y1="38" x2="248" y2="38" stroke="#555" stroke-width="2" marker-end="url(#r1)"/>
+  <rect x="250" y="95" width="220" height="56" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="360" y="118" text-anchor="middle" font-weight="700">3. Kopie je Queue</text><text x="360" y="137" text-anchor="middle" font-size="12">keine Bindung: verworfen</text>
+  <line x1="360" y1="66" x2="360" y2="93" stroke="#555" stroke-width="2" marker-end="url(#r1)"/>
+  <rect x="10" y="95" width="220" height="56" rx="10" fill="#fff" stroke="#555"/><text x="120" y="118" text-anchor="middle" font-weight="700">4. Queue speichert</text><text x="120" y="137" text-anchor="middle" font-size="12">Quorum: Raft-Replikation</text>
+  <line x1="250" y1="123" x2="232" y2="123" stroke="#555" stroke-width="2" marker-end="url(#r1)"/>
+  <rect x="10" y="180" width="220" height="56" rx="10" fill="#fff" stroke="#555"/><text x="120" y="203" text-anchor="middle" font-weight="700">5. Zustellen</text><text x="120" y="222" text-anchor="middle" font-size="12">Push bis zum Prefetch</text>
+  <line x1="120" y1="151" x2="120" y2="178" stroke="#555" stroke-width="2" marker-end="url(#r1)"/>
+  <rect x="250" y="180" width="220" height="56" rx="10" fill="#e8f5e9" stroke="#2e7d32"/><text x="360" y="203" text-anchor="middle" font-weight="700">6. Consumer + Ack</text><text x="360" y="222" text-anchor="middle" font-size="12">Nachricht wird gelöscht</text>
+  <line x1="230" y1="208" x2="248" y2="208" stroke="#555" stroke-width="2" marker-end="url(#r1)"/>
+  <rect x="10" y="265" width="460" height="86" rx="10" fill="#fff4f2" stroke="#c62828"/><text x="240" y="288" text-anchor="middle" font-weight="700">7. Fehler</text><text x="240" y="309" text-anchor="middle" font-size="12">nack oder reject mit requeue: zurück in die Queue</text><text x="240" y="327" text-anchor="middle" font-size="12">ohne requeue: Dead Letter Exchange oder gelöscht</text><text x="240" y="343" text-anchor="middle" font-size="12">Channel zu: unbestätigte Nachrichten werden neu eingereiht</text>
+  <line x1="360" y1="236" x2="360" y2="263" stroke="#c62828" stroke-width="2" marker-end="url(#r1)"/>
+</svg>
+<ol>
+  <li><b>publish:</b> Der Producer sendet Nachricht, Exchange-Name und Routing Key. Mit leerem Namen nimmt er den Default Exchange.</li>
+  <li><b>Exchange:</b> Der Exchange sucht passende Bindings. Die Regel hängt vom Typ ab. Ohne Bindings ist der Exchange eine leere Routing-Tabelle.</li>
+  <li><b>Kopien:</b> Jede passende Queue bekommt eine Kopie. Passt keine Queue, gilt die Nachricht als nicht routbar. Ein Alternate Exchange kann sie auffangen.</li>
+  <li><b>Queue:</b> Die Queue speichert die Nachricht. Bei Quorum Queues bestätigt sie erst, wenn die Replikas sie angenommen haben.</li>
+  <li><b>Zustellen:</b> Der Broker schickt Nachrichten an den Consumer. Er sendet nur, bis die Zahl der unbestätigten Nachrichten den Prefetch erreicht.</li>
+  <li><b>Ack:</b> Der Consumer bestätigt mit <code>basic.ack</code>. Erst dann löscht die Queue die Nachricht.</li>
+  <li><b>Fehler:</b> Bei <code>nack</code> oder <code>reject</code> entscheidet das Flag <code>requeue</code>. Ohne requeue geht die Nachricht an einen Dead Letter Exchange, falls konfiguriert. Schliesst der Channel, werden unbestätigte Nachrichten neu eingereiht.</li>
+</ol>
+
+<h2>2. Aufbau</h2>
+<svg viewBox="0 0 480 340" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="r2" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="10" y="10" width="110" height="60" rx="8" fill="#eee" stroke="#777"/><text x="65" y="45" text-anchor="middle" font-weight="700">Producer</text>
+  <rect x="165" y="10" width="150" height="110" rx="8" fill="#dbe9fb" stroke="#0a66c2"/><text x="240" y="32" text-anchor="middle" font-weight="700">Exchange</text><text x="240" y="54" text-anchor="middle" font-size="12">direct · fanout</text><text x="240" y="72" text-anchor="middle" font-size="12">topic · headers</text><text x="240" y="90" text-anchor="middle" font-size="12">default (Name leer)</text>
+  <line x1="120" y1="40" x2="163" y2="40" stroke="#555" stroke-width="2" marker-end="url(#r2)"/>
+  <text x="330" y="40" font-size="12">Binding =</text><text x="330" y="58" font-size="12">Regel mit</text><text x="330" y="76" font-size="12">Routing Key</text>
+  <rect x="10" y="170" width="140" height="70" rx="8" fill="#fff" stroke="#555"/><text x="80" y="198" text-anchor="middle" font-weight="700">Quorum Queue</text><text x="80" y="218" text-anchor="middle" font-size="12">Raft, replikiert</text>
+  <rect x="170" y="170" width="140" height="70" rx="8" fill="#fff" stroke="#555"/><text x="240" y="198" text-anchor="middle" font-weight="700">Classic Queue</text><text x="240" y="218" text-anchor="middle" font-size="12">einfach</text>
+  <rect x="330" y="170" width="140" height="70" rx="8" fill="#e8f5e9" stroke="#2e7d32"/><text x="400" y="198" text-anchor="middle" font-weight="700">Stream</text><text x="400" y="218" text-anchor="middle" font-size="12">Log, wird nicht gelöscht</text>
+  <line x1="200" y1="120" x2="90" y2="168" stroke="#555" stroke-width="2" marker-end="url(#r2)"/>
+  <line x1="240" y1="120" x2="240" y2="168" stroke="#555" stroke-width="2" marker-end="url(#r2)"/>
+  <line x1="280" y1="120" x2="390" y2="168" stroke="#555" stroke-width="2" marker-end="url(#r2)"/>
+  <rect x="10" y="270" width="460" height="56" rx="8" fill="#f7f7fa" stroke="#999"/><text x="240" y="294" text-anchor="middle" font-weight="700">Consumer</text><text x="240" y="314" text-anchor="middle" font-size="12">Ack pro Nachricht · Prefetch · Dead Letter Exchange bei Fehlern</text>
+  <line x1="80" y1="240" x2="80" y2="268" stroke="#555" stroke-width="2" marker-end="url(#r2)"/>
+  <line x1="240" y1="240" x2="240" y2="268" stroke="#555" stroke-width="2" marker-end="url(#r2)"/>
+  <line x1="400" y1="240" x2="400" y2="268" stroke="#555" stroke-width="2" marker-end="url(#r2)"/>
+</svg>
+<ol>
+  <li>Der <b>Exchange</b> nimmt Nachrichten an und routet sie. Er speichert nichts.</li>
+  <li>Ein <b>Binding</b> verbindet Exchange und Ziel. Es hat Quelle, Ziel, Zieltyp und optionale Argumente.</li>
+  <li>Eine <b>Queue</b> speichert Nachrichten bis zum Ack. Quorum Queues sind die Standardwahl für Hochverfügbarkeit.</li>
+  <li>Ein <b>Stream</b> ist ein replizierter Append-only-Log. Lesen löscht nichts.</li>
+  <li>Der <b>Default Exchange</b> ist ein vordefinierter Direct Exchange mit leerem Namen. Jede Queue ist darin unter ihrem Namen gebunden.</li>
+  <li>Ein <b>Consumer</b> holt Nachrichten und bestätigt sie. Der <b>Dead Letter Exchange</b> fängt abgelehnte Nachrichten auf.</li>
+</ol>
+
+<h2>3. Details</h2>
+<ol>
+  <li><b>Direct:</b> Er routet bei exakt gleichem Routing Key. Für eigenes Direct-Routing deklariert man einen eigenen Exchange. Den Default Exchange nutzt man dafür nicht.</li>
+  <li><b>Fanout:</b> Er schickt eine Kopie an jede gebundene Queue und ignoriert den Routing Key. Gut für Broadcast.</li>
+  <li><b>Topic:</b> Der Routing Key besteht aus Wörtern mit Punkten. <code>*</code> steht für genau ein Wort, <code>#</code> für null oder mehr Wörter. <code>audit.events.#</code> passt auf <code>audit.events</code> und <code>audit.events.users.signup</code>.</li>
+  <li><b>Headers und Plugins:</b> Der Headers Exchange routet nach Nachrichten-Headern. Weitere Typen kommen per Plugin, zum Beispiel Consistent Hash.</li>
+  <li><b>Alternate Exchange:</b> Er übernimmt Nachrichten, die der Exchange nicht routen kann. Das hilft bei Umbau der Topologie und sammelt nicht routbare Nachrichten.</li>
+  <li><b>Exchange-Eigenschaften:</b> Exchanges können dauerhaft (durable) oder flüchtig sein. Ein Auto-Delete-Exchange verschwindet, wenn sein letztes Binding entfernt wird.</li>
+  <li><b>Quorum Queue:</b> Sie nutzt Raft, hat standardmässig 3 Mitglieder (<code>x-quorum-initial-group-size</code>) und braucht eine Mehrheit. 3 Mitglieder vertragen 1 Ausfall, 5 vertragen 2. Sie ist immer durable und nie exklusiv.</li>
+  <li><b>Delivery Limit:</b> Seit 4.0 ist es standardmässig 20. Eine Nachricht, die so oft zurückkommt, wird dead-lettered oder verworfen. Das schützt vor Giftnachrichten. Ab 4.3 zählt <code>basic.nack</code> nicht mehr dazu.</li>
+  <li><b>Priorität in Quorum Queues:</b> Vor 4.3 gab es zwei Stufen. Ab 4.3 gibt es strikte Prioritäten mit 32 Stufen (0 bis 31).</li>
+  <li><b>Stream:</b> Der Stream behält Nachrichten bis zur Retention (<code>max-age</code> oder <code>max-length-bytes</code>). Ein Consumer startet bei first, last, next, einem Offset oder einem Zeitpunkt. Segmente sind standardmässig 500 000 000 Bytes gross. Priorität, DLX und TTL gibt es dort nicht.</li>
+  <li><b>Consumer Acks:</b> Automatisches Ack gilt als unsicher. Delivery Tags sind pro Channel gültig. Ein Ack auf einem anderen Channel ist ein Fehler und schliesst den Channel. Mit <code>multiple</code> bestätigt man alle Tags bis zum genannten.</li>
+  <li><b>Prefetch:</b> <code>basic.qos</code> begrenzt unbestätigte Nachrichten pro Channel. 0 heisst unbegrenzt. Werte von 100 bis 300 geben meist guten Durchsatz. Bei Quorum Queues ist der Prefetch auf 2000 begrenzt.</li>
+  <li><b>Publisher Confirms:</b> Der Broker bestätigt dem Producer, dass er die Nachricht übernommen hat. Bei Quorum Queues kommt das Confirm, wenn die Replikas sie angenommen haben. Confirms können in anderer Reihenfolge eintreffen.</li>
+  <li><b>Dead Lettering:</b> Gründe sind <code>rejected</code>, <code>expired</code>, <code>maxlen</code> und <code>delivery_limit</code>. Der Header <code>x-death</code> hält die Geschichte. Die Doku rät zu Policies statt fest codierten Argumenten.</li>
+</ol>
+
+<h2>4. Fallen</h2>
+<div class="trap">
+<ul>
+  <li>„Der Producer sendet an eine Queue.“ → <b>Falsch.</b> Er sendet an einen Exchange. Der Default Exchange wirkt nur wie ein direktes Senden an die Queue.</li>
+  <li>„Ohne Binding landet die Nachricht trotzdem in der Queue.“ → <b>Falsch.</b> Ohne Bindings ist der Exchange eine leere Routing-Tabelle. Die Nachricht ist nicht routbar.</li>
+  <li>„Auto-Ack ist schneller und deshalb in Ordnung.“ → <b>Falsch.</b> Die Doku nennt es unsicher. Bei Verbindungsabbruch gehen Nachrichten verloren.</li>
+  <li>„Der Prefetch 0 bremst nichts.“ → <b>Falsch.</b> 0 heisst unbegrenzt. Ein Consumer kann dann sehr viele Nachrichten festhalten.</li>
+  <li>„Ein Stream löscht Nachrichten nach dem Lesen.“ → <b>Falsch.</b> Nur die Retention löscht. Mehrere Consumer lesen unabhängig.</li>
+  <li>„Ein fehlender DLX schadet nicht.“ → <b>Falsch.</b> Existiert der Dead Letter Exchange nicht, werden Nachrichten stillschweigend verworfen.</li>
+</ul>
+</div>
+
+<h2>5. Selbsttest</h2>
+<h3>Warum?</h3>
+<details><summary>Warum gibt es Exchanges und nicht nur Queues?</summary><p>Der Producer kennt so keine Queues. Die Topologie ändert sich über Bindings. Man kann neue Consumer ergänzen, ohne den Producer anzufassen.</p></details>
+<details><summary>Warum braucht man Acks?</summary><p>Ohne Ack weiss der Broker nicht, ob die Verarbeitung klappte. Er löscht die Nachricht erst nach dem Ack. Stürzt der Consumer ab, kommt sie zurück.</p></details>
+<details><summary>Warum ersetzen Quorum Queues die gespiegelten Queues?</summary><p>Sie nutzen Raft mit klarer Mehrheitsregel. Die Doku nennt sie die Standardwahl für replizierte, hochverfügbare Queues.</p></details>
+<h3>Wie innen?</h3>
+<details><summary>Wie funktioniert ein Topic Exchange?</summary><p>Der Routing Key wird an Punkten in Wörter geteilt. Das Binding-Muster nutzt * für ein Wort und # für beliebig viele. Passt der Key, bekommt die Queue eine Kopie.</p></details>
+<details><summary>Was ist der Default Exchange?</summary><p>Ein vordefinierter Direct Exchange mit leerem Namen. Jede Queue ist darin unter ihrem Namen gebunden. Man benutzt ihn für einfaches Senden an eine Queue.</p></details>
+<details><summary>Wie arbeitet eine Quorum Queue?</summary><p>Ein Leader nimmt Nachrichten an und repliziert sie per Raft auf Follower. Eine Mehrheit muss bestätigen. Fällt der Leader aus, wird ein Follower Leader.</p></details>
+<details><summary>Wie funktioniert Prefetch?</summary><p>Der Broker sendet nur so viele unbestätigte Nachrichten, wie der Prefetch erlaubt. Kommt ein Ack, schickt er die nächste. So verteilt sich die Last auf mehrere Consumer.</p></details>
+<details><summary>Wie funktionieren Publisher Confirms?</summary><p>Der Channel wird mit confirm.select in den Confirm-Modus gesetzt. Nachrichten werden ab 1 nummeriert. Der Broker antwortet mit basic.ack und der Nummer.</p></details>
+<details><summary>Wie funktioniert Dead Lettering?</summary><p>Eine Nachricht wird abgelehnt, abgelaufen, wegen Längenlimit verdrängt oder überschreitet das Delivery Limit. Sie geht an den Dead Letter Exchange. Der Header x-death trägt Grund und Anzahl.</p></details>
+<details><summary>Wie unterscheidet sich ein Stream von einer Queue?</summary><p>Ein Stream ist ein Log. Lesen löscht nichts, und Consumer können ab einem Offset lesen. Eine Queue löscht Nachrichten nach dem Ack.</p></details>
+<h3>Zahlen</h3>
+<details><summary>Wie viele Replikas hat eine Quorum Queue standardmässig?</summary><p>3, über x-quorum-initial-group-size. Ungerade Zahlen sind sehr empfohlen. 3 vertragen 1 Ausfall, 5 vertragen 2.</p></details>
+<details><summary>Welches Delivery Limit gilt?</summary><p>Seit 4.0 ist es standardmässig 20. Ab 4.3 zählt das delivery-count, einfache Requeues per nack zählen nicht.</p></details>
+<details><summary>Welcher Prefetch ist sinnvoll?</summary><p>Die Doku nennt 100 bis 300 für guten Durchsatz. 1 ist am vorsichtigsten. Quorum Queues begrenzen den Wert auf 2000.</p></details>
+<details><summary>Wie gross sind Stream-Segmente?</summary><p>Standardmässig 500 000 000 Bytes über x-stream-max-segment-size-bytes. Die Retention gilt pro Segment.</p></details>
+<h3>Vergleich</h3>
+<details><summary>Classic Queue gegen Quorum Queue gegen Stream?</summary><p>Classic ist einfach. Quorum ist replizierte Queue mit Raft. Stream ist ein replizierter Log mit nicht löschendem Lesen. Quorum für Aufträge, Stream für Replay und viele Leser.</p></details>
+<details><summary>Direct gegen Topic gegen Fanout?</summary><p>Direct: exakter Key. Topic: Muster mit * und #. Fanout: alle gebundenen Queues, Key ignoriert.</p></details>
+<details><summary>RabbitMQ gegen Kafka im Kern?</summary><p>RabbitMQ routet flexibel und löscht nach dem Ack. Kafka ist ein Log mit Offsets und Replay. Die Details stehen auf der Seite zu Kafka im Vergleich.</p></details>
+<details><summary>Ack gegen Publisher Confirm?</summary><p>Das Ack kommt vom Consumer an den Broker. Das Confirm kommt vom Broker an den Producer. Beide sind unabhängig.</p></details>
+<h3>Produktion</h3>
+<details><summary>Warum füllt sich eine Queue ohne Ende?</summary><p>Consumer sind zu langsam oder haben Prefetch 0 und halten viele Nachrichten fest. Oder eine Giftnachricht kommt immer wieder zurück. Lösung: Consumer skalieren, Prefetch setzen, Delivery Limit und DLX nutzen.</p></details>
+<details><summary>Warum verschwinden Nachrichten ohne Fehler?</summary><p>Oft ist keine Bindung vorhanden, der Routing Key stimmt nicht oder der DLX fehlt. Ein Alternate Exchange fängt nicht routbare Nachrichten auf.</p></details>
+<details><summary>Szenario: Eine Giftnachricht blockiert die Verarbeitung, der Consumer stürzt immer wieder ab. Was tun Sie?</summary><p>Ich nutze eine Quorum Queue mit Delivery Limit und einem Dead Letter Exchange. Nach 20 Versuchen landet die Nachricht in der Dead Letter Queue. Dort prüfe ich sie mit x-death.</p></details>
+<details><summary>Szenario: Beim Neustart eines Knotens fehlen Nachrichten. Worauf prüfen Sie?</summary><p>Ob die Queue durable ist, ob die Nachrichten persistent waren und ob Publisher Confirms genutzt werden. Bei Quorum Queues zählt die Mehrheit der Replikas.</p></details>
+<h3>Design</h3>
+<details><summary>Wie entwerfen Sie Retries mit Verzögerung?</summary><p>Die Doku nennt native verzögerte Retries bei Quorum Queues als empfohlen. Der alte Weg ist eine Wartequeue mit TTL, die per Dead Lettering zurückführt. Aussichtslose Nachrichten gehen in den DLX.</p></details>
+<details><summary>Wie sichern Sie, dass keine Nachricht verloren geht?</summary><p>Producer mit Publisher Confirms, Quorum Queues, manuelle Acks im Consumer. Die Verarbeitung muss idempotent sein, weil Nachrichten mehrfach kommen können.</p></details>
+<details><summary>Szenario: Ein Event soll an fünf Systeme gehen, jedes mit eigener Geschwindigkeit. Was bauen Sie?</summary><p>Einen Fanout oder Topic Exchange und pro System eine eigene Queue. Jedes System liest in seinem Tempo. Für späteres Replay ergänze ich einen Stream.</p></details>
+<details><summary>Wie benennen Sie Routing Keys?</summary><p>Als Hierarchie mit Punkten, etwa bestellung.eingegangen.schweiz. So passen Muster wie bestellung.# oder *.eingegangen.*.</p></details>
+<details><summary>Wann ist RabbitMQ die falsche Wahl?</summary><p>Wenn man ein langes Replay über Wochen und sehr viele Leser braucht. Dafür ist ein Log wie Kafka oder ein RabbitMQ Stream besser.</p></details>
+
+<details class="mehr"><summary>Mehr</summary>
+<h3>Gerüst</h3>
+<ul>
+  <li><b>Warum?</b> Entkopplung durch Exchanges und Bindings, flexible Zustellung an Worker.</li>
+  <li><b>Wie innen?</b> Publish → Exchange → Bindings → Queues → Push mit Prefetch → Ack.</li>
+  <li><b>Zahlen</b> Quorum: 3 Replikas, Delivery Limit 20 (ab 4.0). Prefetch 100 bis 300. Stream-Segment 500 000 000 Bytes.</li>
+  <li><b>Vergleich</b> Direct, Topic, Fanout. Classic, Quorum, Stream.</li>
+  <li><b>Produktion</b> Giftnachrichten, volle Queues, nicht routbare Nachrichten.</li>
+  <li><b>Design</b> Quorum Queues, manuelle Acks, Confirms, idempotente Consumer, DLX.</li>
+</ul>
+
+<h3>Beispiel: Topic-Muster und Dead Letter Policy</h3>
+<pre># Topic-Bindings (Muster) und was sie treffen
+audit.events.#     passt auf  audit.events
+                              audit.events.users.signup
+                   nicht auf  audit.users
+regions.na.cities.*  passt auf  regions.na.cities.toronto
+                     nicht auf  regions.na.cities
+
+# Dead Letter Exchange per Policy setzen
+rabbitmqctl set_policy DLX ".*" '{"dead-letter-exchange":"my-dlx"}'   --apply-to queues --priority 7</pre>
+<p class="small">Nicht ausgeführt. Die Muster-Beispiele stammen aus der RabbitMQ-Doku.</p>
+<ol>
+  <li><code>#</code> passt auf null oder mehr Wörter. Darum trifft <code>audit.events.#</code> auch <code>audit.events</code>.</li>
+  <li><code>*</code> passt auf genau ein Wort. Darum trifft <code>regions.na.cities.*</code> den Key <code>regions.na.cities</code> nicht.</li>
+  <li>Die Policy gilt für alle Queues, deren Name auf <code>.*</code> passt. Die Doku empfiehlt Policies statt fest codierter Queue-Argumente.</li>
+  <li>Existiert <code>my-dlx</code> nicht, werden Nachrichten still verworfen. Der Exchange muss vorher da sein.</li>
+</ol>
+
+<h3>Vergleich</h3>
+<ul>
+  <li><b>Direct:</b> exakter Routing Key. Einfaches Task-Routing.</li>
+  <li><b>Topic:</b> Muster mit <code>*</code> und <code>#</code>. Flexibles Publish-Subscribe.</li>
+  <li><b>Fanout:</b> Kopie an alle gebundenen Queues. Broadcast.</li>
+  <li><b>Quorum Queue:</b> replizierte Queue mit Raft. Standard für kritische Queues.</li>
+  <li><b>Stream:</b> Log mit nicht löschendem Lesen, Offsets und Retention.</li>
+  <li><b>Kafka:</b> Log mit Partitionen. Weniger Routing, mehr Replay.</li>
+</ul>
+
+<h3>Produktion</h3>
+<ol>
+  <li><b>Queue wächst:</b> Consumer zu langsam oder Giftnachricht. Lösung: skalieren, Prefetch, Delivery Limit, DLX.</li>
+  <li><b>Nachrichten fehlen:</b> Keine Bindung oder falscher Key. Lösung: Alternate Exchange und Publisher Confirms.</li>
+  <li><b>Ungleiche Last:</b> Hoher Prefetch lässt einen Consumer viel festhalten. Lösung: Prefetch senken.</li>
+  <li><b>Doppelte Verarbeitung:</b> Nach Verbindungsabbruch werden unbestätigte Nachrichten neu zugestellt. Lösung: idempotente Consumer.</li>
+  <li><b>Ack auf falschem Channel:</b> Delivery Tags sind pro Channel gültig. Lösung: im selben Channel bestätigen.</li>
+  <li><b>DLX fehlt:</b> Nachrichten verschwinden. Lösung: Exchange vor der Policy anlegen.</li>
+</ol>
+
+<h3>Diagnose: Werkzeuge und Befehle</h3>
+<ul>
+  <li><b>Management UI:</b> Queues, Bindings, Raten, unbestätigte Nachrichten.</li>
+  <li><code>rabbitmqctl list_queues</code>: zeigt Queues und Zähler. Spalten in der Doku der eigenen Version prüfen.</li>
+  <li><code>rabbitmqctl list_bindings</code>: zeigt Bindings eines Exchange.</li>
+  <li><b>Header x-death:</b> zeigt Grund, Queue und Anzahl bei Dead Letters.</li>
+  <li><b>Metriken:</b> Länge der Queue, unbestätigte Nachrichten, Consumer-Anzahl.</li>
+</ul>
+
+<h3>Senior-Punkte</h3>
+<div class="senior">
+<ol>
+  <li><b>Routing ist die Stärke.</b> Man modelliert Bindings, nicht Producer-Wissen.</li>
+  <li><b>Quorum Queues sind der Standard.</b> Classic nur für flüchtige, unkritische Fälle.</li>
+  <li><b>Acks und Confirms gehören zusammen.</b> Nur beide zusammen geben Sicherheit auf beiden Seiten.</li>
+  <li><b>Giftnachrichten einplanen.</b> Delivery Limit und DLX sind Pflicht.</li>
+  <li><b>Prefetch ist ein Regler.</b> Zu hoch ist ungerecht, zu niedrig ist langsam.</li>
+  <li><b>Replay ist kein Queue-Thema.</b> Dafür nimmt man Stream oder Kafka.</li>
+</ol>
+</div>
+
+<h3>Dein Beispiel</h3>
+</details>
+
+</body>
+</html>

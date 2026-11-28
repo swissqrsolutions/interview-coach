@@ -1,0 +1,253 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Process Engine, External Tasks, Camunda 7 vs 8</title>
+<style>
+  body { font: 17px/1.55 -apple-system, system-ui, sans-serif; max-width: 760px; margin: 0 auto; padding: 16px; color: #1d1d1f; }
+  h1 { font-size: 28px; margin: 8px 0 4px; }
+  h2 { font-size: 21px; margin: 32px 0 8px; padding-top: 12px; border-top: 2px solid #e5e5ea; }
+  .kern { background: #eef6ff; border-left: 4px solid #0a66c2; padding: 10px 14px; border-radius: 6px; }
+  .senior { background: #f0faf0; border-left: 4px solid #2e7d32; padding: 10px 14px; border-radius: 6px; }
+  .trap { background: #fff4f2; border-left: 4px solid #c62828; padding: 10px 14px; border-radius: 6px; }
+  code { background: #f2f2f7; padding: 1px 5px; border-radius: 4px; font-size: 15px; }
+  pre { background: #1e1e1e; color: #e6e6e6; padding: 12px; border-radius: 8px; overflow-x: auto; font-size: 13.5px; line-height: 1.45; }
+  svg { width: 100%; height: auto; display: block; margin: 10px 0; }
+  ol li, ul li { margin: 4px 0; }
+  details { border: 1px solid #e5e5ea; border-radius: 8px; padding: 8px 12px; margin: 6px 0; }
+  summary { font-weight: 600; cursor: pointer; }
+  details p { margin: 6px 0 2px; }
+  .small { color: #6e6e73; font-size: 14px; }
+  h3 { font-size: 17px; margin: 20px 0 6px; }
+  .geruest { border: 2px solid #1d1d1f; border-radius: 6px; padding: 10px 14px; margin: 14px 0; font-size: 15px; line-height: 1.4; }
+  .geruest h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; margin: 0 0 8px; padding: 0; border: 0; }
+  .geruest dl { display: grid; grid-template-columns: 6.6em 1fr; gap: 6px 10px; margin: 0; }
+  .geruest dt { font-weight: 700; font-size: 12px; text-transform: uppercase; letter-spacing: .05em; padding-top: 1px; }
+  .geruest dd { margin: 0; }
+  .muster { border: 1px solid #e5e5ea; border-left: 4px solid #1d1d1f; border-radius: 6px; padding: 10px 14px; margin: 14px 0; }
+  .muster h3 { margin: 0 0 6px; font-size: 13px; text-transform: uppercase; letter-spacing: .06em; }
+  .muster .mq { margin: 0 0 6px; }
+</style>
+</head>
+<body>
+
+<h1>Process Engine, External Tasks, Camunda 7 vs 8</h1>
+<!-- sources: Camunda 7 Dokumentation (docs.camunda.org: External Tasks, Transactions in Processes, Job Executor), Camunda 8 Dokumentation Stand 8.10 (docs.camunda.io: Job Workers, Zeebe Architecture, Partitions, Clustering, Conceptual differences zu Camunda 7), Camunda Blog Migrating Solutions from Camunda 7 to Camunda 8 (Strategy Update, Februar 2025) -->
+
+<div class="kern">
+<b>Kern:</b> Die <b>Process Engine</b> führt BPMN-Modelle aus und speichert den Zustand jeder Instanz. In <b>Camunda 7</b> läuft sie als Bibliothek in der eigenen Anwendung mit einer Datenbank. In <b>Camunda 8</b> ist die Engine <b>Zeebe</b> ein verteilter Dienst. Fachlogik läuft in <b>External Tasks</b> (7) oder <b>Job Workers</b> (8), die Aufgaben holen.
+</div>
+
+<div class="muster"><h3>Antwort-Muster</h3><p class="mq"><b>Frage:</b> Was sind External Tasks und was ist bei Camunda 8 anders?</p><ol>
+  <li>Mechanismus: Die Engine legt für den Service Task einen Eintrag an. Ein Worker holt ihn per fetchAndLock, arbeitet und meldet complete oder failure.</li>
+  <li>Zahl: Das Lock hat eine Dauer. Läuft es ab, holt ein anderer Worker die Aufgabe. Die Lieferung ist at-least-once.</li>
+  <li>Trade-off: Entkoppelte Worker skalieren und können in jeder Sprache laufen. Dafür gibt es keine gemeinsame ACID-Transaktion mit der Engine.</li>
+  <li>Produktion: Die Worker sind idempotent. Camunda 7 Community ist am Ende, neue Projekte starten auf Camunda 8.</li>
+</ol></div>
+
+<h2>1. Ein External Task in 7 Schritten</h2>
+<svg viewBox="0 0 480 360" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="e1" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <text x="115" y="18" text-anchor="middle" font-weight="700">Engine</text>
+  <text x="370" y="18" text-anchor="middle" font-weight="700">Worker</text>
+  <rect x="10" y="28" width="210" height="52" rx="10" fill="#eee" stroke="#777"/><text x="115" y="50" text-anchor="middle" font-weight="700">1. Token am Service Task</text><text x="115" y="69" text-anchor="middle" font-size="12">Typ external, Topic</text>
+  <rect x="10" y="104" width="210" height="52" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="115" y="126" text-anchor="middle" font-weight="700">2. Wait State</text><text x="115" y="145" text-anchor="middle" font-size="12">Zustand in die DB, Commit</text>
+  <line x1="115" y1="80" x2="115" y2="102" stroke="#555" stroke-width="2" marker-end="url(#e1)"/>
+  <rect x="260" y="104" width="210" height="52" rx="10" fill="#fff" stroke="#555"/><text x="365" y="126" text-anchor="middle" font-weight="700">3. fetchAndLock</text><text x="365" y="145" text-anchor="middle" font-size="12">Topic und Lock-Dauer</text>
+  <line x1="260" y1="130" x2="222" y2="130" stroke="#555" stroke-width="2" marker-end="url(#e1)"/>
+  <rect x="260" y="190" width="210" height="52" rx="10" fill="#fff" stroke="#555"/><text x="365" y="212" text-anchor="middle" font-weight="700">4. Arbeit erledigen</text><text x="365" y="231" text-anchor="middle" font-size="12">in beliebiger Sprache</text>
+  <line x1="365" y1="156" x2="365" y2="188" stroke="#555" stroke-width="2" marker-end="url(#e1)"/>
+  <rect x="260" y="270" width="210" height="76" rx="10" fill="#e8f5e9" stroke="#2e7d32"/><text x="365" y="292" text-anchor="middle" font-weight="700">5. Ergebnis melden</text><text x="365" y="312" text-anchor="middle" font-size="12">complete, handleFailure</text><text x="365" y="330" text-anchor="middle" font-size="12">oder handleBpmnError</text>
+  <line x1="365" y1="242" x2="365" y2="268" stroke="#555" stroke-width="2" marker-end="url(#e1)"/>
+  <rect x="10" y="270" width="210" height="76" rx="10" fill="#0a66c2" stroke="#0a66c2"/><text x="115" y="292" text-anchor="middle" fill="#fff" font-weight="700">6. Engine macht weiter</text><text x="115" y="312" text-anchor="middle" fill="#fff" font-size="12">bis zum nächsten Wait State</text><text x="115" y="330" text-anchor="middle" fill="#fff" font-size="12">7. Lock abgelaufen: neuer Worker</text>
+  <line x1="260" y1="308" x2="222" y2="308" stroke="#555" stroke-width="2" marker-end="url(#e1)"/>
+</svg>
+<ol>
+  <li><b>Token am Service Task:</b> Der Task ist mit <code>camunda:type="external"</code> und einem <code>camunda:topic</code> markiert. Die Engine führt keinen Code aus.</li>
+  <li><b>Wait State:</b> Die Engine speichert die Instanz in der Datenbank und beendet die Transaktion. Der External Task ist ein Wait State.</li>
+  <li><b>fetchAndLock:</b> Ein Worker fragt nach Aufgaben eines Topics. Er gibt <code>maxTasks</code>, seine <code>workerId</code> und die Lock-Dauer an.</li>
+  <li><b>Arbeit:</b> Der Worker läuft ausserhalb der Engine. Er kann in jeder Sprache geschrieben sein.</li>
+  <li><b>Ergebnis:</b> Mit <code>complete</code> geht der Prozess weiter. <code>handleFailure</code> meldet einen technischen Fehler mit Retries. <code>handleBpmnError</code> löst ein Error Boundary Event aus.</li>
+  <li><b>Weiter:</b> Nach <code>complete</code> arbeitet die Engine bis zum nächsten Wait State in einer neuen Transaktion.</li>
+  <li><b>Lock abgelaufen:</b> Das Lock ist zeitbasiert. Läuft es ab, ohne dass der Worker meldet, kann ein anderer Worker die Aufgabe holen.</li>
+</ol>
+
+<h2>2. Aufbau</h2>
+<svg viewBox="0 0 480 340" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="e2" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="5" y="5" width="225" height="330" rx="10" fill="#f7f7fa" stroke="#999"/><text x="117" y="28" text-anchor="middle" font-weight="700">Camunda 7</text>
+  <rect x="20" y="42" width="195" height="100" rx="8" fill="#fff" stroke="#555"/><text x="117" y="64" text-anchor="middle" font-size="13" font-weight="700">Eigene Anwendung (JVM)</text><text x="117" y="86" text-anchor="middle" font-size="12">Process Engine als</text><text x="117" y="104" text-anchor="middle" font-size="12">Bibliothek, Job Executor,</text><text x="117" y="122" text-anchor="middle" font-size="12">Java Delegates</text>
+  <rect x="20" y="170" width="195" height="56" rx="8" fill="#dbe9fb" stroke="#0a66c2"/><text x="117" y="194" text-anchor="middle" font-size="13" font-weight="700">Relationale DB</text><text x="117" y="212" text-anchor="middle" font-size="12">Zustand + Historie</text>
+  <line x1="117" y1="142" x2="117" y2="168" stroke="#555" stroke-width="2" marker-end="url(#e2)"/>
+  <rect x="20" y="254" width="195" height="62" rx="8" fill="#e8f5e9" stroke="#2e7d32"/><text x="117" y="278" text-anchor="middle" font-size="13" font-weight="700">External Task Worker</text><text x="117" y="298" text-anchor="middle" font-size="12">holt per REST oder Client</text>
+  <line x1="117" y1="254" x2="117" y2="144" stroke="#2e7d32" stroke-width="2" stroke-dasharray="4 3" marker-end="url(#e2)"/>
+  <rect x="250" y="5" width="225" height="330" rx="10" fill="#f7f7fa" stroke="#999"/><text x="362" y="28" text-anchor="middle" font-weight="700">Camunda 8</text>
+  <rect x="265" y="42" width="195" height="50" rx="8" fill="#e8f5e9" stroke="#2e7d32"/><text x="362" y="72" text-anchor="middle" font-size="13" font-weight="700">Job Worker / Client</text>
+  <rect x="265" y="116" width="195" height="44" rx="8" fill="#fff" stroke="#555"/><text x="362" y="144" text-anchor="middle" font-size="13" font-weight="700">Gateway (ohne Zustand)</text>
+  <rect x="265" y="184" width="195" height="82" rx="8" fill="#dbe9fb" stroke="#0a66c2"/><text x="362" y="206" text-anchor="middle" font-size="13" font-weight="700">Zeebe Brokers</text><text x="362" y="226" text-anchor="middle" font-size="12">Partitionen mit Leader</text><text x="362" y="244" text-anchor="middle" font-size="12">und Followern (Raft)</text>
+  <rect x="265" y="290" width="195" height="36" rx="8" fill="#fff" stroke="#555"/><text x="362" y="313" text-anchor="middle" font-size="12">Exporter → Elasticsearch</text>
+  <line x1="362" y1="92" x2="362" y2="114" stroke="#555" stroke-width="2" marker-end="url(#e2)"/>
+  <line x1="362" y1="160" x2="362" y2="182" stroke="#555" stroke-width="2" marker-end="url(#e2)"/>
+  <line x1="362" y1="266" x2="362" y2="288" stroke="#555" stroke-width="2" marker-end="url(#e2)"/>
+</svg>
+<ol>
+  <li>In <b>Camunda 7</b> läuft die Engine in der Anwendung. Zustand und Historie liegen in einer relationalen Datenbank.</li>
+  <li>Der <b>Job Executor</b> führt asynchrone Fortsetzungen und Timer aus.</li>
+  <li>Ein <b>External Task Worker</b> ist ein eigener Prozess und holt Aufgaben per REST oder Java-Client.</li>
+  <li>In <b>Camunda 8</b> ist <b>Zeebe</b> immer eine entfernte Ressource. Einen eingebetteten Modus gibt es nicht.</li>
+  <li>Der <b>Gateway</b> ist der Einstieg. Er hat keinen Zustand und leitet an die Brokers.</li>
+  <li><b>Exporter</b> schreiben Zustandsänderungen heraus, zum Beispiel nach Elasticsearch, für Suche und Monitoring.</li>
+</ol>
+
+<h2>3. Details</h2>
+<ol>
+  <li><b>Wait State:</b> Dort speichert die Engine die Instanz und wartet. Wait States sind unter anderem User Task, Receive Task, Message, Timer, Signal, Event-based Gateway und External Task.</li>
+  <li><b>Transaktionsgrenze:</b> Der Weg zwischen zwei Wait States ist eine Transaktion. Bei einer Exception wird sie zurückgerollt. Die Instanz bleibt im letzten Wait State.</li>
+  <li><b>asyncBefore und asyncAfter:</b> Damit legt man zusätzliche Transaktionsgrenzen fest. Der Job Executor führt die Fortsetzung aus. Das trennt zum Beispiel das Erzeugen einer Rechnung vom Abschluss eines User Tasks.</li>
+  <li><b>Job Executor:</b> Er holt Jobs in Wellen und verdoppelt bei Leerlauf die Wartezeit bis maximal 60 Sekunden. Jobs sind standardmässig exklusiv. Jobs derselben Instanz laufen nicht gleichzeitig.</li>
+  <li><b>Retries im Job Executor:</b> Ein fehlgeschlagener Job wird standardmässig insgesamt dreimal versucht. Dann entsteht ein Incident.</li>
+  <li><b>External Task Lock:</b> Die Lock-Dauer sollte nicht kürzer sein als die Ausführung. <code>extendLock</code> geht nur für den Worker, der das Lock hält. <code>complete</code> geht nur für den Worker mit dem letzten Lock.</li>
+  <li><b>handleFailure:</b> Retries grösser 0 erlauben ein erneutes Holen nach dem Timeout. Bei 0 entsteht ein Incident. Die Engine zählt die Retries nicht selbst herunter, das macht der Worker. Die Fehlermeldung ist auf 666 Zeichen begrenzt.</li>
+  <li><b>handleBpmnError:</b> Er löst ein passendes Error Boundary Event aus. Gibt es keines, endet die Activity einfach.</li>
+  <li><b>Long Polling und Priorität:</b> Der Server hält eine Anfrage offen, bis Aufgaben kommen. Die Prioritäten sind standardmässig an (<code>producePrioritizedExternalTasks</code>). Die Warteschlange für fetchAndLock hat standardmässig 200 Plätze.</li>
+  <li><b>Job Workers in Camunda 8:</b> Sie aktivieren Jobs eines Typs. Das Timeout gibt an, wie lange der Job dem Worker gehört. Die Lieferung ist at-least-once. Ein doppeltes <code>complete</code> wird mit NOT_FOUND abgelehnt.</li>
+  <li><b>Fail in Camunda 8:</b> Der Worker schickt die verbleibenden Retries mit. Bei 0 oder weniger entsteht ein Incident. Ein Backoff verzögert den nächsten Versuch. Long Polling hat im Gateway standardmässig 10 Sekunden.</li>
+  <li><b>Zeebe Partitionen:</b> Eine Partition ist ein Append-only-Log. Neue Instanzen gehen per Round-Robin auf Partitionen. Eine Instanz bleibt auf ihrer Partition. Timer-Start-Events starten immer auf Partition 1.</li>
+  <li><b>Raft:</b> Pro Partition gibt es einen Leader und passive Follower. Ein Record wird committet, wenn ein Quorum ihn bestätigt. Replikationsfaktor 3 verträgt den Ausfall eines Brokers, Faktor 5 den von zwei.</li>
+  <li><b>Unterschiede 7 und 8:</b> Camunda 8 hat keine geteilten ACID-Transaktionen mit dem Code und keine Engine-Plugins. Es nutzt FEEL statt JUEL. Variablen sind nur einfache Typen oder JSON.</li>
+  <li><b>Lebensende Camunda 7:</b> Die Community Edition hatte ihre letzte Version 7.24 am 14. Oktober 2025. Enterprise-Kunden erhalten laut Camunda mindestens bis 2030 Sicherheits- und Bugfixes.</li>
+</ol>
+
+<h2>4. Fallen</h2>
+<div class="trap">
+<ul>
+  <li>„Ein External Task läuft in der Engine.“ → <b>Falsch.</b> Der Worker läuft ausserhalb. Die Engine speichert nur den Task und wartet.</li>
+  <li>„Die Engine zählt Retries bei handleFailure herunter.“ → <b>Falsch.</b> Der Worker muss den neuen Wert selbst senden. Sonst wiederholt sich der Task endlos.</li>
+  <li>„Ein Lock schützt vor doppelter Ausführung.“ → <b>Falsch.</b> Läuft das Lock ab, holt ein anderer Worker die Aufgabe. Der erste kann trotzdem weiterarbeiten. Workers brauchen Idempotenz.</li>
+  <li>„Camunda 8 ist Camunda 7 mit neuer Oberfläche.“ → <b>Falsch.</b> Die Engine ist neu. Embedded Engine, Java Delegates, ACID-Transaktionen und Plugins fallen weg.</li>
+  <li>„Camunda 7 bekommt noch Community-Updates.“ → <b>Falsch.</b> 7.24 war die letzte Community-Version. Weitere Fixes gibt es nur mit Enterprise.</li>
+  <li>„Die Partitionen von Zeebe verteilen eine Instanz.“ → <b>Falsch.</b> Eine Instanz bleibt auf einer Partition, bis sie endet.</li>
+</ul>
+</div>
+
+<h2>5. Selbsttest</h2>
+<h3>Warum?</h3>
+<details><summary>Warum gibt es External Tasks?</summary><p>Die Fachlogik läuft entkoppelt von der Engine. Worker skalieren einzeln, können in jeder Sprache laufen und blockieren die Engine nicht. Die Engine ruft keinen fremden Code in ihrer Transaktion.</p></details>
+<details><summary>Warum hat Camunda 8 keine Java Delegates?</summary><p>Zeebe ist ein entfernter Dienst. Er kann keinen Code im eigenen Prozess starten. Die Glue-Logik läuft in Job Workers.</p></details>
+<details><summary>Warum gibt es das Lock?</summary><p>Es verhindert, dass zwei Worker dieselbe Aufgabe gleichzeitig bekommen. Es ist zeitbasiert, damit eine Aufgabe nicht hängt, wenn der Worker abstürzt.</p></details>
+<h3>Wie innen?</h3>
+<details><summary>Was ist ein Wait State und warum zählt er?</summary><p>Die Engine speichert dort die Instanz und beendet die Transaktion. Alles zwischen zwei Wait States ist eine Transaktion. Eine Exception rollt sie zurück.</p></details>
+<details><summary>Wie funktioniert fetchAndLock?</summary><p>Der Worker nennt Topic, Lock-Dauer, maxTasks und workerId. Die Engine sperrt passende Aufgaben für diese Zeit. Läuft das Lock ab, sind sie wieder frei.</p></details>
+<details><summary>Was passiert bei handleFailure?</summary><p>Der Worker sendet Fehlermeldung, Retries und Retry-Timeout. Bei Retries über 0 wird die Aufgabe nach dem Timeout erneut freigegeben. Bei 0 entsteht ein Incident.</p></details>
+<details><summary>Was ist asyncBefore?</summary><p>Die Engine speichert die Instanz vor der Activity und beendet die Transaktion. Der Job Executor führt die Activity später aus. So bekommt sie eine eigene Transaktion.</p></details>
+<details><summary>Wie arbeitet ein Job Worker in Camunda 8?</summary><p>Er holt Jobs eines Typs per Long Polling. Er arbeitet und sendet complete oder fail. Läuft das Timeout ab, weist Zeebe den Job neu zu, ohne Retries zu verbrauchen.</p></details>
+<details><summary>Wie ist Zeebe aufgebaut?</summary><p>Clients sprechen mit einem zustandslosen Gateway. Dahinter liegen Brokers mit Partitionen. Pro Partition gibt es Leader und Follower mit Raft. Exporter schreiben Events in externe Speicher.</p></details>
+<details><summary>Was bedeutet Quorum bei Zeebe?</summary><p>Ein Record wird erst verarbeitet, wenn ein Quorum der Replikas ihn bestätigt hat. Der Cluster arbeitet weiter, solange eine Mehrheit der Brokers läuft.</p></details>
+<h3>Zahlen</h3>
+<details><summary>Wie oft versucht der Job Executor einen Job standardmässig?</summary><p>Dreimal insgesamt. Danach entsteht ein Incident.</p></details>
+<details><summary>Wie lange wartet der Job Executor maximal zwischen Abfragen?</summary><p>Die Wartezeit verdoppelt sich bei Leerlauf. Das Maximum ist standardmässig 60 Sekunden.</p></details>
+<details><summary>Wie lang ist das Long Polling im Camunda-8-Gateway?</summary><p>Standardmässig 10 Sekunden, bei Request-Timeout 0.</p></details>
+<details><summary>Welche Replikationsfaktoren empfiehlt Zeebe?</summary><p>Ungerade Zahlen. Faktor 3 verträgt einen Ausfall, Faktor 5 zwei. Gerade Faktoren bringen nichts gegenüber der nächsten kleineren ungeraden Zahl.</p></details>
+<h3>Vergleich</h3>
+<details><summary>Camunda 7 gegen Camunda 8 im Überblick?</summary><p>7: eingebettete Engine, relationale DB, Java Delegates, ACID mit dem Code, JUEL. 8: entfernte Engine Zeebe, Job Workers, keine geteilte Transaktion, FEEL, horizontale Skalierung über Partitionen.</p></details>
+<details><summary>External Task gegen Java Delegate?</summary><p>Ein Delegate läuft in der Transaktion der Engine, schnell, aber gekoppelt. Ein External Task läuft entkoppelt und skalierbar, aber ohne gemeinsame Transaktion.</p></details>
+<details><summary>Job Worker gegen External Task Worker?</summary><p>Beide holen Aufgaben. Der External Task nutzt Topic und fetchAndLock. Der Job Worker nutzt einen Job-Typ. Das Topic aus Camunda 7 wird in Camunda 8 zum Task-Typ.</p></details>
+<details><summary>Camunda 8 gegen Alternativen nach dem 7-EOL?</summary><p>Camunda 8 ist der offizielle Weg. Community-Forks der Version 7 und Enterprise-Support für 7 sind Alternativen. Die Wahl hängt von Aufwand, Budget und Zeitplan ab.</p></details>
+<h3>Produktion</h3>
+<details><summary>Warum wird ein External Task mehrfach ausgeführt?</summary><p>Das Lock lief ab, bevor der Worker fertig war. Ein zweiter Worker holte die Aufgabe. Lösung: längere Lock-Dauer, extendLock und idempotente Worker.</p></details>
+<details><summary>Warum bleibt ein Task nach einem Fehler hängen?</summary><p>Retries sind 0, damit gibt es einen Incident. Oder der Worker setzt Retries nicht richtig. Lösung: Retries im Worker herunterzählen, Incidents überwachen und im Cockpit neu starten.</p></details>
+<details><summary>Szenario: Nach einem Deployment hat jeder Auftrag doppelte Buchungen im Zielsystem. Was prüfen Sie?</summary><p>Ob die Worker idempotent sind und Locks vor Ablauf verlängert werden. Ich setze einen Schlüssel pro Auftrag und prüfe im Zielsystem, ob die Buchung schon besteht.</p></details>
+<details><summary>Szenario: Alle Prozesse auf einer Zeebe-Partition sind langsam. Was untersuchen Sie?</summary><p>Ob ein Broker Leader von zu vielen Partitionen ist. Die Leader-Wahl ist pro Partition unabhängig und balanciert nicht aktiv. Die Rebalancing API kann helfen.</p></details>
+<h3>Design</h3>
+<details><summary>Wie entwerfen Sie einen robusten Worker?</summary><p>Idempotent, mit klaren Retries und Backoff. Lock oder Timeout über der Laufzeit. Fachfehler als BPMN-Error, technische Fehler als Failure.</p></details>
+<details><summary>Szenario: Ein Team hat 40 Prozesse auf Camunda 7 mit Java Delegates. Wie planen Sie die Migration?</summary><p>Erst analysieren, mit den Migrationswerkzeugen von Camunda. Danach Delegates zu Job Workers umbauen, JUEL zu FEEL, Variablen auf JSON. Laufende Instanzen und Transaktionsgrenzen gesondert planen.</p></details>
+<details><summary>Wann bleiben Sie vorerst auf Camunda 7?</summary><p>Wenn Enterprise-Support besteht und der Umbau grösser ist als das Risiko. Aber nur mit festem Plan. Community-Fixes gibt es nicht mehr.</p></details>
+<details><summary>Wie ersetzen Sie die ACID-Transaktion mit der Engine?</summary><p>Mit Idempotenz und dem Outbox-Muster. Der Worker meldet erst nach dem Commit im eigenen System und kann gefahrlos wiederholt werden.</p></details>
+<details><summary>Wie testen Sie Prozesse mit Workern?</summary><p>Die Worker einzeln mit Unit-Tests. Den Prozess mit einer Test-Engine, die den Pfad durchläuft. Zusätzlich ein Test für Lock-Ablauf und doppelte Zustellung.</p></details>
+
+<details class="mehr"><summary>Mehr</summary>
+<h3>Gerüst</h3>
+<ul>
+  <li><b>Warum?</b> Entkoppelte Worker und eine Engine, die nur den Zustand führt.</li>
+  <li><b>Wie innen?</b> Wait State speichert, Worker holt per fetchAndLock, meldet complete oder failure. Camunda 8: Gateway, Brokers, Raft.</li>
+  <li><b>Zahlen</b> Job Executor 3 Versuche, Max-Wait 60 s. Long Polling 10 s. Replikation 3 oder 5. 7.24 letzte Community-Version.</li>
+  <li><b>Vergleich</b> Delegate gegen External Task, Embedded gegen Remote, JUEL gegen FEEL.</li>
+  <li><b>Produktion</b> Doppelte Ausführung, hängende Incidents, Migration.</li>
+  <li><b>Design</b> Idempotente Worker, Outbox, Migration in Schritten.</li>
+</ul>
+
+<h3>Beispiel: External Task Worker</h3>
+<pre>&lt;bpmn:serviceTask id="charge" name="Zahlung buchen"
+    camunda:type="external" camunda:topic="charge-card"/&gt;
+
+// Worker (Camunda 7 Java Client, Skizze)
+client.subscribe("charge-card")
+      .lockDuration(30_000)
+      .handler((task, service) -&gt; {
+         try {
+           charge(task.getVariable("orderId"));
+           service.complete(task);
+         } catch (BusinessException e) {
+           service.handleBpmnError(task, "CARD_DECLINED");
+         } catch (Exception e) {
+           int left = task.getRetries() == null ? 2 : task.getRetries() - 1;
+           service.handleFailure(task, e.getMessage(), null, left, 10_000);
+         }
+      }).open();</pre>
+<p class="small">Nicht ausgeführt.</p>
+<ol>
+  <li>Der Service Task ist <code>external</code> und gehört zum Topic <code>charge-card</code>.</li>
+  <li>Das Lock dauert 30 Sekunden. Die Zahlung darf nicht länger dauern, sonst holt ein anderer Worker den Task.</li>
+  <li><code>complete</code> setzt den Prozess fort.</li>
+  <li>Ein Fachfehler wird zum BPMN-Error. Ein Error Boundary Event mit Code <code>CARD_DECLINED</code> fängt ihn.</li>
+  <li>Ein technischer Fehler geht an <code>handleFailure</code>. Der Worker zählt die Retries selbst herunter. Die Engine tut das nicht.</li>
+  <li>Die Methodennamen des Clients sind eine Skizze. Vor dem Einsatz die Doku der eigenen Version prüfen.</li>
+</ol>
+
+<h3>Vergleich</h3>
+<ul>
+  <li><b>Camunda 7:</b> Embedded oder Shared Engine, relationale DB, Java Delegates, JUEL, Cockpit.</li>
+  <li><b>Camunda 8:</b> Zeebe als entfernter Dienst, Partitionen, Job Workers, FEEL, Operate.</li>
+  <li><b>Java Delegate:</b> in der Transaktion der Engine. Schnell, gekoppelt.</li>
+  <li><b>External Task und Job Worker:</b> entkoppelt, skalierbar, at-least-once.</li>
+  <li><b>Community-Forks von Camunda 7:</b> halten die alte Engine am Leben. Eigenes Risiko und eigene Doku prüfen.</li>
+  <li><b>Andere Engines:</b> Temporal und Flowable sind Alternativen mit anderem Modell.</li>
+</ul>
+
+<h3>Produktion</h3>
+<ol>
+  <li><b>Doppelte Ausführung:</b> Das Lock lief ab. Lösung: Lock-Dauer anpassen, extendLock, Idempotenz.</li>
+  <li><b>Incidents häufen sich:</b> Retries erschöpft. Lösung: Alarm auf Incidents, Ursache beheben, Retries neu setzen.</li>
+  <li><b>Hängende Instanzen im Job Executor:</b> Ein Job schlägt wiederholt fehl. Lösung: Fehler im Log lesen, Job-Retries setzen.</li>
+  <li><b>Langsame Datenbank in Camunda 7:</b> Historie wächst. Lösung: History Cleanup und passende Historienstufe.</li>
+  <li><b>Ungleiche Last in Zeebe:</b> Ein Broker führt viele Partitionen. Lösung: Rebalancing API und Monitoring.</li>
+  <li><b>Migration ohne Plan:</b> Transaktionsannahmen brechen. Lösung: Idempotenz einbauen, schrittweise migrieren.</li>
+</ol>
+
+<h3>Diagnose: Werkzeuge und Befehle</h3>
+<ul>
+  <li><b>Cockpit</b> (Camunda 7): Instanzen, Incidents, Jobs, External Tasks.</li>
+  <li><b>Operate</b> (Camunda 8): Instanzen und Incidents. Daten stammen aus dem Exporter.</li>
+  <li><b>REST-Aufruf External Tasks:</b> zeigt offene Aufgaben mit Topic und Lock.</li>
+  <li><b>Worker-Logs</b> mit Task-ID und Prozess-Instanz-ID.</li>
+  <li><b>Metriken:</b> Anzahl offener Jobs, Fehlerrate und Wartezeit bis zum Holen.</li>
+</ul>
+
+<h3>Senior-Punkte</h3>
+<div class="senior">
+<ol>
+  <li><b>At-least-once ist der Vertrag.</b> Alles, was ein Worker tut, muss wiederholbar sein.</li>
+  <li><b>Transaktionen ändern sich.</b> Bei der Migration verschwindet die gemeinsame ACID-Transaktion. Outbox und Idempotenz ersetzen sie.</li>
+  <li><b>Fachfehler und technische Fehler trennen.</b> BPMN-Error gegen Failure mit Retries.</li>
+  <li><b>Lebensende ernst nehmen.</b> Camunda 7 Community bekommt keine Fixes mehr. Das ist ein Sicherheitsrisiko.</li>
+  <li><b>Migration ist ein Umbau,</b> kein Upgrade. Delegates, Ausdrücke und Variablen ändern sich.</li>
+  <li><b>Skalierung hat Grenzen.</b> Eine Instanz bleibt auf einer Partition. Die Last verteilt sich über viele Instanzen.</li>
+</ol>
+</div>
+
+<h3>Dein Beispiel</h3>
+</details>
+
+</body>
+</html>

@@ -1,0 +1,249 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OpenShift vs Kubernetes: Routes, SCC, Operators</title>
+<style>
+  body { font: 17px/1.55 -apple-system, system-ui, sans-serif; max-width: 760px; margin: 0 auto; padding: 16px; color: #1d1d1f; }
+  h1 { font-size: 28px; margin: 8px 0 4px; }
+  h2 { font-size: 21px; margin: 32px 0 8px; padding-top: 12px; border-top: 2px solid #e5e5ea; }
+  .kern { background: #eef6ff; border-left: 4px solid #0a66c2; padding: 10px 14px; border-radius: 6px; }
+  .senior { background: #f0faf0; border-left: 4px solid #2e7d32; padding: 10px 14px; border-radius: 6px; }
+  .trap { background: #fff4f2; border-left: 4px solid #c62828; padding: 10px 14px; border-radius: 6px; }
+  code { background: #f2f2f7; padding: 1px 5px; border-radius: 4px; font-size: 15px; }
+  pre { background: #1e1e1e; color: #e6e6e6; padding: 12px; border-radius: 8px; overflow-x: auto; font-size: 13.5px; line-height: 1.45; }
+  svg { width: 100%; height: auto; display: block; margin: 10px 0; }
+  ol li, ul li { margin: 4px 0; }
+  details { border: 1px solid #e5e5ea; border-radius: 8px; padding: 8px 12px; margin: 6px 0; }
+  summary { font-weight: 600; cursor: pointer; }
+  details p { margin: 6px 0 2px; }
+  .small { color: #6e6e73; font-size: 14px; }
+  h3 { font-size: 17px; margin: 20px 0 6px; }
+  .geruest { border: 2px solid #1d1d1f; border-radius: 6px; padding: 10px 14px; margin: 14px 0; font-size: 15px; line-height: 1.4; }
+  .geruest h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; margin: 0 0 8px; padding: 0; border: 0; }
+  .geruest dl { display: grid; grid-template-columns: 6.6em 1fr; gap: 6px 10px; margin: 0; }
+  .geruest dt { font-weight: 700; font-size: 12px; text-transform: uppercase; letter-spacing: .05em; padding-top: 1px; }
+  .geruest dd { margin: 0; }
+  .muster { border: 1px solid #e5e5ea; border-left: 4px solid #1d1d1f; border-radius: 6px; padding: 10px 14px; margin: 14px 0; }
+  .muster h3 { margin: 0 0 6px; font-size: 13px; text-transform: uppercase; letter-spacing: .06em; }
+  .muster .mq { margin: 0 0 6px; }
+</style>
+</head>
+<body>
+
+<h1>OpenShift vs Kubernetes: Routes, SCC, Operators</h1>
+<!-- sources: Red Hat OpenShift Container Platform Dokumentation (Quelltexte openshift/openshift-docs, Branch main, Stand 4.22: Security Context Constraints, Pod Security Admission, Routes, Route-Annotationen, Operator Lifecycle Manager v0 und v1, DeploymentConfig-Hinweis), Kubernetes Dokumentation (Ingress, Pod Security Admission) -->
+
+<div class="kern">
+<b>Kern:</b> <b>OpenShift</b> ist eine Kubernetes-Distribution von Red Hat mit zusätzlichen Regeln und Werkzeugen. Wichtig sind <b>Routes</b> für den Zugang von aussen, <b>Security Context Constraints (SCC)</b> für strenge Pod-Rechte und <b>Operators</b> mit dem Operator Lifecycle Manager (OLM). Standard-Kubernetes-Objekte wie Deployment und Service laufen weiter.
+</div>
+
+<div class="muster"><h3>Antwort-Muster</h3><p class="mq"><b>Frage:</b> Was ist der Unterschied zwischen OpenShift und Kubernetes?</p><ol>
+  <li>Mechanismus: OpenShift ist Kubernetes mit mehr eingebauten Teilen. Eine Route gibt Dienste nach aussen frei, eine SCC begrenzt die Rechte der Pods, OLM installiert Operators.</li>
+  <li>Zahl: Die Standard-SCC restricted-v2 lässt keine Root-UID zu. Die UID kommt aus dem Bereich des Namespace.</li>
+  <li>Trade-off: Mehr Sicherheit und Komfort ab Werk, aber Container-Images müssen mit beliebiger UID laufen. Dazu kommt Bindung an einen Anbieter.</li>
+  <li>Produktion: Ich baue Images ohne Root, nutze Routes mit TLS und vergebe SCC nur gezielt an Service Accounts.</li>
+</ol></div>
+
+<h2>1. Ein Pod und sein Zugang in 7 Schritten</h2>
+<svg viewBox="0 0 480 380" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="o1" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="10" y="10" width="220" height="56" rx="10" fill="#eee" stroke="#777"/><text x="120" y="33" text-anchor="middle" font-weight="700">1. oc apply</text><text x="120" y="52" text-anchor="middle" font-size="12">Deployment im Projekt</text>
+  <rect x="250" y="10" width="220" height="56" rx="10" fill="#eee" stroke="#777"/><text x="360" y="33" text-anchor="middle" font-weight="700">2. RBAC</text><text x="360" y="52" text-anchor="middle" font-size="12">darf der Nutzer das?</text>
+  <line x1="230" y1="38" x2="248" y2="38" stroke="#555" stroke-width="2" marker-end="url(#o1)"/>
+  <rect x="250" y="95" width="220" height="70" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="360" y="118" text-anchor="middle" font-weight="700">3. SCC wählen</text><text x="360" y="138" text-anchor="middle" font-size="12">erlaubte SCC sortieren,</text><text x="360" y="155" text-anchor="middle" font-size="12">erste passende gewinnt</text>
+  <line x1="360" y1="66" x2="360" y2="93" stroke="#555" stroke-width="2" marker-end="url(#o1)"/>
+  <rect x="10" y="95" width="220" height="70" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="120" y="118" text-anchor="middle" font-weight="700">4. IDs zuteilen</text><text x="120" y="138" text-anchor="middle" font-size="12">UID, MCS-Label, fsGroup</text><text x="120" y="155" text-anchor="middle" font-size="12">aus Namespace-Annotation</text>
+  <line x1="250" y1="130" x2="232" y2="130" stroke="#555" stroke-width="2" marker-end="url(#o1)"/>
+  <rect x="10" y="195" width="220" height="70" rx="10" fill="#fff" stroke="#555"/><text x="120" y="218" text-anchor="middle" font-weight="700">5. Pod Security</text><text x="120" y="238" text-anchor="middle" font-size="12">PSA-Labels warn und audit</text><text x="120" y="255" text-anchor="middle" font-size="12">werden synchronisiert</text>
+  <line x1="120" y1="165" x2="120" y2="193" stroke="#555" stroke-width="2" marker-end="url(#o1)"/>
+  <rect x="250" y="195" width="220" height="70" rx="10" fill="#fff" stroke="#555"/><text x="360" y="218" text-anchor="middle" font-weight="700">6. Pod läuft</text><text x="360" y="238" text-anchor="middle" font-size="12">Service verbindet</text><text x="360" y="255" text-anchor="middle" font-size="12">die Pods</text>
+  <line x1="230" y1="230" x2="248" y2="230" stroke="#555" stroke-width="2" marker-end="url(#o1)"/>
+  <rect x="10" y="295" width="460" height="70" rx="10" fill="#0a66c2" stroke="#0a66c2"/><text x="240" y="318" text-anchor="middle" fill="#fff" font-weight="700">7. Route</text><text x="240" y="338" text-anchor="middle" fill="#fff" font-size="12">Router (HAProxy) nimmt Anfragen von aussen an,</text><text x="240" y="354" text-anchor="middle" fill="#fff" font-size="12">beendet TLS und leitet zum Service</text>
+  <line x1="360" y1="265" x2="300" y2="293" stroke="#555" stroke-width="2" marker-end="url(#o1)"/>
+</svg>
+<ol>
+  <li><b>oc apply:</b> Man legt ein Standard-<code>Deployment</code> in einem <b>Projekt</b> an. Ein Projekt ist ein Namespace mit Zusatzfunktionen.</li>
+  <li><b>RBAC:</b> Wie in Kubernetes prüft der API-Server, ob der Nutzer das darf.</li>
+  <li><b>SCC wählen:</b> Die SCC-Admission sammelt alle SCC, die Nutzer und Service Account verwenden dürfen. Sie sortiert nach Priorität, dann nach Strenge, dann nach Name.</li>
+  <li><b>IDs zuteilen:</b> Hat die SCC keine festen Bereiche, liest die Admission sie aus den Annotationen des Namespace. Die Annotation <code>openshift.io/sa.scc.uid-range</code> liefert den UID-Bereich.</li>
+  <li><b>Pod Security Admission:</b> Die Labels <code>warn</code> und <code>audit</code> werden aus den erlaubten SCC des Namespace abgeleitet.</li>
+  <li><b>Pod läuft:</b> Der Pod startet mit der zugeteilten UID. Ein Service gibt ihm eine feste Adresse im Cluster.</li>
+  <li><b>Route:</b> Ein Router auf HAProxy-Basis nimmt Anfragen von aussen an, beendet je nach Typ TLS und leitet an den Service.</li>
+</ol>
+
+<h2>2. Aufbau</h2>
+<svg viewBox="0 0 480 340" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="o2" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="10" y="10" width="460" height="130" rx="10" fill="#f7f7fa" stroke="#999"/><text x="25" y="32" font-weight="700">Zugang von aussen</text>
+  <rect x="25" y="48" width="120" height="70" rx="8" fill="#dbe9fb" stroke="#0a66c2"/><text x="85" y="78" text-anchor="middle" font-weight="700">Route</text><text x="85" y="98" text-anchor="middle" font-size="12">Host + TLS</text>
+  <rect x="180" y="48" width="120" height="70" rx="8" fill="#fff" stroke="#555"/><text x="240" y="78" text-anchor="middle" font-weight="700">Service</text><text x="240" y="98" text-anchor="middle" font-size="12">feste Adresse</text>
+  <rect x="335" y="48" width="120" height="70" rx="8" fill="#fff" stroke="#555"/><text x="395" y="78" text-anchor="middle" font-weight="700">Pods</text><text x="395" y="98" text-anchor="middle" font-size="12">mit SCC</text>
+  <line x1="145" y1="83" x2="178" y2="83" stroke="#555" stroke-width="2" marker-end="url(#o2)"/>
+  <line x1="300" y1="83" x2="333" y2="83" stroke="#555" stroke-width="2" marker-end="url(#o2)"/>
+  <rect x="10" y="160" width="460" height="170" rx="10" fill="#f7f7fa" stroke="#999"/><text x="25" y="182" font-weight="700">Operators mit OLM</text>
+  <rect x="25" y="198" width="125" height="46" rx="8" fill="#eee" stroke="#777"/><text x="87" y="226" text-anchor="middle" font-size="13" font-weight="700">CatalogSource</text>
+  <rect x="177" y="198" width="125" height="46" rx="8" fill="#eee" stroke="#777"/><text x="240" y="226" text-anchor="middle" font-size="13" font-weight="700">Subscription</text>
+  <rect x="330" y="198" width="125" height="46" rx="8" fill="#eee" stroke="#777"/><text x="392" y="226" text-anchor="middle" font-size="13" font-weight="700">InstallPlan</text>
+  <line x1="150" y1="221" x2="175" y2="221" stroke="#555" stroke-width="2" marker-end="url(#o2)"/>
+  <line x1="302" y1="221" x2="328" y2="221" stroke="#555" stroke-width="2" marker-end="url(#o2)"/>
+  <rect x="25" y="268" width="190" height="46" rx="8" fill="#e8f5e9" stroke="#2e7d32"/><text x="120" y="296" text-anchor="middle" font-size="13" font-weight="700">CSV + Operator-Pod</text>
+  <rect x="265" y="268" width="190" height="46" rx="8" fill="#e8f5e9" stroke="#2e7d32"/><text x="360" y="296" text-anchor="middle" font-size="13" font-weight="700">Custom Resource</text>
+  <line x1="392" y1="244" x2="140" y2="266" stroke="#555" stroke-width="2" marker-end="url(#o2)"/>
+  <line x1="215" y1="291" x2="263" y2="291" stroke="#555" stroke-width="2" marker-end="url(#o2)"/>
+</svg>
+<ol>
+  <li>Eine <b>Route</b> ist ein OpenShift-Objekt mit Hostnamen, Pfad, TLS-Typ und Ziel-Service.</li>
+  <li>Der <b>Router</b> ist der Ingress Controller. Er wird vom Cluster verwaltet und liest die Routes.</li>
+  <li>Eine <b>SCC</b> legt fest, was ein Pod darf. Dazu gehören UID, Capabilities, Host-Zugriff und Volume-Typen.</li>
+  <li>Ein <b>Operator</b> ist ein Controller für eine Anwendung. Er hat eigene Custom Resources.</li>
+  <li><b>OLM</b> installiert und aktualisiert Operators über CatalogSource, Subscription und InstallPlan.</li>
+  <li>Die <b>ClusterServiceVersion (CSV)</b> beschreibt eine Operator-Version mit Rechten und Deployments.</li>
+</ol>
+
+<h2>3. Details</h2>
+<ol>
+  <li><b>Route gegen Ingress:</b> Eine Route kennt drei TLS-Arten. Edge beendet TLS am Router. Passthrough leitet TLS unverändert weiter. Re-encrypt beendet TLS und baut eine neue Verbindung zum Pod auf. OpenShift erzeugt aus einem Ingress-Objekt automatisch eine Route.</li>
+  <li><b>Route-Annotationen:</b> <code>haproxy.router.openshift.io/balance</code> setzt den Algorithmus. Standard ist <code>random</code>, bei Passthrough <code>source</code>. <code>haproxy.router.openshift.io/timeout</code> setzt das Timeout pro Route.</li>
+  <li><b>Sticky Sessions:</b> Der Router nutzt Cookies, um Anfragen am selben Pod zu halten. Bei Passthrough gibt es keine Cookies, weil der Router den Verkehr nicht liest.</li>
+  <li><b>SCC-Standard:</b> <code>restricted-v2</code> ist für authentifizierte Nutzer die Standard-SCC. Sie entfernt alle Capabilities, erlaubt <code>NET_BIND_SERVICE</code> auf Wunsch, setzt das seccomp-Profil auf <code>runtime/default</code> und verbietet Privilege Escalation.</li>
+  <li><b>Weitere SCC:</b> <code>anyuid</code> erlaubt jede UID und GID, sonst wie restricted. <code>nonroot-v2</code> erlaubt jede UID ungleich 0. <code>privileged</code> ist die lockerste SCC und nur für Cluster-Administration gedacht.</li>
+  <li><b>restricted gegen restricted-v2:</b> In neuen Clustern ab 4.11 ist restricted-v2 der Standard. Die alte restricted ist dort nicht mehr verfügbar, ausser man gibt sie explizit frei. Die neuesten Docs nennen zusätzlich restricted-v3 mit Pflicht zu einem User Namespace.</li>
+  <li><b>Zufällige UID:</b> Ein Pod mit restricted-v2 läuft mit einer UID aus dem Bereich des Namespace. Ein Image, das als feste UID oder als Root läuft, scheitert oft. Das Image muss mit beliebiger UID funktionieren.</li>
+  <li><b>SCC-Wahl:</b> Es gewinnt nicht immer die lockerste SCC. <code>privileged: true</code> im Pod wählt nicht automatisch die privileged-SCC. Es zählt die SCC mit der höchsten Priorität, die der Nutzer verwenden darf und die den Pod erlaubt.</li>
+  <li><b>Standard-SCC nicht ändern:</b> Änderungen können bei Upgrades verloren gehen oder Plattform-Pods stören. Eine Priorität über 0 für Standard-SCC kann den Cluster destabilisieren. Man legt eigene SCC an.</li>
+  <li><b>PSA in OpenShift:</b> Global gilt privileged als enforce, restricted als warn und audit. Die Labels warn und audit werden aus den SCC der Service Accounts im Namespace abgeleitet.</li>
+  <li><b>Operator Lifecycle Manager:</b> OLM nutzt CatalogSource, Subscription (folgt einem Channel), InstallPlan, ClusterServiceVersion und OperatorGroup. Die OperatorGroup bestimmt, welche Namespaces ein Operator beobachtet.</li>
+  <li><b>OLM v1:</b> Die neue Generation nutzt das Objekt <code>ClusterExtension</code>. Ein Objekt darf nur einer ClusterExtension gehören. Ein Bundle lässt sich nur einmal pro Cluster installieren.</li>
+  <li><b>DeploymentConfig:</b> Seit OpenShift 4.14 ist DeploymentConfig veraltet (deprecated). Für neue Anwendungen nimmt man das Kubernetes-Objekt Deployment.</li>
+</ol>
+
+<h2>4. Fallen</h2>
+<div class="trap">
+<ul>
+  <li>„Eine Route ist dasselbe wie ein Ingress.“ → <b>Falsch.</b> Die Route ist ein OpenShift-Objekt mit eigenen TLS-Typen. Ein Ingress erzeugt automatisch eine Route.</li>
+  <li>„privileged: true im Pod gibt dem Pod die privileged-SCC.“ → <b>Falsch.</b> Gewählt wird die SCC mit der höchsten Priorität, die der Nutzer verwenden darf.</li>
+  <li>„Ein Image läuft in OpenShift wie in Docker.“ → <b>Falsch.</b> Mit restricted-v2 läuft es mit zufälliger UID. Root-Images scheitern.</li>
+  <li>„Man passt einfach die Standard-SCC an.“ → <b>Falsch.</b> Upgrades setzen die Werte zurück. Man legt eine eigene SCC an.</li>
+  <li>„Operators sind nur Helm Charts.“ → <b>Falsch.</b> Ein Operator ist ein laufender Controller. Er überwacht und repariert die Anwendung dauerhaft.</li>
+  <li>„DeploymentConfig ist der Standard.“ → <b>Falsch.</b> Er ist seit 4.14 veraltet. Der Standard ist Deployment.</li>
+</ul>
+</div>
+
+<h2>5. Selbsttest</h2>
+<h3>Warum?</h3>
+<details><summary>Warum gibt es Routes, obwohl es Ingress gibt?</summary><p>Die Route ist ein OpenShift-eigenes Objekt. Sie hat eigene TLS-Typen und Annotationen. OpenShift erzeugt aus Ingress-Objekten automatisch Routes.</p></details>
+<details><summary>Warum laufen Pods in OpenShift nicht als Root?</summary><p>Die restricted-v2 SCC verlangt eine UID aus dem Bereich des Namespace. So kann ein Ausbruch aus dem Container nicht als Root auf dem Host enden.</p></details>
+<details><summary>Warum nutzt man Operators?</summary><p>Ein Operator kennt den Betrieb einer Anwendung, etwa Backup und Upgrade. Er hält den Zustand mit einer Control Loop. OLM installiert und aktualisiert ihn sicher.</p></details>
+<h3>Wie innen?</h3>
+<details><summary>Wie wählt OpenShift die SCC für einen Pod?</summary><p>Die Admission sammelt alle SCC, die Nutzer und Service Account verwenden dürfen. Sie sortiert nach Priorität, dann nach Strenge, dann nach Name. Die erste SCC, die den Pod erlaubt, gewinnt.</p></details>
+<details><summary>Woher kommt die UID des Pods?</summary><p>Aus der Namespace-Annotation openshift.io/sa.scc.uid-range. Die Admission füllt damit die SCC-Strategie MustRunAsRange.</p></details>
+<details><summary>Wie funktioniert eine Route?</summary><p>Der Router (HAProxy) liest alle Routes. Er ordnet Host und Pfad einem Service zu. Er beendet TLS je nach Typ und leitet die Anfrage an die Endpunkte des Service.</p></details>
+<details><summary>Was sind edge, passthrough und re-encrypt?</summary><p>Edge beendet TLS am Router. Passthrough leitet TLS unverändert an den Pod weiter. Re-encrypt beendet TLS und öffnet eine neue verschlüsselte Verbindung zum Pod.</p></details>
+<details><summary>Wie installiert OLM einen Operator?</summary><p>Ein CatalogSource liefert das Angebot. Eine Subscription wählt Paket und Channel. Der InstallPlan berechnet die Ressourcen. Die CSV beschreibt die Version, OLM legt Deployments und Rechte an.</p></details>
+<details><summary>Was macht eine OperatorGroup?</summary><p>Sie legt fest, in welchen Namespaces die Operators in ihrem Namespace ihre Custom Resources beobachten. Das kann clusterweit sein.</p></details>
+<details><summary>Wie hängen SCC und Pod Security Admission zusammen?</summary><p>Ein Controller bildet die SCC der Service Accounts auf Pod-Security-Profile ab. Er setzt damit die warn- und audit-Labels im Namespace.</p></details>
+<h3>Zahlen</h3>
+<details><summary>Welche Balance-Standardwerte hat der Router?</summary><p>random für alle Routes, source für TLS-Passthrough. Weitere Werte sind roundrobin und leastconn.</p></details>
+<details><summary>Ab wann ist restricted-v2 der Standard?</summary><p>In neu installierten Clustern ab 4.11. In Clustern, die von 4.10 oder früher aktualisiert wurden, haben authentifizierte Nutzer weiter Zugriff auf restricted.</p></details>
+<details><summary>Seit wann ist DeploymentConfig veraltet?</summary><p>Seit OpenShift 4.14. Er wird noch unterstützt, aber nicht für neue Installationen empfohlen.</p></details>
+<details><summary>Wie viele IPs darf eine ip_allowlist direkt in der HAProxy-Konfiguration haben?</summary><p>Die Doku nennt 61 Adressen und CIDR-Bereiche, die direkt in haproxy.config sichtbar sind.</p></details>
+<h3>Vergleich</h3>
+<details><summary>Route gegen Ingress im Vergleich?</summary><p>Beide geben HTTP-Dienste frei. Die Route hat Edge, Passthrough und Re-encrypt und OpenShift-Annotationen. Ingress ist der Kubernetes-Standard. In OpenShift wird aus Ingress eine Route.</p></details>
+<details><summary>SCC gegen Pod Security Admission?</summary><p>PSA hat drei feste Profile pro Namespace. Die SCC ist feiner und hängt am Nutzer und Service Account. OpenShift nutzt beide und leitet die PSA-Labels aus den SCC ab.</p></details>
+<details><summary>OpenShift gegen reines Kubernetes?</summary><p>OpenShift bringt Router, Registry, Build-Werkzeuge, SCC, OLM und Konsole mit. Reines Kubernetes ist offener, aber man baut diese Teile selbst zusammen.</p></details>
+<details><summary>Operator gegen Helm Chart?</summary><p>Helm rendert Manifeste einmal beim Install oder Upgrade. Ein Operator läuft dauerhaft und passt die Anwendung laufend an den Sollzustand an.</p></details>
+<h3>Produktion</h3>
+<details><summary>Warum startet ein Pod mit „unable to validate against any security context constraint“?</summary><p>Keine SCC, die der Service Account verwenden darf, erlaubt den Pod. Meist verlangt er Root oder Privilegien. Lösung: Image anpassen oder gezielt eine SCC an den Service Account binden.</p></details>
+<details><summary>Warum bricht ein Image mit Berechtigungsfehlern ab?</summary><p>Es läuft mit zufälliger UID und kann nicht in Verzeichnisse schreiben, die einer anderen UID gehören. Lösung: Verzeichnisse für beliebige UID schreibbar machen oder Volumes mit fsGroup nutzen.</p></details>
+<details><summary>Szenario: Eine Anwendung braucht Port 80 und läuft als Root. Sie muss in OpenShift laufen. Was tun Sie?</summary><p>Ich ändere das Image auf einen Nicht-Root-Port wie 8080 und eine beliebige UID. Nur wenn das unmöglich ist, binde ich anyuid gezielt an einen eigenen Service Account.</p></details>
+<details><summary>Szenario: Eine Route bricht bei langen Requests mit einem Fehler ab. Was prüfen Sie?</summary><p>Das Timeout der Route und eines Load Balancers davor. Ich setze die Annotation haproxy.router.openshift.io/timeout. Ein externer Load Balancer muss ein höheres Timeout haben.</p></details>
+<h3>Design</h3>
+<details><summary>Wie vergeben Sie SCC im Team?</summary><p>Standard bleibt restricted-v2. Ausnahmen bekommen einen eigenen Service Account und eine eigene SCC mit minimalen Rechten. Jede Ausnahme wird dokumentiert und geprüft.</p></details>
+<details><summary>Szenario: Ein Team will eine Datenbank per Operator betreiben. Worauf achten Sie?</summary><p>Welche Rechte die CSV anfordert, welcher Channel und welche Update-Strategie gelten und welche Namespaces die OperatorGroup umfasst. Dazu Backup und Restore des Operators prüfen.</p></details>
+<details><summary>Wie bleibt man portabel zwischen OpenShift und Kubernetes?</summary><p>Standard-Objekte wie Deployment, Service und Ingress nutzen. Route, ImageStream und SCC nur kapseln. Images ohne Root bauen, dann laufen sie überall.</p></details>
+<details><summary>Welche Teile sind Lock-in?</summary><p>Routes, SCC, ImageStreams, BuildConfigs und OLM-Konfiguration sind OpenShift-spezifisch. Deployment, Service und Ingress sind Kubernetes-Standard.</p></details>
+<details><summary>Szenario: Eine Behörde verlangt TLS bis zum Pod. Was setzen Sie ein?</summary><p>Eine Route mit Re-encrypt oder Passthrough. Bei Passthrough prüft der Pod das Zertifikat selbst und der Router liest keinen Inhalt. Bei Re-encrypt prüft der Router die Verbindung zum Pod.</p></details>
+
+<details class="mehr"><summary>Mehr</summary>
+<h3>Gerüst</h3>
+<ul>
+  <li><b>Warum?</b> Kubernetes mit eingebautem Zugang, strenger Pod-Sicherheit und Operator-Verwaltung.</li>
+  <li><b>Wie innen?</b> Route → Router (HAProxy) → Service. SCC-Admission wählt SCC und füllt UID aus Annotationen.</li>
+  <li><b>Zahlen</b> restricted-v2 ab 4.11 Standard. DeploymentConfig veraltet ab 4.14. Balance random, Passthrough source.</li>
+  <li><b>Vergleich</b> Route gegen Ingress, SCC gegen PSA, Operator gegen Helm.</li>
+  <li><b>Produktion</b> Root-Images scheitern, SCC-Fehler, Router-Timeouts.</li>
+  <li><b>Design</b> Nicht-Root-Images, eigene SCC für Ausnahmen, Standard-Objekte für Portabilität.</li>
+</ul>
+
+<h3>Beispiel: Route und SCC-Zuweisung</h3>
+<pre>apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: shop
+  annotations:
+    haproxy.router.openshift.io/timeout: 60s
+spec:
+  host: shop.apps.example.com
+  to: { kind: Service, name: shop }
+  port: { targetPort: 8080 }
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect
+
+# SCC gezielt an einen Service Account binden
+oc adm policy add-scc-to-user nonroot-v2 -z shop-sa -n shop</pre>
+<p class="small">Nicht ausgeführt.</p>
+<ol>
+  <li>Die Route beendet TLS am Router (<code>edge</code>) und leitet an den Service <code>shop</code> auf Port 8080.</li>
+  <li>Die Annotation setzt das Timeout dieser Route auf 60 Sekunden.</li>
+  <li>Der Befehl <code>oc adm policy add-scc-to-user</code> gibt dem Service Account die SCC <code>nonroot-v2</code>. Diesen Befehl nennt die Doku für den Zugriff auf eine SCC.</li>
+  <li>Die Doku rät, Standard-SCC nicht zu ändern. Man bindet sie an Accounts oder legt eigene an.</li>
+</ol>
+
+<h3>Vergleich</h3>
+<ul>
+  <li><b>Route:</b> OpenShift-Objekt, TLS edge, passthrough, re-encrypt, Router-Annotationen.</li>
+  <li><b>Ingress:</b> Kubernetes-Standard. OpenShift macht daraus Routes.</li>
+  <li><b>SCC:</b> Rechte pro Nutzer und Service Account. Feiner als PSA.</li>
+  <li><b>PSA:</b> Drei Profile pro Namespace. In OpenShift aus SCC abgeleitet.</li>
+  <li><b>Operator mit OLM:</b> Dauerhafter Controller, installiert und aktualisiert über Catalog und Subscription.</li>
+  <li><b>Helm:</b> Einmaliges Rendern von Manifesten. Kein laufender Controller.</li>
+</ul>
+
+<h3>Produktion</h3>
+<ol>
+  <li><b>Root-Image startet nicht:</b> SCC verbietet die UID. Lösung: Nicht-Root-Image, beliebige UID.</li>
+  <li><b>Schreibfehler im Container:</b> Verzeichnisse gehören einer anderen UID. Lösung: Gruppenrechte oder fsGroup und Volumes.</li>
+  <li><b>Timeouts an der Route:</b> Timeout für lange Requests zu kurz. Lösung: Annotation pro Route.</li>
+  <li><b>Unfairer Lastausgleich:</b> roundrobin wird bei Router-Reloads zurückgesetzt. Lösung: leastconn oder random nutzen.</li>
+  <li><b>Operator-Upgrade bricht Anwendung:</b> Automatische Updates im Channel. Lösung: manuelle Freigabe im InstallPlan und Test im Staging.</li>
+  <li><b>Standard-SCC verändert:</b> Upgrades setzen sie zurück. Lösung: eigene SCC.</li>
+</ol>
+
+<h3>Diagnose: Werkzeuge und Befehle</h3>
+<ul>
+  <li><code>oc get pod -o yaml</code>: Annotation <code>openshift.io/scc</code> zeigt die gewählte SCC.</li>
+  <li><code>oc describe pod</code> und <code>oc get events</code>: zeigen SCC-Fehler der Admission.</li>
+  <li><code>oc get route</code> und <code>oc describe route</code>: Host, TLS-Typ und Status.</li>
+  <li><code>oc get csv,sub,ip -n &lt;ns&gt;</code>: Operator-Installation prüfen.</li>
+</ul>
+
+<h3>Senior-Punkte</h3>
+<div class="senior">
+<ol>
+  <li><b>Sicherheit ab Werk hat Folgen für Images.</b> Nicht-Root-Images sind keine Zusatzarbeit, sondern Voraussetzung.</li>
+  <li><b>SCC sind Ausnahmen mit Begründung.</b> Jede lockere SCC gehört an einen eigenen Service Account.</li>
+  <li><b>Portabilität bewusst planen.</b> Standard-Objekte bevorzugen. OpenShift-Spezifisches kapseln.</li>
+  <li><b>Operators brauchen Betrieb.</b> Update-Channel, Freigabe und Backup gehören zur Planung.</li>
+  <li><b>Route-TLS-Typ ist eine Sicherheitsentscheidung.</b> Passthrough hält Ende-zu-Ende, verliert aber Router-Funktionen.</li>
+  <li><b>Kosten und Support zählen.</b> OpenShift ist ein Produkt mit Support. Das ist ein wichtiger Grund neben der Technik.</li>
+</ol>
+</div>
+
+<h3>Dein Beispiel</h3>
+</details>
+
+</body>
+</html>

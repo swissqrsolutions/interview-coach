@@ -1,0 +1,257 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Hazelcast und Solace</title>
+<style>
+  body { font: 17px/1.55 -apple-system, system-ui, sans-serif; max-width: 760px; margin: 0 auto; padding: 16px; color: #1d1d1f; }
+  h1 { font-size: 28px; margin: 8px 0 4px; }
+  h2 { font-size: 21px; margin: 32px 0 8px; padding-top: 12px; border-top: 2px solid #e5e5ea; }
+  .kern { background: #eef6ff; border-left: 4px solid #0a66c2; padding: 10px 14px; border-radius: 6px; }
+  .senior { background: #f0faf0; border-left: 4px solid #2e7d32; padding: 10px 14px; border-radius: 6px; }
+  .trap { background: #fff4f2; border-left: 4px solid #c62828; padding: 10px 14px; border-radius: 6px; }
+  code { background: #f2f2f7; padding: 1px 5px; border-radius: 4px; font-size: 15px; }
+  pre { background: #1e1e1e; color: #e6e6e6; padding: 12px; border-radius: 8px; overflow-x: auto; font-size: 13.5px; line-height: 1.45; }
+  svg { width: 100%; height: auto; display: block; margin: 10px 0; }
+  ol li, ul li { margin: 4px 0; }
+  details { border: 1px solid #e5e5ea; border-radius: 8px; padding: 8px 12px; margin: 6px 0; }
+  summary { font-weight: 600; cursor: pointer; }
+  details p { margin: 6px 0 2px; }
+  .small { color: #6e6e73; font-size: 14px; }
+  h3 { font-size: 17px; margin: 20px 0 6px; }
+  .geruest { border: 2px solid #1d1d1f; border-radius: 6px; padding: 10px 14px; margin: 14px 0; font-size: 15px; line-height: 1.4; }
+  .geruest h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; margin: 0 0 8px; padding: 0; border: 0; }
+  .geruest dl { display: grid; grid-template-columns: 6.6em 1fr; gap: 6px 10px; margin: 0; }
+  .geruest dt { font-weight: 700; font-size: 12px; text-transform: uppercase; letter-spacing: .05em; padding-top: 1px; }
+  .geruest dd { margin: 0; }
+  .muster { border: 1px solid #e5e5ea; border-left: 4px solid #1d1d1f; border-radius: 6px; padding: 10px 14px; margin: 14px 0; }
+  .muster h3 { margin: 0 0 6px; font-size: 13px; text-transform: uppercase; letter-spacing: .06em; }
+  .muster .mq { margin: 0 0 6px; }
+</style>
+</head>
+<body>
+
+<h1>Hazelcast und Solace</h1>
+<!-- sources: Hazelcast Dokumentation 5.x (docs.hazelcast.com: Data Replication, Maps, Backing Up Maps, Managing Map Memory, CP Subsystem), Solace Dokumentation (docs.solace.com: Glossary, Topic Architecture Best Practices, Wildcard Characters in Topic Subscriptions, Configuring Queues, Dead Message Queues), Apache Camel Doku Idempotent Consumer -->
+
+<div class="kern">
+<b>Kern:</b> <b>Hazelcast</b> ist ein verteilter In-Memory-Speicher. Seine Maps verteilen Daten in <b>Partitionen</b> auf Cluster-Mitglieder und sichern sie mit <b>Backups</b>. <b>Solace</b> ist ein Event Broker. Er routet Nachrichten über hierarchische <b>Topics</b> mit Wildcards und speichert garantierte Nachrichten in <b>Queues</b>. Beide sind Teil von Integrationslandschaften, lösen aber verschiedene Probleme.
+</div>
+
+<div class="muster"><h3>Antwort-Muster</h3><p class="mq"><b>Frage:</b> Was sind Hazelcast und Solace und wofür setzt man sie ein?</p><ol>
+  <li>Mechanismus: Hazelcast teilt Map-Einträge nach Schlüssel auf Partitionen auf und hält Backups. Solace leitet Nachrichten über Topic-Abos und speichert garantierte Nachrichten in Queues.</li>
+  <li>Zahl: Hazelcast hat standardmässig 271 Partitionen und ein synchrones Backup. Ein Solace-Topic hat höchstens 128 Ebenen und 250 Zeichen.</li>
+  <li>Trade-off: Hazelcast bevorzugt Verfügbarkeit gegenüber Konsistenz (AP). Strenge Konsistenz gibt es nur über das CP Subsystem. Solace unterscheidet zwischen schneller Direct-Zustellung und sicherer Guaranteed-Zustellung.</li>
+  <li>Produktion: Ich begrenze Maps mit Eviction und TTL und nutze für Solace Queues mit Redelivery-Limit und DMQ.</li>
+</ol></div>
+
+<h2>1. Ein put() und eine Nachricht in 8 Schritten</h2>
+<svg viewBox="0 0 480 360" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="h1" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <text x="240" y="18" text-anchor="middle" font-weight="700">Hazelcast: map.put(key, value)</text>
+  <rect x="5" y="30" width="110" height="64" rx="8" fill="#eee" stroke="#777"/><text x="60" y="55" text-anchor="middle" font-size="13" font-weight="700">1. Schlüssel</text><text x="60" y="75" text-anchor="middle" font-size="12">→ Partition</text>
+  <rect x="125" y="30" width="110" height="64" rx="8" fill="#dbe9fb" stroke="#0a66c2"/><text x="180" y="55" text-anchor="middle" font-size="13" font-weight="700">2. Owner</text><text x="180" y="75" text-anchor="middle" font-size="12">Partition Table</text>
+  <rect x="245" y="30" width="110" height="64" rx="8" fill="#dbe9fb" stroke="#0a66c2"/><text x="300" y="55" text-anchor="middle" font-size="13" font-weight="700">3. Primär</text><text x="300" y="75" text-anchor="middle" font-size="12">Eintrag schreiben</text>
+  <rect x="365" y="30" width="110" height="64" rx="8" fill="#e8f5e9" stroke="#2e7d32"/><text x="420" y="55" text-anchor="middle" font-size="13" font-weight="700">4. Backup</text><text x="420" y="75" text-anchor="middle" font-size="12">dann Antwort</text>
+  <line x1="115" y1="62" x2="123" y2="62" stroke="#555" stroke-width="2" marker-end="url(#h1)"/>
+  <line x1="235" y1="62" x2="243" y2="62" stroke="#555" stroke-width="2" marker-end="url(#h1)"/>
+  <line x1="355" y1="62" x2="363" y2="62" stroke="#555" stroke-width="2" marker-end="url(#h1)"/>
+  <text x="240" y="150" text-anchor="middle" font-weight="700">Solace: publish a/b/c</text>
+  <rect x="5" y="162" width="110" height="64" rx="8" fill="#eee" stroke="#777"/><text x="60" y="187" text-anchor="middle" font-size="13" font-weight="700">5. Publish</text><text x="60" y="207" text-anchor="middle" font-size="12">auf Topic</text>
+  <rect x="125" y="162" width="110" height="64" rx="8" fill="#dbe9fb" stroke="#0a66c2"/><text x="180" y="187" text-anchor="middle" font-size="13" font-weight="700">6. Abos</text><text x="180" y="207" text-anchor="middle" font-size="12">prüfen, Wildcards</text>
+  <rect x="245" y="162" width="110" height="64" rx="8" fill="#fff" stroke="#555"/><text x="300" y="187" text-anchor="middle" font-size="13" font-weight="700">7. Queue</text><text x="300" y="207" text-anchor="middle" font-size="12">oder Direct</text>
+  <rect x="365" y="162" width="110" height="64" rx="8" fill="#e8f5e9" stroke="#2e7d32"/><text x="420" y="187" text-anchor="middle" font-size="13" font-weight="700">8. Ack</text><text x="420" y="207" text-anchor="middle" font-size="12">oder Redelivery</text>
+  <line x1="115" y1="194" x2="123" y2="194" stroke="#555" stroke-width="2" marker-end="url(#h1)"/>
+  <line x1="235" y1="194" x2="243" y2="194" stroke="#555" stroke-width="2" marker-end="url(#h1)"/>
+  <line x1="355" y1="194" x2="363" y2="194" stroke="#555" stroke-width="2" marker-end="url(#h1)"/>
+  <rect x="5" y="260" width="470" height="84" rx="8" fill="#f7f7fa" stroke="#999"/><text x="240" y="285" text-anchor="middle" font-size="13" font-weight="700">Gemeinsam: ein Eintrag oder eine Nachricht hat genau einen Weg</text><text x="240" y="307" text-anchor="middle" font-size="12">Hazelcast verteilt Zustand über Schlüssel und Partitionen.</text><text x="240" y="327" text-anchor="middle" font-size="12">Solace verteilt Ereignisse über Topics und Queues.</text>
+</svg>
+<ol>
+  <li><b>Schlüssel zu Partition:</b> Hazelcast verteilt Map-Einträge nach dem Schlüssel. Jedes Mitglied hält etwa gleich viele Einträge.</li>
+  <li><b>Owner finden:</b> Die Partition Table sagt, welches Mitglied die Partition besitzt. Es gibt standardmässig 271 Partitionen.</li>
+  <li><b>Primär schreiben:</b> Das besitzende Mitglied speichert den Eintrag.</li>
+  <li><b>Backup:</b> Standardmässig sichert ein anderes Mitglied jeden Eintrag. Ein synchrones Backup blockiert, bis es geschrieben ist. Dann antwortet die Operation.</li>
+  <li><b>Solace publish:</b> Der Publisher sendet eine Nachricht auf ein Topic wie <code>flight/delayed/jfk</code>. Wildcards gelten nur in Abos.</li>
+  <li><b>Abos prüfen:</b> Der Broker sucht alle passenden Abos. Das können Clients oder Queues mit Topic-Abos sein.</li>
+  <li><b>Zustellung:</b> Direct Messaging ist zuverlässig, aber nicht garantiert. Bei Guaranteed Messaging speichert eine Queue die Nachricht in nichtflüchtigem Speicher.</li>
+  <li><b>Ack und Redelivery:</b> Der Consumer bestätigt. Ohne Ack stellt die Queue erneut zu. Bei Überschreiten des Limits kommt die Nachricht in die Dead Message Queue, falls es eine gibt.</li>
+</ol>
+
+<h2>2. Aufbau</h2>
+<svg viewBox="0 0 480 340" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="h2" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="5" y="5" width="470" height="150" rx="10" fill="#f7f7fa" stroke="#999"/><text x="20" y="27" font-weight="700">Hazelcast-Cluster</text>
+  <rect x="20" y="42" width="130" height="100" rx="8" fill="#dbe9fb" stroke="#0a66c2"/><text x="85" y="64" text-anchor="middle" font-size="13" font-weight="700">Member A</text><text x="85" y="86" text-anchor="middle" font-size="12">Partition 1 (primär)</text><text x="85" y="106" text-anchor="middle" font-size="12">Partition 2 (Backup)</text>
+  <rect x="175" y="42" width="130" height="100" rx="8" fill="#dbe9fb" stroke="#0a66c2"/><text x="240" y="64" text-anchor="middle" font-size="13" font-weight="700">Member B</text><text x="240" y="86" text-anchor="middle" font-size="12">Partition 2 (primär)</text><text x="240" y="106" text-anchor="middle" font-size="12">Partition 3 (Backup)</text>
+  <rect x="330" y="42" width="130" height="100" rx="8" fill="#dbe9fb" stroke="#0a66c2"/><text x="395" y="64" text-anchor="middle" font-size="13" font-weight="700">Member C</text><text x="395" y="86" text-anchor="middle" font-size="12">Partition 3 (primär)</text><text x="395" y="106" text-anchor="middle" font-size="12">Partition 1 (Backup)</text>
+  <line x1="150" y1="122" x2="173" y2="122" stroke="#555" stroke-width="2" marker-end="url(#h2)"/>
+  <line x1="305" y1="122" x2="328" y2="122" stroke="#555" stroke-width="2" marker-end="url(#h2)"/>
+  <rect x="5" y="175" width="470" height="160" rx="10" fill="#f7f7fa" stroke="#999"/><text x="20" y="197" font-weight="700">Solace Event Broker (Message VPN)</text>
+  <rect x="20" y="212" width="130" height="56" rx="8" fill="#eee" stroke="#777"/><text x="85" y="245" text-anchor="middle" font-weight="700">Publisher</text>
+  <rect x="175" y="212" width="130" height="56" rx="8" fill="#e8f5e9" stroke="#2e7d32"/><text x="240" y="236" text-anchor="middle" font-weight="700">Queue</text><text x="240" y="256" text-anchor="middle" font-size="12">Topic-Abos, Spool</text>
+  <rect x="330" y="212" width="130" height="56" rx="8" fill="#eee" stroke="#777"/><text x="395" y="245" text-anchor="middle" font-weight="700">Consumer</text>
+  <line x1="150" y1="240" x2="173" y2="240" stroke="#555" stroke-width="2" marker-end="url(#h2)"/>
+  <line x1="305" y1="240" x2="328" y2="240" stroke="#555" stroke-width="2" marker-end="url(#h2)"/>
+  <rect x="20" y="282" width="440" height="44" rx="8" fill="#fff" stroke="#555"/><text x="240" y="309" text-anchor="middle" font-size="12">Event Mesh: mehrere Broker leiten Abos untereinander (DMR)</text>
+</svg>
+<ol>
+  <li>Ein <b>Member</b> ist ein Hazelcast-Knoten. Der Cluster verteilt Partitionen und Backups auf alle Member.</li>
+  <li>Eine <b>IMap</b> ist die verteilte Map. Werte können einfache Typen, serialisierte Objekte oder JSON sein.</li>
+  <li>Die <b>Partition Table</b> verwaltet, wem welche Partition gehört. Bei einem Ausfall werden Backups neu verteilt.</li>
+  <li>Eine <b>Message VPN</b> trennt bei Solace Topic-Raum und Clients. Viele Anwendungen teilen sich so einen Broker.</li>
+  <li>Eine <b>Queue</b> sammelt Nachrichten, die ihren Topic-Abos entsprechen. Sie nutzt exklusiven oder geteilten Zugriff.</li>
+  <li>Ein <b>Event Mesh</b> verbindet mehrere Broker. <b>DMR</b> leitet Ereignisse selbstständig weiter.</li>
+</ol>
+
+<h2>3. Details</h2>
+<ol>
+  <li><b>Hazelcast AP:</b> Maps bevorzugen Verfügbarkeit gegenüber Konsistenz (CAP). Man kann Maps so konfigurieren, dass veraltete Daten seltener sind. Die Garantie bleibt schwächer als bei einer Datenbank.</li>
+  <li><b>Backups:</b> <code>backup-count</code> ist standardmässig 1 (synchron), <code>async-backup-count</code> ist 0. Zusammen sind höchstens 6 Backups möglich. Beide auf 0 schaltet Backups ab.</li>
+  <li><b>read-backup-data:</b> Standard ist aus. Mit true liest ein Member aus seinem lokalen Backup. Das kann veraltete Werte liefern. TTL und max-idle gelten nur für Lesen am Primär.</li>
+  <li><b>Eviction gegen Expiration:</b> Expiration ist zeitbasiert pro Eintrag (<code>time-to-live-seconds</code> ab letztem Schreiben, <code>max-idle-seconds</code> ab letztem Zugriff). Eviction ist grössenbasiert für die ganze Map. Beide sind standardmässig aus.</li>
+  <li><b>Eviction-Richtlinien:</b> Eingebaut sind LRU und LFU. Der Standard ist <code>NONE</code>. Ist <code>size</code> gesetzt, darf die Richtlinie nicht NONE sein. Max-Size-Standard ist <code>PER_NODE</code>.</li>
+  <li><b>Unbegrenzte Maps:</b> Ohne Eviction und TTL bleiben Daten in der Map, bis man sie löscht. Das ist die häufigste Ursache für OutOfMemory.</li>
+  <li><b>CP Subsystem:</b> Es ist eine Enterprise-Funktion mit Raft. Es bietet linearisierbare Strukturen wie AtomicLong, Fenced Lock, Semaphore und CountDownLatch. Ohne CP-Mitglieder laufen sie im Unsafe-Modus, nur für Entwicklung.</li>
+  <li><b>CP-Quorum:</b> Eine Operation committet erst, wenn die Mehrheit der CP-Mitglieder einer Gruppe sie hat. Bei 7 Mitgliedern müssen 4 erreichbar sein. Fällt die Mehrheit aus, steht die Verfügbarkeit.</li>
+  <li><b>Hazelcast in Camel:</b> Die Camel-Doku nennt Hazelcast als Repository für den Idempotent Consumer. So teilen mehrere Knoten ihren Zustand.</li>
+  <li><b>Solace Topics:</b> Das Muster ist <code>Domain/Noun/Verb/Version/Properties</code>. Ein Topic hat höchstens 128 Ebenen und 250 Zeichen. Topics unterscheiden Gross- und Kleinschreibung.</li>
+  <li><b>Wildcards:</b> <code>*</code> passt auf genau eine Ebene. <code>&gt;</code> passt auf eine oder mehr Ebenen am Ende. <code>animals/domestic/&gt;</code> passt nicht auf <code>animals/domestic</code>. In veröffentlichten Topics sind beide Zeichen Literale.</li>
+  <li><b>Direct gegen Guaranteed:</b> Direct ist der Standard und zuverlässig, aber nicht garantiert. Guaranteed speichert nichtflüchtig und liefert in Reihenfolge der Veröffentlichung, auch wenn der Empfänger offline ist.</li>
+  <li><b>Queue-Standardwerte:</b> Der Zugriff ist exklusiv. Max Redelivery ist 0, also unendlich, mit Bereich 0 bis 255. Redelivery-Delay startet bei 1000 ms, Maximum 64 000 ms, Faktor 2. Max unbestätigte Nachrichten pro Flow sind 10 000. Max Bind Count ist 1000.</li>
+  <li><b>Dead Message Queue:</b> Überschreitet die Zahl der Zustellversuche das Limit, geht die Nachricht in die DMQ, wenn der Publisher sie als DMQ-geeignet markiert hat. Sonst wird sie verworfen. Solace empfiehlt eine DMQ pro Queue mit Namen <code>MyQueue_dmq</code>.</li>
+  <li><b>Partitionierte Queues:</b> Nicht-exklusive Queues können partitioniert sein. Der Standard ist 0, also nicht partitioniert.</li>
+</ol>
+
+<h2>4. Fallen</h2>
+<div class="trap">
+<ul>
+  <li>„Hazelcast ist eine Datenbank mit voller Konsistenz.“ → <b>Falsch.</b> Maps sind AP. Strenge Konsistenz gibt es nur im CP Subsystem.</li>
+  <li>„Backups sind immer synchron.“ → <b>Falsch.</b> Es gibt synchrone und asynchrone Backups. Standard ist ein synchrones.</li>
+  <li>„Eine Hazelcast-Map räumt sich selbst auf.“ → <b>Falsch.</b> Ohne Eviction und TTL bleiben Daten für immer.</li>
+  <li>„Solace Direct Messaging verliert nie etwas.“ → <b>Falsch.</b> Direct ist zuverlässig, aber nicht garantiert. Für Garantien braucht man Guaranteed Messaging.</li>
+  <li>„Wildcards gelten auch beim Publizieren.“ → <b>Falsch.</b> In veröffentlichten Topics sind * und &gt; Literale.</li>
+  <li>„Ein Solace-Queue-Fehler endet nach drei Versuchen.“ → <b>Falsch.</b> Der Standard für Max Redelivery ist 0, also endlos. Man setzt das Limit selbst.</li>
+</ul>
+</div>
+
+<h2>5. Selbsttest</h2>
+<h3>Warum?</h3>
+<details><summary>Warum nutzt man Hazelcast?</summary><p>Daten liegen im Arbeitsspeicher und sind über Partitionen auf mehrere Knoten verteilt. Das gibt schnelle Zugriffe und teilt Zustand zwischen Anwendungsinstanzen, zum Beispiel für Caches oder Idempotenz-Repositories.</p></details>
+<details><summary>Warum gibt es Backups?</summary><p>Fällt ein Member aus, hat ein anderer Member eine Kopie. Der Cluster verteilt die Daten dann neu. Ohne Backups ginge der Teil der Daten verloren.</p></details>
+<details><summary>Warum nutzt Solace hierarchische Topics?</summary><p>Wildcards in Abos filtern auf Ebenen. Der Broker routet so fein, ohne den Inhalt zu lesen. Eine gute Struktur ist die Grundlage für Routing und Governance.</p></details>
+<h3>Wie innen?</h3>
+<details><summary>Wie verteilt Hazelcast Daten?</summary><p>Der Schlüssel bestimmt die Partition. Die Partition Table ordnet jeder Partition ein Mitglied zu. Jedes Mitglied hält etwa gleich viele Einträge. Kommt ein Mitglied dazu, wandern Partitionen.</p></details>
+<details><summary>Wie arbeitet ein synchrones Backup?</summary><p>Die Änderung muss beim Primär und allen synchronen Backups ankommen, bevor die Operation weiterläuft. Das gibt Konsistenz, kostet aber Latenz.</p></details>
+<details><summary>Wie funktioniert das CP Subsystem?</summary><p>CP-Mitglieder bilden Gruppen mit Raft. Ein Leader repliziert Operationen an Follower. Es braucht die Mehrheit. Strukturen wie Fenced Lock sind linearisierbar.</p></details>
+<details><summary>Wie funktionieren Solace-Wildcards?</summary><p>Ein * steht für genau eine Ebene. Ein &gt; steht für eine oder mehr Ebenen am Ende. Abos nutzen sie, Publisher nicht.</p></details>
+<details><summary>Was ist der Unterschied zwischen Direct und Guaranteed?</summary><p>Direct ist der Standard und zuverlässig, aber ohne Garantie. Guaranteed speichert nichtflüchtig, liefert in Reihenfolge und auch an Empfänger, die offline waren.</p></details>
+<details><summary>Wie funktioniert eine Solace Queue?</summary><p>Sie sammelt Nachrichten, die ihren Topic-Abos entsprechen. Clients binden sich und konsumieren exklusiv oder geteilt. Ohne Ack gibt es eine Redelivery.</p></details>
+<details><summary>Was ist eine Message VPN?</summary><p>Ein Objekt auf dem Broker, das Topic-Raum und Clients trennt. Viele Anwendungen teilen sich einen Broker, ohne sich zu stören.</p></details>
+<details><summary>Was ist ein Event Mesh?</summary><p>Ein Netz aus Event Brokern, in dem Ereignisse jede Anwendung erreichen, egal wo sie läuft. DMR leitet die Abos und Nachrichten zwischen den Brokern.</p></details>
+<h3>Zahlen</h3>
+<details><summary>Wie viele Partitionen hat Hazelcast standardmässig?</summary><p>271.</p></details>
+<details><summary>Welche Backup-Standardwerte gelten?</summary><p>Ein synchrones Backup und kein asynchrones. Zusammen höchstens 6.</p></details>
+<details><summary>Welche Grenzen hat ein Solace-Topic?</summary><p>Höchstens 128 Ebenen und 250 Zeichen.</p></details>
+<details><summary>Welche Redelivery-Werte hat eine Solace Queue?</summary><p>Max Redelivery 0 (endlos), Bereich 0 bis 255. Anfangs 1000 ms Pause, höchstens 64 000 ms, Faktor 2.</p></details>
+<h3>Vergleich</h3>
+<details><summary>Hazelcast gegen Redis?</summary><p>Beides sind In-Memory-Speicher. Hazelcast ist ein Cluster aus Java-Membern mit Partitionen und kann eingebettet laufen. Die Auswahl hängt von Sprache, Betrieb und benötigten Strukturen ab.</p></details>
+<details><summary>Hazelcast-Map gegen Datenbank?</summary><p>Die Map ist schnell und verteilt, aber AP und im Speicher. Eine Datenbank gibt Dauerhaftigkeit und Transaktionen. Die Map eignet sich als Cache oder gemeinsamer Zustand.</p></details>
+<details><summary>Solace gegen Kafka?</summary><p>Solace routet fein über Topics und liefert in Queues mit Ack. Kafka ist ein Log mit Replay. Der Vergleich im Detail steht auf der Seite zu Kafka im Vergleich.</p></details>
+<details><summary>Solace Queue gegen Topic Endpoint?</summary><p>Eine Queue hat mehrere Topic-Abos und viele Optionen. Ein Topic Endpoint hat genau ein Abo und weniger Optionen.</p></details>
+<h3>Produktion</h3>
+<details><summary>Warum läuft ein Hazelcast-Member mit OutOfMemory?</summary><p>Die Map hat keine Grenze. Ohne Eviction und TTL bleiben Daten für immer. Lösung: Eviction mit Max-Size und TTL setzen.</p></details>
+<details><summary>Warum sehen wir veraltete Werte aus Hazelcast?</summary><p>Die Map ist AP. Bei read-backup-data kann das lokale Backup hinterherhinken. Lösung: von der Primärkopie lesen oder CP-Strukturen für kritischen Zustand nutzen.</p></details>
+<details><summary>Szenario: Eine Solace-Queue ist voll und ein Consumer wiederholt dieselbe Nachricht endlos. Was tun Sie?</summary><p>Max Redelivery steht auf 0, also endlos. Ich setze ein Limit und eine DMQ. Die Nachricht muss vom Publisher als DMQ-geeignet markiert sein.</p></details>
+<details><summary>Szenario: Nach einem Netzproblem zeigen zwei Anwendungsinstanzen verschiedene Werte aus der Hazelcast-Map. Was prüfen Sie?</summary><p>Ob ein Split Brain vorlag und wie die Map-Konfiguration ist. Für Sperren und Zähler nutze ich das CP Subsystem. Für Caches akzeptiere ich kurze Abweichungen.</p></details>
+<h3>Design</h3>
+<details><summary>Wann nutzen Sie Hazelcast?</summary><p>Für gemeinsamen Zustand mehrerer Instanzen, etwa Cache, Session-Daten oder Idempotenz-Repository. Nicht als einzige Quelle der Wahrheit.</p></details>
+<details><summary>Wie entwerfen Sie Topics in Solace?</summary><p>Nach Domain, Noun, Verb und Version. Nur Properties, die Routing oder Filter brauchen. Kein Environment und keine IDs im Topic. Jede Ebene wird dokumentiert.</p></details>
+<details><summary>Szenario: Fünf Teams sollen Bestell-Ereignisse empfangen, jedes in eigener Geschwindigkeit, einige offline. Was bauen Sie?</summary><p>Guaranteed Messaging mit einer Queue pro Team. Jede Queue hat ein Topic-Abo mit Wildcard, ein Redelivery-Limit und eine DMQ. Offline-Teams bekommen die Nachrichten später.</p></details>
+<details><summary>Wie sichern Sie den Zustand einer Anwendung mit Hazelcast?</summary><p>Mit mindestens einem Backup, TTL und Eviction. Kritische Daten gehören zusätzlich in eine Datenbank. Der Cluster ist ein Cache und kein Archiv.</p></details>
+<details><summary>Wann ist Solace die falsche Wahl?</summary><p>Wenn man nur ein einfaches Log mit langem Replay braucht und die Plattform schon Kafka hat. Oder wenn ein Hersteller-Produkt nicht in die Strategie passt.</p></details>
+
+<details class="mehr"><summary>Mehr</summary>
+<h3>Gerüst</h3>
+<ul>
+  <li><b>Warum?</b> Hazelcast: schneller verteilter Zustand. Solace: feines Routing und garantierte Zustellung.</li>
+  <li><b>Wie innen?</b> Hazelcast: Schlüssel, Partition, Owner, Backup. Solace: Topic, Abos, Queue, Ack.</li>
+  <li><b>Zahlen</b> 271 Partitionen, 1 Backup. Topic 128 Ebenen, 250 Zeichen. Max Redelivery 0.</li>
+  <li><b>Vergleich</b> AP gegen CP. Direct gegen Guaranteed. Queue gegen Topic Endpoint.</li>
+  <li><b>Produktion</b> Unbegrenzte Maps, veraltete Reads, endlose Redelivery.</li>
+  <li><b>Design</b> Eviction und TTL, Topic-Hierarchie, DMQ pro Queue.</li>
+</ul>
+
+<h3>Beispiel: Map-Konfiguration und Topic-Abos</h3>
+<pre># Hazelcast (YAML, Skizze): Map mit Backup, TTL und Eviction
+hazelcast:
+  map:
+    sessions:
+      backup-count: 1
+      async-backup-count: 0
+      time-to-live-seconds: 1800
+      eviction:
+        eviction-policy: LRU
+        max-size-policy: PER_NODE
+        size: 10000
+
+# Solace Topic-Muster
+Publish:  flight/delayed/v1/jfk
+Abos:     flight/delayed/&gt;        (alle verspäteten Flüge)
+          flight/*/v1/jfk          (jedes Ereignis für jfk)
+          flight/&gt;                (alles unter flight)</pre>
+<p class="small">Nicht ausgeführt. Die YAML-Schlüssel sind eine Skizze nach den Optionen der Doku, vor dem Einsatz mit der eigenen Version prüfen.</p>
+<ol>
+  <li><code>backup-count: 1</code> ist der Standard. Ein anderes Mitglied hält eine synchrone Kopie.</li>
+  <li><code>time-to-live-seconds</code> zählt ab dem letzten Schreiben. Hier laufen Einträge nach 30 Minuten ab.</li>
+  <li>LRU mit <code>size</code> 10 000 pro Mitglied begrenzt die Map. Ohne diese Zeilen wächst sie ohne Grenze.</li>
+  <li>Der Publisher nutzt ein festes Topic. Wildcards sind nur in Abos gültig.</li>
+  <li><code>*</code> trifft genau eine Ebene. <code>&gt;</code> trifft eine oder mehr Ebenen am Ende.</li>
+</ol>
+
+<h3>Vergleich</h3>
+<ul>
+  <li><b>Hazelcast IMap:</b> verteilte Map, AP, Backups, Eviction und TTL.</li>
+  <li><b>Hazelcast CP Subsystem:</b> Raft, linearisierbar, für Locks und Zähler.</li>
+  <li><b>Datenbank:</b> Dauerhaft und transaktional. Langsamer als Speicher.</li>
+  <li><b>Solace Direct:</b> schnell, zuverlässig, nicht garantiert.</li>
+  <li><b>Solace Guaranteed:</b> nichtflüchtig, geordnet, mit Ack und Redelivery.</li>
+  <li><b>Kafka und RabbitMQ:</b> andere Modelle. Siehe die Seiten zu Kafka im Vergleich und RabbitMQ.</li>
+</ul>
+
+<h3>Produktion</h3>
+<ol>
+  <li><b>OutOfMemory durch Map:</b> Keine Grenze. Lösung: Eviction, TTL und Monitoring der Map-Grösse.</li>
+  <li><b>Verlust bei Ausfall:</b> Kein Backup oder asynchron. Lösung: Backup-Anzahl passend wählen.</li>
+  <li><b>Split Brain:</b> Zwei Teile des Clusters arbeiten getrennt. Lösung: CP Subsystem für kritische Strukturen und klare Merge-Regeln.</li>
+  <li><b>Endlose Redelivery:</b> Standard 0. Lösung: Limit und DMQ setzen.</li>
+  <li><b>Queue läuft voll:</b> Consumer zu langsam. Lösung: Consumer skalieren, nicht-exklusive Queue, Spool-Grenzen überwachen.</li>
+  <li><b>Wildcard-Verwechslung:</b> Wildcards beim Publizieren werden Literale. Lösung: nur Abos mit Wildcards.</li>
+</ol>
+
+<h3>Diagnose: Werkzeuge und Befehle</h3>
+<ul>
+  <li><b>Hazelcast Management Center:</b> Mitglieder, Partitionen, Map-Grösse und Operationen.</li>
+  <li><b>Hazelcast-Metriken:</b> Anzahl Einträge, Evictions, Backup-Zähler.</li>
+  <li><b>Solace Broker Manager oder CLI:</b> Queue-Tiefe, Redelivery, Spool-Nutzung, Bindungen.</li>
+  <li><b>DMQ ansehen:</b> zeigt Nachrichten, die nicht zustellbar waren.</li>
+  <li><b>Topic-Abos prüfen:</b> zeigen, welche Wildcards eine Queue abonniert.</li>
+</ul>
+
+<h3>Senior-Punkte</h3>
+<div class="senior">
+<ol>
+  <li><b>Hazelcast ist ein Cache und geteilter Zustand,</b> keine Wahrheit. Kritische Daten gehören in eine Datenbank.</li>
+  <li><b>AP gegen CP ist eine Entscheidung pro Datenstruktur.</b> Locks und Zähler gehören ins CP Subsystem.</li>
+  <li><b>Eine Map braucht Grenzen.</b> Eviction und TTL gehören zur Grundkonfiguration.</li>
+  <li><b>Topic-Hierarchie ist ein Vertrag.</b> Sie wird früh dokumentiert und selten geändert.</li>
+  <li><b>Guaranteed nur, wo nötig.</b> Direct ist schneller. Garantierte Zustellung kostet Speicher und Durchsatz.</li>
+  <li><b>Standardwerte prüfen.</b> Max Redelivery 0 heisst endlos. Das ist selten gewollt.</li>
+</ol>
+</div>
+
+<h3>Dein Beispiel</h3>
+</details>
+
+</body>
+</html>

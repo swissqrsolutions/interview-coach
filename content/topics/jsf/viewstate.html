@@ -1,0 +1,242 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ViewState: client vs server</title>
+<style>
+  body { font: 17px/1.55 -apple-system, system-ui, sans-serif; max-width: 760px; margin: 0 auto; padding: 16px; color: #1d1d1f; }
+  h1 { font-size: 28px; margin: 8px 0 4px; }
+  h2 { font-size: 21px; margin: 32px 0 8px; padding-top: 12px; border-top: 2px solid #e5e5ea; }
+  .kern { background: #eef6ff; border-left: 4px solid #0a66c2; padding: 10px 14px; border-radius: 6px; }
+  .senior { background: #f0faf0; border-left: 4px solid #2e7d32; padding: 10px 14px; border-radius: 6px; }
+  .trap { background: #fff4f2; border-left: 4px solid #c62828; padding: 10px 14px; border-radius: 6px; }
+  code { background: #f2f2f7; padding: 1px 5px; border-radius: 4px; font-size: 15px; }
+  pre { background: #1e1e1e; color: #e6e6e6; padding: 12px; border-radius: 8px; overflow-x: auto; font-size: 13.5px; line-height: 1.45; }
+  svg { width: 100%; height: auto; display: block; margin: 10px 0; }
+  ol li, ul li { margin: 4px 0; }
+  details { border: 1px solid #e5e5ea; border-radius: 8px; padding: 8px 12px; margin: 6px 0; }
+  summary { font-weight: 600; cursor: pointer; }
+  details p { margin: 6px 0 2px; }
+  .small { color: #6e6e73; font-size: 14px; }
+  h3 { font-size: 17px; margin: 20px 0 6px; }
+  .geruest { border: 2px solid #1d1d1f; border-radius: 6px; padding: 10px 14px; margin: 14px 0; font-size: 15px; line-height: 1.4; }
+  .geruest h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; margin: 0 0 8px; padding: 0; border: 0; }
+  .geruest dl { display: grid; grid-template-columns: 6.6em 1fr; gap: 6px 10px; margin: 0; }
+  .geruest dt { font-weight: 700; font-size: 12px; text-transform: uppercase; letter-spacing: .05em; padding-top: 1px; }
+  .geruest dd { margin: 0; }
+  .muster { border: 1px solid #e5e5ea; border-left: 4px solid #1d1d1f; border-radius: 6px; padding: 10px 14px; margin: 14px 0; }
+  .muster h3 { margin: 0 0 6px; font-size: 13px; text-transform: uppercase; letter-spacing: .06em; }
+  .muster .mq { margin: 0 0 6px; }
+</style>
+</head>
+<body>
+
+<h1>ViewState: client vs server</h1>
+<!-- sources: Jakarta Faces 4.0 API-Doku (StateManager, ResponseStateManager, Converter), Mojarra CONTEXT-PARAMS.md (eclipse-ee4j/mojarra, Standardwerte), Apache MyFaces Web Context Parameters (core30 webconfig) -->
+
+<div class="kern">
+<b>Kern:</b> Der <b>ViewState</b> ist der gespeicherte Zustand des Komponentenbaums einer Faces-Seite. Er liegt entweder in der <b>Session auf dem Server</b> oder <b>verschlüsselt im Browser</b>, im versteckten Feld <code>jakarta.faces.ViewState</code>. Damit stellt <b>Restore View</b> beim nächsten Postback den Baum wieder her.
+</div>
+
+<div class="muster"><h3>Antwort-Muster</h3><p class="mq"><b>Frage:</b> Was ist der ViewState und wo liegt er?</p><ol>
+  <li>Mechanismus: Faces speichert den Zustand der Komponenten. Beim Server-Modus liegt er in der Session und das Feld trägt nur eine Referenz. Beim Client-Modus trägt das Feld den ganzen Zustand.</li>
+  <li>Zahl: Mojarra hält je 15 Views pro logischer View und 15 logische Views in der Session. MyFaces hält standardmässig 20 Views.</li>
+  <li>Trade-off: Server spart Bandbreite, kostet Session-Speicher und endet bei Session-Ablauf. Client kostet Bandbreite und CPU pro Request.</li>
+  <li>Produktion: Ich nutze server, begrenze die Views, setze bei Clustern Session-Replikation und fange die ViewExpiredException ab.</li>
+</ol></div>
+
+<h2>1. Ein Postback in 7 Schritten</h2>
+<svg viewBox="0 0 480 380" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="v1" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="10" y="10" width="220" height="56" rx="10" fill="#eee" stroke="#777"/><text x="120" y="33" text-anchor="middle" font-weight="700">1. Render Response</text><text x="120" y="52" text-anchor="middle" font-size="12">Baum wird gezeichnet</text>
+  <rect x="250" y="10" width="220" height="56" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="360" y="33" text-anchor="middle" font-weight="700">2. Zustand sichern</text><text x="360" y="52" text-anchor="middle" font-size="12">nur Änderungen (partial)</text>
+  <line x1="230" y1="38" x2="248" y2="38" stroke="#555" stroke-width="2" marker-end="url(#v1)"/>
+  <rect x="10" y="100" width="220" height="70" rx="10" fill="#e8f5e9" stroke="#2e7d32"/><text x="120" y="123" text-anchor="middle" font-weight="700">3a. Server</text><text x="120" y="143" text-anchor="middle" font-size="12">Zustand in Session</text><text x="120" y="160" text-anchor="middle" font-size="12">Feld = Referenz</text>
+  <rect x="250" y="100" width="220" height="70" rx="10" fill="#fff4f2" stroke="#c62828"/><text x="360" y="123" text-anchor="middle" font-weight="700">3b. Client</text><text x="360" y="143" text-anchor="middle" font-size="12">serialisieren, komprimieren,</text><text x="360" y="160" text-anchor="middle" font-size="12">verschlüsseln, Base64</text>
+  <line x1="360" y1="66" x2="120" y2="98" stroke="#555" stroke-width="2" marker-end="url(#v1)"/>
+  <line x1="360" y1="66" x2="360" y2="98" stroke="#555" stroke-width="2" marker-end="url(#v1)"/>
+  <rect x="10" y="205" width="460" height="52" rx="10" fill="#fff" stroke="#555"/><text x="240" y="228" text-anchor="middle" font-weight="700">4. Browser sendet das Feld jakarta.faces.ViewState</text><text x="240" y="247" text-anchor="middle" font-size="12">beim nächsten Postback mit</text>
+  <line x1="120" y1="170" x2="120" y2="203" stroke="#555" stroke-width="2" marker-end="url(#v1)"/>
+  <line x1="360" y1="170" x2="360" y2="203" stroke="#555" stroke-width="2" marker-end="url(#v1)"/>
+  <rect x="10" y="290" width="220" height="70" rx="10" fill="#dbe9fb" stroke="#0a66c2"/><text x="120" y="313" text-anchor="middle" font-weight="700">5. Restore View</text><text x="120" y="333" text-anchor="middle" font-size="12">Seite aus Facelets bauen,</text><text x="120" y="350" text-anchor="middle" font-size="12">Änderungen einspielen</text>
+  <rect x="250" y="290" width="220" height="70" rx="10" fill="#0a66c2" stroke="#0a66c2"/><text x="360" y="313" text-anchor="middle" fill="#fff" font-weight="700">6. Fehlt der Zustand?</text><text x="360" y="333" text-anchor="middle" fill="#fff" font-size="12">ViewExpiredException</text><text x="360" y="350" text-anchor="middle" fill="#fff" font-size="12">7. sonst weiter, neu sichern</text>
+  <line x1="240" y1="257" x2="120" y2="288" stroke="#555" stroke-width="2" marker-end="url(#v1)"/>
+  <line x1="230" y1="325" x2="248" y2="325" stroke="#555" stroke-width="2" marker-end="url(#v1)"/>
+</svg>
+<ol>
+  <li><b>Render Response:</b> Faces zeichnet den Komponentenbaum als HTML. Der Zustand der Komponenten ist jetzt bekannt.</li>
+  <li><b>Zustand sichern:</b> Mit <b>Partial State Saving</b> (Standard seit 2.0) speichert Faces nur, was sich vom Anfangszustand der View unterscheidet.</li>
+  <li><b>Server oder Client:</b> Im Server-Modus liegt der Zustand in der Session. Im Client-Modus wird er serialisiert, komprimiert, verschlüsselt und als Text ins Feld geschrieben.</li>
+  <li><b>Feld im Formular:</b> Das HTML enthält ein verstecktes Feld <code>jakarta.faces.ViewState</code>. Sein Wert ist die Referenz oder der ganze Zustand.</li>
+  <li><b>Restore View:</b> Beim Postback baut Faces die View aus dem Facelets-Template. Dann spielt es die gespeicherten Änderungen ein.</li>
+  <li><b>Zustand fehlt:</b> Ist der Zustand nicht mehr da, wirft Faces eine <code>ViewExpiredException</code>. Das passiert nach Session-Ablauf oder wenn der Server die View verdrängt hat.</li>
+  <li><b>Neu sichern:</b> Nach der Verarbeitung rendert Faces wieder und sichert den neuen Zustand.</li>
+</ol>
+<p>Die 6 Phasen selbst stehen auf der Seite zum Lebenszyklus. Hier geht es nur um den Zustand dazwischen.</p>
+
+<h2>2. Aufbau</h2>
+<svg viewBox="0 0 480 330" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+  <defs><marker id="v2" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+  <rect x="10" y="10" width="200" height="140" rx="10" fill="#f7f7fa" stroke="#999"/><text x="110" y="32" text-anchor="middle" font-weight="700">Browser</text>
+  <rect x="25" y="46" width="170" height="90" rx="6" fill="#fff" stroke="#777"/><text x="110" y="68" text-anchor="middle" font-size="12">&lt;form&gt;</text><text x="110" y="88" text-anchor="middle" font-size="12" font-weight="700">hidden input</text><text x="110" y="106" text-anchor="middle" font-size="12">jakarta.faces.ViewState</text><text x="110" y="124" text-anchor="middle" font-size="12">Referenz oder Zustand</text>
+  <rect x="270" y="10" width="200" height="140" rx="10" fill="#f7f7fa" stroke="#999"/><text x="370" y="32" text-anchor="middle" font-weight="700">Server</text>
+  <rect x="285" y="46" width="170" height="40" rx="6" fill="#dbe9fb" stroke="#0a66c2"/><text x="370" y="71" text-anchor="middle" font-size="13" font-weight="700">StateManager</text>
+  <rect x="285" y="96" width="170" height="40" rx="6" fill="#dbe9fb" stroke="#0a66c2"/><text x="370" y="121" text-anchor="middle" font-size="13" font-weight="700">ResponseStateManager</text>
+  <line x1="195" y1="90" x2="283" y2="90" stroke="#555" stroke-width="2" marker-end="url(#v2)"/>
+  <rect x="270" y="190" width="200" height="130" rx="10" fill="#e8f5e9" stroke="#2e7d32"/><text x="370" y="212" text-anchor="middle" font-weight="700">Session (server)</text><text x="370" y="236" text-anchor="middle" font-size="12">logische View 1: Views</text><text x="370" y="256" text-anchor="middle" font-size="12">logische View 2: Views</text><text x="370" y="276" text-anchor="middle" font-size="12">… begrenzt durch</text><text x="370" y="296" text-anchor="middle" font-size="12">numberOfLogicalViews ×</text><text x="370" y="312" text-anchor="middle" font-size="12">numberOfViewsInSession</text>
+  <line x1="370" y1="136" x2="370" y2="188" stroke="#2e7d32" stroke-width="2" marker-end="url(#v2)"/>
+  <rect x="10" y="190" width="200" height="130" rx="10" fill="#fff4f2" stroke="#c62828"/><text x="110" y="212" text-anchor="middle" font-weight="700">Client-Modus</text><text x="110" y="238" text-anchor="middle" font-size="12">serialisieren</text><text x="110" y="258" text-anchor="middle" font-size="12">GZIP, verschlüsseln</text><text x="110" y="278" text-anchor="middle" font-size="12">Base64 im Feld</text><text x="110" y="302" text-anchor="middle" font-size="12">Server speichert nichts</text>
+  <line x1="283" y1="125" x2="110" y2="188" stroke="#c62828" stroke-width="2" marker-end="url(#v2)"/>
+</svg>
+<ol>
+  <li>Der <b>StateManager</b> sichert und stellt den Zustand der View her.</li>
+  <li>Der <b>ResponseStateManager</b> schreibt und liest das Feld im HTML. Er prüft auch, ob ein Request ein Postback ist.</li>
+  <li>Das <b>versteckte Feld</b> heisst <code>jakarta.faces.ViewState</code>. Seine ID hat eine eindeutige Nummer pro View.</li>
+  <li>Im <b>Server-Modus</b> hält die Session mehrere Views. Eine Obergrenze verdrängt die ältesten.</li>
+  <li>Im <b>Client-Modus</b> bleibt auf dem Server nichts. Das Feld trägt alles.</li>
+  <li><b>Mojarra und MyFaces</b> haben eigene Parameter dafür. Die Namen unterscheiden sich.</li>
+</ol>
+
+<h2>3. Details</h2>
+<ol>
+  <li><b>Standardwert:</b> Mojarra und MyFaces nutzen <code>server</code> als Standard. Das Javadoc der Spec nennt <code>client</code>. Darum setzt man <code>jakarta.faces.STATE_SAVING_METHOD</code> immer selbst.</li>
+  <li><b>Server-Modus:</b> Die Session hält den Zustand. Das Feld trägt nur eine Referenz. Das ist schneller, aber begrenzt. Es endet mit der Session.</li>
+  <li><b>Client-Modus:</b> Das Feld trägt den ganzen Zustand. Er ist praktisch unbegrenzt und überlebt Session-Ende. Er kostet CPU und Bandbreite bei jedem Request.</li>
+  <li><b>Partial State Saving:</b> <code>jakarta.faces.PARTIAL_STATE_SAVING</code> ist standardmässig an. Faces speichert nur Abweichungen vom Anfangszustand. Das ist schneller und viel kleiner. <code>FULL_STATE_SAVING_VIEW_IDS</code> erzwingt vollen Zustand für einzelne Views.</li>
+  <li><b>Limits in Mojarra:</b> <code>com.sun.faces.numberOfLogicalViews</code> ist 15, <code>com.sun.faces.numberOfViewsInSession</code> ist 15. Eine logische View ist eine View mit allen Postbacks. Die Session hält bis zum Produkt beider Werte.</li>
+  <li><b>Limits in MyFaces:</b> <code>org.apache.myfaces.NUMBER_OF_VIEWS_IN_SESSION</code> ist 20. <code>NUMBER_OF_SEQUENTIAL_VIEWS_IN_SESSION</code> ist 4 und gilt für Sequenzen aus POST und Redirect.</li>
+  <li><b>ViewExpiredException:</b> Sie kommt, wenn die Session ablief oder der Server die View verdrängt hat. Im Client-Modus kommt sie nach einem gesetzten Timeout, in Mojarra <code>com.sun.faces.clientStateTimeout</code> in Minuten.</li>
+  <li><b>Verschlüsselung:</b> Im Client-Modus muss der Zustand verschlüsselt und manipulationssicher sein. Schlägt die Prüfung fehl, wirft Faces eine <code>ProtectedViewException</code>. Mojarra kann die Verschlüsselung nur im Project Stage Development abschalten.</li>
+  <li><b>Cluster:</b> Im Client-Modus müssen alle Knoten denselben Schlüssel nutzen, bei MyFaces <code>org.apache.myfaces.SECRET</code>. Im Server-Modus braucht man Sticky Sessions oder Session-Replikation. Dann muss der Zustand serialisierbar sein.</li>
+  <li><b>SERIALIZE_SERVER_STATE:</b> Standard ist false. Mit true wird der Zustand schon beim Request serialisiert. So zeigt sich eine <code>NotSerializableException</code> sofort und nicht erst bei der Replikation.</li>
+  <li><b>Kompression:</b> Mojarra komprimiert den Zustand mit GZIP, Standard ist an. Im Client-Modus schrumpft das den Weg übers Netz. Im Server-Modus wirkt es nur mit SERIALIZE_SERVER_STATE.</li>
+  <li><b>Sicherheit des Werts:</b> Die Spec verlangt, dass der ViewState-Wert schwer vorhersagbar ist. Mojarra erzeugt standardmässig zufällige Server-State-IDs statt eines Zählers.</li>
+  <li><b>Stateless Views:</b> Mit <code>transient="true"</code> auf <code>f:view</code> speichert Faces keinen Zustand. Das spart Speicher bei reinen Lese-Seiten.</li>
+  <li><b>Client Window:</b> <code>jakarta.faces.CLIENT_WINDOW_MODE</code> ist standardmässig <code>none</code>, möglich ist <code>url</code>. Es trennt Browser-Tabs. Mojarra hält höchstens 10 Client Windows (seit 4.0).</li>
+</ol>
+
+<h2>4. Fallen</h2>
+<div class="trap">
+<ul>
+  <li>„Der ViewState liegt immer im Browser.“ → <b>Falsch.</b> Im Server-Modus liegt er in der Session. Das Feld trägt nur eine Referenz.</li>
+  <li>„Client-Modus heisst: der Server hat keine Session mehr.“ → <b>Falsch.</b> Die Session für Beans existiert weiter. Nur der Komponentenzustand liegt im Browser.</li>
+  <li>„Der Client-ViewState ist Klartext und manipulierbar.“ → <b>Falsch.</b> Er ist laut Spec verschlüsselt und manipulationssicher. Eine Manipulation führt zur ProtectedViewException.</li>
+  <li>„Der Server-Modus hat kein Limit.“ → <b>Falsch.</b> Die Session hält nur eine begrenzte Zahl an Views. Alte Views sind danach weg.</li>
+  <li>„Mit client geht die ViewExpiredException weg.“ → <b>Falsch.</b> Sie kommt auch dort, etwa nach einem Timeout oder bei kaputtem Zustand.</li>
+  <li>„Der ViewState ist die ganze Seite.“ → <b>Falsch.</b> Mit Partial State Saving ist er nur der Unterschied zum Anfangszustand. Die Seite entsteht neu aus Facelets.</li>
+</ul>
+</div>
+
+<h2>5. Selbsttest</h2>
+<h3>Warum?</h3>
+<details><summary>Warum braucht Faces einen ViewState?</summary><p>Der Server baut die Seite pro Request neu. Er muss wissen, wie der Baum und seine Werte beim letzten Render aussahen. Der ViewState liefert das.</p></details>
+<details><summary>Warum ist der Server-Modus meist der Standard?</summary><p>Er sendet nur eine Referenz. Das spart Bandbreite und CPU. Der Zustand verlässt den Server nicht.</p></details>
+<details><summary>Warum gibt es Partial State Saving?</summary><p>Der volle Baum ist gross. Meist ändert sich wenig. Faces speichert nur die Änderungen, das ist schneller und viel kleiner.</p></details>
+<h3>Wie innen?</h3>
+<details><summary>Was steht im Feld jakarta.faces.ViewState?</summary><p>Im Server-Modus eine Referenz auf den Zustand in der Session. Im Client-Modus der serialisierte, komprimierte und verschlüsselte Zustand als Text.</p></details>
+<details><summary>Wie stellt Restore View die View wieder her?</summary><p>Es liest das Feld. Bei Partial State Saving baut es die View aus dem Facelets-Template. Dann spielt es die gespeicherten Änderungen ein.</p></details>
+<details><summary>Wie sichert Faces den Zustand im Client-Modus?</summary><p>Es serialisiert den Zustand, komprimiert ihn (Mojarra: GZIP) und verschlüsselt ihn. Danach kommt Base64 als Text ins Feld.</p></details>
+<details><summary>Wie hält die Session den Zustand im Server-Modus?</summary><p>Sie hält mehrere Views pro logischer View und mehrere logische Views. Mojarra begrenzt jedes auf 15. Älteste Einträge werden verdrängt.</p></details>
+<details><summary>Was ist eine logische View?</summary><p>Eine erste angeforderte View mit allen ihren Postbacks. Ein zweiter Browser-Tab erzeugt eine neue logische View.</p></details>
+<details><summary>Wie erkennt Faces einen Postback?</summary><p>Der Standard-RenderKit prüft, ob die Request-Parameter das Feld jakarta.faces.ViewState enthalten.</p></details>
+<h3>Zahlen</h3>
+<details><summary>Wie viele Views hält die Session in Mojarra?</summary><p>numberOfLogicalViews ist 15 und numberOfViewsInSession ist 15. Die Session hält bis zum Produkt der beiden Werte.</p></details>
+<details><summary>Wie viele Views hält MyFaces?</summary><p>NUMBER_OF_VIEWS_IN_SESSION ist 20. NUMBER_OF_SEQUENTIAL_VIEWS_IN_SESSION ist 4.</p></details>
+<details><summary>Welche Standardwerte hat PARTIAL_STATE_SAVING?</summary><p>true für Anwendungen ab Version 2.0. Für 1.2-Anwendungen ist es aus.</p></details>
+<details><summary>Welche Einheit hat clientStateTimeout?</summary><p>Minuten. Der Wert gilt nur, wenn er gesetzt ist. Danach kommt eine ViewExpiredException.</p></details>
+<h3>Vergleich</h3>
+<details><summary>Server gegen Client im Vergleich?</summary><p>Server: wenig Netz, mehr Session-Speicher, Ende bei Session-Ablauf. Client: viel Netz und CPU, kein Session-Speicher, überlebt Session-Ende.</p></details>
+<details><summary>ViewState gegen Session-Bean?</summary><p>Der ViewState speichert den Zustand der Komponenten. Beans speichern Anwendungsdaten. Beide leben getrennt und haben eigene Scopes.</p></details>
+<details><summary>Full State gegen Partial State?</summary><p>Full speichert den ganzen Baum. Partial speichert nur Abweichungen. Partial ist Standard seit 2.0.</p></details>
+<details><summary>Faces-ViewState gegen JWT in REST?</summary><p>Der ViewState hält UI-Zustand, ein JWT hält Identität. Ein REST-Frontend hält den UI-Zustand im Browser.</p></details>
+<h3>Produktion</h3>
+<details><summary>Warum kommt nach Inaktivität eine ViewExpiredException?</summary><p>Die Session ist abgelaufen und damit der Zustand weg. Im Server-Modus ist das normal. Man fängt sie mit einer Fehlerseite oder einem Handler ab.</p></details>
+<details><summary>Was bedeutet NotSerializableException im Cluster?</summary><p>Eine Komponente oder Bean im Zustand ist nicht serialisierbar. Bei Replikation oder Passivierung scheitert es. SERIALIZE_SERVER_STATE macht den Fehler früher sichtbar.</p></details>
+<details><summary>Szenario: Nach dem Login-Timeout sehen Nutzer eine weisse Seite bei Ajax-Klicks. Was tun Sie?</summary><p>Ich fange die ViewExpiredException mit einem ExceptionHandler. Bei Ajax leite ich auf Login oder Startseite um. Das Session-Timeout passe ich an.</p></details>
+<details><summary>Szenario: Der Heap wächst, obwohl wenige Nutzer da sind. Im Dump liegen viele UIViewRoot-Objekte in Sessions. Warum?</summary><p>Der Server-Modus hält pro Session bis zu 15 mal 15 Views in Mojarra. Grosse Seiten summieren sich. Ich senke die Limits, nutze Stateless Views und verkleinere die Bäume.</p></details>
+<h3>Design</h3>
+<details><summary>Server oder Client für ein neues Projekt?</summary><p>Standardmässig Server. Client nur, wenn Sessions knapp sind oder ein Cluster ohne Session-Replikation läuft. Dann Schlüssel gleich auf allen Knoten.</p></details>
+<details><summary>Wie bleibt die Anwendung im Cluster stabil?</summary><p>Mit Server-Modus braucht es Sticky Sessions oder Replikation und serialisierbaren Zustand. Mit Client-Modus braucht es denselben Schlüssel auf allen Knoten und genug Bandbreite.</p></details>
+<details><summary>Szenario: Eine Lese-Seite mit grosser Tabelle belastet die Session. Was ändern Sie?</summary><p>Ich markiere die View als transient, wenn sie keinen Postback braucht. Oder ich setze Partial State Saving und Paginierung ein, damit der Baum klein bleibt.</p></details>
+<details><summary>Wie schützt der ViewState vor CSRF?</summary><p>Die Spec verlangt einen schwer vorhersagbaren Wert. Ein Angreifer kann ihn nicht raten. Im Client-Modus schützt zusätzlich die Verschlüsselung vor Manipulation. Ein eigener Schutz gegen CSRF bleibt trotzdem sinnvoll.</p></details>
+<details><summary>Wie testen Sie, dass die Anwendung clusterfähig ist?</summary><p>Ich schalte SERIALIZE_SERVER_STATE ein und fahre die Tests. Eine NotSerializableException zeigt sofort, welche Bean oder Komponente nicht serialisierbar ist.</p></details>
+
+<details class="mehr"><summary>Mehr</summary>
+<h3>Gerüst</h3>
+<ul>
+  <li><b>Warum?</b> Der Server baut den Baum pro Request neu und braucht den Zustand vom letzten Render.</li>
+  <li><b>Wie innen?</b> Feld jakarta.faces.ViewState, Server: Referenz in Session. Client: verschlüsselter Zustand im Feld.</li>
+  <li><b>Zahlen</b> Mojarra 15 × 15 Views. MyFaces 20 Views und 4 sequentielle. Partial State an.</li>
+  <li><b>Vergleich</b> Server: wenig Netz. Client: kein Session-Speicher, aber CPU und Bandbreite.</li>
+  <li><b>Produktion</b> ViewExpiredException, Heap durch Views, NotSerializableException im Cluster.</li>
+  <li><b>Design</b> Server als Standard, Limits setzen, transient für Lese-Seiten, Schlüssel gleich im Cluster.</li>
+</ul>
+
+<h3>Beispiel: web.xml Einstellungen</h3>
+<pre>&lt;context-param&gt;
+  &lt;param-name&gt;jakarta.faces.STATE_SAVING_METHOD&lt;/param-name&gt;
+  &lt;param-value&gt;server&lt;/param-value&gt;
+&lt;/context-param&gt;
+&lt;context-param&gt;
+  &lt;param-name&gt;com.sun.faces.numberOfLogicalViews&lt;/param-name&gt;
+  &lt;param-value&gt;10&lt;/param-value&gt;
+&lt;/context-param&gt;
+&lt;context-param&gt;
+  &lt;param-name&gt;jakarta.faces.SERIALIZE_SERVER_STATE&lt;/param-name&gt;
+  &lt;param-value&gt;true&lt;/param-value&gt;
+&lt;/context-param&gt;</pre>
+<p class="small">Nicht ausgeführt.</p>
+<ol>
+  <li>Die erste Zeile setzt den Modus ausdrücklich. So hängt das Verhalten nicht vom Standard der Implementierung ab.</li>
+  <li>Die zweite Zeile senkt die Zahl der logischen Views in Mojarra von 15 auf 10. Das spart Session-Speicher.</li>
+  <li>Die dritte Zeile serialisiert den Zustand schon beim Request. Das ist gut für Tests auf Cluster-Tauglichkeit.</li>
+  <li>Bei MyFaces heissen die Parameter anders, zum Beispiel <code>org.apache.myfaces.NUMBER_OF_VIEWS_IN_SESSION</code>.</li>
+</ol>
+
+<h3>Vergleich</h3>
+<ul>
+  <li><b>Server-State:</b> Session hält Zustand. Kleines Feld, begrenzte Views, Ende mit Session.</li>
+  <li><b>Client-State:</b> Feld hält Zustand, verschlüsselt. Mehr Netz und CPU, kein Session-Speicher.</li>
+  <li><b>Partial State Saving:</b> nur Änderungen. Standard seit 2.0.</li>
+  <li><b>Full State Saving:</b> ganzer Baum. Nur für einzelne Views mit <code>FULL_STATE_SAVING_VIEW_IDS</code>.</li>
+  <li><b>Stateless View:</b> <code>transient="true"</code>. Kein Zustand, kein Postback-Restore.</li>
+  <li><b>Client Window:</b> trennt Tabs. Mit <code>CLIENT_WINDOW_MODE=url</code>.</li>
+</ul>
+
+<h3>Produktion</h3>
+<ol>
+  <li><b>ViewExpiredException:</b> Session ist abgelaufen. Lösung: Fehlerseite oder Redirect, Timeout prüfen.</li>
+  <li><b>Hoher Heap:</b> Viele Views pro Session. Lösung: Limits senken, Bäume klein halten, transient nutzen.</li>
+  <li><b>Grosse Requests im Client-Modus:</b> Das Feld ist gross. Lösung: Komprimierung an lassen oder auf Server wechseln.</li>
+  <li><b>NotSerializableException:</b> Cluster-Replikation scheitert. Lösung: Beans serialisierbar machen, SERIALIZE_SERVER_STATE in Tests.</li>
+  <li><b>ProtectedViewException im Cluster:</b> Knoten haben verschiedene Schlüssel. Lösung: denselben Schlüssel setzen.</li>
+  <li><b>Zurück-Button zeigt alten Zustand:</b> Der Browser stellt Felder wieder her. Mojarra setzt dafür autocomplete auf one-time-code.</li>
+</ol>
+
+<h3>Diagnose: Werkzeuge und Befehle</h3>
+<ul>
+  <li><b>Browser Dev Tools:</b> Feld <code>jakarta.faces.ViewState</code> im Formular und im Request ansehen. Länge zeigt den Modus.</li>
+  <li><b>Heap Dump</b> mit Eclipse MAT: zeigt <code>UIViewRoot</code> und Zustandsobjekte pro Session.</li>
+  <li><b>Session-Grösse messen</b> mit dem Server-Monitoring oder einem Serialisierungs-Test.</li>
+  <li><b>Log-Level</b> der Faces-Implementierung erhöhen, um den Grund der Exception zu sehen.</li>
+  <li><b>Project Stage Development</b> zeigt ausführliche Fehlerseiten.</li>
+</ul>
+
+<h3>Senior-Punkte</h3>
+<div class="senior">
+<ol>
+  <li><b>Der Modus ist eine Betriebsentscheidung.</b> Er bestimmt Speicher, Netz und Cluster-Verhalten.</li>
+  <li><b>Immer explizit setzen.</b> Spec und Implementierungen nennen verschiedene Standards.</li>
+  <li><b>ViewExpired ist ein Normalfall.</b> Man baut dafür eine Behandlung, keine Fehlermeldung.</li>
+  <li><b>Zustand klein halten.</b> Kleine Bäume und Paginierung sparen mehr als jede Einstellung.</li>
+  <li><b>Cluster früh testen.</b> Serialisierbarkeit zeigt sich spät, wenn man sie nicht erzwingt.</li>
+  <li><b>Client-State ist kein Geheimnis.</b> Verschlüsselt heisst nicht, dass sensible Daten hineingehören.</li>
+</ol>
+</div>
+
+<h3>Dein Beispiel</h3>
+</details>
+
+</body>
+</html>

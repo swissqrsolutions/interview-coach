@@ -2,7 +2,7 @@
 
 Generated from content/syllabus.json. Priority 1 = asked in almost every interview. Mark: **Projekt** = shown in CV/Gmail · **— kein Projekt** = no project experience · **? prüfen** = unclear, you decide.
 
-437 topics · P1 267 · P2 132 · P3 38 · written 435
+437 topics · P1 267 · P2 132 · P3 38 · written 437
 
 ## Java 21 (core + advanced) (42)
 Sources: Java SE 21/25 docs (docs.oracle.com) · JVM Specification · OpenJDK source + JEPs (openjdk.org) · Oracle Java SE 21 Developer exam 1Z0-830 topics
@@ -597,8 +597,8 @@ Sources: RabbitMQ docs · Jakarta Messaging spec · Solace and Hazelcast docs
 | P | Topic | Project | Written |
 |---|---|---|---|
 | 3 | RabbitMQ: Exchanges, Queues, Routing | — kein Projekt | ✓ |
-| 3 | JMS | — kein Projekt |  |
-| 3 | Hazelcast und Solace | — kein Projekt |  |
+| 3 | JMS | — kein Projekt | ✓ |
+| 3 | Hazelcast und Solace | — kein Projekt | ✓ |
 
 ## GIS (PostGIS, GeoTools, GeoServer) (2)
 Sources: PostGIS docs · OGC WMS/WFS standards · GeoServer docs
