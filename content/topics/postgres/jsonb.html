@@ -36,7 +36,7 @@
 <!-- sources: PostgreSQL 19 (aktuell seit 19.11.2026; Beispiele auf 17.12 ausgeführt) · Quellen: PostgreSQL 19 Doku, Kapitel 8.14 „JSON Types“ (Containment, jsonb Indexing, Subscripting), Kapitel 9.16 „JSON Functions and Operators“ (SQL/JSON Path, JSON_TABLE, JSON_VALUE/JSON_QUERY/JSON_EXISTS), Kapitel 65.1 „TOAST“, Kapitel 5.4 „Generated Columns“, CREATE STATISTICS; Release Notes 14 (Subscripting, Statistiken auf Ausdrücken, LZ4), 17 (JSON_TABLE, SQL/JSON-Funktionen), 18 (virtuelle Generated Columns als Standard), 19 (neue jsonpath-String-Methoden, COPY … (FORMAT json)) -->
 
 <div class="kern">
-<b>Kern:</b> <b>JSONB</b> ist der binäre JSON-Typ von PostgreSQL: Das Dokument wird beim Schreiben einmal geparst und zerlegt gespeichert. Dadurch sind Zugriffe auf Felder schnell, und ein <b>GIN-Index</b> findet Dokumente nach Inhalt. Der Preis: keine Statistiken über innere Felder und jedes Update schreibt das ganze Dokument neu.
+<b>Kern:</b> <b>JSONB</b> ist der binäre JSON-Typ von PostgreSQL, bei dem das Dokument beim Schreiben einmal geparst und zerlegt gespeichert wird. Dadurch sind Zugriffe auf Felder schnell, und ein <b>GIN-Index</b> findet Dokumente nach Inhalt. Dafür gibt es keine Statistiken über innere Felder, und jedes Update schreibt das ganze Dokument neu.
 </div>
 
 <div class="muster"><h3>Antwort-Muster</h3><p class="mq"><b>Frage:</b> Wie indizieren Sie eine JSONB-Spalte?</p><ol>
@@ -90,10 +90,10 @@
   <rect x="10" y="230" width="700" height="56" rx="8" fill="#f7f7fa" stroke="#999"/><text x="360" y="254" text-anchor="middle" font-weight="700">Planner</text><text x="360" y="272" text-anchor="middle" font-size="12">kennt nur Statistik der ganzen Spalte · Felder brauchen Ausdrucksindex oder CREATE STATISTICS</text>
 </svg>
 <ol>
-  <li><b>Parsen beim Schreiben:</b> PostgreSQL prüft das JSON und baut den binären Wert. Leerzeichen fallen weg, Keys werden sortiert, bei doppelten Keys gewinnt der letzte.</li>
+  <li><b>Parsen beim Schreiben:</b> PostgreSQL prüft das JSON und baut den binären Wert. Leerzeichen fallen weg. Keys werden sortiert. Bei doppelten Keys gewinnt der letzte.</li>
   <li><b>jsonb-Wert:</b> Ein Header mit Längen und Offsets erlaubt, einen Key ohne Parsen zu finden. Zahlen werden als <code>numeric</code> gespeichert.</li>
   <li><b>Heap-Zeile:</b> Kleine Dokumente liegen direkt in der Zeile. Beispiel: das Event im Beispiel unten hat 93 Byte.</li>
-  <li><b>TOAST:</b> Ist die Zeile breiter als etwa 2 kB, komprimiert <b>TOAST</b> (The Oversized-Attribute Storage Technique) den Wert und lagert ihn in eine eigene Tabelle aus. Maximal 1 GB pro Wert.</li>
+  <li><b>TOAST:</b> Ist die Zeile breiter als etwa 2 kB, greift <b>TOAST</b> (The Oversized-Attribute Storage Technique). Es komprimiert den Wert und lagert ihn in eine eigene Tabelle aus. Maximal 1 GB pro Wert.</li>
   <li><b>GIN-Index:</b> Ein <b>invertierter Index</b> über Keys und Werte des ganzen Dokuments. Er beantwortet „enthält“-Fragen wie <code>@&gt;</code>. Interna und Pending List: Seite Index-Typen.</li>
   <li><b>B-Tree auf Ausdruck:</b> Ein normaler Index auf ein einzelnes Feld, z. B. <code>(doc-&gt;&gt;'firma')</code>. Er beantwortet <code>=</code>, <code>&lt;</code> und Sortierung.</li>
   <li><b>Planner:</b> <code>ANALYZE</code> sammelt Statistiken für die ganze Spalte, nicht für innere Felder. Ohne Hilfe rät der Planner bei Filtern auf Feldern.</li>
@@ -101,23 +101,23 @@
 
 <h2>3. Details, die Interviewer fragen</h2>
 <ol>
-  <li><b>Operatoren:</b> <code>-&gt;</code> liefert jsonb, <code>-&gt;&gt;</code> liefert text. <code>#&gt;</code> und <code>#&gt;&gt;</code> gehen über einen Pfad, z. B. <code>doc #&gt;&gt; '{kopf,art}'</code>.</li>
-  <li><b>Containment-Regeln:</b> Array-Reihenfolge zählt nicht, Duplikate auch nicht. <code>'[1,2,3]' @&gt; '[3,1]'</code> ist true. Ein Array enthält auch einen einzelnen Wert: <code>'["a","b"]' @&gt; '"b"'</code> ist true.</li>
+  <li><b>Operatoren:</b> <code>-&gt;</code> liefert jsonb. <code>-&gt;&gt;</code> liefert text. <code>#&gt;</code> und <code>#&gt;&gt;</code> gehen über einen Pfad, z. B. <code>doc #&gt;&gt; '{kopf,art}'</code>.</li>
+  <li><b>Containment-Regeln:</b> Die Array-Reihenfolge zählt nicht. Duplikate zählen auch nicht. <code>'[1,2,3]' @&gt; '[3,1]'</code> ist true. Ein Array enthält auch einen einzelnen Wert. Zum Beispiel ist <code>'["a","b"]' @&gt; '"b"'</code> true.</li>
   <li><b>jsonb_ops:</b> Die Standard-Opclass legt je einen Eintrag pro Key und pro Wert an. Sie kann <code>@&gt;</code>, <code>?</code>, <code>?|</code>, <code>?&amp;</code>, <code>@?</code>, <code>@@</code>.</li>
-  <li><b>jsonb_path_ops:</b> Ein Eintrag ist ein Hash aus Pfad und Wert. Kleiner und genauer, aber kein <code>?</code>. Leere Strukturen wie <code>{"a": {}}</code> erzeugen keinen Eintrag; eine Suche danach liest den ganzen Index.</li>
-  <li><b>Teil-Index auf ein Unterobjekt:</b> <code>USING gin ((doc-&gt;'tags'))</code> indiziert nur die Tags. Kleiner, aber die Abfrage muss genau diesen Ausdruck nutzen.</li>
-  <li><b>B-Tree auf jsonb:</b> Ein B-Tree auf die ganze Spalte hilft nur bei Gleichheit kompletter Dokumente. Für Felder: Ausdrucksindex.</li>
-  <li><b>SQL/JSON Path:</b> <code>jsonpath</code> ist eine eigene Pfadsprache. <code>@?</code> fragt „liefert der Pfad etwas?“, <code>@@</code> wertet ein Prädikat aus. Beispiel: <code>doc @? '$.tags[*] ? (@ == "storno")'</code>.</li>
-  <li><b>lax vs strict:</b> Im Standardmodus <b>lax</b> passt sich der Pfad an die Daten an, Strukturfehler ergeben „kein Treffer“. <b>strict</b> wirft einen Fehler.</li>
-  <li><b>SQL/JSON-Funktionen (seit 17):</b> <code>JSON_VALUE</code> liefert einen Skalar, <code>JSON_QUERY</code> ein JSON-Stück, <code>JSON_EXISTS</code> ein boolean, <code>JSON_TABLE</code> Zeilen. Ohne <code>ON ERROR</code> gibt es NULL bzw. false.</li>
-  <li><b>Ändern:</b> <code>jsonb_set(doc, '{pfad}', wert)</code>, <code>||</code> zum Zusammenführen (flach), <code>-</code> löscht einen Key, <code>#-</code> löscht über einen Pfad. Subscripting (seit 14) schreibt <code>doc['key'] = …</code>.</li>
+  <li><b>jsonb_path_ops:</b> Ein Eintrag ist ein Hash aus Pfad und Wert. Sie ist kleiner und genauer, kann aber kein <code>?</code>. Leere Strukturen wie <code>{"a": {}}</code> erzeugen keinen Eintrag. Eine Suche danach liest den ganzen Index.</li>
+  <li><b>Teil-Index auf ein Unterobjekt:</b> <code>USING gin ((doc-&gt;'tags'))</code> indiziert nur die Tags. Das ist kleiner. Die Abfrage muss aber genau diesen Ausdruck nutzen.</li>
+  <li><b>B-Tree auf jsonb:</b> Ein B-Tree auf die ganze Spalte hilft nur bei Gleichheit kompletter Dokumente. Für Felder nimmt man einen Ausdrucksindex.</li>
+  <li><b>SQL/JSON Path:</b> <code>jsonpath</code> ist eine eigene Pfadsprache. <code>@?</code> fragt „liefert der Pfad etwas?“. <code>@@</code> wertet ein Prädikat aus. Beispiel: <code>doc @? '$.tags[*] ? (@ == "storno")'</code>.</li>
+  <li><b>lax vs strict:</b> Im Standardmodus <b>lax</b> passt sich der Pfad an die Daten an. Strukturfehler ergeben dann „kein Treffer“. <b>strict</b> wirft einen Fehler.</li>
+  <li><b>SQL/JSON-Funktionen (seit 17):</b> <code>JSON_VALUE</code> liefert einen Skalar. <code>JSON_QUERY</code> liefert ein JSON-Stück. <code>JSON_EXISTS</code> liefert ein boolean. <code>JSON_TABLE</code> liefert Zeilen. Ohne <code>ON ERROR</code> gibt es NULL bzw. false.</li>
+  <li><b>Ändern:</b> <code>jsonb_set(doc, '{pfad}', wert)</code> setzt einen Wert. <code>||</code> führt flach zusammen. <code>-</code> löscht einen Key. <code>#-</code> löscht über einen Pfad. Subscripting (seit 14) schreibt <code>doc['key'] = …</code>.</li>
   <li><b>Jedes Update schreibt alles neu:</b> MVCC erzeugt eine neue Zeilenversion mit dem ganzen Dokument. Ist es getoastet, wird der TOAST-Wert neu geschrieben. Ein unverändertes TOAST-Feld kostet beim Update nichts.</li>
   <li><b>TOAST:</b> Ab etwa 2 kB Zeilenbreite wird komprimiert (<code>pglz</code> Standard oder <code>lz4</code>) und ausgelagert. Jeder Feldzugriff muss den Wert dann ganz holen und entpacken.</li>
-  <li><b>Statistiken:</b> Für innere Felder gibt es keine. Lösung: Ausdrucksindex (bekommt eigene Statistik) oder <code>CREATE STATISTICS</code> auf den Ausdruck (seit 14).</li>
-  <li><b>Generated Column:</b> Ein Feld als Spalte herausziehen: <code>firma text GENERATED ALWAYS AS (doc-&gt;&gt;'firma') STORED</code>. Seit 18 ist <code>VIRTUAL</code> der Standard (Release Notes 18, Utility Commands); für Index und Speicherung schreibe ich <code>STORED</code> explizit.</li>
-  <li><b>Zahlen:</b> jsonb speichert Zahlen als <code>numeric</code>. <code>1.230e-5</code> wird zu <code>0.00001230</code>, Nullen am Ende bleiben, <code>NaN</code> ist verboten.</li>
+  <li><b>Statistiken:</b> Für innere Felder gibt es keine. Die Lösung ist ein Ausdrucksindex (bekommt eigene Statistik). Oder man nutzt <code>CREATE STATISTICS</code> auf den Ausdruck (seit 14).</li>
+  <li><b>Generated Column:</b> Man zieht ein Feld als Spalte heraus: <code>firma text GENERATED ALWAYS AS (doc-&gt;&gt;'firma') STORED</code>. Seit 18 ist <code>VIRTUAL</code> der Standard (Release Notes 18, Utility Commands). Für Index und Speicherung schreibe ich <code>STORED</code> explizit.</li>
+  <li><b>Zahlen:</b> jsonb speichert Zahlen als <code>numeric</code>. <code>1.230e-5</code> wird zu <code>0.00001230</code>. Nullen am Ende bleiben. <code>NaN</code> ist verboten.</li>
   <li><b>Neu in 19:</b> jsonpath bekommt String-Methoden wie <code>lower()</code>, <code>upper()</code>, <code>replace()</code> (Release Notes 19, Data Types). <code>COPY TO</code> kann JSON ausgeben (Release Notes 19, COPY). Ein <code>json_array()</code> über eine Abfrage ohne Zeilen liefert jetzt <code>[]</code> statt NULL (Release Notes 19, Migration).</li>
-  <li><b>Neu in 18:</b> Ein jsonb-<code>null</code> lässt sich in einen Skalar-Typ casten und ergibt SQL-NULL; vorher gab das einen Fehler (Release Notes 18, Data Types). Beispiel: <code>('{"menge": null}'::jsonb-&gt;'menge')::int</code>.</li>
+  <li><b>Neu in 18:</b> Ein jsonb-<code>null</code> lässt sich in einen Skalar-Typ casten. Das ergibt SQL-NULL. Vorher gab das einen Fehler (Release Notes 18, Data Types). Beispiel: <code>('{"menge": null}'::jsonb-&gt;'menge')::int</code>.</li>
 </ol>
 
 <h2>4. Fallen</h2>

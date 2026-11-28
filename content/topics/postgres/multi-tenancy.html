@@ -41,9 +41,9 @@
 
 <div class="muster"><h3>Antwort-Muster</h3><p class="mq"><b>Frage:</b> Wie trennen Sie Mandanten in PostgreSQL?</p><ol>
   <li>Mechanismus: Es gibt drei Modelle: Datenbank pro Mandant, Schema pro Mandant oder geteilte Tabellen mit <code>tenant_id</code> und Row-Level Security.</li>
-  <li>Zahl: DB pro Mandant heisst Pool pro Mandant: 200 Mandanten × 5 Verbindungen × 3 Pods sind 3000 Verbindungen.</li>
+  <li>Zahl: DB pro Mandant heisst Pool pro Mandant. 200 Mandanten × 5 Verbindungen × 3 Pods sind 3000 Verbindungen.</li>
   <li>Trade-off: Mehr Isolation kostet mehr Pools und Migrationen. Geteilte Tabellen sind billig, aber ein Bug kann fremde Daten zeigen.</li>
-  <li>Produktion: Für sensible Daten nehme ich eine DB pro Mandant mit Registry. Für viele kleine Kunden geteilte Tabellen mit RLS und <code>FORCE</code>.</li>
+  <li>Produktion: Für sensible Daten nehme ich eine DB pro Mandant mit Registry. Für viele kleine Kunden nehme ich geteilte Tabellen mit RLS und <code>FORCE</code>.</li>
 </ol></div>
 
 <h2>1. Die Reise eines Requests im Modell „DB pro Mandant“</h2>
@@ -102,26 +102,26 @@
 
 <h2>3. Details, die Interviewer fragen</h2>
 <ol>
-  <li><b>Datenbank pro Mandant:</b> beste Isolation innerhalb von PostgreSQL. Kein SQL kann Datenbanken übergreifend lesen. Eigenes Backup, eigenes Löschen (<code>DROP DATABASE</code>), eigene Extensions und Einstellungen.</li>
-  <li><b>CREATE DATABASE zur Laufzeit:</b> Es geht nicht in einem Transaktionsblock. Die App-Rolle braucht <code>CREATEDB</code>. Mit <code>TEMPLATE</code> kopiert man eine vorbereitete Datenbank. Der Name kann kein Bind-Parameter sein, also streng validieren und mit <code>quote_ident</code> oder einer Whitelist bauen. Namen sind höchstens 63 Byte lang; längere kürzt PostgreSQL still. Seit 19 sind Zeilenumbrüche (CR, LF) in Datenbank- und Rollennamen verboten (Release Notes 19).</li>
+  <li><b>Datenbank pro Mandant:</b> Das ist die beste Isolation innerhalb von PostgreSQL. Kein SQL kann Datenbanken übergreifend lesen. Jeder Mandant hat ein eigenes Backup und eigenes Löschen (<code>DROP DATABASE</code>). Er hat auch eigene Extensions und Einstellungen.</li>
+  <li><b>CREATE DATABASE zur Laufzeit:</b> Es geht nicht in einem Transaktionsblock. Die App-Rolle braucht <code>CREATEDB</code>. Mit <code>TEMPLATE</code> kopiert man eine vorbereitete Datenbank. Der Name kann kein Bind-Parameter sein. Darum validiert man ihn streng und baut ihn mit <code>quote_ident</code> oder einer Whitelist. Namen sind höchstens 63 Byte lang. Längere kürzt PostgreSQL still. Seit 19 sind Zeilenumbrüche (CR, LF) in Datenbank- und Rollennamen verboten (Release Notes 19).</li>
   <li><b>Flyway pro Mandant:</b>
 <pre>Flyway.configure()
       .dataSource(tenantUrl, user, password)   // oder .schemas("tenant_b")
       .locations("classpath:db/migration/tenant")
       .load()
       .migrate();</pre>
-    Jede Datenbank (oder jedes Schema) hat eine eigene <code>flyway_schema_history</code>. Spring Boot migriert automatisch nur die primäre DataSource. Für Mandanten ruft man Flyway selbst auf: beim Start für alle, beim Onboarding für den neuen.</li>
-  <li><b>Migrationen bei vielen Mandanten:</b> Sie laufen nacheinander oder begrenzt parallel. Ein Mandant kann scheitern, während andere schon neu sind. Darum: Migrationen rückwärtskompatibel (<b>expand/contract</b>), Status pro Mandant in der Registry, Retry.</li>
-  <li><b>Schema pro Mandant:</b> Isolation per <code>search_path</code> und Rechte pro Schema. Ein Fehler im <code>search_path</code> zeigt Daten des falschen Mandanten. Tausende Schemas machen den Systemkatalog gross, <code>pg_dump</code> und Migrationen langsam.</li>
-  <li><b>search_path hinter PgBouncer:</b> Im Transaction Mode blieb ein <code>SET search_path</code> früher auf dem Backend und galt für den nächsten Client. Seit PostgreSQL 18 meldet der Server <code>search_path</code>-Änderungen an den Client (Release Notes 18). PgBouncer verfolgt den Wert seit 1.26 standardmässig und stellt ihn pro Client wieder her (Changelog 1.26). Mit älteren Versionen: nur <code>SET LOCAL search_path</code> in der Transaktion.</li>
-  <li><b>Geteilte Tabellen:</b> billig und einfach zu migrieren (eine Migration für alle). Risiko: ein vergessenes <code>WHERE tenant_id</code> zeigt fremde Daten. RLS ist das Sicherheitsnetz in der DB.</li>
-  <li><b>Wer RLS umgeht:</b> Superuser, Rollen mit <code>BYPASSRLS</code> und der Tabellen-Owner (ohne <code>FORCE</code>). Ohne Policy gilt <b>default deny</b>. Unique- und FK-Prüfungen ignorieren RLS. Das kann Informationen verraten („Schlüssel existiert schon“).</li>
-  <li><b>RLS und Performance:</b> Die Policy ist ein zusätzliches Prädikat. Ohne Index mit <code>tenant_id</code> vorne gibt es Seq Scans. Funktionen in Policies sollten <code>STABLE</code> sein und keine Unterabfragen pro Zeile auslösen.</li>
-  <li><b>Hibernate 6:</b> <code>@TenantId</code> auf einem Feld filtert und befüllt automatisch (geteilte Tabelle). Für DB oder Schema pro Mandant: <code>MultiTenantConnectionProvider</code> plus <code>CurrentTenantIdentifierResolver</code>.</li>
-  <li><b>Connection Routing und Pools:</b> DB pro Mandant heisst Pool pro Mandant. 200 Mandanten × Pool 5 × 3 Pods = 3000 Verbindungen. Lösung: kleine Pools, Pools lazy anlegen und idle schliessen, PgBouncer davor. Achtung: PgBouncer poolt pro User/Datenbank-Paar. In Azure ist <code>pgbouncer.default_pool_size</code> 50, also bei 200 Mandanten-DBs bis zu 10 000 Server-Verbindungen. Den Wert darum klein setzen.</li>
-  <li><b>Noisy Neighbour:</b> Ein Mandant verbraucht CPU, I/O oder Verbindungen und bremst alle anderen. Im selben Cluster gibt es keine echte CPU- oder I/O-Isolation. Grenzen: <code>ALTER DATABASE tenant_b CONNECTION LIMIT 20</code>, <code>ALTER ROLE ... SET statement_timeout</code>, Rate Limits in der App.</li>
-  <li><b>Backup und Restore pro Mandant:</b> DB pro Mandant: <code>pg_dump -Fc -d tenant_b</code> und <code>pg_restore</code> einzeln. Schema: <code>pg_dump -n tenant_b</code>. Geteilte Tabellen: nur per Export mit <code>WHERE tenant_id</code>. Azure Point-in-Time-Restore stellt immer den <b>ganzen Server</b> als neuen Server her. Einen Mandanten holt man dann per Dump daraus.</li>
-  <li><b>Löschen eines Mandanten (DSG/DSGVO):</b> DB pro Mandant: <code>DROP DATABASE</code>. Geteilte Tabellen: <code>DELETE</code> über viele Tabellen, Bloat, und die Daten bleiben in alten Backups bis zum Ablauf der Aufbewahrung.</li>
+    Jede Datenbank (oder jedes Schema) hat eine eigene <code>flyway_schema_history</code>. Spring Boot migriert automatisch nur die primäre DataSource. Für Mandanten ruft man Flyway selbst auf. Das geschieht beim Start für alle und beim Onboarding für den neuen.</li>
+  <li><b>Migrationen bei vielen Mandanten:</b> Sie laufen nacheinander oder begrenzt parallel. Ein Mandant kann scheitern, während andere schon neu sind. Darum macht man Migrationen rückwärtskompatibel (<b>expand/contract</b>). Man führt den Status pro Mandant in der Registry. Und man wiederholt bei Fehlern.</li>
+  <li><b>Schema pro Mandant:</b> Die Isolation läuft per <code>search_path</code> und Rechte pro Schema. Ein Fehler im <code>search_path</code> zeigt Daten des falschen Mandanten. Tausende Schemas machen den Systemkatalog gross. <code>pg_dump</code> und Migrationen werden langsam.</li>
+  <li><b>search_path hinter PgBouncer:</b> Im Transaction Mode blieb ein <code>SET search_path</code> früher auf dem Backend. Er galt dann für den nächsten Client. Seit PostgreSQL 18 meldet der Server <code>search_path</code>-Änderungen an den Client (Release Notes 18). PgBouncer verfolgt den Wert seit 1.26 standardmässig. Er stellt ihn pro Client wieder her (Changelog 1.26). Mit älteren Versionen nutzt man nur <code>SET LOCAL search_path</code> in der Transaktion.</li>
+  <li><b>Geteilte Tabellen:</b> Sie sind billig und einfach zu migrieren (eine Migration für alle). Das Risiko ist ein vergessenes <code>WHERE tenant_id</code>. Es zeigt fremde Daten. RLS ist das Sicherheitsnetz in der DB.</li>
+  <li><b>Wer RLS umgeht:</b> Das tun Superuser, Rollen mit <code>BYPASSRLS</code> und der Tabellen-Owner (ohne <code>FORCE</code>). Ohne Policy gilt <b>default deny</b>. Unique- und FK-Prüfungen ignorieren RLS. Das kann Informationen verraten („Schlüssel existiert schon“).</li>
+  <li><b>RLS und Performance:</b> Die Policy ist ein zusätzliches Prädikat. Ohne Index mit <code>tenant_id</code> vorne gibt es Seq Scans. Funktionen in Policies sollten <code>STABLE</code> sein. Sie sollten keine Unterabfragen pro Zeile auslösen.</li>
+  <li><b>Hibernate 6:</b> <code>@TenantId</code> auf einem Feld filtert und befüllt automatisch (geteilte Tabelle). Für DB oder Schema pro Mandant nimmt man <code>MultiTenantConnectionProvider</code> plus <code>CurrentTenantIdentifierResolver</code>.</li>
+  <li><b>Connection Routing und Pools:</b> DB pro Mandant heisst Pool pro Mandant. 200 Mandanten × Pool 5 × 3 Pods = 3000 Verbindungen. Die Lösung sind kleine Pools. Man legt Pools lazy an, schliesst idle Pools und setzt PgBouncer davor. Achtung: PgBouncer poolt pro User/Datenbank-Paar. In Azure ist <code>pgbouncer.default_pool_size</code> 50. Bei 200 Mandanten-DBs sind das bis zu 10 000 Server-Verbindungen. Den Wert setzt man darum klein.</li>
+  <li><b>Noisy Neighbour:</b> Ein Mandant verbraucht CPU, I/O oder Verbindungen. Er bremst alle anderen. Im selben Cluster gibt es keine echte CPU- oder I/O-Isolation. Grenzen setzt man mit <code>ALTER DATABASE tenant_b CONNECTION LIMIT 20</code>, <code>ALTER ROLE ... SET statement_timeout</code> und Rate Limits in der App.</li>
+  <li><b>Backup und Restore pro Mandant:</b> Bei DB pro Mandant nutzt man <code>pg_dump -Fc -d tenant_b</code> und <code>pg_restore</code> einzeln. Bei Schema nutzt man <code>pg_dump -n tenant_b</code>. Bei geteilten Tabellen geht es nur per Export mit <code>WHERE tenant_id</code>. Azure Point-in-Time-Restore stellt immer den <b>ganzen Server</b> als neuen Server her. Einen Mandanten holt man dann per Dump daraus.</li>
+  <li><b>Löschen eines Mandanten (DSG/DSGVO):</b> Bei DB pro Mandant nutzt man <code>DROP DATABASE</code>. Bei geteilten Tabellen nutzt man <code>DELETE</code> über viele Tabellen. Das gibt Bloat. Die Daten bleiben in alten Backups bis zum Ablauf der Aufbewahrung.</li>
 </ol>
 
 <h2>4. Fallen</h2>

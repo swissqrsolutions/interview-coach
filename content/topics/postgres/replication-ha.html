@@ -36,7 +36,7 @@
 <!-- sources: PostgreSQL 19 (aktuell seit 19.11.2026; Beispiele auf 17.12 ausgeführt) · Quellen: PostgreSQL 19 Doku, Kapitel 26 „High Availability, Load Balancing, and Replication“ (Log-Shipping Standby, Streaming Replication, Replication Slots, Synchronous Replication, Failover, Hot Standby), Kapitel 19.6 „Replication“ (Parameter und Defaults), Kapitel 29 „Logical Replication“ (Restrictions, Failover), SQL-Befehl WAIT, View pg_replication_slots, pg_stat_replication, pg_rewind; Release Notes 17 (Failover-Slots, pg_createsubscriber), 18 (idle_replication_slot_timeout), 19 (WAIT FOR LSN, automatisches logisches Decoding bei wal_level = replica, Sequenzen in logischer Replikation) -->
 
 <div class="kern">
-<b>Kern:</b> <b>Replikation</b> ist das Kopieren aller Änderungen von einem <b>Primary</b> auf einen oder mehrere <b>Standbys</b>, über das <b>WAL</b> (Write-Ahead Log). Sie schützt vor Server-Ausfall und verteilt Leselast. <b>Hochverfügbarkeit</b> (HA) heisst zusätzlich: Ein Werkzeug erkennt den Ausfall und befördert einen Standby automatisch zum neuen Primary.
+<b>Kern:</b> <b>Replikation</b> ist das Kopieren aller Änderungen von einem <b>Primary</b> auf einen oder mehrere <b>Standbys</b>, über das <b>WAL</b> (Write-Ahead Log). Sie schützt vor Server-Ausfall und verteilt Leselast. <b>Hochverfügbarkeit</b> (HA) heisst zusätzlich, dass ein Werkzeug den Ausfall erkennt und einen Standby automatisch zum neuen Primary befördert.
 </div>
 
 <div class="muster"><h3>Antwort-Muster</h3><p class="mq"><b>Frage:</b> Wie funktioniert Replikation in PostgreSQL, und synchron oder asynchron?</p><ol>
@@ -66,8 +66,8 @@
 <ol>
   <li><b>COMMIT:</b> Der Backend schreibt den Commit-Record ins WAL und flusht ihn lokal.</li>
   <li><b>walsender:</b> Er schickt die neuen Records sofort an den Standby.</li>
-  <li><b>Standby:</b> Der walreceiver schreibt (<b>write</b>), flusht (<b>flush</b>), dann spielt der Startup-Prozess ein (<b>apply</b>). Er meldet seine Positionen zurück.</li>
-  <li><b>Antwort an den Client:</b> Mit <code>synchronous_commit</code> und <code>synchronous_standby_names</code> wählt man, worauf der Commit wartet: nichts, <code>remote_write</code>, <code>on</code> (Flush) oder <code>remote_apply</code>. Ohne <code>synchronous_standby_names</code> ist alles asynchron.</li>
+  <li><b>Standby:</b> Der walreceiver schreibt (<b>write</b>) und flusht (<b>flush</b>). Dann spielt der Startup-Prozess ein (<b>apply</b>). Er meldet seine Positionen zurück.</li>
+  <li><b>Antwort an den Client:</b> Mit <code>synchronous_commit</code> und <code>synchronous_standby_names</code> wählt man, worauf der Commit wartet. Möglich sind nichts, <code>remote_write</code>, <code>on</code> (Flush) oder <code>remote_apply</code>. Ohne <code>synchronous_standby_names</code> ist alles asynchron.</li>
   <li><b>Ausfall:</b> Der Primary antwortet nicht mehr. Patroni merkt es, weil sein Leader-Key im DCS (etcd, Consul) nicht erneuert wird.</li>
   <li><b>Promote:</b> Der Standby mit dem neuesten WAL wird per <code>pg_promote()</code> zum Primary. Er beginnt eine neue <b>Timeline</b>, also einen neuen Zweig der WAL-Geschichte.</li>
   <li><b>Umleiten:</b> Clients folgen einer neuen IP, einem DNS-Namen oder einem Proxy. Der alte Primary darf nie wieder schreiben (<b>Fencing</b>). Er kommt mit <code>pg_rewind</code> als Standby zurück.</li>
@@ -102,20 +102,20 @@
 
 <h2>3. Details, die Interviewer fragen</h2>
 <ol>
-  <li><b>Streaming vs Log Shipping:</b> <b>Streaming</b> schickt WAL-Records sofort über eine Verbindung. <b>Log Shipping</b> schickt fertige 16-MB-Segmente aus dem Archiv. Meist kombiniert man beides: Streaming plus Archiv als Rückfall.</li>
-  <li><b>synchronous_commit:</b> <code>off</code>: nicht einmal lokal warten. <code>local</code>: nur lokal. <code>remote_write</code>: Standby hat geschrieben. <code>on</code>: Standby hat geflusht. <code>remote_apply</code>: Standby hat eingespielt, Lesen dort sieht den Commit.</li>
-  <li><b>synchronous_standby_names:</b> <code>FIRST 1 (s1, s2)</code> wartet auf den ersten verfügbaren nach Priorität. <code>ANY 1 (s1, s2)</code> ist ein <b>Quorum</b>: irgendeiner reicht. Leer heisst asynchron.</li>
-  <li><b>Sync-Falle:</b> Fällt der einzige synchrone Standby aus, hängen alle Commits. Darum mindestens zwei Kandidaten oder ein Quorum.</li>
-  <li><b>Replication Slots:</b> Ohne Slot kann der Primary WAL löschen, das ein langsamer Standby noch braucht. Mit Slot kann er die Platte füllen. Schutz: <code>max_slot_wal_keep_size</code> (Standard -1 = unbegrenzt) und seit 18 <code>idle_replication_slot_timeout</code> (Release Notes 18, Replication). Er erklärt inaktive Slots nach der Zeit für ungültig, geprüft beim Checkpoint. Standard 0 = aus.</li>
-  <li><b>wal_keep_size:</b> Hält eine feste Menge WAL vor, ohne Slot. Einfacher, aber ohne Garantie für einen Standby.</li>
+  <li><b>Streaming vs Log Shipping:</b> <b>Streaming</b> schickt WAL-Records sofort über eine Verbindung. <b>Log Shipping</b> schickt fertige 16-MB-Segmente aus dem Archiv. Meist kombiniert man beides. Streaming kommt dann mit Archiv als Rückfall.</li>
+  <li><b>synchronous_commit:</b> Bei <code>off</code> wartet man nicht einmal lokal. Bei <code>local</code> wartet man nur lokal. Bei <code>remote_write</code> hat der Standby geschrieben. Bei <code>on</code> hat der Standby geflusht. Bei <code>remote_apply</code> hat der Standby eingespielt. Dann sieht Lesen dort den Commit.</li>
+  <li><b>synchronous_standby_names:</b> <code>FIRST 1 (s1, s2)</code> wartet auf den ersten verfügbaren nach Priorität. <code>ANY 1 (s1, s2)</code> ist ein <b>Quorum</b>. Irgendeiner reicht. Leer heisst asynchron.</li>
+  <li><b>Sync-Falle:</b> Fällt der einzige synchrone Standby aus, hängen alle Commits. Darum nimmt man mindestens zwei Kandidaten oder ein Quorum.</li>
+  <li><b>Replication Slots:</b> Ohne Slot kann der Primary WAL löschen, das ein langsamer Standby noch braucht. Mit Slot kann er die Platte füllen. Schutz bietet <code>max_slot_wal_keep_size</code> (Standard -1 = unbegrenzt). Seit 18 gibt es zusätzlich <code>idle_replication_slot_timeout</code> (Release Notes 18, Replication). Er erklärt inaktive Slots nach der Zeit für ungültig. Er prüft beim Checkpoint. Der Standard ist 0 = aus.</li>
+  <li><b>wal_keep_size:</b> Es hält eine feste Menge WAL vor, ohne Slot. Das ist einfacher. Es gibt aber keine Garantie für einen Standby.</li>
   <li><b>Recovery-Konflikt:</b> Der Replay will Zeilen entfernen, die eine Lese-Abfrage auf dem Standby noch sieht. Nach <code>max_standby_streaming_delay</code> (Standard 30 s) bricht PostgreSQL die Abfrage ab.</li>
-  <li><b>hot_standby_feedback:</b> Der Standby meldet seinen ältesten Snapshot. Weniger Abbrüche, aber VACUUM auf dem Primary kann dann weniger aufräumen (Bloat, Seite VACUUM).</li>
-  <li><b>Replication Lag:</b> Lesen vom Standby sieht eventuell alte Daten. Seit 19 kann ein Client mit <code>WAIT FOR LSN '…'</code> auf dem Standby warten, bis sein eigener Commit da ist: <b>Read-your-writes</b> (Release Notes 19, Streaming Replication). Standard-Modus ist <code>standby_replay</code>. Ohne <code>TIMEOUT</code> wartet der Befehl unbegrenzt; mit <code>NO_THROW</code> liefert er <code>timeout</code> als Status statt Fehler.</li>
-  <li><b>Logische Replikation:</b> <code>CREATE PUBLICATION</code> auf der Quelle, <code>CREATE SUBSCRIPTION</code> auf dem Ziel. DDL und Large Objects werden nicht repliziert. UPDATE und DELETE brauchen eine <b>Replica Identity</b>, meist den PK.</li>
-  <li><b>Sequenzen logisch:</b> Bis 18 werden Sequenzen nicht repliziert. Seit 19 gibt es <code>FOR ALL SEQUENCES</code> und <code>ALTER SUBSCRIPTION … REFRESH SEQUENCES</code> (Release Notes 19, Logical Replication); laufende Änderungen fliessen trotzdem nicht automatisch. Vor dem Umschalten bei einem Upgrade also <code>REFRESH SEQUENCES</code> ausführen.</li>
+  <li><b>hot_standby_feedback:</b> Der Standby meldet seinen ältesten Snapshot. Das gibt weniger Abbrüche. Aber VACUUM auf dem Primary kann dann weniger aufräumen (Bloat, Seite VACUUM).</li>
+  <li><b>Replication Lag:</b> Lesen vom Standby sieht eventuell alte Daten. Seit 19 kann ein Client mit <code>WAIT FOR LSN '…'</code> auf dem Standby warten, bis sein eigener Commit da ist. Das ist <b>Read-your-writes</b> (Release Notes 19, Streaming Replication). Der Standard-Modus ist <code>standby_replay</code>. Ohne <code>TIMEOUT</code> wartet der Befehl unbegrenzt. Mit <code>NO_THROW</code> liefert er <code>timeout</code> als Status statt Fehler.</li>
+  <li><b>Logische Replikation:</b> Man nutzt <code>CREATE PUBLICATION</code> auf der Quelle und <code>CREATE SUBSCRIPTION</code> auf dem Ziel. DDL und Large Objects werden nicht repliziert. UPDATE und DELETE brauchen eine <b>Replica Identity</b>, meist den PK.</li>
+  <li><b>Sequenzen logisch:</b> Bis 18 werden Sequenzen nicht repliziert. Seit 19 gibt es <code>FOR ALL SEQUENCES</code> und <code>ALTER SUBSCRIPTION … REFRESH SEQUENCES</code> (Release Notes 19, Logical Replication). Laufende Änderungen fliessen trotzdem nicht automatisch. Vor dem Umschalten bei einem Upgrade führt man also <code>REFRESH SEQUENCES</code> aus.</li>
   <li><b>Failover-Slots (seit 17):</b> Logische Slots können auf den physischen Standby synchronisiert werden (<code>sync_replication_slots</code>). Nach einem Failover kann ein Subscriber dann weiterlesen.</li>
-  <li><b>pg_rewind:</b> Es spult einen alten Primary auf den Abzweigpunkt der neuen Timeline zurück. Dann kann er als Standby folgen, ohne neues Basis-Backup. Voraussetzung: <code>wal_log_hints</code> oder Data Checksums. Checksums sind seit 18 Standard bei <code>initdb</code> (Release Notes 18, Migration).</li>
-  <li><b>Split Brain:</b> Zwei Server halten sich für Primary und schreiben beide. Daten laufen auseinander. Schutz: Konsens im DCS, Fencing, Watchdog.</li>
+  <li><b>pg_rewind:</b> Es spult einen alten Primary auf den Abzweigpunkt der neuen Timeline zurück. Dann kann er als Standby folgen, ohne neues Basis-Backup. Voraussetzung ist <code>wal_log_hints</code> oder Data Checksums. Checksums sind seit 18 Standard bei <code>initdb</code> (Release Notes 18, Migration).</li>
+  <li><b>Split Brain:</b> Zwei Server halten sich für Primary und schreiben beide. Die Daten laufen auseinander. Schutz bieten Konsens im DCS, Fencing und Watchdog.</li>
   <li><b>Kaskadierung:</b> Ein Standby kann selbst WAL an weitere Standbys senden. Das entlastet den Primary.</li>
 </ol>
 

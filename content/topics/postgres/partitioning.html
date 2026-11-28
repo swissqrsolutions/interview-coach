@@ -41,9 +41,9 @@
 
 <div class="muster"><h3>Antwort-Muster</h3><p class="mq"><b>Frage:</b> Wann und wie partitionieren Sie eine Tabelle?</p><ol>
   <li>Mechanismus: Ich teile sie mit <code>PARTITION BY RANGE</code> nach Datum. Der Planner liest dank Pruning nur passende Partitionen.</li>
-  <li>Zahl: Die Doku nennt einige tausend Partitionen als machbar, wenn Abfragen fast alle wegprunen.</li>
-  <li>Trade-off: Ich gewinne schnelles Löschen per DROP, verliere aber globale Unique-Indizes und zahle Planungszeit.</li>
-  <li>Produktion: Ich lege Partitionen per Job vorab an und alarmiere, wenn der nächste Monat fehlt.</li>
+  <li>Zahl: Die Doku nennt einige tausend Partitionen als machbar. Das gilt, wenn Abfragen fast alle wegprunen.</li>
+  <li>Trade-off: Ich gewinne schnelles Löschen per DROP. Ich verliere aber globale Unique-Indizes und zahle Planungszeit.</li>
+  <li>Produktion: Ich lege Partitionen per Job vorab an. Ich alarmiere, wenn der nächste Monat fehlt.</li>
 </ol></div>
 
 <h2>1. Die Reise einer Abfrage und eines Monatswechsels</h2>
@@ -100,17 +100,17 @@
 <h2>3. Details, die Interviewer fragen</h2>
 <ol>
   <li><b>Deklarativ vs Vererbung:</b> Heute nutzt man <b>deklarative Partitionierung</b> mit <code>PARTITION BY</code>. Die alte Variante über Tabellen-Vererbung und Trigger braucht man nicht mehr.</li>
-  <li><b>DEFAULT-Partition:</b> Sie nimmt alle Zeilen ohne passende Partition. Nachteil: Ein späteres <code>ATTACH</code> muss sie scannen, mit <code>ACCESS EXCLUSIVE</code> auf ihr. Und <code>DETACH CONCURRENTLY</code> geht nicht, solange eine DEFAULT-Partition existiert.</li>
+  <li><b>DEFAULT-Partition:</b> Sie nimmt alle Zeilen ohne passende Partition. Ein Nachteil: Ein späteres <code>ATTACH</code> muss sie scannen, mit <code>ACCESS EXCLUSIVE</code> auf ihr. Und <code>DETACH CONCURRENTLY</code> geht nicht, solange eine DEFAULT-Partition existiert.</li>
   <li><b>Sub-Partitionierung:</b> Eine Partition kann selbst partitioniert sein, z. B. RANGE nach Monat, dann LIST nach Art. Mehr Ebenen heissen mehr Planungsaufwand.</li>
-  <li><b>Lock-Stufen:</b> <code>ATTACH PARTITION</code> nimmt <code>SHARE UPDATE EXCLUSIVE</code> auf dem Parent, Lesen und Schreiben laufen weiter. <code>DETACH</code> ohne <code>CONCURRENTLY</code> und <code>DROP</code> einer Partition brauchen <code>ACCESS EXCLUSIVE</code> auf dem Parent (Seite Locking).</li>
-  <li><b>DETACH CONCURRENTLY:</b> Es läuft in zwei Transaktionen und wartet auf alle laufenden Abfragen. Es geht nicht in einem Transaktionsblock. Ein Abbruch wird mit <code>DETACH … FINALIZE</code> beendet.</li>
-  <li><b>Index ohne lange Sperre:</b> <code>CREATE INDEX</code> auf dem Parent kann nicht <code>CONCURRENTLY</code>. Weg: <code>CREATE INDEX … ON ONLY meldung</code>, dann pro Partition <code>CONCURRENTLY</code> und <code>ALTER INDEX … ATTACH PARTITION</code>.</li>
+  <li><b>Lock-Stufen:</b> <code>ATTACH PARTITION</code> nimmt <code>SHARE UPDATE EXCLUSIVE</code> auf dem Parent. Lesen und Schreiben laufen weiter. <code>DETACH</code> ohne <code>CONCURRENTLY</code> und <code>DROP</code> einer Partition brauchen <code>ACCESS EXCLUSIVE</code> auf dem Parent (Seite Locking).</li>
+  <li><b>DETACH CONCURRENTLY:</b> Es läuft in zwei Transaktionen und wartet auf alle laufenden Abfragen. Es geht nicht in einem Transaktionsblock. Einen Abbruch beendet man mit <code>DETACH … FINALIZE</code>.</li>
+  <li><b>Index ohne lange Sperre:</b> <code>CREATE INDEX</code> auf dem Parent kann nicht <code>CONCURRENTLY</code>. Der Weg ist <code>CREATE INDEX … ON ONLY meldung</code>. Dann folgt pro Partition <code>CONCURRENTLY</code> und <code>ALTER INDEX … ATTACH PARTITION</code>.</li>
   <li><b>Pruning-Voraussetzung:</b> Der Filter muss direkt auf den Key-Spalten stehen. Funktionen oder Rechnungen auf dem Key verhindern Pruning. <code>enable_partition_pruning</code> ist standardmässig an.</li>
   <li><b>Partitionwise Join und Aggregate:</b> <code>enable_partitionwise_join</code> und <code>enable_partitionwise_aggregate</code> lassen gleich partitionierte Tabellen Partition für Partition joinen. Beide sind standardmässig aus, weil sie Planungszeit und Speicher kosten.</li>
-  <li><b>Statistiken:</b> Autovacuum bearbeitet nur die Partitionen, nicht den Parent. Der Parent braucht ein manuelles <code>ANALYZE</code> für Abfragen über alle Partitionen. Seit 18 gibt es <code>ANALYZE ONLY meldung</code> nur für den Parent (Release Notes 18, Utility Commands). Seit 19 analysiert <code>vacuumdb --analyze-only</code> ohne Ziel auch partitionierte Tabellen; vorher übersprang es sie (Release Notes 19, Server Applications).</li>
+  <li><b>Statistiken:</b> Autovacuum bearbeitet nur die Partitionen, nicht den Parent. Der Parent braucht ein manuelles <code>ANALYZE</code> für Abfragen über alle Partitionen. Seit 18 gibt es <code>ANALYZE ONLY meldung</code> nur für den Parent (Release Notes 18, Utility Commands). Seit 19 analysiert <code>vacuumdb --analyze-only</code> ohne Ziel auch partitionierte Tabellen. Vorher übersprang es sie (Release Notes 19, Server Applications).</li>
   <li><b>Foreign Keys:</b> Eine partitionierte Tabelle kann einen FK haben und Ziel eines FK sein. Seit 18 auch als <code>NOT VALID</code> (Release Notes 18, Constraints).</li>
-  <li><b>Neu in 17:</b> Identity-Spalten und Exclusion Constraints auf partitionierten Tabellen. Der Exclusion Constraint muss die Key-Spalten mit <code>=</code> vergleichen.</li>
-  <li><b>Neu in 18 und 19:</b> 18 verbietet UNLOGGED partitionierte Tabellen; vorher wirkte <code>UNLOGGED</code> dort gar nicht auf die Partitionen (Release Notes 18, Migration). 18 plant Abfragen über viele Partitionen effizienter (Release Notes 18, Optimizer). 19 erlaubt <code>COPY meldung TO …</code> direkt, vorher brauchte man <code>COPY (SELECT …)</code> (Release Notes 19, COPY).</li>
+  <li><b>Neu in 17:</b> Identity-Spalten und Exclusion Constraints gehen jetzt auf partitionierten Tabellen. Der Exclusion Constraint muss die Key-Spalten mit <code>=</code> vergleichen.</li>
+  <li><b>Neu in 18 und 19:</b> 18 verbietet UNLOGGED partitionierte Tabellen. Vorher wirkte <code>UNLOGGED</code> dort gar nicht auf die Partitionen (Release Notes 18, Migration). 18 plant Abfragen über viele Partitionen effizienter (Release Notes 18, Optimizer). 19 erlaubt <code>COPY meldung TO …</code> direkt. Vorher brauchte man <code>COPY (SELECT …)</code> (Release Notes 19, COPY).</li>
   <li><b>Kein SPLIT/MERGE:</b> Auch PostgreSQL 19 hat kein <code>SPLIT PARTITION</code> oder <code>MERGE PARTITIONS</code> (nicht in der ALTER-TABLE-Doku 19). Umbauen heisst: neue Partition anlegen, Daten kopieren, alte abhängen.</li>
   <li><b>Anzahl Partitionen:</b> Die Doku nennt einige tausend Partitionen als gut machbar, wenn Abfragen fast alle wegprunen. Jede berührte Partition kostet Planungszeit und Speicher pro Session.</li>
   <li><b>Einschränkungen:</b> Partitionen haben keine eigenen Zusatzspalten. Ein <code>BEFORE ROW</code>-Trigger kann das Ziel nicht ändern. Generated Columns dürfen nicht im Partition Key sein.</li>

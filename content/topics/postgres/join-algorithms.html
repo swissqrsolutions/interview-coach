@@ -36,14 +36,14 @@
 <!-- sources: PostgreSQL · Tier 1 · Quellen: PostgreSQL 17 Doku (aktuell ist PostgreSQL 19; wichtige Unterschiede in 18/19 laut Release Notes stehen im Text), Kapitel 51.5 „Planner/Optimizer“ (Join-Strategien), Kapitel 14.1 „Using EXPLAIN“, Kapitel 19.4 „Resource Consumption“ (work_mem, hash_mem_multiplier), Kapitel 19.7 „Query Planning“ (enable_*, join_collapse_limit), Kapitel 15 „Parallel Query“; Markus Winand, „Use The Index, Luke“, Kapitel „The Join Operation“ -->
 
 <div class="kern">
-<b>Kern:</b> Ein <b>Join-Algorithmus</b> ist die Methode, mit der PostgreSQL zwei Zeilenmengen zu passenden Paaren verbindet. Es gibt drei: <b>Nested Loop</b> (für wenige Zeilen mit Index), <b>Hash Join</b> (für grosse, unsortierte Mengen mit <code>=</code>) und <b>Merge Join</b> (für grosse, schon sortierte Mengen). Der Planner wählt nach geschätzten Zeilen. Eine falsche Schätzung führt zum falschen Algorithmus.
+<b>Kern:</b> Ein <b>Join-Algorithmus</b> ist die Methode, mit der PostgreSQL zwei Zeilenmengen zu passenden Paaren verbindet. Es gibt drei: <b>Nested Loop</b> (für wenige Zeilen mit Index), <b>Hash Join</b> (für grosse, unsortierte Mengen mit <code>=</code>) und <b>Merge Join</b> (für grosse, schon sortierte Mengen). Der Planner wählt nach geschätzten Zeilen, und eine falsche Schätzung führt zum falschen Algorithmus.
 </div>
 
 <div class="muster"><h3>Antwort-Muster</h3><p class="mq"><b>Frage:</b> Welche Join-Algorithmen kennt PostgreSQL, und wann nimmt er welchen?</p><ol>
-  <li>Mechanismus: Nested Loop sucht pro Outer-Zeile innen, am besten per Index. Hash Join baut eine Hash-Tabelle aus der kleineren Seite, Merge Join läuft über zwei sortierte Seiten.</li>
-  <li>Zahl: Die Hash-Tabelle darf standardmässig 4 MB × 2.0 = 8 MB nutzen, sonst spillt sie in Batches auf Platte.</li>
-  <li>Trade-off: Nested Loop ist bei wenigen Zeilen der beste und bei Millionen der schlimmste Join.</li>
-  <li>Produktion: Sehe ich einen falschen Join, repariere ich die Zeilenschätzung, nicht den Join.</li>
+  <li>Mechanismus: Nested Loop sucht pro Outer-Zeile innen, am besten per Index. Hash Join baut eine Hash-Tabelle aus der kleineren Seite. Merge Join läuft über zwei sortierte Seiten.</li>
+  <li>Zahl: Die Hash-Tabelle darf standardmässig 4 MB × 2.0 = 8 MB nutzen. Sonst spillt sie in Batches auf Platte.</li>
+  <li>Trade-off: Nested Loop ist bei wenigen Zeilen der beste Join. Bei Millionen ist er der schlimmste.</li>
+  <li>Produktion: Sehe ich einen falschen Join, repariere ich die Zeilenschätzung. Den Join ändere ich nicht.</li>
 </ol></div>
 
 <h2>1. Die Reise eines Joins: drei Wege</h2>
@@ -70,8 +70,8 @@
   <li><b>Nested Loop.</b> Die Abfrage will alle Bestellungen der 200 Kunden aus Bern. PostgreSQL liest die 200 Kunden (Outer). Für jeden Kunden sucht er im Index <code>orders(customer_id)</code> die Bestellungen (Inner). Der Inner-Knoten läuft also 200 Mal: <code>loops=200</code>. Ohne Index wäre jeder Durchlauf ein Seq Scan über 5 Mio. Zeilen.</li>
   <li><b>Hash Join, Build.</b> Jetzt will der Report alle 5 Mio. Bestellungen mit Kundendaten. PostgreSQL liest die kleinere Seite (100 000 Kunden) einmal. Er baut daraus im RAM eine <b>Hash-Tabelle</b> über <code>id</code>.</li>
   <li><b>Hash Join, Probe.</b> Dann liest er die 5 Mio. Bestellungen einmal. Für jede berechnet er den Hash von <code>customer_id</code> und schaut im passenden Bucket nach. Jede Tabelle wird nur einmal gelesen.</li>
-  <li><b>Hash Join, Spill.</b> Passt die Hash-Tabelle nicht in <code>work_mem × hash_mem_multiplier</code>, teilt PostgreSQL beide Seiten in <b>Batches</b>. Er schreibt die übrigen Batches in temporäre Dateien und arbeitet sie nacheinander ab. Das Ergebnis bleibt richtig, wird aber langsamer.</li>
-  <li><b>Merge Join.</b> Beide Seiten kommen sortiert nach dem Join-Schlüssel, z. B. aus zwei Indizes auf <code>id</code>. Zwei Zeiger laufen gleichzeitig. Sind die Werte gleich: Treffer. Sonst rückt der kleinere vor. Jede Seite wird einmal gelesen, und das Ergebnis ist schon sortiert.</li>
+  <li><b>Hash Join, Spill.</b> Passt die Hash-Tabelle nicht in <code>work_mem × hash_mem_multiplier</code>, teilt PostgreSQL beide Seiten in <b>Batches</b>. Er schreibt die übrigen Batches in temporäre Dateien. Dann arbeitet er sie nacheinander ab. Das Ergebnis bleibt richtig, wird aber langsamer.</li>
+  <li><b>Merge Join.</b> Beide Seiten kommen sortiert nach dem Join-Schlüssel, z. B. aus zwei Indizes auf <code>id</code>. Zwei Zeiger laufen gleichzeitig. Sind die Werte gleich: Treffer. Sonst rückt der kleinere vor. Jede Seite wird einmal gelesen. Das Ergebnis ist schon sortiert.</li>
 </ol>
 
 <h2>2. Aufbau</h2>
@@ -96,7 +96,7 @@
 <ol>
   <li><b>Join-Knoten</b>: Ein Knoten im Plan-Baum. Er hat immer genau zwei Kinder. Ein Join über 4 Tabellen sind also 3 Join-Knoten.</li>
   <li><b>Outer</b>: das erste (obere) Kind in <code>EXPLAIN</code>. Es liefert die Zeilen, die den Join treiben.</li>
-  <li><b>Inner</b>: das zweite Kind. Beim Nested Loop wird es pro Outer-Zeile durchsucht, beim Hash Join wird es in eine Hash-Tabelle geladen.</li>
+  <li><b>Inner</b>: das zweite Kind. Beim Nested Loop wird es pro Outer-Zeile durchsucht. Beim Hash Join wird es in eine Hash-Tabelle geladen.</li>
   <li><b>Scans</b>: Seq Scan, Index Scan oder Bitmap Scan liefern die Zeilen an den Join.</li>
   <li><b>work_mem</b>: Speichergrenze pro Hash-Tabelle und pro Sort. Passt es nicht, schreibt PostgreSQL temporäre Dateien.</li>
   <li><b>Planner</b>: wählt Reihenfolge und Algorithmus nach den geschätzten Zeilen jeder Seite.</li>
@@ -104,24 +104,24 @@
 
 <h2>3. Details, die Interviewer fragen</h2>
 <ol>
-  <li><b>Nested Loop</b>: Für jede Outer-Zeile wird die Inner-Seite durchsucht. Kosten ohne Index: Outer × Inner, also O(N·M). Mit Index auf der Inner-Seite: Outer × log(Inner). Er kann <b>jede</b> Join-Bedingung: <code>=</code>, <code>&lt;</code>, <code>BETWEEN</code>, <code>LIKE</code>, Geo-Funktionen.</li>
-  <li><b>Nested Loop Startkosten</b>: sehr klein. Die erste Ergebniszeile kommt sofort. Darum gewinnt er oft bei <code>LIMIT</code> und bei <code>EXISTS</code>.</li>
+  <li><b>Nested Loop</b>: Für jede Outer-Zeile wird die Inner-Seite durchsucht. Die Kosten ohne Index sind Outer × Inner, also O(N·M). Mit Index auf der Inner-Seite sind sie Outer × log(Inner). Er kann <b>jede</b> Join-Bedingung. Beispiele sind <code>=</code>, <code>&lt;</code>, <code>BETWEEN</code>, <code>LIKE</code> und Geo-Funktionen.</li>
+  <li><b>Nested Loop Startkosten</b>: Sie sind sehr klein. Die erste Ergebniszeile kommt sofort. Darum gewinnt er oft bei <code>LIMIT</code> und bei <code>EXISTS</code>.</li>
   <li><b>Materialize</b>: Hat die Inner-Seite keinen Index, kann PostgreSQL sie einmal in den Speicher legen (<code>Materialize</code>-Knoten). Dann liest er sie nicht jedes Mal neu von der Tabelle.</li>
-  <li><b>Memoize</b> (seit PostgreSQL 14): Ein Cache zwischen Nested Loop und Inner-Seite. Wiederholt sich der Outer-Schlüssel, kommt das Ergebnis aus dem Cache. Im Plan: <code>Memoize</code> mit <code>Hits</code> und <code>Misses</code>. Seit 19 zeigt <code>EXPLAIN</code> auch die Schätzungen, warum Memoize gewählt wurde (PG 19 Release Notes), und Memoize geht auch für Anti Joins mit eindeutiger Inner-Seite (PG 19 Release Notes).</li>
-  <li><b>Hash Join</b>: Build-Phase über die Inner-Seite (die kleinere), Probe-Phase über die Outer-Seite. Kosten ca. O(N + M). Nur für <b>Gleichheit</b> (<code>=</code>). Hohe Startkosten, weil die Hash-Tabelle erst fertig sein muss. Ergebnis ist unsortiert.</li>
-  <li><b>Hash-Speicher</b>: Grenze ist <code>work_mem × hash_mem_multiplier</code>. Standard 4 MB × 2.0 = 8 MB (Multiplikator 2.0 seit Version 15). Im Plan: <code>Buckets</code>, <code>Batches</code>, <code>Memory Usage</code>.</li>
-  <li><b>Batches</b>: <code>Batches: 1</code> = alles im RAM. Mehr Batches = Spill in temporäre Dateien. <code>Batches: 8 (originally 1)</code> heisst: Die Schätzung war zu klein, PostgreSQL musste während der Ausführung nachteilen.</li>
+  <li><b>Memoize</b> (seit PostgreSQL 14): Das ist ein Cache zwischen Nested Loop und Inner-Seite. Wiederholt sich der Outer-Schlüssel, kommt das Ergebnis aus dem Cache. Im Plan steht <code>Memoize</code> mit <code>Hits</code> und <code>Misses</code>. Seit 19 zeigt <code>EXPLAIN</code> auch die Schätzungen, warum Memoize gewählt wurde (PG 19 Release Notes). Zudem geht Memoize auch für Anti Joins mit eindeutiger Inner-Seite (PG 19 Release Notes).</li>
+  <li><b>Hash Join</b>: Die Build-Phase läuft über die Inner-Seite (die kleinere). Die Probe-Phase läuft über die Outer-Seite. Die Kosten sind ca. O(N + M). Er geht nur für <b>Gleichheit</b> (<code>=</code>). Die Startkosten sind hoch, weil die Hash-Tabelle erst fertig sein muss. Das Ergebnis ist unsortiert.</li>
+  <li><b>Hash-Speicher</b>: Die Grenze ist <code>work_mem × hash_mem_multiplier</code>. Der Standard ist 4 MB × 2.0 = 8 MB (Multiplikator 2.0 seit Version 15). Im Plan stehen <code>Buckets</code>, <code>Batches</code> und <code>Memory Usage</code>.</li>
+  <li><b>Batches</b>: <code>Batches: 1</code> heisst, alles liegt im RAM. Mehr Batches heisst Spill in temporäre Dateien. <code>Batches: 8 (originally 1)</code> heisst: Die Schätzung war zu klein. PostgreSQL musste während der Ausführung nachträglich mehr Batches bilden.</li>
   <li><b>Skew</b>: Sehr häufige Werte auf der Outer-Seite behandelt der Hash Join gesondert (Skew-Optimierung über die MCV-Statistik). Trotzdem können Batches mit einem Riesenwert ungleich gross werden.</li>
-  <li><b>Parallel Hash Join</b> (seit Version 11): Mehrere Worker bauen gemeinsam eine geteilte Hash-Tabelle. Im Plan: <code>Parallel Hash Join</code> und <code>Parallel Hash</code>.</li>
-  <li><b>Merge Join</b>: Beide Seiten müssen nach dem Join-Schlüssel sortiert sein. Entweder durch einen Index oder durch einen <code>Sort</code>-Knoten. Kosten O(N + M) plus Sortieren. Nur für Gleichheit (mergejoinable Operatoren). Seit 18 darf der Sort davor ein <b>Incremental Sort</b> sein, wenn die Eingabe schon nach einem Teil des Schlüssels sortiert ist (PG 18 Release Notes).</li>
+  <li><b>Parallel Hash Join</b> (seit Version 11): Mehrere Worker bauen gemeinsam eine geteilte Hash-Tabelle. Im Plan stehen <code>Parallel Hash Join</code> und <code>Parallel Hash</code>.</li>
+  <li><b>Merge Join</b>: Beide Seiten müssen nach dem Join-Schlüssel sortiert sein. Das geht durch einen Index oder durch einen <code>Sort</code>-Knoten. Die Kosten sind O(N + M) plus Sortieren. Er geht nur für Gleichheit (mergejoinable Operatoren). Seit 18 darf der Sort davor ein <b>Incremental Sort</b> sein. Das gilt, wenn die Eingabe schon nach einem Teil des Schlüssels sortiert ist (PG 18 Release Notes).</li>
   <li><b>Merge Join mit Duplikaten</b>: Gibt es auf beiden Seiten gleiche Schlüssel, muss die Inner-Seite zurückspulen (<b>mark/restore</b>). Darum steht manchmal ein <code>Materialize</code> unter dem Merge Join.</li>
-  <li><b>Wann der Planner was wählt</b>: Kleine Outer-Seite und Index innen → Nested Loop. Grosse Mengen ohne Ordnung → Hash Join. Beide schon sortiert oder sortiertes Ergebnis nötig → Merge Join. Nicht-Gleichheit → nur Nested Loop.</li>
-  <li><b>FULL OUTER JOIN</b>: Geht nur mit Hash Join oder Merge Join, also nur mit einer Gleichheitsbedingung. Sonst Fehler: „FULL JOIN is only supported with merge-joinable or hash-joinable join conditions“.</li>
+  <li><b>Wann der Planner was wählt</b>: Bei kleiner Outer-Seite und Index innen nimmt er Nested Loop. Bei grossen Mengen ohne Ordnung nimmt er Hash Join. Sind beide Seiten schon sortiert oder braucht es ein sortiertes Ergebnis, nimmt er Merge Join. Bei Nicht-Gleichheit geht nur Nested Loop.</li>
+  <li><b>FULL OUTER JOIN</b>: Er geht nur mit Hash Join oder Merge Join. Das heisst: nur mit einer Gleichheitsbedingung. Sonst gibt es den Fehler „FULL JOIN is only supported with merge-joinable or hash-joinable join conditions“.</li>
   <li><b>Semi Join und Anti Join</b>: <code>EXISTS</code> wird zu einem <b>Semi Join</b> (stoppt beim ersten Treffer). <code>NOT EXISTS</code> wird zu einem <b>Anti Join</b>. Alle drei Algorithmen gibt es in diesen Varianten.</li>
-  <li><b>NOT IN</b>: Ein einziges <code>NULL</code> in der Unterabfrage macht das Ergebnis leer. Darum wird <code>NOT IN</code> bis PostgreSQL 18 nie ein Anti Join. Seit 19 wandelt der Planner es in einen Anti Join um, wenn keine NULLs vorkommen können (z. B. <code>NOT NULL</code>-Spalten auf beiden Seiten; PG 19 Release Notes). <code>NOT EXISTS</code> bleibt die sichere Wahl.</li>
+  <li><b>NOT IN</b>: Ein einziges <code>NULL</code> in der Unterabfrage macht das Ergebnis leer. Darum wird <code>NOT IN</code> bis PostgreSQL 18 nie ein Anti Join. Seit 19 wandelt der Planner es in einen Anti Join um, wenn keine NULLs vorkommen können. Ein Beispiel sind <code>NOT NULL</code>-Spalten auf beiden Seiten (PG 19 Release Notes). <code>NOT EXISTS</code> bleibt die sichere Wahl.</li>
   <li><b>Join-Reihenfolge</b>: Der Planner tauscht Tabellen frei, bis <code>join_collapse_limit</code> (8). Darüber behält er die geschriebene Reihenfolge. Ab <code>geqo_threshold</code> (12) nutzt er GEQO.</li>
-  <li><b>work_mem ist pro Knoten</b>: Ein Plan mit 3 Hash Joins und 2 Sorts darf 5 × <code>work_mem</code> (Hash × 2) nutzen. Dazu pro paralleler Worker: Laut Doku kann eine Abfrage mit 4 Workern bis 5-mal so viel Speicher nutzen. Darum ist ein globales <code>work_mem = 1GB</code> bei vielen Verbindungen gefährlich.</li>
-  <li><b>Indizes für Joins</b>: Ein Nested Loop braucht einen Index auf der Join-Spalte der Inner-Seite, typisch die Foreign-Key-Spalte. Hash Join braucht keinen Index. Merge Join profitiert von Indizes, weil der Sort wegfällt.</li>
+  <li><b>work_mem ist pro Knoten</b>: Ein Plan mit 3 Hash Joins und 2 Sorts darf 5 × <code>work_mem</code> (Hash × 2) nutzen. Dazu kommt es pro paralleler Worker. Laut Doku kann eine Abfrage mit 4 Workern bis 5-mal so viel Speicher nutzen. Darum ist ein globales <code>work_mem = 1GB</code> bei vielen Verbindungen gefährlich.</li>
+  <li><b>Indizes für Joins</b>: Ein Nested Loop braucht einen Index auf der Join-Spalte der Inner-Seite. Das ist typisch die Foreign-Key-Spalte. Hash Join braucht keinen Index. Merge Join profitiert von Indizes, weil der Sort wegfällt.</li>
 </ol>
 
 <h2>4. Fallen</h2>

@@ -40,10 +40,10 @@
 </div>
 
 <div class="muster"><h3>Antwort-Muster</h3><p class="mq"><b>Frage:</b> Welche Isolation Levels gibt es, und welches nehmen Sie?</p><ol>
-  <li>Mechanismus: Read Committed, Repeatable Read und Serializable, alle auf MVCC-Snapshots.</li>
+  <li>Mechanismus: Es gibt Read Committed, Repeatable Read und Serializable. Alle laufen auf MVCC-Snapshots.</li>
   <li>Zahl: Ab Repeatable Read kann eine Transaktion mit SQLSTATE 40001 abbrechen.</li>
-  <li>Trade-off: Ein höheres Level verhindert mehr Anomalien, braucht aber Retries.</li>
-  <li>Produktion: Ich lasse Read Committed, schreibe Updates atomar und nutze Serializable nur mit zentralem Retry.</li>
+  <li>Trade-off: Ein höheres Level verhindert mehr Anomalien. Es braucht aber Retries.</li>
+  <li>Produktion: Ich lasse Read Committed und schreibe Updates atomar. Serializable nutze ich nur mit zentralem Retry.</li>
 </ol></div>
 
 <h2>1. Die Reise einer Write-Skew-Anomalie</h2>
@@ -68,8 +68,8 @@
   <li><b>Alice schreibt:</b> <code>UPDATE doctors SET on_call = false WHERE name = 'Alice'</code>.</li>
   <li><b>Bob schreibt:</b> Er ändert eine <b>andere Zeile</b> (Bob). Darum gibt es <b>keinen Row-Lock-Konflikt</b>.</li>
   <li><b>Alice committet.</b> Alles gut aus ihrer Sicht.</li>
-  <li><b>Bob committet:</b> In <b>Repeatable Read</b> klappt es. Jetzt ist niemand im Dienst. Das ist <b>Write Skew</b>: Jeder hat korrekt gelesen, aber zusammen brechen sie die Regel.</li>
-  <li><b>Serializable erkennt es:</b> SSI sieht zwei <b>rw-Abhängigkeiten</b> (A las, was B schrieb, und umgekehrt). Einer muss abbrechen: Fehler <code>40001</code>. Bob wiederholt, sieht nun 1 Arzt und darf nicht gehen.</li>
+  <li><b>Bob committet:</b> In <b>Repeatable Read</b> klappt es. Jetzt ist niemand im Dienst. Das ist <b>Write Skew</b>. Jeder hat korrekt gelesen. Zusammen brechen sie aber die Regel.</li>
+  <li><b>Serializable erkennt es:</b> SSI sieht zwei <b>rw-Abhängigkeiten</b> (A las, was B schrieb, und umgekehrt). Einer muss abbrechen. Der Fehler ist <code>40001</code>. Bob wiederholt. Er sieht nun 1 Arzt und darf nicht gehen.</li>
 </ol>
 
 <h2>2. Aufbau</h2>
@@ -99,21 +99,21 @@
 
 <h2>3. Details, die Interviewer fragen</h2>
 <ol>
-  <li><b>Dirty Read:</b> Lesen von nicht committeten Daten. In PostgreSQL <b>nie</b> möglich. <code>READ UNCOMMITTED</code> verhält sich wie Read Committed.</li>
-  <li><b>Non-repeatable Read:</b> Dieselbe Zeile zweimal gelesen, anderer Wert, weil jemand dazwischen committet hat. Möglich in Read Committed.</li>
-  <li><b>Phantom Read:</b> Dieselbe Abfrage mit <code>WHERE</code> liefert beim zweiten Mal neue Zeilen. Möglich in Read Committed. In PostgreSQL-Repeatable-Read <b>nicht</b> möglich, strenger als der SQL-Standard.</li>
-  <li><b>Lost Update:</b> Zwei Transaktionen lesen, rechnen und schreiben. Eine überschreibt die andere. Möglich in Read Committed bei read-modify-write in der App.</li>
-  <li><b>Write Skew:</b> Zwei Transaktionen lesen überlappende Daten und schreiben <b>verschiedene</b> Zeilen. Eine Regel über mehrere Zeilen bricht. Möglich bis Repeatable Read.</li>
+  <li><b>Dirty Read:</b> Das ist Lesen von nicht committeten Daten. In PostgreSQL ist das <b>nie</b> möglich. <code>READ UNCOMMITTED</code> verhält sich wie Read Committed.</li>
+  <li><b>Non-repeatable Read:</b> Dieselbe Zeile wird zweimal gelesen. Der Wert ist anders, weil jemand dazwischen committet hat. Das ist möglich in Read Committed.</li>
+  <li><b>Phantom Read:</b> Dieselbe Abfrage mit <code>WHERE</code> liefert beim zweiten Mal neue Zeilen. Das ist möglich in Read Committed. In PostgreSQL-Repeatable-Read ist es <b>nicht</b> möglich. Das ist strenger als der SQL-Standard.</li>
+  <li><b>Lost Update:</b> Zwei Transaktionen lesen, rechnen und schreiben. Eine überschreibt die andere. Das ist möglich in Read Committed bei read-modify-write in der App.</li>
+  <li><b>Write Skew:</b> Zwei Transaktionen lesen überlappende Daten und schreiben <b>verschiedene</b> Zeilen. Eine Regel über mehrere Zeilen bricht. Das ist möglich bis Repeatable Read.</li>
   <li><b>Read Committed im Detail:</b> Jeder Befehl hat einen neuen Snapshot. Trifft ein UPDATE auf eine gerade gesperrte Zeile, wartet es. Nach dem COMMIT des anderen prüft es die <b>neueste Version</b> erneut gegen das <code>WHERE</code>.</li>
-  <li><b>Repeatable Read im Detail:</b> Ein Snapshot für die ganze Transaktion, genommen beim <b>ersten Befehl</b>. Das ist <b>Snapshot Isolation</b>. Will sie eine Zeile ändern, die seit dem Snapshot geändert wurde, kommt <code>40001</code>.</li>
-  <li><b>Serializable (SSI):</b> Wie Repeatable Read plus Überwachung. PostgreSQL merkt sich Lesezugriffe als <b>SIRead Locks</b> (Predicate Locks). Findet es zwei aufeinanderfolgende rw-Abhängigkeiten mit einem „Pivot“, bricht es eine Transaktion ab.</li>
-  <li><b>False Positives:</b> SSI bricht manchmal ab, obwohl kein echter Fehler entstanden wäre. Grund: grobe Locks, z. B. auf Seite oder Tabelle statt Zeile. Sequential Scans sperren die ganze Tabelle als Prädikat.</li>
-  <li><b>Retry-Regel:</b> Bei <code>40001</code> (und <code>40P01</code> Deadlock) die <b>ganze Transaktion</b> wiederholen, inklusive aller Lesezugriffe. Nicht nur den letzten Befehl. Mit Obergrenze und kurzem Backoff.</li>
+  <li><b>Repeatable Read im Detail:</b> Die ganze Transaktion hat einen Snapshot. Er wird beim <b>ersten Befehl</b> genommen. Das ist <b>Snapshot Isolation</b>. Will sie eine Zeile ändern, die seit dem Snapshot geändert wurde, kommt <code>40001</code>.</li>
+  <li><b>Serializable (SSI):</b> Es ist wie Repeatable Read plus Überwachung. PostgreSQL merkt sich Lesezugriffe als <b>SIRead Locks</b> (Predicate Locks). Findet es zwei aufeinanderfolgende rw-Abhängigkeiten mit einem „Pivot“, bricht es eine Transaktion ab.</li>
+  <li><b>False Positives:</b> SSI bricht manchmal ab, obwohl kein echter Fehler entstanden wäre. Der Grund sind grobe Locks, z. B. auf Seite oder Tabelle statt Zeile. Sequential Scans sperren die ganze Tabelle als Prädikat.</li>
+  <li><b>Retry-Regel:</b> Bei <code>40001</code> (und <code>40P01</code> Deadlock) wiederholt man die <b>ganze Transaktion</b>. Das schliesst alle Lesezugriffe ein. Man wiederholt nicht nur den letzten Befehl. Man nimmt eine Obergrenze und einen kurzen Backoff.</li>
   <li><b>READ ONLY DEFERRABLE:</b> <code>BEGIN ISOLATION LEVEL SERIALIZABLE READ ONLY DEFERRABLE</code> wartet auf einen sicheren Snapshot. Danach kann sie nie mit 40001 scheitern. Gut für lange Reports.</li>
   <li><b>Mischen von Levels:</b> SSI schützt nur Transaktionen, die selbst Serializable laufen. Eine Read-Committed-Transaktion daneben kann trotzdem Anomalien erzeugen.</li>
   <li><b>Replicas:</b> Auf einem Hot Standby gibt es kein Serializable. Dort geht höchstens Repeatable Read.</li>
-  <li><b>Lost Update ohne höheres Level verhindern:</b> atomares <code>UPDATE … SET saldo = saldo + 10</code>, <code>SELECT … FOR UPDATE</code>, oder optimistisch mit Versionsspalte (<code>WHERE version = 7</code>, JPA <code>@Version</code>).</li>
-  <li><b>Write Skew ohne Serializable verhindern:</b> Die gelesenen Zeilen mit <code>FOR UPDATE</code> sperren. Oder den Konflikt „materialisieren“: eine Zeile, die beide ändern müssen. Oder ein Constraint.</li>
+  <li><b>Lost Update ohne höheres Level verhindern:</b> Möglich sind atomares <code>UPDATE … SET saldo = saldo + 10</code> und <code>SELECT … FOR UPDATE</code>. Auch optimistisch geht es mit einer Versionsspalte (<code>WHERE version = 7</code>, JPA <code>@Version</code>).</li>
+  <li><b>Write Skew ohne Serializable verhindern:</b> Man sperrt die gelesenen Zeilen mit <code>FOR UPDATE</code>. Oder man „materialisiert“ den Konflikt. Das ist eine Zeile, die beide ändern müssen. Oder man nutzt ein Constraint.</li>
 </ol>
 
 <h2>4. Fallen</h2>

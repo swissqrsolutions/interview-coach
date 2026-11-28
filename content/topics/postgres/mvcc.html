@@ -40,10 +40,10 @@
 </div>
 
 <div class="muster"><h3>Antwort-Muster</h3><p class="mq"><b>Frage:</b> Was ist MVCC, und wie funktioniert es in PostgreSQL?</p><ol>
-  <li>Mechanismus: Ein UPDATE schreibt eine neue Zeilenversion, die alte bekommt <code>xmax</code> und bleibt im Heap.</li>
-  <li>Zahl: Jede Version trägt 32-Bit-xids, und der Snapshot entscheidet, welche Version sichtbar ist.</li>
-  <li>Trade-off: Leser warten nie auf Schreiber, aber tote Versionen erzeugen Bloat und brauchen VACUUM.</li>
-  <li>Produktion: Ich überwache die HOT-Quote und den ältesten Snapshot, damit VACUUM aufräumen kann.</li>
+  <li>Mechanismus: Ein UPDATE schreibt eine neue Zeilenversion. Die alte bekommt <code>xmax</code> und bleibt im Heap.</li>
+  <li>Zahl: Jede Version trägt 32-Bit-xids. Der Snapshot entscheidet, welche Version sichtbar ist.</li>
+  <li>Trade-off: Leser warten nie auf Schreiber. Tote Versionen erzeugen aber Bloat und brauchen VACUUM.</li>
+  <li>Produktion: Ich überwache die HOT-Quote und den ältesten Snapshot. So kann VACUUM aufräumen.</li>
 </ol></div>
 
 <h2>1. Die Reise eines UPDATE</h2>
@@ -101,19 +101,22 @@
 
 <h2>3. Details, die Interviewer fragen</h2>
 <ol>
-  <li><b>Sichtbarkeitsregel (vereinfacht):</b> Eine Version ist sichtbar, wenn <code>xmin</code> committed und für den Snapshot „vorher“ ist. Und wenn <code>xmax</code> leer, abgebrochen oder für den Snapshot „nachher“ ist.</li>
-  <li><b>Snapshot-Inhalt:</b> <b>xmin</b> = älteste noch laufende xid. <b>xmax</b> = erste noch nicht vergebene xid. <b>xip_list</b> = laufende xids dazwischen. Alles ab xmax oder in der Liste ist unsichtbar.</li>
-  <li><b>Wann der Snapshot entsteht:</b> In <b>Read Committed</b> bei jedem Befehl neu. In <b>Repeatable Read</b> und <b>Serializable</b> einmal beim ersten Befehl der Transaktion, nicht bei <code>BEGIN</code>.</li>
-  <li><b>Eigene Änderungen:</b> Die Transaktion sieht ihre eigenen Änderungen. Innerhalb der Transaktion unterscheidet <b>cmin/cmax</b> (Command ID) die Befehle.</li>
-  <li><b>Hint Bits:</b> Der erste Leser schlägt den Status in pg_xact nach. Danach setzt er Bits im Tuple-Header, z. B. „xmin committed“. Darum kann ein <code>SELECT</code> Seiten schmutzig machen und WAL erzeugen (bei Checksums). Seit PostgreSQL 18 schaltet <code>initdb</code> Checksums standardmässig ein (PG 18 Release Notes).</li>
-  <li><b>DELETE:</b> setzt nur <code>xmax</code>. Die Zeile bleibt physisch liegen, bis VACUUM sie entfernt.</li>
-  <li><b>xmax als Lock:</b> <code>SELECT … FOR UPDATE</code> schreibt auch <code>xmax</code>, aber mit einem Lock-Flag. Teilen sich mehrere Transaktionen einen Lock, steht in xmax eine <b>MultiXact-ID</b>.</li>
-  <li><b>HOT-Bedingungen:</b> Keine Spalte eines Index ändert sich. Und die neue Version passt auf <b>dieselbe Seite</b>. Ein tieferer <code>fillfactor</code> (z. B. 90) lässt dafür Platz.</li>
-  <li><b>Write Amplification:</b> Ohne HOT erzeugt ein UPDATE einen Eintrag in jedem Index, auch bei nicht geänderten Spalten. Viele Indexe machen Updates teuer.</li>
-  <li><b>Visibility Map und Index-Only Scan:</b> Ist eine Seite all-visible, braucht ein Index-Only Scan den Heap nicht. Sonst muss er doch in den Heap (<code>Heap Fetches</code> in EXPLAIN). Seit PostgreSQL 19 können auch normale Table Scans Seiten als all-visible markieren (PG 19 Release Notes), vorher nur VACUUM und <code>COPY … FREEZE</code>.</li>
-  <li><b>32-Bit-xid:</b> Eine xid hat 32 Bit, also ca. 4 Mrd. Werte. Verglichen wird im Kreis: ca. 2 Mrd. gelten als Vergangenheit, 2 Mrd. als Zukunft.</li>
-  <li><b>Wraparound:</b> Ist eine Zeile über 2 Mrd. Transaktionen alt, würde sie plötzlich „in der Zukunft“ liegen und verschwinden. Das verhindert <b>Freezing</b>: VACUUM markiert alte Versionen als „für alle sichtbar“.</li>
-  <li><b>Schutz vor Wraparound:</b> Ab <code>autovacuum_freeze_max_age</code> (200 Mio.) startet ein Pflicht-Autovacuum, auch bei <code>autovacuum = off</code>. Bleiben weniger als 40 Mio. xids, warnt PostgreSQL (seit 19: schon ab 100 Mio.; PG 19 Release Notes). Bei 3 Mio. vergibt es keine neuen xids mehr.</li>
+  <li><b>Sichtbarkeitsregel (vereinfacht):</b> Eine Version ist sichtbar, wenn <code>xmin</code> committed ist. Dazu muss <code>xmin</code> für den Snapshot „vorher“ liegen. Und <code>xmax</code> muss leer oder abgebrochen sein. Oder <code>xmax</code> liegt für den Snapshot „nachher“.</li>
+  <li><b>Snapshot-Inhalt:</b> Der Snapshot hat drei Teile. <b>xmin</b> ist die älteste noch laufende xid. <b>xmax</b> ist die erste noch nicht vergebene xid. <b>xip_list</b> sind die laufenden xids dazwischen. Alles ab xmax oder in der Liste ist unsichtbar.</li>
+  <li><b>Snapshot-Zeitpunkt:</b> In <b>Read Committed</b> entsteht er bei jedem Befehl neu. In <b>Repeatable Read</b> und <b>Serializable</b> entsteht er einmal. Das ist beim ersten Befehl der Transaktion, nicht bei <code>BEGIN</code>.</li>
+  <li><b>Eigene Änderungen:</b> Die Transaktion sieht ihre eigenen Änderungen. Die Befehle unterscheidet <b>cmin/cmax</b> (Command ID).</li>
+  <li><b>Hint Bits:</b> Der erste Leser schlägt den Status in pg_xact nach. Danach setzt er Bits im Tuple-Header, z. B. „xmin committed“. Darum kann ein <code>SELECT</code> Seiten schmutzig machen. Bei Checksums erzeugt das auch WAL. Seit PostgreSQL 18 schaltet <code>initdb</code> Checksums standardmässig ein (PG 18 Release Notes).</li>
+  <li><b>DELETE:</b> Es setzt nur <code>xmax</code>. Die Zeile bleibt physisch liegen. VACUUM entfernt sie später.</li>
+  <li><b>xmax als Lock:</b> <code>SELECT … FOR UPDATE</code> schreibt auch <code>xmax</code>. Es hat dann ein Lock-Flag. Teilen sich mehrere Transaktionen einen Lock, steht in xmax eine <b>MultiXact-ID</b>.</li>
+  <li><b>HOT-Index:</b> Keine Spalte eines Index ändert sich.</li>
+  <li><b>HOT-Platz:</b> Die neue Version passt auf <b>dieselbe Seite</b>. Ein tieferer <code>fillfactor</code> (z. B. 90) lässt dafür Platz.</li>
+  <li><b>Write Amplification:</b> Ohne HOT erzeugt ein UPDATE einen Eintrag in jedem Index. Das gilt auch für nicht geänderte Spalten. Viele Indexe machen Updates teuer.</li>
+  <li><b>Visibility Map und Index-Only Scan:</b> Ist eine Seite all-visible, braucht ein Index-Only Scan den Heap nicht. Sonst muss er doch in den Heap (<code>Heap Fetches</code> in EXPLAIN).</li>
+  <li><b>Visibility Map setzen:</b> Seit PostgreSQL 19 können auch normale Table Scans Seiten als all-visible markieren (PG 19 Release Notes). Vorher taten das nur VACUUM und <code>COPY … FREEZE</code>.</li>
+  <li><b>32-Bit-xid:</b> Eine xid hat 32 Bit, also ca. 4 Mrd. Werte. Sie wird im Kreis verglichen. Ca. 2 Mrd. gelten als Vergangenheit und 2 Mrd. als Zukunft.</li>
+  <li><b>Wraparound:</b> Ist eine Zeile über 2 Mrd. Transaktionen alt, läge sie plötzlich „in der Zukunft“. Sie würde verschwinden. Das verhindert <b>Freezing</b>. VACUUM markiert alte Versionen als „für alle sichtbar“.</li>
+  <li><b>Schutz vor Wraparound:</b> Ab <code>autovacuum_freeze_max_age</code> (200 Mio.) startet ein Pflicht-Autovacuum. Es läuft auch bei <code>autovacuum = off</code>.</li>
+  <li><b>Warnung und Stopp:</b> Bleiben weniger als 40 Mio. xids, warnt PostgreSQL (seit 19 schon ab 100 Mio., laut PG 19 Release Notes). Bei 3 Mio. vergibt es keine neuen xids mehr.</li>
   <li><b>xid8:</b> <code>pg_current_xact_id()</code> liefert eine 64-Bit-xid mit Epoche. Auf der Disk speichert PostgreSQL aber weiter 32 Bit.</li>
 </ol>
 

@@ -36,12 +36,12 @@
 <!-- sources: PostgreSQL · Quellen: PostgreSQL 17 Doku (aktuell ist PostgreSQL 19; wichtige Unterschiede in 18/19 laut Release Notes stehen im Text) (19.3 Connections, 27.2 pg_stat_activity, 52.x Architektur), HikariCP README und Wiki „About Pool Sizing“, PgBouncer Doku (config, features, usage), Microsoft Learn „PgBouncer in Azure Database for PostgreSQL Flexible Server“, pgJDBC Doku (prepareThreshold), PgBouncer Changelog 1.21–1.26, PostgreSQL Release Notes 18 -->
 
 <div class="kern">
-<b>Kern:</b> Ein <b>Connection Pool</b> ist eine Menge offener Datenbankverbindungen, die viele Anfragen nacheinander wiederverwenden. Er löst ein PostgreSQL-Problem: Jede Verbindung ist ein <b>eigener Betriebssystem-Prozess</b> und teuer im Aufbau und im Speicher. <b>HikariCP</b> poolt in der Java-Anwendung, <b>PgBouncer</b> poolt zentral vor der Datenbank.
+<b>Kern:</b> Ein <b>Connection Pool</b> ist eine Menge offener Datenbankverbindungen, die viele Anfragen nacheinander wiederverwenden. Das hilft, weil jede PostgreSQL-Verbindung ein <b>eigener Betriebssystem-Prozess</b> und teuer im Aufbau und im Speicher ist. <b>HikariCP</b> poolt in der Java-Anwendung, <b>PgBouncer</b> poolt zentral vor der Datenbank.
 </div>
 
 <div class="muster"><h3>Antwort-Muster</h3><p class="mq"><b>Frage:</b> Warum braucht PostgreSQL einen Connection Pool, und wie gross machen Sie ihn?</p><ol>
   <li>Mechanismus: Jede Verbindung ist ein eigener Prozess mit Fork, Login und Speicher. Ein Pool verwendet offene Verbindungen wieder.</li>
-  <li>Zahl: <code>max_connections</code> ist standardmässig 100, HikariCP hält 10 Verbindungen pro Instanz.</li>
+  <li>Zahl: <code>max_connections</code> ist standardmässig 100. HikariCP hält 10 Verbindungen pro Instanz.</li>
   <li>Trade-off: Mehr Verbindungen als DB-Kerne bringen nur Kontextwechsel. Ein kleiner Pool mit Warteschlange in der App ist schneller.</li>
   <li>Produktion: Ich rechne Pods × Poolgrösse gegen <code>max_connections</code>. Bei vielen Pods setze ich PgBouncer im Transaction Mode davor.</li>
 </ol></div>
@@ -105,33 +105,27 @@
 
 <h2>3. Details, die Interviewer fragen</h2>
 <ol>
-  <li><b>Process-per-Connection:</b> PostgreSQL startet pro Verbindung einen Prozess. Der Aufbau braucht Fork, Authentifizierung und TLS-Handshake. Das dauert Millisekunden, viel länger als eine kurze Abfrage.</li>
-  <li><b>Kosten idle Verbindungen:</b> Jede idle Verbindung hält Speicher. Viele Verbindungen machen Snapshots teurer, weil PostgreSQL alle laufenden Transaktionen prüfen muss. PostgreSQL 14 hat das stark verbessert, aber nicht beseitigt.</li>
-  <li><b>Reservierte Slots:</b> <code>superuser_reserved_connections</code> (Standard 3) bleibt für Superuser frei. Seit PostgreSQL 16 gibt es zusätzlich <code>reserved_connections</code> für Rollen mit <code>pg_use_reserved_connections</code>.</li>
-  <li><b>HikariCP-Einstellungen:</b>
-    <ul>
-      <li><code>maximumPoolSize</code> (Standard 10): obere Grenze, aktiv plus idle.</li>
-      <li><code>minimumIdle</code> (Standard = maximumPoolSize): untere Grenze für idle Verbindungen.</li>
-      <li><code>connectionTimeout</code> (30 s): max. Wartezeit auf eine Verbindung.</li>
-      <li><code>idleTimeout</code> (10 min): entfernt idle Verbindungen, nur wenn <code>minimumIdle &lt; maximumPoolSize</code>.</li>
-      <li><code>maxLifetime</code> (30 min): maximales Alter. Einige Sekunden kürzer als jedes Infrastruktur-Limit setzen.</li>
-      <li><code>keepaliveTime</code> (2 min): Ping auf idle Verbindungen, damit Firewalls sie nicht still schliessen.</li>
-      <li><code>leakDetectionThreshold</code> (0 = aus): loggt einen Stacktrace, wenn eine Verbindung länger ausgeliehen ist.</li>
-    </ul></li>
-  <li><b>Pool-Grösse (HikariCP-Wiki):</b> Startwert <code>connections = (core_count × 2) + effective_spindle_count</code>. <b>core_count</b> meint die Kerne des DB-Servers. Bei SSD und Daten im Cache ist der Spindel-Anteil fast 0. Ein kleiner Pool mit wartenden Threads ist oft schneller als ein grosser.</li>
-  <li><b>Deadlock im Pool:</b> Hält ein Thread zwei Verbindungen gleichzeitig (z. B. <code>REQUIRES_NEW</code>), kann der Pool sich selbst blockieren. Mindestgrösse laut Wiki: <code>Tn × (Cm − 1) + 1</code>. Besser: das Design ändern.</li>
-  <li><b>PgBouncer-Modi:</b>
-    <ul>
-      <li><b>Session Pooling:</b> Ein Client behält die Server-Verbindung bis zum Trennen. Alle Features gehen. Wenig Gewinn bei langen Sessions. Upstream-Standard.</li>
-      <li><b>Transaction Pooling:</b> Die Server-Verbindung gehört dem Client nur für eine Transaktion. Grosser Gewinn. Standard in Azure.</li>
-      <li><b>Statement Pooling:</b> Nur ein Statement, Mehr-Statement-Transaktionen sind verboten. Selten sinnvoll.</li>
-    </ul></li>
-  <li><b>Grenzen im Transaction Mode:</b> Laut PgBouncer-Doku gehen nicht: <code>SET</code>/<code>RESET</code> auf Session-Ebene, <code>LISTEN</code>, <code>WITH HOLD</code>-Cursor, SQL-<code>PREPARE</code>/<code>DEALLOCATE</code>, Temp-Tabellen über Transaktionen, <code>LOAD</code>, Session-Advisory-Locks. <code>SET LOCAL</code> innerhalb der Transaktion geht.</li>
-  <li><b>Prepared Statements:</b> pgJDBC nutzt ab der 5. Ausführung (<code>prepareThreshold=5</code>) benannte Server-Statements wie <code>S_1</code>. Im Transaction Mode landet die nächste Ausführung auf einem anderen Backend. Fehler: <code>prepared statement "S_1" does not exist</code>. Seit PgBouncer 1.21 löst <code>max_prepared_statements &gt; 0</code> das auf Protokoll-Ebene. Upstream-Standard seit PgBouncer 1.24 ist 200, in Azure 0.</li>
-  <li><b>Welche Werte PgBouncer mitnimmt:</b> PgBouncer kennt nur Parameter, deren Änderung PostgreSQL dem Client meldet. Diese stellt er pro Client auf dem Backend wieder her. Seit PostgreSQL 18 meldet der Server auch <code>search_path</code>-Änderungen (Release Notes 18). Seit PgBouncer 1.26 verfolgt PgBouncer <code>search_path</code> darum standardmässig (Changelog 1.26). Eigene Werte wie <code>app.tenant_id</code> meldet PostgreSQL nicht. Sie kleben weiter am Backend.</li>
-  <li><b>PgBouncer-Grössen:</b> <code>max_client_conn</code> (Clients, upstream 100), <code>default_pool_size</code> (Server-Verbindungen pro User/Datenbank-Paar, upstream 20), <code>query_wait_timeout</code> (120 s Wartezeit auf einen Server).</li>
-  <li><b>Azure Database for PostgreSQL Flexible Server:</b> eingebauter PgBouncer (aktuell 1.26.1) auf Port 6432, gleiche Host-Adresse. Aktivieren mit Server-Parameter <code>pgbouncer.enabled = true</code>, ohne Neustart. Standard: <code>pool_mode = transaction</code>, <code>default_pool_size = 50</code>, <code>max_client_conn = 5000</code>, <code>max_prepared_statements = 0</code>. Nicht im <b>Burstable</b>-Tier.</li>
-  <li><b>Azure-Grenzen:</b> PgBouncer ist single-threaded und läuft auf derselben VM. Bei Restart, Skalierung oder HA-Failover startet er neu, Verbindungen brechen ab. Nach einem Failover läuft er auf dem neuen Primary, der Connection String bleibt gleich.</li>
+  <li><b>Process-per-Connection:</b> PostgreSQL startet pro Verbindung einen Prozess. Der Aufbau braucht Fork, Authentifizierung und TLS-Handshake. Das dauert Millisekunden. Das ist viel länger als eine kurze Abfrage.</li>
+  <li><b>Kosten idle Verbindungen:</b> Jede idle Verbindung hält Speicher. Viele Verbindungen machen Snapshots teurer. PostgreSQL muss dafür alle laufenden Transaktionen prüfen. PostgreSQL 14 hat das stark verbessert. Beseitigt hat es das nicht.</li>
+  <li><b>Reservierte Slots:</b> <code>superuser_reserved_connections</code> (Standard 3) bleibt für Superuser frei. Seit PostgreSQL 16 gibt es zusätzlich <code>reserved_connections</code>. Es gilt für Rollen mit <code>pg_use_reserved_connections</code>.</li>
+  <li><b>maximumPoolSize:</b> Der Standard ist 10. Das ist die obere Grenze, aktiv plus idle.</li>
+  <li><b>minimumIdle:</b> Der Standard ist maximumPoolSize. Das ist die untere Grenze für idle Verbindungen.</li>
+  <li><b>connectionTimeout:</b> Der Standard ist 30 s. Das ist die maximale Wartezeit auf eine Verbindung.</li>
+  <li><b>idleTimeout:</b> Der Standard ist 10 min. Es entfernt idle Verbindungen. Das gilt nur, wenn <code>minimumIdle &lt; maximumPoolSize</code>.</li>
+  <li><b>maxLifetime:</b> Der Standard ist 30 min. Das ist das maximale Alter einer Verbindung. Man setzt es einige Sekunden kürzer als jedes Infrastruktur-Limit.</li>
+  <li><b>keepaliveTime:</b> Der Standard ist 2 min. Es pingt idle Verbindungen. So schliessen Firewalls sie nicht still.</li>
+  <li><b>leakDetectionThreshold:</b> Der Standard ist 0 (= aus). Es loggt einen Stacktrace, wenn eine Verbindung zu lange ausgeliehen ist.</li>
+  <li><b>Pool-Grösse (HikariCP-Wiki):</b> Der Startwert ist <code>connections = (core_count × 2) + effective_spindle_count</code>. <b>core_count</b> meint die Kerne des DB-Servers. Bei SSD und Daten im Cache ist der Spindel-Anteil fast 0. Ein kleiner Pool mit wartenden Threads ist oft schneller als ein grosser.</li>
+  <li><b>Deadlock im Pool:</b> Hält ein Thread zwei Verbindungen gleichzeitig, kann der Pool sich selbst blockieren. Ein Beispiel ist <code>REQUIRES_NEW</code>. Die Mindestgrösse laut Wiki ist <code>Tn × (Cm − 1) + 1</code>. Besser ist es, das Design zu ändern.</li>
+  <li><b>Session Pooling:</b> Ein Client behält die Server-Verbindung bis zum Trennen. Alle Features gehen. Der Gewinn ist klein bei langen Sessions. Das ist der Upstream-Standard.</li>
+  <li><b>Transaction Pooling:</b> Die Server-Verbindung gehört dem Client nur für eine Transaktion. Der Gewinn ist gross. Das ist der Standard in Azure.</li>
+  <li><b>Statement Pooling:</b> Die Verbindung gilt nur für ein Statement. Transaktionen mit mehreren Statements sind verboten. Das ist selten sinnvoll.</li>
+  <li><b>Grenzen im Transaction Mode:</b> Laut PgBouncer-Doku gehen diese Dinge nicht: <code>SET</code>/<code>RESET</code> auf Session-Ebene, <code>LISTEN</code>, <code>WITH HOLD</code>-Cursor, SQL-<code>PREPARE</code>/<code>DEALLOCATE</code>, Temp-Tabellen über Transaktionen, <code>LOAD</code> und Session-Advisory-Locks. <code>SET LOCAL</code> innerhalb der Transaktion geht.</li>
+  <li><b>Prepared Statements:</b> pgJDBC nutzt ab der 5. Ausführung (<code>prepareThreshold=5</code>) benannte Server-Statements wie <code>S_1</code>. Im Transaction Mode landet die nächste Ausführung auf einem anderen Backend. Dann kommt der Fehler <code>prepared statement "S_1" does not exist</code>. Seit PgBouncer 1.21 löst <code>max_prepared_statements &gt; 0</code> das auf Protokoll-Ebene. Der Upstream-Standard ist seit PgBouncer 1.24 200. In Azure ist er 0.</li>
+  <li><b>Welche Werte PgBouncer mitnimmt:</b> PgBouncer kennt nur Parameter, deren Änderung PostgreSQL dem Client meldet. Diese stellt er pro Client auf dem Backend wieder her. Seit PostgreSQL 18 meldet der Server auch <code>search_path</code>-Änderungen (Release Notes 18). Darum verfolgt PgBouncer <code>search_path</code> seit 1.26 standardmässig (Changelog 1.26). Eigene Werte wie <code>app.tenant_id</code> meldet PostgreSQL nicht. Sie kleben weiter am Backend.</li>
+  <li><b>PgBouncer-Grössen:</b> <code>max_client_conn</code> (Clients) ist upstream 100. <code>default_pool_size</code> (Server-Verbindungen pro User/Datenbank-Paar) ist upstream 20. <code>query_wait_timeout</code> ist 120 s. Das ist die Wartezeit auf einen Server.</li>
+  <li><b>Azure Database for PostgreSQL Flexible Server:</b> Er hat einen eingebauten PgBouncer (aktuell 1.26.1) auf Port 6432. Die Host-Adresse bleibt gleich. Man aktiviert ihn mit dem Server-Parameter <code>pgbouncer.enabled = true</code>. Das braucht keinen Neustart. Die Standards sind <code>pool_mode = transaction</code>, <code>default_pool_size = 50</code>, <code>max_client_conn = 5000</code> und <code>max_prepared_statements = 0</code>. Im <b>Burstable</b>-Tier gibt es ihn nicht.</li>
+  <li><b>Azure-Grenzen:</b> PgBouncer ist single-threaded. Er läuft auf derselben VM. Bei Restart, Skalierung oder HA-Failover startet er neu. Dann brechen Verbindungen ab. Nach einem Failover läuft er auf dem neuen Primary. Der Connection String bleibt gleich.</li>
 </ol>
 
 <h2>4. Fallen</h2>

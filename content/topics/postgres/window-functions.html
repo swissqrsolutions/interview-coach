@@ -40,10 +40,10 @@
 </div>
 
 <div class="muster"><h3>Antwort-Muster</h3><p class="mq"><b>Frage:</b> Was ist eine Window Function, und wie unterscheidet sie sich von GROUP BY?</p><ol>
-  <li>Mechanismus: Sie rechnet für jede Zeile über ein Fenster verwandter Zeilen, und jede Zeile bleibt erhalten.</li>
-  <li>Zahl: Bei den Werten 70, 70, 40 gibt <code>rank</code> 1, 1, 3 und <code>dense_rank</code> 1, 1, 2.</li>
-  <li>Trade-off: Sie braucht meist einen Sort nach Partition und Ordnung, spart aber einen Self-Join.</li>
-  <li>Produktion: Ich ergänze immer einen eindeutigen Tie-Breaker, sonst ist <code>row_number</code> nicht stabil.</li>
+  <li>Mechanismus: Sie rechnet für jede Zeile über ein Fenster verwandter Zeilen. Jede Zeile bleibt erhalten.</li>
+  <li>Zahl: Bei den Werten 70, 70, 40 gibt <code>rank</code> 1, 1, 3. <code>dense_rank</code> gibt 1, 1, 2.</li>
+  <li>Trade-off: Sie braucht meist einen Sort nach Partition und Ordnung. Sie spart aber einen Self-Join.</li>
+  <li>Produktion: Ich ergänze immer einen eindeutigen Tie-Breaker. Sonst ist <code>row_number</code> nicht stabil.</li>
 </ol></div>
 
 <h2>1. Die Reise einer Zeile durch das Fenster</h2>
@@ -64,9 +64,9 @@
 <ol>
   <li><b>Zeilen kommen an.</b> Die Abfrage will pro Händler eine laufende Summe: <code>sum(volume) OVER (PARTITION BY trader ORDER BY day)</code>. Die Zeilen kommen aus <code>WHERE</code> in beliebiger Reihenfolge.</li>
   <li><b>Sortieren und teilen.</b> <code>WindowAgg</code> braucht die Zeilen nach <code>trader, day</code> sortiert. Ein <code>Sort</code>-Knoten macht das, oder ein passender Index. Jeder Händler ist jetzt eine <b>Partition</b>.</li>
-  <li><b>Frame bestimmen.</b> Für die Zeile „Alpine, 03-03“ ist der <b>Frame</b> der Ausschnitt der Partition, über den gerechnet wird. Standard mit <code>ORDER BY</code>: vom Anfang bis zur aktuellen Zeile (inklusive gleicher Werte). Also 03-02 und 03-03.</li>
+  <li><b>Frame bestimmen.</b> Der <b>Frame</b> ist der Ausschnitt der Partition, über den gerechnet wird. Für die Zeile „Alpine, 03-03“ gilt der Standard mit <code>ORDER BY</code>: vom Anfang bis zur aktuellen Zeile (inklusive gleicher Werte). Das sind 03-02 und 03-03.</li>
   <li><b>Rechnen und anhängen.</b> Die Summe ist 40 + 90 = 130. Die Zeile bleibt erhalten und bekommt eine neue Spalte.</li>
-  <li><b>Weiter.</b> Die nächste Zeile (03-05) erweitert den Frame: 150. Bei „Bern“ beginnt eine neue Partition, die Summe startet wieder bei 0.</li>
+  <li><b>Weiter.</b> Die nächste Zeile (03-05) erweitert den Frame auf 150. Bei „Bern“ beginnt eine neue Partition. Die Summe startet wieder bei 0.</li>
 </ol>
 
 <h2>2. Aufbau</h2>
@@ -97,26 +97,26 @@
 
 <h2>3. Details, die Interviewer fragen</h2>
 <ol>
-  <li><b>OVER</b>: macht aus einer Funktion eine Window Function. <code>OVER ()</code> leer heisst: das Fenster ist die ganze Ergebnismenge. Beispiel: <code>volume * 100.0 / sum(volume) OVER ()</code> = Anteil am Total.</li>
-  <li><b>PARTITION BY</b>: teilt die Zeilen in unabhängige Gruppen. Die Funktion startet pro Partition neu. Ohne <code>PARTITION BY</code> ist alles eine Partition.</li>
-  <li><b>ORDER BY im Fenster</b>: bestimmt die Reihenfolge in der Partition. Sie ist unabhängig vom <code>ORDER BY</code> der Abfrage. Für <code>row_number</code>, <code>lag</code> und laufende Summen ist sie Pflicht.</li>
-  <li><b>Frame</b>: der Ausschnitt der Partition für Aggregat-Funktionen und <code>first_value</code>/<code>last_value</code>/<code>nth_value</code>. Ranking-Funktionen und <code>lag</code>/<code>lead</code> ignorieren den Frame.</li>
-  <li><b>Standard-Frame</b>: Mit <code>ORDER BY</code>: <code>RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW</code>, inklusive Peers. Ohne <code>ORDER BY</code>: die ganze Partition.</li>
-  <li><b>ROWS</b>: zählt physische Zeilen. Beispiel gleitender Durchschnitt über 7 Zeilen: <code>avg(x) OVER (ORDER BY day ROWS BETWEEN 6 PRECEDING AND CURRENT ROW)</code>.</li>
-  <li><b>RANGE</b>: arbeitet mit Werten. Seit PostgreSQL 11 auch mit Abstand: <code>RANGE BETWEEN INTERVAL '6 days' PRECEDING AND CURRENT ROW</code>. Das ist korrekt auch bei fehlenden Tagen. ROWS wäre dann falsch.</li>
-  <li><b>GROUPS</b> (seit Version 11): zählt Gruppen von Peers. <code>GROUPS BETWEEN 1 PRECEDING AND CURRENT ROW</code> = aktuelle und vorige Wertegruppe.</li>
-  <li><b>EXCLUDE</b> (seit Version 11): <code>EXCLUDE CURRENT ROW</code>, <code>GROUP</code>, <code>TIES</code>, <code>NO OTHERS</code>. Beispiel: Durchschnitt der Nachbarn ohne die eigene Zeile.</li>
-  <li><b>Ranking-Funktionen</b>: <code>row_number()</code> (fortlaufend, eindeutig), <code>rank()</code> (gleiche Werte gleicher Rang, dann Lücke), <code>dense_rank()</code> (ohne Lücke), <code>percent_rank()</code>, <code>cume_dist()</code>, <code>ntile(n)</code> (in n etwa gleich grosse Gruppen teilen, z. B. Quartile).</li>
-  <li><b>LAG / LEAD</b>: <code>lag(x, n, default)</code> holt den Wert n Zeilen davor, <code>lead</code> danach. Typisch: Differenz zum Vortag <code>x - lag(x) OVER (ORDER BY day)</code>. <code>IGNORE NULLS</code> gibt es erst seit PostgreSQL 19 (für <code>lead</code>, <code>lag</code>, <code>first_value</code>, <code>last_value</code>, <code>nth_value</code>; PG 19 Release Notes). PostgreSQL 17 und 18 kennen es nicht.</li>
-  <li><b>first_value / last_value / nth_value</b>: Wert aus dem Frame. Falle: <code>last_value</code> mit Standard-Frame liefert die aktuelle Zeile (bzw. ihren letzten Peer). Lösung: <code>ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING</code>.</li>
-  <li><b>Laufende Summe</b>: <code>sum(x) OVER (PARTITION BY k ORDER BY t)</code>. Bei doppelten <code>t</code> lieber <code>ROWS</code> oder einen eindeutigen Tie-Breaker, sonst springen Peers gemeinsam.</li>
-  <li><b>Top-N pro Gruppe</b>: <code>row_number()</code> in einer Subquery oder CTE, aussen <code>WHERE rn &lt;= 3</code>. Für Top-1: PostgreSQL-eigenes <code>DISTINCT ON (k) ... ORDER BY k, x DESC</code>. Bei wenigen Gruppen und Index: <code>LATERAL (... ORDER BY x DESC LIMIT 3)</code> pro Gruppe.</li>
-  <li><b>Run Condition</b> (seit Version 15): Bei <code>WHERE rn &lt;= 3</code> aussen hört <code>WindowAgg</code> pro Partition früh auf. Im Plan: <code>Run Condition: (row_number() OVER (?) &lt;= 3)</code>. Gilt für <code>row_number</code>, <code>rank</code>, <code>dense_rank</code>, <code>count</code>.</li>
-  <li><b>Kein Filter auf Window-Werte im WHERE</b>: <code>WHERE row_number() OVER ... = 1</code> ist ein Fehler. PostgreSQL hat auch in Version 19 kein <code>QUALIFY</code>. Lösung: Subquery oder CTE.</li>
-  <li><b>WINDOW-Klausel</b>: benannte Fenster, z. B. <code>WINDOW w AS (PARTITION BY day ORDER BY volume DESC)</code>. Weniger Wiederholung, und gleiche Fenster teilen sich einen Sort.</li>
-  <li><b>Aggregat + Window kombiniert</b>: <code>sum(sum(volume)) OVER (ORDER BY day)</code> = laufende Summe der Tagessummen. Das innere <code>sum</code> ist das <code>GROUP BY</code>-Aggregat, das äussere das Fenster.</li>
+  <li><b>OVER</b>: Es macht aus einer Funktion eine Window Function. <code>OVER ()</code> leer heisst: Das Fenster ist die ganze Ergebnismenge. Beispiel: <code>volume * 100.0 / sum(volume) OVER ()</code> = Anteil am Total.</li>
+  <li><b>PARTITION BY</b>: Es teilt die Zeilen in unabhängige Gruppen. Die Funktion startet pro Partition neu. Ohne <code>PARTITION BY</code> ist alles eine Partition.</li>
+  <li><b>ORDER BY im Fenster</b>: Es bestimmt die Reihenfolge in der Partition. Sie ist unabhängig vom <code>ORDER BY</code> der Abfrage. Für <code>row_number</code>, <code>lag</code> und laufende Summen ist sie Pflicht.</li>
+  <li><b>Frame</b>: Das ist der Ausschnitt der Partition für Aggregat-Funktionen und <code>first_value</code>/<code>last_value</code>/<code>nth_value</code>. Ranking-Funktionen und <code>lag</code>/<code>lead</code> ignorieren den Frame.</li>
+  <li><b>Standard-Frame</b>: Mit <code>ORDER BY</code> ist er <code>RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW</code>, inklusive Peers. Ohne <code>ORDER BY</code> ist er die ganze Partition.</li>
+  <li><b>ROWS</b>: Es zählt physische Zeilen. Ein Beispiel ist der gleitende Durchschnitt über 7 Zeilen: <code>avg(x) OVER (ORDER BY day ROWS BETWEEN 6 PRECEDING AND CURRENT ROW)</code>.</li>
+  <li><b>RANGE</b>: Es arbeitet mit Werten. Seit PostgreSQL 11 geht es auch mit Abstand: <code>RANGE BETWEEN INTERVAL '6 days' PRECEDING AND CURRENT ROW</code>. Das ist korrekt auch bei fehlenden Tagen. ROWS wäre dann falsch.</li>
+  <li><b>GROUPS</b> (seit Version 11): Es zählt Gruppen von Peers. <code>GROUPS BETWEEN 1 PRECEDING AND CURRENT ROW</code> = aktuelle und vorige Wertegruppe.</li>
+  <li><b>EXCLUDE</b> (seit Version 11): Es gibt <code>EXCLUDE CURRENT ROW</code>, <code>GROUP</code>, <code>TIES</code> und <code>NO OTHERS</code>. Beispiel: Durchschnitt der Nachbarn ohne die eigene Zeile.</li>
+  <li><b>Ranking-Funktionen</b>: <code>row_number()</code> ist fortlaufend und eindeutig. <code>rank()</code> gibt gleichen Werten gleichen Rang, dann kommt eine Lücke. <code>dense_rank()</code> hat keine Lücke. Dazu kommen <code>percent_rank()</code>, <code>cume_dist()</code> und <code>ntile(n)</code>. <code>ntile(n)</code> teilt in n etwa gleich grosse Gruppen, z. B. Quartile.</li>
+  <li><b>LAG / LEAD</b>: <code>lag(x, n, default)</code> holt den Wert n Zeilen davor. <code>lead</code> holt ihn danach. Typisch ist die Differenz zum Vortag <code>x - lag(x) OVER (ORDER BY day)</code>. <code>IGNORE NULLS</code> gibt es erst seit PostgreSQL 19 (für <code>lead</code>, <code>lag</code>, <code>first_value</code>, <code>last_value</code>, <code>nth_value</code>, laut PG 19 Release Notes). PostgreSQL 17 und 18 kennen es nicht.</li>
+  <li><b>first_value / last_value / nth_value</b>: Sie holen einen Wert aus dem Frame. Die Falle: <code>last_value</code> mit Standard-Frame liefert die aktuelle Zeile (bzw. ihren letzten Peer). Die Lösung ist <code>ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING</code>.</li>
+  <li><b>Laufende Summe</b>: <code>sum(x) OVER (PARTITION BY k ORDER BY t)</code>. Bei doppelten <code>t</code> nimmt man lieber <code>ROWS</code> oder einen eindeutigen Tie-Breaker. Sonst springen Peers gemeinsam.</li>
+  <li><b>Top-N pro Gruppe</b>: Man nutzt <code>row_number()</code> in einer Subquery oder CTE. Aussen steht <code>WHERE rn &lt;= 3</code>. Für Top-1 gibt es das PostgreSQL-eigene <code>DISTINCT ON (k) ... ORDER BY k, x DESC</code>. Bei wenigen Gruppen und Index geht <code>LATERAL (... ORDER BY x DESC LIMIT 3)</code> pro Gruppe.</li>
+  <li><b>Run Condition</b> (seit Version 15): Bei <code>WHERE rn &lt;= 3</code> aussen hört <code>WindowAgg</code> pro Partition früh auf. Im Plan steht <code>Run Condition: (row_number() OVER (?) &lt;= 3)</code>. Das gilt für <code>row_number</code>, <code>rank</code>, <code>dense_rank</code> und <code>count</code>.</li>
+  <li><b>Kein Filter auf Window-Werte im WHERE</b>: <code>WHERE row_number() OVER ... = 1</code> ist ein Fehler. PostgreSQL hat auch in Version 19 kein <code>QUALIFY</code>. Die Lösung ist Subquery oder CTE.</li>
+  <li><b>WINDOW-Klausel</b>: Sie definiert benannte Fenster, z. B. <code>WINDOW w AS (PARTITION BY day ORDER BY volume DESC)</code>. Das gibt weniger Wiederholung. Gleiche Fenster teilen sich einen Sort.</li>
+  <li><b>Aggregat + Window kombiniert</b>: <code>sum(sum(volume)) OVER (ORDER BY day)</code> = laufende Summe der Tagessummen. Das innere <code>sum</code> ist das <code>GROUP BY</code>-Aggregat. Das äussere ist das Fenster.</li>
   <li><b>FILTER</b>: Aggregate im Fenster können filtern: <code>count(*) FILTER (WHERE status = 'open') OVER (PARTITION BY k)</code>.</li>
-  <li><b>Kosten</b>: Jedes andere <code>PARTITION BY</code>/<code>ORDER BY</code> kann einen eigenen Sort brauchen. Ein Index auf <code>(partition_key, order_key)</code> kann den Sort sparen. Grosse Partitionen nutzen einen Tuplestore, der über <code>work_mem</code> (Standard 4 MB) auf Platte geht. Seit 18 zeigt <code>EXPLAIN ANALYZE</code> beim <code>WindowAgg</code>-Knoten Speicher- und Plattenverbrauch (PG 18 Release Notes).</li>
+  <li><b>Kosten</b>: Jedes andere <code>PARTITION BY</code>/<code>ORDER BY</code> kann einen eigenen Sort brauchen. Ein Index auf <code>(partition_key, order_key)</code> kann den Sort sparen. Grosse Partitionen nutzen einen Tuplestore. Er geht über <code>work_mem</code> (Standard 4 MB) auf Platte. Seit 18 zeigt <code>EXPLAIN ANALYZE</code> beim <code>WindowAgg</code>-Knoten Speicher- und Plattenverbrauch (PG 18 Release Notes).</li>
 </ol>
 
 <h2>4. Fallen</h2>
