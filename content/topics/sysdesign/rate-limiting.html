@@ -36,14 +36,14 @@
 <!-- sources: System Design · Tier 1 · Quellen: RFC 6585 §4 (429 Too Many Requests), RFC 9110 §10.2.3 (Retry-After), IETF draft-ietf-httpapi-ratelimit-headers-12 (Entwurf, kein RFC), Microsoft Learn: API Management Policies rate-limit, rate-limit-by-key, quota-by-key und „Advanced request throttling“, Azure Architecture Center: Rate Limiting Pattern und Throttling Pattern, Redis-Doku (INCR, EXPIRE, Sorted Sets, Lua-Skripte), NGINX ngx_http_limit_req_module -->
 
 <div class="kern">
-<b>Kern:</b> <b>Rate Limiting</b> ist eine Grenze, wie viele Requests ein Client pro Zeitfenster schicken darf. Es schützt das Backend vor <b>Überlast</b>, Missbrauch und einem lauten Mandanten (<b>Noisy Neighbor</b>). Wer die Grenze überschreitet, bekommt <b>429 Too Many Requests</b> mit <b>Retry-After</b>. Der Algorithmus bestimmt, wie viele <b>Bursts</b> (kurze Spitzen) durchkommen.
+<b>Kern:</b> <b>Rate Limiting</b> ist eine Grenze, wie viele Requests ein Client pro Zeitfenster schicken darf. Es schützt das Backend vor <b>Überlast</b>, Missbrauch und einem lauten Mandanten (<b>Noisy Neighbor</b>). Wer die Grenze überschreitet, bekommt <b>429 Too Many Requests</b> mit <b>Retry-After</b>, und der Algorithmus bestimmt, wie viele <b>Bursts</b> (kurze Spitzen) durchkommen.
 </div>
 
 <div class="muster"><h3>Antwort-Muster</h3><p class="mq"><b>Frage:</b> Wie funktioniert ein Token Bucket?</p><ol>
-  <li>Mechanismus: Ein Eimer hält höchstens b Tokens und füllt sich mit r pro Sekunde, jeder Request kostet eines.</li>
-  <li>Zahl: Bei Kapazität 5 und 0,5 Token/s kommen Bursts bis 5 sofort durch, der Durchschnitt bleibt 0,5/s.</li>
-  <li>Trade-off: Kurzfristig kommt mehr als Rate mal Fenster durch, das ist gewollt.</li>
-  <li>Produktion: Der Zähler liegt atomar in Redis (Lua-Skript), sonst zählt jede Instanz für sich.</li>
+  <li>Mechanismus: Ein Eimer hält höchstens b Tokens und füllt sich mit r pro Sekunde. Jeder Request kostet eines.</li>
+  <li>Zahl: Bei Kapazität 5 und 0,5 Token/s kommen Bursts bis 5 sofort durch. Der Durchschnitt bleibt 0,5/s.</li>
+  <li>Trade-off: Kurzfristig kommt mehr als Rate mal Fenster durch. Das ist gewollt.</li>
+  <li>Produktion: Der Zähler liegt atomar in Redis (Lua-Skript). Sonst zählt jede Instanz für sich.</li>
 </ol></div>
 
 <h2>1. Die Reise eines Requests durch den Rate Limiter</h2>
@@ -67,11 +67,11 @@
 </svg>
 <ol>
   <li><b>Request kommt an.</b> Ein Partner schickt <code>POST /orders</code> an das Gateway.</li>
-  <li><b>Key bestimmen.</b> Der <b>Counter Key</b> sagt, wer gezählt wird. Typisch: Subscription-Key, User-ID aus dem JWT oder IP. Der Key entscheidet über Fairness.</li>
-  <li><b>Zähler prüfen.</b> Der Limiter liest und erhöht den Zähler in <b>einem atomaren Schritt</b>. In Redis: <code>INCR</code> oder ein Lua-Skript.</li>
+  <li><b>Key bestimmen.</b> Der <b>Counter Key</b> sagt, wer gezählt wird. Typisch sind Subscription-Key, User-ID aus dem JWT oder IP. Der Key entscheidet über Fairness.</li>
+  <li><b>Zähler prüfen.</b> Der Limiter liest und erhöht den Zähler in <b>einem atomaren Schritt</b>. In Redis geht das mit <code>INCR</code> oder einem Lua-Skript.</li>
   <li><b>Entscheiden.</b> Der Algorithmus vergleicht mit dem Limit. Er entscheidet auch, wie viel Burst erlaubt ist.</li>
   <li><b>Erlaubt:</b> Der Request geht ans Backend. Die Antwort kann Header mit dem Restkontingent tragen. <b>Abgelehnt:</b> Das Gateway antwortet sofort mit <b>429</b> und <code>Retry-After</code>.</li>
-  <li><b>Client wartet.</b> Ein guter Client liest <code>Retry-After</code>. Ohne Header nutzt er <b>exponentielles Backoff mit Jitter</b>, also wachsende, zufällig gestreute Wartezeiten.</li>
+  <li><b>Client wartet.</b> Ein guter Client liest <code>Retry-After</code>. Ohne Header nutzt er <b>exponentielles Backoff mit Jitter</b>. Das sind wachsende, zufällig gestreute Wartezeiten.</li>
   <li><b>Neuer Versuch.</b> Jetzt ist wieder Kontingent frei. Ohne Warten würde der Client das Problem verschärfen (<b>Retry Storm</b>).</li>
 </ol>
 
@@ -104,20 +104,23 @@
 
 <h2>3. Details, die Interviewer fragen</h2>
 <ol>
-  <li><b>Token Bucket:</b> Ein Eimer hält max. <b>b Tokens</b> (Burst-Grösse). Er füllt sich mit <b>r Tokens pro Sekunde</b>. Jeder Request kostet ein Token. Zwei Parameter: Rate und Burst. Speicher: zwei Zahlen pro Key (Tokens, letzter Zeitpunkt).</li>
+  <li><b>Token Bucket:</b> Ein Eimer hält max. <b>b Tokens</b> (Burst-Grösse). Er füllt sich mit <b>r Tokens pro Sekunde</b>. Jeder Request kostet ein Token.</li>
+  <li><b>Token Bucket Parameter:</b> Es gibt zwei Parameter, nämlich Rate und Burst. Der Speicher sind zwei Zahlen pro Key (Tokens, letzter Zeitpunkt).</li>
   <li><b>Leaky Bucket:</b> Requests fliessen in einen Eimer mit fester Abflussrate. Als <b>Queue</b> glättet er den Ausgang. Als <b>Meter</b> ist er gleich wie der Token Bucket. NGINX <code>limit_req</code> nutzt diese Methode.</li>
-  <li><b>Fixed Window Counter:</b> Ein Zähler pro Key und Fenster, z. B. <code>user:42:202611241310</code>. Sehr billig: <code>INCR</code> und <code>EXPIRE</code>. Schwäche: bis zum doppelten Limit an der Fenstergrenze.</li>
-  <li><b>Sliding Window Log:</b> Jeder Zeitstempel kommt in eine sortierte Liste. Alte Einträge fallen raus. Exakt, aber Speicher wächst mit dem Limit. In Redis: Sorted Set mit <code>ZADD</code>, <code>ZREMRANGEBYSCORE</code>, <code>ZCARD</code>.</li>
-  <li><b>Sliding Window Counter:</b> Formel: <code>prev × Überlappung + curr</code>. Bei 30 % im neuen Fenster zählt das alte zu 70 %. Billig wie Fixed Window, fast so genau wie der Log.</li>
-  <li><b>Atomarität:</b> Lesen, Prüfen und Schreiben müssen <b>ein Schritt</b> sein. In Redis: <code>INCR</code> (atomar), <code>MULTI/EXEC</code> oder ein <b>Lua-Skript</b>. Ein Token Bucket braucht fast immer ein Lua-Skript.</li>
+  <li><b>Fixed Window Counter:</b> Es gibt einen Zähler pro Key und Fenster, z. B. <code>user:42:202611241310</code>. Er ist sehr billig mit <code>INCR</code> und <code>EXPIRE</code>. Die Schwäche ist bis zum doppelten Limit an der Fenstergrenze.</li>
+  <li><b>Sliding Window Log:</b> Jeder Zeitstempel kommt in eine sortierte Liste. Alte Einträge fallen raus. Das ist exakt. Aber der Speicher wächst mit dem Limit. In Redis nimmt man ein Sorted Set mit <code>ZADD</code>, <code>ZREMRANGEBYSCORE</code> und <code>ZCARD</code>.</li>
+  <li><b>Sliding Window Counter:</b> Die Formel ist <code>prev × Überlappung + curr</code>. Bei 30 % im neuen Fenster zählt das alte zu 70 %. Er ist billig wie Fixed Window und fast so genau wie der Log.</li>
+  <li><b>Atomarität:</b> Lesen, Prüfen und Schreiben müssen <b>ein Schritt</b> sein. In Redis geht das mit <code>INCR</code> (atomar), <code>MULTI/EXEC</code> oder einem <b>Lua-Skript</b>. Ein Token Bucket braucht fast immer ein Lua-Skript.</li>
   <li><b>429 Too Many Requests:</b> RFC 6585 definiert den Statuscode. Die Antwort <b>darf</b> <code>Retry-After</code> enthalten. Caches dürfen 429 <b>nicht speichern</b>.</li>
-  <li><b>Retry-After:</b> RFC 9110 erlaubt zwei Formen: Sekunden (<code>Retry-After: 4</code>) oder ein HTTP-Datum. Er kommt auch mit <b>503</b> vor.</li>
-  <li><b>RateLimit-Header:</b> Üblich sind <code>X-RateLimit-Limit</code>, <code>-Remaining</code>, <code>-Reset</code> (nicht standardisiert). Die IETF arbeitet an <code>RateLimit-Policy</code> und <code>RateLimit</code>. Das ist noch ein <b>Entwurf</b> (draft-12, November 2026). Beispiel: <code>RateLimit-Policy: "default";q=100;w=60</code> und <code>RateLimit: "default";a=99;w=50</code>.</li>
-  <li><b>Rate Limit vs Quota:</b> Ein <b>Rate Limit</b> schützt vor Spitzen (pro Sekunde, Minute). Eine <b>Quota</b> begrenzt das Volumen über lange Zeit (pro Monat), oft fürs Geschäftsmodell.</li>
+  <li><b>Retry-After:</b> RFC 9110 erlaubt zwei Formen. Das sind Sekunden (<code>Retry-After: 4</code>) oder ein HTTP-Datum. Der Header kommt auch mit <b>503</b> vor.</li>
+  <li><b>RateLimit-Header:</b> Üblich sind <code>X-RateLimit-Limit</code>, <code>-Remaining</code> und <code>-Reset</code> (nicht standardisiert). Die IETF arbeitet an <code>RateLimit-Policy</code> und <code>RateLimit</code>. Das ist noch ein <b>Entwurf</b> (draft-12, November 2026).</li>
+  <li><b>RateLimit-Beispiel:</b> Ein Beispiel ist <code>RateLimit-Policy: "default";q=100;w=60</code>. Dazu passt <code>RateLimit: "default";a=99;w=50</code>.</li>
+  <li><b>Rate Limit vs Quota:</b> Ein <b>Rate Limit</b> schützt vor Spitzen (pro Sekunde, Minute). Eine <b>Quota</b> begrenzt das Volumen über lange Zeit (pro Monat). Sie dient oft dem Geschäftsmodell.</li>
   <li><b>APIM-Policies:</b> <code>rate-limit</code> zählt pro Subscription. <code>rate-limit-by-key</code> zählt pro frei wählbarem Key, z. B. IP oder JWT-Claim. Beide antworten mit <b>429</b>. <code>quota</code> und <code>quota-by-key</code> antworten mit <b>403 Forbidden</b> und <code>Retry-After</code>.</li>
-  <li><b>APIM-Algorithmus:</b> Die klassischen Tiers nutzen ein <b>Sliding Window</b>, die v2-Tiers einen <b>Token Bucket</b>. <code>renewal-period</code> ist bei <code>rate-limit-by-key</code> max. 300 s.</li>
-  <li><b>APIM-Genauigkeit:</b> Microsoft sagt: Rate Limiting ist wegen der verteilten Architektur <b>nie ganz genau</b>. Jedes regionale Gateway zählt <b>für sich</b>. Ein Multi-Region-APIM aggregiert die Zähler nicht.</li>
-  <li><b>Throttling vs Rate Limiting Pattern:</b> Das <b>Throttling Pattern</b> (Azure Architecture Center) schützt den eigenen Service. Das <b>Rate Limiting Pattern</b> drosselt die eigenen Aufrufe an einen fremden Dienst, z. B. mit einer Queue.</li>
+  <li><b>APIM-Algorithmus:</b> Die klassischen Tiers nutzen ein <b>Sliding Window</b>. Die v2-Tiers nutzen einen <b>Token Bucket</b>. <code>renewal-period</code> ist bei <code>rate-limit-by-key</code> max. 300 s.</li>
+  <li><b>APIM-Genauigkeit:</b> Microsoft sagt, Rate Limiting ist wegen der verteilten Architektur <b>nie ganz genau</b>. Jedes regionale Gateway zählt <b>für sich</b>. Ein Multi-Region-APIM aggregiert die Zähler nicht.</li>
+  <li><b>Throttling Pattern:</b> Das <b>Throttling Pattern</b> (Azure Architecture Center) schützt den eigenen Service.</li>
+  <li><b>Rate Limiting Pattern:</b> Das <b>Rate Limiting Pattern</b> drosselt die eigenen Aufrufe an einen fremden Dienst, z. B. mit einer Queue.</li>
   <li><b>Fail-open vs fail-closed:</b> Fällt Redis aus, muss der Limiter entscheiden. <b>Fail-open</b> lässt alles durch und schützt die Verfügbarkeit. <b>Fail-closed</b> blockt alles und schützt das Backend.</li>
 </ol>
 

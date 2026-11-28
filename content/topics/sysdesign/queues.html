@@ -36,13 +36,13 @@
 <!-- sources: System Design · Tier 1 · Quellen: Microsoft Learn (Service Bus: Queues, topics and subscriptions; Message transfers, locks and settlement; Dead-letter queues; Duplicate detection; Message sessions), Microsoft Learn (Event Hubs: Features and terminology), Azure Architecture Center (Competing Consumers, Queue-Based Load Leveling, Claim-Check, Asynchronous messaging options), Apache Kafka Doku (Design: Message Delivery Semantics), RabbitMQ Doku (Consumer Acknowledgements, Dead Letter Exchanges), Kleppmann, DDIA (Kap. 11) -->
 
 <div class="kern">
-<b>Kern:</b> Eine <b>Queue</b> ist ein Puffer zwischen einem <b>Producer</b>, der Nachrichten schickt, und einem <b>Consumer</b>, der sie später verarbeitet. Sie löst drei Probleme: <b>Entkopplung</b> (beide müssen nicht gleichzeitig laufen), <b>Lastspitzen</b> (die Queue puffert) und <b>Skalierung</b> (mehr Consumer arbeiten parallel). Der Preis: Nachrichten kommen <b>mindestens einmal</b>, also muss der Consumer Duplikate vertragen.
+<b>Kern:</b> Eine <b>Queue</b> ist ein Puffer zwischen einem <b>Producer</b>, der Nachrichten schickt, und einem <b>Consumer</b>, der sie später verarbeitet. Sie löst drei Probleme, nämlich <b>Entkopplung</b> (beide müssen nicht gleichzeitig laufen), <b>Lastspitzen</b> (die Queue puffert) und <b>Skalierung</b> (mehr Consumer arbeiten parallel). Der Preis ist, dass Nachrichten <b>mindestens einmal</b> kommen, darum muss der Consumer Duplikate vertragen.
 </div>
 
 <div class="muster"><h3>Antwort-Muster</h3><p class="mq"><b>Frage:</b> Warum setzen Sie eine Queue zwischen zwei Services?</p><ol>
-  <li>Mechanismus: Der Broker speichert die Nachricht dauerhaft, der Consumer sperrt sie, arbeitet und bestätigt erst danach.</li>
-  <li>Zahl: In Service Bus ist der Lock standardmässig 1 Minute, nach 10 Zustellungen geht die Nachricht in die DLQ.</li>
-  <li>Trade-off: Das ist at-least-once: Bei einem Absturz vor dem Complete kommt die Nachricht doppelt.</li>
+  <li>Mechanismus: Der Broker speichert die Nachricht dauerhaft. Der Consumer sperrt sie, arbeitet und bestätigt erst danach.</li>
+  <li>Zahl: In Service Bus ist der Lock standardmässig 1 Minute. Nach 10 Zustellungen geht die Nachricht in die DLQ.</li>
+  <li>Trade-off: Das ist at-least-once. Bei einem Absturz vor dem Complete kommt die Nachricht doppelt.</li>
   <li>Produktion: Darum speichert mein Consumer die MessageId in derselben DB-Transaktion wie den Write.</li>
 </ol></div>
 
@@ -70,9 +70,9 @@
   <li><b>Gespeichert:</b> Der Broker speichert die Nachricht dauerhaft. Der Producer darf jetzt abstürzen.</li>
   <li><b>Receive mit Lock:</b> Im Modus <b>Peek-Lock</b> sperrt Service Bus die Nachricht für einen Consumer. Andere sehen sie nicht. Der <b>DeliveryCount</b> steigt um 1. Die Lock-Dauer ist standardmässig 1 Minute.</li>
   <li><b>Verarbeiten:</b> Der Consumer führt die Arbeit aus, z. B. einen DB-Write.</li>
-  <li><b>Complete:</b> Erst jetzt bestätigt der Consumer. Der Broker löscht die Nachricht. Das ist <b>at-least-once</b>: erst arbeiten, dann bestätigen.</li>
+  <li><b>Complete:</b> Erst jetzt bestätigt der Consumer. Der Broker löscht die Nachricht. Das ist <b>at-least-once</b>, also erst arbeiten und dann bestätigen.</li>
   <li><b>Fehler oder Absturz:</b> Der Consumer meldet <b>Abandon</b>, oder der Lock läuft ab. Die Nachricht wird wieder zugestellt, eventuell an einen anderen Worker. Hat Schritt 4 schon geschrieben, ist das ein <b>Duplikat</b>.</li>
-  <li><b>Dead-Letter:</b> Erreicht der DeliveryCount den Wert <b>MaxDeliveryCount</b> (Service Bus Standard: 10), verschiebt der Broker die Nachricht in die DLQ.</li>
+  <li><b>Dead-Letter:</b> Der DeliveryCount erreicht den Wert <b>MaxDeliveryCount</b> (Service Bus Standard: 10). Dann verschiebt der Broker die Nachricht in die DLQ.</li>
 </ol>
 
 <h2>2. Aufbau</h2>
@@ -102,20 +102,25 @@
 
 <h2>3. Details, die Interviewer fragen</h2>
 <ol>
-  <li><b>Delivery-Garantien:</b> <b>At-most-once</b> heisst, erst bestätigen, dann arbeiten. Bei Absturz geht die Nachricht verloren. <b>At-least-once</b> heisst, erst arbeiten, dann bestätigen. Bei Absturz gibt es Duplikate. <b>Exactly-once</b> gibt es über ein Netz nur als Effekt: at-least-once plus idempotenter Consumer.</li>
-  <li><b>Peek-Lock vs Receive-and-Delete:</b> <b>Peek-Lock</b> sperrt und wartet auf Complete, also at-least-once. <b>Receive-and-Delete</b> löscht beim Abholen, also at-most-once.</li>
+  <li><b>At-most-once:</b> Man bestätigt zuerst und arbeitet dann. Bei Absturz geht die Nachricht verloren.</li>
+  <li><b>At-least-once:</b> Man arbeitet zuerst und bestätigt dann. Bei Absturz gibt es Duplikate.</li>
+  <li><b>Exactly-once:</b> Exactly-once gibt es über ein Netz nur als Effekt. Das ist at-least-once plus idempotenter Consumer.</li>
+  <li><b>Peek-Lock:</b> <b>Peek-Lock</b> sperrt die Nachricht und wartet auf Complete. Das ist at-least-once.</li>
+  <li><b>Receive-and-Delete:</b> <b>Receive-and-Delete</b> löscht beim Abholen. Das ist at-most-once.</li>
   <li><b>Lock-Dauer:</b> In Service Bus ist der Lock standardmässig 1 Minute, maximal 5 Minuten. Dauert die Arbeit länger, muss der Consumer den Lock <b>erneuern</b>. Sonst verarbeitet ein zweiter Worker dieselbe Nachricht.</li>
   <li><b>Idempotenter Consumer:</b> Der Consumer speichert verarbeitete MessageIds in einer Tabelle mit <b>Unique Constraint</b>. Insert und Geschäfts-Write laufen in <b>einer</b> DB-Transaktion. Das heisst auch <b>Inbox Pattern</b>.</li>
-  <li><b>Duplicate Detection im Broker:</b> Service Bus verwirft Nachrichten mit bekannter MessageId innerhalb eines Zeitfensters. Standard 10 Minuten, möglich 20 Sekunden bis 7 Tage. Nur Standard und Premium. Das schützt nur vor Producer-Duplikaten, nicht vor Redelivery.</li>
+  <li><b>Duplicate Detection im Broker:</b> Service Bus verwirft Nachrichten mit bekannter MessageId innerhalb eines Zeitfensters. Der Standard ist 10 Minuten. Möglich sind 20 Sekunden bis 7 Tage. Es gibt das nur in Standard und Premium.</li>
+  <li><b>Grenze der Duplicate Detection:</b> Sie schützt nur vor Producer-Duplikaten, nicht vor Redelivery.</li>
   <li><b>Transactional Outbox:</b> Ein Service muss DB-Write und Nachricht atomar machen. Er schreibt die Nachricht in eine <b>Outbox-Tabelle</b> in derselben Transaktion. Ein Relay sendet sie danach an den Broker.</li>
   <li><b>DLQ:</b> Nachrichten landen dort bei zu vielen Zustellungen, bei Ablauf der <b>TTL</b> (wenn aktiviert) oder wenn der Consumer sie bewusst dead-lettert. Die DLQ braucht Alarm, Analyse und einen Weg zum <b>Replay</b>.</li>
-  <li><b>Poison Message:</b> Eine Nachricht, die immer scheitert, z. B. ungültiges Format. Der Consumer sollte sie sofort dead-lettern statt zehnmal zu versuchen.</li>
+  <li><b>Poison Message:</b> Das ist eine Nachricht, die immer scheitert, z. B. wegen ungültigem Format. Der Consumer sollte sie sofort dead-lettern. Er sollte sie nicht zehnmal versuchen.</li>
   <li><b>Retry mit Backoff:</b> Bei vorübergehenden Fehlern wartet der Consumer immer länger, z. B. 1, 2, 4, 8 Sekunden plus Zufall (<b>Jitter</b>). Sonst trifft jeder Retry den kaputten Dienst gleichzeitig.</li>
-  <li><b>Reihenfolge:</b> Mehrere Competing Consumers zerstören die Reihenfolge. Service Bus garantiert FIFO pro <b>Session</b> (gleiche <code>SessionId</code>). Kafka und Event Hubs garantieren Reihenfolge pro <b>Partition</b>, gewählt über den Key.</li>
-  <li><b>Backpressure:</b> <b>Backpressure</b> heisst, ein langsamer Consumer bremst den Zufluss. Mittel: begrenzte <b>Prefetch</b>-Menge pro Consumer, Pull statt Push, Queue-Grösse begrenzen, Producer mit 429 oder <code>ServerBusy</code> abweisen.</li>
-  <li><b>Autoscaling:</b> Die Anzahl Worker folgt der Queue-Länge. In Kubernetes macht das <b>KEDA</b> mit Scalern für Service Bus, Event Hubs, Kafka und RabbitMQ.</li>
+  <li><b>Reihenfolge:</b> Mehrere Competing Consumers zerstören die Reihenfolge. Service Bus garantiert FIFO pro <b>Session</b> (gleiche <code>SessionId</code>). Kafka und Event Hubs garantieren Reihenfolge pro <b>Partition</b>. Der Key wählt die Partition.</li>
+  <li><b>Backpressure:</b> <b>Backpressure</b> heisst, ein langsamer Consumer bremst den Zufluss.</li>
+  <li><b>Mittel gegen Überlast:</b> Man begrenzt die <b>Prefetch</b>-Menge pro Consumer. Man nutzt Pull statt Push. Man begrenzt die Queue-Grösse. Man weist Producer mit 429 oder <code>ServerBusy</code> ab.</li>
+  <li><b>Autoscaling:</b> Die Anzahl Worker folgt der Queue-Länge. In Kubernetes macht das <b>KEDA</b>. Es hat Scaler für Service Bus, Event Hubs, Kafka und RabbitMQ.</li>
   <li><b>Claim-Check:</b> Grosse Daten kommen in Blob Storage. Die Nachricht enthält nur den Verweis. Service Bus Standard erlaubt 256 KB pro Nachricht.</li>
-  <li><b>Queue vs Log:</b> Eine <b>Queue</b> löscht Nachrichten nach Bestätigung. Ein <b>Log</b> (Kafka, Event Hubs) behält sie für eine Retention-Zeit. Consumer merken sich nur ihre Position (<b>Offset</b>, <b>Checkpoint</b>) und können zurückspulen.</li>
+  <li><b>Queue vs Log:</b> Eine <b>Queue</b> löscht Nachrichten nach Bestätigung. Ein <b>Log</b> (Kafka, Event Hubs) behält sie für eine Retention-Zeit. Consumer merken sich nur ihre Position (<b>Offset</b>, <b>Checkpoint</b>). Sie können zurückspulen.</li>
 </ol>
 
 <h2>4. Fallen</h2>

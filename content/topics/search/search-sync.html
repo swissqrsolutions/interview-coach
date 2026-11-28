@@ -36,14 +36,14 @@
 <!-- sources: Search · Tier 1 · Quellen: Debezium Reference (PostgreSQL Connector, Outbox Event Router), Elasticsearch 9 Reference (Aliases, Reindex API, Bulk API, Index API version_type, refresh, Index Settings), PostgreSQL 17 Doku (Logical Decoding, Replication Slots, max_slot_wal_keep_size), microservices.io: Transactional Outbox -->
 
 <div class="kern">
-<b>Kern:</b> Der Suchindex ist eine <b>Kopie</b> der Datenbank, und jede Änderung muss dort ankommen. Das <b>Dual-Write-Problem</b> heisst: DB und Index in zwei Schritten schreiben geht bei einem Fehler auseinander. Die Lösung ist, Änderungen <b>aus der DB-Transaktion heraus</b> weiterzugeben (<b>Outbox</b> oder <b>CDC</b>), idempotent und mit <b>Eventual Consistency</b>.
+<b>Kern:</b> Der Suchindex ist eine <b>Kopie</b> der Datenbank, und jede Änderung muss dort ankommen. Das <b>Dual-Write-Problem</b> heisst, dass DB und Index bei zwei Schritten nach einem Fehler auseinandergehen. Die Lösung ist, Änderungen <b>aus der DB-Transaktion heraus</b> weiterzugeben (<b>Outbox</b> oder <b>CDC</b>), idempotent und mit <b>Eventual Consistency</b>.
 </div>
 
 <div class="muster"><h3>Antwort-Muster</h3><p class="mq"><b>Frage:</b> Wie halten Sie den Suchindex konsistent mit der Datenbank?</p><ol>
-  <li>Mechanismus: Ich schreibe Daten und Outbox-Event in einer DB-Transaktion; ein Relay gibt das Event weiter.</li>
+  <li>Mechanismus: Ich schreibe Daten und Outbox-Event in einer DB-Transaktion. Ein Relay gibt das Event weiter.</li>
   <li>Zahl: Der Index hinkt um Pipeline-Lag plus Refresh hinterher, typisch rund eine Sekunde.</li>
-  <li>Trade-off: Die Lieferung ist at-least-once, darum schreibt der Indexer idempotent mit der DB-ID und einem Versions-Check.</li>
-  <li>Produktion: Ein Abgleich-Job vergleicht regelmässig Anzahl und Versionen und repariert Lücken.</li>
+  <li>Trade-off: Die Lieferung ist at-least-once. Darum schreibt der Indexer idempotent mit der DB-ID und einem Versions-Check.</li>
+  <li>Produktion: Ein Abgleich-Job vergleicht regelmässig Anzahl und Versionen. Er repariert Lücken.</li>
 </ol></div>
 
 <h2>1. Die Reise einer Änderung</h2>
@@ -64,11 +64,11 @@
   <rect x="160" y="230" width="400" height="56" rx="10" fill="#0a66c2" stroke="#0a66c2"/><text x="360" y="254" text-anchor="middle" fill="#fff" font-weight="700">Mapping ändert sich? → neuer Index, Reindex,</text><text x="360" y="274" text-anchor="middle" fill="#fff" font-size="13">Alias atomar umschalten</text>
 </svg>
 <ol>
-  <li><b>Commit:</b> Ein Bild bekommt neue Labels. Die API ändert die Zeile <code>image</code> und schreibt ein Event in <code>outbox</code>. Ein Commit für beides.</li>
-  <li><b>Erfassen:</b> Ein <b>Poller</b> liest offene Outbox-Zeilen. Oder <b>Debezium</b> liest den Insert aus dem WAL. Die Änderung kann nicht verloren gehen, sie steht in der DB.</li>
-  <li><b>Upsert:</b> Der Indexer schreibt das Dokument mit der <b>DB-ID als Dokument-ID</b>. Zweimal schreiben ergibt dasselbe Ergebnis: <b>idempotent</b>.</li>
+  <li><b>Commit:</b> Ein Bild bekommt neue Labels. Die API ändert die Zeile <code>image</code> und schreibt ein Event in <code>outbox</code>. Ein Commit gilt für beides.</li>
+  <li><b>Erfassen:</b> Ein <b>Poller</b> liest offene Outbox-Zeilen. Oder <b>Debezium</b> liest den Insert aus dem WAL. Die Änderung kann nicht verloren gehen. Sie steht in der DB.</li>
+  <li><b>Upsert:</b> Der Indexer schreibt das Dokument mit der <b>DB-ID als Dokument-ID</b>. Zweimal schreiben ergibt dasselbe Ergebnis. Das ist <b>idempotent</b>.</li>
   <li><b>Version prüfen:</b> Kommt ein altes Event später an, darf es den neuen Stand nicht überschreiben. Elasticsearch prüft das mit <code>version_type=external</code> und der Version aus der DB.</li>
-  <li><b>Fehler:</b> Ist der Cluster nicht erreichbar, bleibt das Event offen. Der Indexer versucht es später erneut. Das heisst <b>at-least-once</b>: mindestens einmal, manchmal öfter.</li>
+  <li><b>Fehler:</b> Ist der Cluster nicht erreichbar, bleibt das Event offen. Der Indexer versucht es später erneut. Das heisst <b>at-least-once</b>, also mindestens einmal und manchmal öfter.</li>
   <li><b>Refresh:</b> Nach dem nächsten Refresh ist die Änderung suchbar. Die Gesamt-Verzögerung (<b>Lag</b>) ist Pipeline plus Refresh.</li>
   <li><b>Reindex:</b> Ändert sich das Mapping, baut man einen neuen Index und schaltet den Alias um. Die Suche merkt nichts.</li>
 </ol>
@@ -103,25 +103,31 @@
 
 <h2>3. Details, die Interviewer fragen</h2>
 <ol>
-  <li><b>Dual-Write-Problem:</b> Zwei Systeme ohne gemeinsame Transaktion. Fällt der zweite Schritt aus, sind sie inkonsistent. Zwei parallele Requests können sich ausserdem in falscher Reihenfolge überholen.</li>
+  <li><b>Dual-Write-Problem:</b> Es gibt zwei Systeme ohne gemeinsame Transaktion. Fällt der zweite Schritt aus, sind sie inkonsistent. Zwei parallele Requests können sich ausserdem in falscher Reihenfolge überholen.</li>
   <li><b>Warum kein verteiltes Commit (2PC)?</b> Elasticsearch unterstützt kein <b>Two-Phase Commit</b>. Und 2PC koppelt die Verfügbarkeit beider Systeme.</li>
   <li><b>Transactional Outbox:</b> Die App schreibt das Event in eine <b>Outbox-Tabelle</b> in derselben DB-Transaktion. Ein separater Prozess gibt es weiter. So hängt die Weitergabe nur am DB-Commit.</li>
-  <li><b>Outbox weitergeben, zwei Wege:</b> 1. <b>Polling Publisher</b>: liest offene Zeilen per SQL, markiert sie als gesendet. Einfach, etwas Verzögerung, Last auf der DB. 2. <b>CDC</b>: Debezium liest die Inserts aus dem WAL. Kein Polling, aber mehr Infrastruktur.</li>
-  <li><b>Debezium Outbox Event Router:</b> Eine <b>SMT</b> (Single Message Transformation) in Kafka Connect. Sie routet Outbox-Zeilen nach <code>aggregatetype</code> in Topics, Standard <code>outbox.event.&lt;aggregatetype&gt;</code>. Die Spalte <code>id</code> dient Consumern zum Erkennen von Duplikaten.</li>
-  <li><b>CDC direkt auf der Tabelle:</b> Debezium kann auch die <code>image</code>-Tabelle selbst lesen. Kein Outbox-Code nötig. Nachteil: Das Event ist das DB-Schema. Jede Spaltenänderung bricht den Consumer.</li>
-  <li><b>Debezium und PostgreSQL:</b> Der Connector nutzt Logical Decoding mit dem Plugin <code>pgoutput</code> und einen <b>Replication Slot</b>. Beim Start macht er einen <b>Snapshot</b> der Tabelle, dann streamt er Änderungen.</li>
-  <li><b>Replication Slot:</b> Der Slot merkt sich, bis wohin der Consumer gelesen hat. PostgreSQL behält das WAL ab dieser Stelle. Steht Debezium still, wächst das WAL und kann die Platte füllen.</li>
-  <li><b>At-least-once und Idempotenz:</b> CDC und Outbox liefern mindestens einmal. Darum muss das Schreiben in den Index idempotent sein: Dokument-ID = DB-Primärschlüssel, Upsert statt Insert.</li>
-  <li><b>Reihenfolge:</b> Kafka garantiert Reihenfolge nur pro Partition. Darum Schlüssel = Bild-ID. Zusätzlich schützt <code>version_type=external</code>: Elasticsearch nimmt nur eine höhere Version an.</li>
+  <li><b>Outbox weitergeben, Weg 1:</b> Ein <b>Polling Publisher</b> liest offene Zeilen per SQL und markiert sie als gesendet. Das ist einfach. Es gibt etwas Verzögerung und Last auf der DB.</li>
+  <li><b>Outbox weitergeben, Weg 2:</b> Bei <b>CDC</b> liest Debezium die Inserts aus dem WAL. Es gibt kein Polling. Aber es braucht mehr Infrastruktur.</li>
+  <li><b>Debezium Outbox Event Router:</b> Er ist eine <b>SMT</b> (Single Message Transformation) in Kafka Connect. Er routet Outbox-Zeilen nach <code>aggregatetype</code> in Topics. Der Standard ist <code>outbox.event.&lt;aggregatetype&gt;</code>. Die Spalte <code>id</code> dient Consumern zum Erkennen von Duplikaten.</li>
+  <li><b>CDC direkt auf der Tabelle:</b> Debezium kann auch die <code>image</code>-Tabelle selbst lesen. Dafür ist kein Outbox-Code nötig. Der Nachteil ist, dass das Event das DB-Schema ist. Jede Spaltenänderung bricht den Consumer.</li>
+  <li><b>Debezium und PostgreSQL:</b> Der Connector nutzt Logical Decoding mit dem Plugin <code>pgoutput</code> und einen <b>Replication Slot</b>. Beim Start macht er einen <b>Snapshot</b> der Tabelle. Dann streamt er Änderungen.</li>
+  <li><b>Replication Slot:</b> Der Slot merkt sich, bis wohin der Consumer gelesen hat. PostgreSQL behält das WAL ab dieser Stelle. Steht Debezium still, wächst das WAL. Es kann die Platte füllen.</li>
+  <li><b>At-least-once und Idempotenz:</b> CDC und Outbox liefern mindestens einmal. Darum muss das Schreiben in den Index idempotent sein. Die Dokument-ID ist der DB-Primärschlüssel. Man nimmt Upsert statt Insert.</li>
+  <li><b>Reihenfolge:</b> Kafka garantiert Reihenfolge nur pro Partition. Darum ist der Schlüssel die Bild-ID. Zusätzlich schützt <code>version_type=external</code>. Elasticsearch nimmt nur eine höhere Version an.</li>
   <li><b>Deletes:</b> Ein gelöschtes Bild muss auch aus dem Index. CDC liefert ein Delete-Event. Bei Outbox schreibt die App ein eigenes „deleted“-Event. Bei Soft Delete filtert der Index nach dem Flag.</li>
-  <li><b>Eventual Consistency:</b> Der Index hinkt der DB hinterher: Pipeline-Lag plus Refresh (Standard 1 s). Die API zeigt nach dem Speichern darum Daten aus der DB, nicht aus der Suche.</li>
-  <li><b>Read-your-writes:</b> Wenn die Suche sofort stimmen muss: synchron indexieren mit <code>refresh=wait_for</code>. Der Request wartet bis zum nächsten Refresh. Kostet Latenz, ersetzt aber nicht die Outbox.</li>
-  <li><b>Warum Reindex?</b> Den Typ oder Analyzer eines bestehenden Feldes kann man nicht ändern. Neue Felder kann man hinzufügen, alte Dokumente haben sie aber nicht.</li>
-  <li><b>Reindex ohne Ausfall:</b> 1. Neuen Index <code>images_v3</code> mit neuem Mapping anlegen. 2. Daten laden: <code>_reindex</code> aus dem alten Index oder neu aus der DB. 3. Laufende Änderungen auch in v3 schreiben. 4. Prüfen (Anzahl, Stichproben). 5. Alias mit <code>_aliases</code> atomar umschalten. 6. Alten Index später löschen.</li>
+  <li><b>Eventual Consistency:</b> Der Index hinkt der DB hinterher. Das ist Pipeline-Lag plus Refresh (Standard 1 s). Die API zeigt nach dem Speichern darum Daten aus der DB, nicht aus der Suche.</li>
+  <li><b>Read-your-writes:</b> Muss die Suche sofort stimmen, indexiert man synchron mit <code>refresh=wait_for</code>. Der Request wartet bis zum nächsten Refresh. Das kostet Latenz. Es ersetzt aber nicht die Outbox.</li>
+  <li><b>Warum Reindex?</b> Den Typ oder Analyzer eines bestehenden Feldes kann man nicht ändern. Neue Felder kann man hinzufügen. Alte Dokumente haben sie aber nicht.</li>
+  <li><b>Reindex Schritt 1:</b> Man legt einen neuen Index <code>images_v3</code> mit neuem Mapping an.</li>
+  <li><b>Reindex Schritt 2:</b> Man lädt die Daten. Das geht mit <code>_reindex</code> aus dem alten Index oder neu aus der DB.</li>
+  <li><b>Reindex Schritt 3:</b> Man schreibt laufende Änderungen auch in v3.</li>
+  <li><b>Reindex Schritt 4:</b> Man prüft (Anzahl, Stichproben).</li>
+  <li><b>Reindex Schritt 5:</b> Man schaltet den Alias mit <code>_aliases</code> atomar um.</li>
+  <li><b>Reindex Schritt 6:</b> Den alten Index löscht man später.</li>
   <li><b>Änderungen während des Reindex:</b> Entweder schreibt der Indexer in beide Indizes. Oder man merkt sich die CDC-Position vor dem Start und spielt ab dort in v3 nach. Wegen Versions-Check schadet doppeltes Abspielen nicht.</li>
   <li><b><code>_reindex</code> oder aus der DB?</b> <code>_reindex</code> kopiert nur <code>_source</code>. Fehlen dort Daten oder ändern sich Embeddings, muss man aus der DB neu bauen. Die DB ist die Quelle der Wahrheit.</li>
-  <li><b>Schnelles Laden:</b> Im neuen Index <code>refresh_interval: -1</code> und <code>number_of_replicas: 0</code>. Mit <code>_bulk</code> laden. Danach beides zurücksetzen.</li>
-  <li><b>Abgleich (Reconciliation):</b> Ein Job vergleicht regelmässig DB und Index: Anzahl, Versionen, fehlende IDs. Er repariert Abweichungen. Er fängt Fehler, die die Pipeline nicht sieht.</li>
+  <li><b>Schnelles Laden:</b> Im neuen Index setzt man <code>refresh_interval: -1</code> und <code>number_of_replicas: 0</code>. Man lädt mit <code>_bulk</code>. Danach setzt man beides zurück.</li>
+  <li><b>Abgleich (Reconciliation):</b> Ein Job vergleicht regelmässig DB und Index. Er prüft Anzahl, Versionen und fehlende IDs. Er repariert Abweichungen. Er fängt Fehler, die die Pipeline nicht sieht.</li>
 </ol>
 
 <h2>4. Fallen</h2>

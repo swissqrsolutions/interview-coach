@@ -40,9 +40,9 @@
 </div>
 
 <div class="muster"><h3>Antwort-Muster</h3><p class="mq"><b>Frage:</b> Warum Consistent Hashing statt hash % N?</p><ol>
-  <li>Mechanismus: Knoten und Schlüssel liegen auf einem Ring, ein Schlüssel gehört zum nächsten Token im Uhrzeigersinn.</li>
-  <li>Zahl: Beim Schritt von 4 auf 5 Knoten ziehen ca. 20 % der Schlüssel um, mit hash % N ca. 80 %.</li>
-  <li>Trade-off: Ein Token pro Server verteilt ungleich, darum virtuelle Knoten, z. B. 256 pro Server.</li>
+  <li>Mechanismus: Knoten und Schlüssel liegen auf einem Ring. Ein Schlüssel gehört zum nächsten Token im Uhrzeigersinn.</li>
+  <li>Zahl: Beim Schritt von 4 auf 5 Knoten ziehen ca. 20 % der Schlüssel um. Mit hash % N sind es ca. 80 %.</li>
+  <li>Trade-off: Ein Token pro Server verteilt ungleich. Darum nutze ich virtuelle Knoten, z. B. 256 pro Server.</li>
   <li>Produktion: In Cache-Pools verhindert das einen Miss-Sturm auf die Datenbank beim Scale-out.</li>
 </ol></div>
 
@@ -100,20 +100,21 @@
 <h2>3. Details, die Interviewer fragen</h2>
 <ol>
   <li><b>Problem von <code>hash % N</code>:</b> Ändert sich N, ändert sich das Ergebnis für fast jeden Schlüssel. Von N auf N+1 bleiben nur ca. 1/(N+1) am Platz.</li>
-  <li><b>Monotonie:</b> <b>Monotonie</b> heisst, ein neuer Knoten nimmt nur Schlüssel auf, er verschiebt keine zwischen alten Knoten. Das ist die Kern-Eigenschaft aus Karger 1997.</li>
-  <li><b>Virtuelle Knoten (vnodes, Tokens):</b> Jeder Server erhält viele Positionen auf dem Ring. Ergebnis: gleichmässige Last und Verteilung der Last eines Ausfalls auf viele Server.</li>
+  <li><b>Monotonie:</b> <b>Monotonie</b> heisst, ein neuer Knoten nimmt nur Schlüssel auf. Er verschiebt keine zwischen alten Knoten. Das ist die Kern-Eigenschaft aus Karger 1997.</li>
+  <li><b>Virtuelle Knoten (vnodes, Tokens):</b> Jeder Server erhält viele Positionen auf dem Ring. So wird die Last gleichmässig. Die Last eines Ausfalls verteilt sich auf viele Server.</li>
   <li><b>Gewichtung:</b> Ein starker Server bekommt mehr Tokens. So trägt er mehr Daten. Cassandra beschreibt genau das für <code>num_tokens</code>.</li>
-  <li><b>Cassandra:</b> <code>num_tokens</code> ist in Cassandra 5.0 standardmässig <b>16</b>. Wenige Tokens mit dem Allocator (<code>allocate_tokens_for_local_replication_factor</code>, Standard 3) geben gute Balance bei weniger Reparatur-Aufwand.</li>
+  <li><b>Cassandra:</b> <code>num_tokens</code> ist in Cassandra 5.0 standardmässig <b>16</b>. Wenige Tokens mit dem Allocator geben gute Balance bei weniger Reparatur-Aufwand. Der Allocator heisst <code>allocate_tokens_for_local_replication_factor</code> und hat den Standard 3.</li>
   <li><b>Replikation auf dem Ring:</b> Kopien liegen auf den nächsten RF−1 <b>verschiedenen</b> Servern. Mit vnodes muss man Tokens desselben Servers überspringen. Rack- und Zonen-Bewusstsein kommt dazu.</li>
-  <li><b>Jump Consistent Hash:</b> Eine Funktion <code>jump(key, n)</code> liefert direkt einen Bucket 0…n−1. Kein Speicher, perfekte Verteilung. Aber: Buckets nur am <b>Ende</b> hinzufügen oder entfernen. Gut für nummerierte Shards, schlecht für zufällig ausfallende Server.</li>
-  <li><b>Rendezvous Hashing (HRW):</b> Für jeden Server einen Score <code>hash(server, key)</code> rechnen, der höchste gewinnt. Kein Ring, beliebige Server entfernbar. Kosten: O(N) pro Lookup.</li>
-  <li><b>Maglev Hashing:</b> Google baut daraus eine feste Lookup-Tabelle. Sehr schneller Lookup, sehr gleichmässig, minimal mehr Bewegung als ein Ring. Envoy nutzt standardmässig eine Tabelle mit 65 537 Einträgen.</li>
-  <li><b>Envoy Ring Hash:</b> <code>minimum_ring_size</code> ist standardmässig 1024 Einträge, maximal 8M. Mehr Einträge heisst bessere Verteilung, mehr Speicher.</li>
-  <li><b>Bounded Loads:</b> Ein Knoten darf höchstens <code>(1+ε)</code> mal den Durchschnitt tragen. Ist er voll, geht der Schlüssel zum nächsten. Gut gegen Hot Spots bei Sticky Routing.</li>
-  <li><b>Hot Keys:</b> Consistent Hashing verteilt <b>Schlüssel</b>, nicht <b>Last</b>. Ein einzelner sehr heisser Key landet immer auf einem Server. Lösung: Key-Splitting, lokale Caches, Replikate lesen.</li>
+  <li><b>Jump Consistent Hash:</b> Eine Funktion <code>jump(key, n)</code> liefert direkt einen Bucket 0…n−1. Sie braucht keinen Speicher und verteilt perfekt.</li>
+  <li><b>Grenze von Jump Hash:</b> Man darf Buckets nur am <b>Ende</b> hinzufügen oder entfernen. Er ist gut für nummerierte Shards. Er ist schlecht für zufällig ausfallende Server.</li>
+  <li><b>Rendezvous Hashing (HRW):</b> Man rechnet für jeden Server einen Score <code>hash(server, key)</code>. Der höchste gewinnt. Es gibt keinen Ring, und man kann beliebige Server entfernen. Ein Lookup kostet O(N).</li>
+  <li><b>Maglev Hashing:</b> Google baut daraus eine feste Lookup-Tabelle. Der Lookup ist sehr schnell. Die Verteilung ist sehr gleichmässig. Es bewegt minimal mehr als ein Ring. Envoy nutzt standardmässig eine Tabelle mit 65 537 Einträgen.</li>
+  <li><b>Envoy Ring Hash:</b> <code>minimum_ring_size</code> ist standardmässig 1024 Einträge, maximal 8M. Mehr Einträge heisst bessere Verteilung, aber mehr Speicher.</li>
+  <li><b>Bounded Loads:</b> Ein Knoten darf höchstens <code>(1+ε)</code> mal den Durchschnitt tragen. Ist er voll, geht der Schlüssel zum nächsten. Das hilft gegen Hot Spots bei Sticky Routing.</li>
+  <li><b>Hot Keys:</b> Consistent Hashing verteilt <b>Schlüssel</b>, nicht <b>Last</b>. Ein einzelner sehr heisser Key landet immer auf einem Server. Lösungen sind Key-Splitting, lokale Caches und Replikate lesen.</li>
   <li><b>Redis Cluster ist kein Ring:</b> Er nutzt <b>16 384 feste Hash Slots</b> (CRC16 mod 16384). Slots werden zwischen Knoten verschoben. Das ist das Muster „viele feste Partitionen“.</li>
-  <li><b>Feste Partitionen als Alternative:</b> Viel mehr Partitionen als Knoten anlegen, z. B. 1024. Beim Skalieren ziehen ganze Partitionen um. Kafka, Elasticsearch und Redis Cluster arbeiten so.</li>
-  <li><b>Hash-Funktion:</b> Sie muss gleichmässig sein, nicht kryptografisch. Typisch: MurmurHash3, xxHash. Wichtig: Alle Clients nutzen exakt dieselbe Funktion.</li>
+  <li><b>Feste Partitionen als Alternative:</b> Man legt viel mehr Partitionen als Knoten an, z. B. 1024. Beim Skalieren ziehen ganze Partitionen um. Kafka, Elasticsearch und Redis Cluster arbeiten so.</li>
+  <li><b>Hash-Funktion:</b> Sie muss gleichmässig sein, nicht kryptografisch. Typisch sind MurmurHash3 und xxHash. Alle Clients nutzen exakt dieselbe Funktion.</li>
 </ol>
 
 <h2>4. Fallen</h2>
