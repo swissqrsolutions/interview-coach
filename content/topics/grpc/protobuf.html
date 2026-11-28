@@ -1,0 +1,290 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Protobuf und Schema-Evolution</title>
+<style>
+  body { font: 17px/1.55 -apple-system, system-ui, sans-serif; max-width: 760px; margin: 0 auto; padding: 16px; color: #1d1d1f; }
+  h1 { font-size: 28px; margin: 8px 0 4px; }
+  h2 { font-size: 21px; margin: 32px 0 8px; padding-top: 12px; border-top: 2px solid #e5e5ea; }
+  .kern { background: #eef6ff; border-left: 4px solid #0a66c2; padding: 10px 14px; border-radius: 6px; }
+  .senior { background: #f0faf0; border-left: 4px solid #2e7d32; padding: 10px 14px; border-radius: 6px; }
+  .trap { background: #fff4f2; border-left: 4px solid #c62828; padding: 10px 14px; border-radius: 6px; }
+  code { background: #f2f2f7; padding: 1px 5px; border-radius: 4px; font-size: 15px; }
+  pre { background: #1e1e1e; color: #e6e6e6; padding: 12px; border-radius: 8px; overflow-x: auto; font-size: 13.5px; line-height: 1.45; }
+  svg { width: 100%; height: auto; display: block; margin: 10px 0; }
+  ol li, ul li { margin: 4px 0; }
+  details { border: 1px solid #e5e5ea; border-radius: 8px; padding: 8px 12px; margin: 6px 0; }
+  summary { font-weight: 600; cursor: pointer; }
+  details p { margin: 6px 0 2px; }
+  .small { color: #6e6e73; font-size: 14px; }
+  h3 { font-size: 17px; margin: 20px 0 6px; }
+  .geruest { border: 2px solid #1d1d1f; border-radius: 6px; padding: 10px 14px; margin: 14px 0; font-size: 15px; line-height: 1.4; }
+  .geruest h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; margin: 0 0 8px; padding: 0; border: 0; }
+  .geruest dl { display: grid; grid-template-columns: 6.6em 1fr; gap: 6px 10px; margin: 0; }
+  .geruest dt { font-weight: 700; font-size: 12px; text-transform: uppercase; letter-spacing: .05em; padding-top: 1px; }
+  .geruest dd { margin: 0; }
+  .muster { border: 1px solid #e5e5ea; border-left: 4px solid #1d1d1f; border-radius: 6px; padding: 10px 14px; margin: 14px 0; }
+  .muster h3 { margin: 0 0 6px; font-size: 13px; text-transform: uppercase; letter-spacing: .06em; }
+  .muster .mq { margin: 0 0 6px; }
+</style>
+</head>
+<body>
+
+
+<h1>Protobuf und Schema-Evolution</h1>
+<!-- sources: protobuf.dev: Protocol Buffers Language Guide (proto3), Encoding, Proto Best Practices (Dos and Don'ts); GitHub protocolbuffers/protobuf Releases. Eigener Lauf mit Python 3.12 (Mini-Encoder nach der Encoding-Doku, ohne protoc) -->
+
+<div class="kern">
+<b>Kern:</b> <b>Protocol Buffers</b> (Protobuf) beschreiben Daten in einer <code>.proto</code>-Datei. Daraus entsteht Code, der Nachrichten in ein kompaktes <b>Binärformat</b> schreibt. Jedes Feld hat eine <b>Feldnummer</b>, und diese Nummer macht die <b>Schema-Evolution</b> möglich.
+</div>
+
+<div class="muster"><h3>Antwort-Muster</h3><p class="mq"><b>Frage:</b> Wie kodiert Protobuf Daten, und wie ändert man ein Schema sicher?</p><ol>
+  <li>Mechanismus: Jedes Feld wird als Tag (Feldnummer und Wire Type) plus Wert geschrieben. Namen stehen nicht auf der Leitung.</li>
+  <li>Zahl: Feldnummern 1 bis 15 brauchen ein Byte, 16 bis 2047 zwei Bytes. Die Nummern 19000 bis 19999 sind reserviert.</li>
+  <li>Trade-off: Binär ist klein und schnell, aber nicht lesbar. Unbekannte Felder werden übersprungen, so bleibt alt kompatibel mit neu.</li>
+  <li>Produktion: Ich ändere nie eine Feldnummer oder einen Typ. Gelöschte Nummern und Namen setze ich auf <code>reserved</code>.</li>
+</ol></div>
+
+<h2>1. Eine Nachricht kodieren und lesen in 6 Schritten</h2>
+<svg viewBox="0 0 720 244" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+<defs><marker id="f1" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+<rect x="10" y="10" width="200" height="66" rx="10" fill="#eee" stroke="#777"/>
+<text x="110" y="34" text-anchor="middle" font-weight="700" font-size="14" fill="#1d1d1f">1. Feld</text>
+<text x="110" y="53" text-anchor="middle" font-size="12" fill="#1d1d1f">Nummer und Wert</text>
+<text x="110" y="69" text-anchor="middle" font-size="12" fill="#1d1d1f">a = 150 in Feld 1</text>
+<rect x="260" y="10" width="200" height="66" rx="10" fill="#dbe9fb" stroke="#0a66c2"/>
+<text x="360" y="34" text-anchor="middle" font-weight="700" font-size="14" fill="#1d1d1f">2. Default?</text>
+<text x="360" y="53" text-anchor="middle" font-size="12" fill="#1d1d1f">Wert gleich Default</text>
+<text x="360" y="69" text-anchor="middle" font-size="12" fill="#1d1d1f">dann nicht senden</text>
+<rect x="510" y="10" width="200" height="66" rx="10" fill="#dbe9fb" stroke="#0a66c2"/>
+<text x="610" y="34" text-anchor="middle" font-weight="700" font-size="14" fill="#1d1d1f">3. Tag</text>
+<text x="610" y="53" text-anchor="middle" font-size="12" fill="#1d1d1f">(Nummer &lt;&lt; 3) | Typ</text>
+<text x="610" y="69" text-anchor="middle" font-size="12" fill="#1d1d1f">1:VARINT gibt 08</text>
+<rect x="10" y="132" width="200" height="66" rx="10" fill="#fff" stroke="#555"/>
+<text x="110" y="156" text-anchor="middle" font-weight="700" font-size="14" fill="#1d1d1f">4. Wert</text>
+<text x="110" y="175" text-anchor="middle" font-size="12" fill="#1d1d1f">Varint oder LEN</text>
+<text x="110" y="191" text-anchor="middle" font-size="12" fill="#1d1d1f">150 gibt 96 01</text>
+<rect x="260" y="132" width="200" height="66" rx="10" fill="#e8f5e9" stroke="#2e7d32"/>
+<text x="360" y="156" text-anchor="middle" font-weight="700" font-size="14" fill="#1d1d1f">5. Aneinander</text>
+<text x="360" y="175" text-anchor="middle" font-size="12" fill="#1d1d1f">Felder nacheinander</text>
+<text x="360" y="191" text-anchor="middle" font-size="12" fill="#1d1d1f">ohne Trenner</text>
+<rect x="510" y="132" width="200" height="66" rx="10" fill="#fff4f2" stroke="#c62828"/>
+<text x="610" y="156" text-anchor="middle" font-weight="700" font-size="14" fill="#1d1d1f">6. Lesen</text>
+<text x="610" y="175" text-anchor="middle" font-size="12" fill="#1d1d1f">Tag lesen, Typ lesen</text>
+<text x="610" y="191" text-anchor="middle" font-size="12" fill="#1d1d1f">unbekannt: überspringen</text>
+<line x1="210" y1="43" x2="258" y2="43" stroke="#555" stroke-width="2" marker-end="url(#f1)"/>
+<line x1="460" y1="43" x2="508" y2="43" stroke="#555" stroke-width="2" marker-end="url(#f1)"/>
+<path d="M610,76 L610,104 L110,104 L110,130" fill="none" stroke="#555" stroke-width="2" marker-end="url(#f1)"/>
+<line x1="210" y1="165" x2="258" y2="165" stroke="#555" stroke-width="2" marker-end="url(#f1)"/>
+<line x1="460" y1="165" x2="508" y2="165" stroke="#555" stroke-width="2" marker-end="url(#f1)"/>
+</svg>
+<ol>
+  <li><b>Feld:</b> <code>message Test1 { int32 a = 1; }</code> mit <code>a = 150</code>. Das Feld hat die Nummer 1.</li>
+  <li><b>Default?:</b> Ist der Wert der Default (bei Zahlen 0), schreibt Protobuf bei implizitem Feld nichts.</li>
+  <li><b>Tag:</b> Der Tag ist ein Varint aus <code>(Feldnummer &lt;&lt; 3) | WireType</code>. Feld 1 als VARINT (Typ 0) ergibt das Byte <code>08</code>.</li>
+  <li><b>Wert:</b> 150 als Varint ergibt <code>96 01</code>. Jedes Byte hat 7 Bits Nutzdaten, das oberste Bit zeigt, ob noch ein Byte folgt.</li>
+  <li><b>Aneinander:</b> Alle Felder stehen hintereinander. Es gibt keine Feldnamen und keine Trenner. Strings und Untermeldungen haben ein Längen-Präfix (Typ LEN).</li>
+  <li><b>Lesen:</b> Der Leser liest Tag, Feldnummer und Typ. Kennt er die Nummer nicht, überspringt er den Wert nach dem Typ. Er behält ihn als unbekanntes Feld.</li>
+</ol>
+<p>Der echte Lauf unten zeigt dieselben Bytes wie die Encoding-Doku: <code>08 96 01</code> für <code>a = 150</code>.</p>
+
+<h2>2. Aufbau</h2>
+<svg viewBox="0 0 720 240" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+<defs><marker id="f2" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+<rect x="195" y="12" width="330" height="62" rx="10" fill="#dbe9fb" stroke="#0a66c2"/>
+<text x="360" y="36" text-anchor="middle" font-weight="700" font-size="14" fill="#1d1d1f">.proto-Schema</text>
+<text x="360" y="56" text-anchor="middle" font-size="12" fill="#1d1d1f">Messages, Felder, Nummern</text>
+<rect x="12" y="124" width="156" height="64" rx="10" fill="#fff" stroke="#555"/>
+<text x="90" y="148" text-anchor="middle" font-weight="700" font-size="14" fill="#1d1d1f">Feldnummer</text>
+<text x="90" y="166" text-anchor="middle" font-size="12" fill="#1d1d1f">Identität im Wire</text>
+<text x="90" y="181" text-anchor="middle" font-size="12" fill="#1d1d1f">nie ändern</text>
+<line x1="360" y1="74" x2="90" y2="122" stroke="#555" stroke-width="2" marker-end="url(#f2)"/>
+<rect x="192" y="124" width="156" height="64" rx="10" fill="#fff" stroke="#555"/>
+<text x="270" y="148" text-anchor="middle" font-weight="700" font-size="14" fill="#1d1d1f">Wire Type</text>
+<text x="270" y="166" text-anchor="middle" font-size="12" fill="#1d1d1f">VARINT, I64, LEN, I32</text>
+<text x="270" y="181" text-anchor="middle" font-size="12" fill="#1d1d1f">3 Bits im Tag</text>
+<line x1="360" y1="74" x2="270" y2="122" stroke="#555" stroke-width="2" marker-end="url(#f2)"/>
+<rect x="372" y="124" width="156" height="64" rx="10" fill="#e8f5e9" stroke="#2e7d32"/>
+<text x="450" y="148" text-anchor="middle" font-weight="700" font-size="14" fill="#1d1d1f">reserved</text>
+<text x="450" y="166" text-anchor="middle" font-size="12" fill="#1d1d1f">gelöschte Nummern</text>
+<text x="450" y="181" text-anchor="middle" font-size="12" fill="#1d1d1f">und Namen sperren</text>
+<line x1="360" y1="74" x2="450" y2="122" stroke="#555" stroke-width="2" marker-end="url(#f2)"/>
+<rect x="552" y="124" width="156" height="64" rx="10" fill="#eee" stroke="#777"/>
+<text x="630" y="148" text-anchor="middle" font-weight="700" font-size="14" fill="#1d1d1f">Unbekannte Felder</text>
+<text x="630" y="166" text-anchor="middle" font-size="12" fill="#1d1d1f">werden behalten</text>
+<text x="630" y="181" text-anchor="middle" font-size="12" fill="#1d1d1f">und weitergegeben</text>
+<line x1="360" y1="74" x2="630" y2="122" stroke="#555" stroke-width="2" marker-end="url(#f2)"/>
+<text x="360" y="224" text-anchor="middle" font-size="12" fill="#555">Auf der Leitung zählen nur Nummer und Typ, nicht der Name.</text>
+</svg>
+<ol>
+  <li>Eine <b>message</b> hat Felder mit Typ, Name und <b>Feldnummer</b>.</li>
+  <li>Der <b>Wire Type</b> sagt, wie der Wert aufgebaut ist: VARINT (0), I64, LEN (2), I32 (5) und die veralteten Gruppen.</li>
+  <li>Ein <b>Varint</b> speichert Zahlen mit 1 bis 10 Bytes. Kleine Zahlen brauchen weniger Bytes.</li>
+  <li>Ein <b>Enum</b> muss einen Wert 0 als ersten haben. Er soll <code>..._UNSPECIFIED</code> heissen.</li>
+  <li><b>oneof</b>, <b>map</b> und <b>repeated</b> sind weitere Feldformen. <code>repeated</code> mit Zahlen ist in proto3 standardmässig gepackt.</li>
+  <li><b>Well-Known Types</b> wie <code>Timestamp</code> und <code>Duration</code> gehören zu protoc und ersetzen eigene Zahlenfelder.</li>
+</ol>
+
+<h2>3. Details</h2>
+<ol>
+  <li><b>Feldnummern:</b> Sie liegen zwischen 1 und 536 870 911. Die Nummern 19 000 bis 19 999 sind für die Implementierung reserviert. Nummern 1 bis 15 brauchen ein Byte, 16 bis 2047 zwei Bytes. Häufige Felder bekommen darum kleine Nummern.</li>
+  <li><b>Tag:</b> Der Tag ist <code>(Feldnummer &lt;&lt; 3) | WireType</code>. Die unteren drei Bits sind der Typ. Der Tag ist selbst ein Varint.</li>
+  <li><b>Varint:</b> Das oberste Bit jedes Bytes zeigt, ob ein weiteres folgt. Die 7-Bit-Gruppen stehen in Little-Endian-Reihenfolge. 150 wird zu <code>96 01</code>.</li>
+  <li><b>Negative Zahlen:</b> <code>int32</code> und <code>int64</code> kodieren negative Zahlen als Zweierkomplement. Dann brauchen sie 10 Bytes. <code>sint32</code> und <code>sint64</code> nutzen ZigZag. Dann ist -1 nur ein Byte.</li>
+  <li><b>Defaults:</b> Ein implizites Feld mit Default-Wert wird nicht gesendet. Der Leser kann "nicht gesetzt" und "auf 0 gesetzt" nicht unterscheiden. Dafür gibt es explizite Präsenz mit <code>optional</code>.</li>
+  <li><b>Unbekannte Felder:</b> Proto3 behält unbekannte Felder und schreibt sie beim Serialisieren wieder mit. Bei JSON gehen sie verloren. Darum bleibt alt kompatibel mit neu.</li>
+  <li><b>Last one wins:</b> Kommt ein einfaches Feld mehrfach in den Bytes vor, zählt das letzte. Bei Untermeldungen werden die Teile zusammengeführt.</li>
+  <li><b>Nummern nie wiederverwenden:</b> Ein Leser kann nicht erkennen, dass eine Nummer eine andere Bedeutung bekam. Das führt zu Fehlern, falsch gelesenen Daten und Datenlecks.</li>
+  <li><b>reserved:</b> Beim Löschen eines Feldes setzt man Nummer und Namen auf <code>reserved</code>. Der Compiler verbietet dann die Wiederverwendung. Das gilt auch für Enum-Werte.</li>
+  <li><b>Typ ändern:</b> Man ändert den Typ eines Feldes fast nie. Manche Typen lesen sich gegenseitig (zum Beispiel <code>int32</code>, <code>uint32</code>, <code>int64</code> und <code>bool</code>), aber ein sicherer Rollout ist trotzdem schwer.</li>
+  <li><b>Enums:</b> Der erste Wert ist 0 und der Default. Er soll keine Bedeutung tragen, zum Beispiel <code>STATUS_UNSPECIFIED</code>. Ein unbekannter Wert bleibt erhalten. Wie das aussieht, hängt von der Sprache ab.</li>
+  <li><b>Required und Any:</b> In proto3 gibt es kein <code>required</code>. Die Best Practices raten davon ab. <code>Any</code> hat Designschwächen. Wo möglich, sind Extensions besser.</li>
+</ol>
+
+<h2>4. Fallen</h2>
+<div class="trap">
+<ul>
+  <li>„Die Feldnamen stehen in den Bytes.“ → <b>Falsch.</b> Nur die Nummer. Darum kann man Namen umbenennen, Nummern aber nie ändern.</li>
+  <li>„Eine gelöschte Feldnummer kann man später wiederverwenden.“ → <b>Falsch.</b> Nie. Alte Daten und alte Clients lesen sie falsch. Man setzt sie auf <code>reserved</code>.</li>
+  <li>„Neue Felder brechen alte Leser.“ → <b>Falsch.</b> Alte Leser überspringen unbekannte Felder. Das Hinzufügen ist kompatibel.</li>
+  <li>„Ein Feld mit Wert 0 ist gesetzt.“ → <b>Falsch.</b> Ein implizites Feld mit Default wird nicht gesendet. Man erkennt "nicht gesetzt" nicht, ausser mit <code>optional</code>.</li>
+  <li>„Negative Werte in <code>int32</code> sind klein.“ → <b>Falsch.</b> Sie brauchen 10 Bytes. Für oft negative Werte nimmt man <code>sint32</code>.</li>
+  <li>„Man kann den Typ eines Feldes bedenkenlos ändern.“ → <b>Falsch.</b> Es kann zu Parse-Fehlern oder falschen Werten führen. Auch kompatible Typen sind schwer auszurollen.</li>
+</ul>
+</div>
+
+<h2>5. Selbsttest</h2>
+<h3>Warum?</h3>
+<details><summary>Warum haben Felder Nummern?</summary><p>Die Nummer ist die Identität auf der Leitung. So bleiben Nachrichten klein, und Namen können sich ändern, ohne das Format zu brechen.</p></details>
+<details><summary>Warum nutzt man reserved?</summary><p>Es verhindert, dass jemand eine alte Nummer oder einen alten Namen neu nutzt. Das schützt vor falsch gelesenen Daten.</p></details>
+<details><summary>Warum Enum-Wert 0 als UNSPECIFIED?</summary><p>Der erste Wert ist der Default. Ein Leser, der einen neuen Wert nicht kennt, sieht nichts Falsches. UNSPECIFIED sagt, dass es keine Angabe gibt.</p></details>
+<h3>Wie innen?</h3>
+<details><summary>Wie ist ein Tag aufgebaut?</summary><p>Ein Varint aus Feldnummer links verschoben um 3 Bits, oder-verknüpft mit dem Wire Type.</p></details>
+<details><summary>Wie funktioniert ein Varint?</summary><p>7 Bits Nutzdaten pro Byte, das oberste Bit ist das Fortsetzungs-Bit. Die Gruppen stehen in Little-Endian-Reihenfolge.</p></details>
+<details><summary>Wie wird ein String kodiert?</summary><p>Als LEN-Feld: Tag mit Typ 2, ein Varint mit der Länge, dann die UTF-8-Bytes.</p></details>
+<details><summary>Was macht ein alter Leser mit einem neuen Feld?</summary><p>Er liest den Tag, kennt die Nummer nicht und überspringt den Wert anhand des Wire Types. Er behält das Feld als unbekannt.</p></details>
+<h3>Zahlen</h3>
+<details><summary>Wie viele Bytes braucht ein Tag mit Feldnummer 1 bis 15?</summary><p>Ein Byte. Für 16 bis 2047 zwei Bytes.</p></details>
+<details><summary>Welche Feldnummern sind reserviert?</summary><p>19 000 bis 19 999 sind für die Protobuf-Implementierung reserviert.</p></details>
+<details><summary>Wie viele Bytes braucht int32 -1?</summary><p>Zehn Bytes. Mit <code>sint32</code> ist es ein Byte.</p></details>
+<details><summary>Wie ist die höchste Feldnummer?</summary><p>536 870 911.</p></details>
+<h3>Vergleich</h3>
+<details><summary>Protobuf vs JSON?</summary><p>Protobuf ist binär, kleiner und braucht ein Schema. JSON ist lesbar, aber grösser und ohne feste Typen. Protobuf kann auch in JSON abgebildet werden.</p></details>
+<details><summary>Protobuf vs Avro?</summary><p>Avro braucht das Schema beim Lesen und hat keine Feldnummern. Protobuf trägt die Nummer in jedem Feld und kommt ohne Schema zum Überspringen aus.</p></details>
+<details><summary>Protobuf vs Java-Serialisierung?</summary><p>Java-Serialisierung ist nur für Java und riskant. Protobuf ist sprachneutral und hat ein klares Schema.</p></details>
+<details><summary>proto2 vs proto3?</summary><p>Proto3 hat kein <code>required</code>, implizite Präsenz als Standard und gepackte <code>repeated</code>-Zahlen. Es ist einfacher, aber verliert bei Default-Werten Information.</p></details>
+<h3>Produktion</h3>
+<details><summary>Welche Änderungen sind sicher?</summary><p>Felder hinzufügen mit neuer Nummer, Felder löschen mit <code>reserved</code>, Felder umbenennen auf der Leitung. Nicht sicher sind Nummer oder Typ ändern.</p></details>
+<details><summary>Wie rollt man eine Änderung aus?</summary><p>Zuerst Leser aktualisieren, dann Schreiber. Alte und neue Version laufen gleichzeitig. Man nimmt nie an, dass Client und Server zugleich wechseln.</p></details>
+<details><summary>Szenario: Nach einem Deployment zeigen alte Clients falsche Werte in einem Feld. Was vermuten Sie?</summary><p>Eine Feldnummer wurde wiederverwendet oder der Typ wurde geändert. Ich vergleiche die .proto-Dateien in der Versionskontrolle und stelle die alte Nummer wieder her. Dann setze ich sie auf <code>reserved</code>.</p></details>
+<details><summary>Szenario: Ein neuer Enum-Wert lässt alte Clients mit einem Fehler abstürzen. Was tun Sie?</summary><p>Der alte Code muss unbekannte Werte behandeln. Je nach Sprache ist es ein Standardwert oder eine Zahl. Ich ergänze einen <code>default</code>-Zweig und teste mit einem neuen Wert.</p></details>
+<h3>Design</h3>
+<details><summary>Wie vergebe ich Feldnummern?</summary><p>Die häufigsten Felder bekommen 1 bis 15.</p></details>
+<details><summary>Wie modelliere ich "nicht gesetzt"?</summary><p>Mit <code>optional</code> für explizite Präsenz, mit einem Wrapper oder mit einer Untermeldung. Ein Zahlfeld mit 0 sagt es nicht.</p></details>
+<details><summary>Wie bilde ich Zeit und Dauer ab?</summary><p>Mit den Well-Known Types <code>Timestamp</code> und <code>Duration</code>. Kein eigenes Feld "millis".</p></details>
+
+<details class="mehr"><summary>Mehr</summary>
+<h3>Gerüst</h3>
+<ul>
+  <li><b>Warum?</b> Kompaktes, schnelles, sprachneutrales Format mit Schema und sicherer Evolution.</li>
+  <li><b>Wie innen?</b> Tag gleich Nummer und Typ, dann Wert. Unbekannte Felder werden übersprungen und behalten.</li>
+  <li><b>Zahlen</b> Nummern 1 bis 15 ein Byte. 19000 bis 19999 reserviert. <code>int32</code> -1 braucht 10 Bytes.</li>
+  <li><b>Vergleich</b> Gegen JSON, Avro, Java-Serialisierung, proto2.</li>
+  <li><b>Produktion</b> Wiederverwendete Nummern, geänderte Typen, Enum-Werte, Rollout-Reihenfolge.</li>
+  <li><b>Design</b> <code>reserved</code>, UNSPECIFIED, <code>optional</code>, Well-Known Types, Nummern nie ändern.</li>
+</ul>
+
+
+<h3>Beispiel: Protobuf-Bytes von Hand erzeugt</h3>
+<pre>def varint(n):
+    out = bytearray()
+    while True:
+        b = n &amp; 0x7f; n &gt;&gt;= 7
+        if n: out.append(b | 0x80)
+        else: out.append(b); return bytes(out)
+def tag(field, wt): return varint((field &lt;&lt; 3) | wt)
+def f_varint(field, v): return tag(field, 0) + varint(v)
+def f_len(field, b): return tag(field, 2) + varint(len(b)) + b
+def zigzag(n): return (n &lt;&lt; 1) ^ (n &gt;&gt; 63)
+
+f_varint(1, 150)                 # message Test1 { int32 a = 1; }
+f_len(2, b'testing')             # message Test2 { string b = 2; }
+tag(15, 0), tag(16, 0)           # Tag-Grösse
+varint(-1 &amp; 0xffffffffffffffff)  # int32 -1
+varint(zigzag(-1))               # sint32 -1
+f_len(4, varint(3) + varint(270) + varint(86942))   # repeated int32, gepackt</pre>
+<pre>1) message Test1 { int32 a = 1; }, a = 150
+08 96 01
+2) message Test2 { string b = 2; }, b = 'testing'
+12 07 74 65 73 74 69 6e 67
+3) field number 1 vs 16: tag size
+field 15: 78  field 16: 80 01
+4) int32 -1 vs sint32 -1
+int32 -1 : 10 bytes -&gt; ff ff ff ff ff ff ff ff ff 01
+sint32 -1: 1 byte  -&gt; 01
+5) default value is not sent: a = 0
+bytes: 0 (empty message)
+6) unknown field: old reader sees field 3, skips by wire type
+field 1 VARINT 150
+field 2 LEN b'hi'
+field 3 VARINT 7
+9) packed repeated int32 [3, 270, 86942] in field 4
+22 06 03 8e 02 9e a7 05</pre>
+<p class="small">Echte Ausgabe, Python 3.12.10 mit eigenem Mini-Encoder nach der Encoding-Doku (kein protoc installiert). Die Abschnitte 7 und 8 des Skripts sind weggelassen. Sie gehören zur gRPC-Seite.</p>
+<ol>
+  <li><code>08 96 01</code> ist <code>a = 150</code>. <code>08</code> ist der Tag (Feld 1, Typ 0). <code>96 01</code> ist 150 als Varint.</li>
+  <li><code>12 07 ...</code> ist ein String in Feld 2. <code>12</code> ist der Tag (Feld 2, Typ LEN). <code>07</code> ist die Länge.</li>
+  <li>Feld 15 braucht einen Tag von einem Byte (<code>78</code>). Feld 16 braucht zwei Bytes (<code>80 01</code>).</li>
+  <li><code>int32</code> -1 braucht 10 Bytes. Mit ZigZag (<code>sint32</code>) ist es ein Byte.</li>
+  <li>Ein Wert 0 erzeugt keine Bytes. Der Leser sieht nur den Default.</li>
+  <li>Das Feld 3 kennt ein alter Leser nicht. Er liest aber den Typ im Tag und kann den Wert überspringen.</li>
+  <li>Die Bytes <code>22 06 03 8e 02 9e a7 05</code> sind dasselbe Beispiel wie in der Doku für gepackte Felder.</li>
+</ol>
+
+<h3>Vergleich</h3>
+<ul>
+  <li><b>Protobuf:</b> Binär, Schema mit Nummern, sichere Evolution, Code-Generierung.</li>
+  <li><b>JSON:</b> Text, lesbar, ohne festes Schema. Grösser und langsamer zu parsen.</li>
+  <li><b>Avro:</b> Binär, Schema wird zum Lesen gebraucht, beliebt bei Kafka.</li>
+  <li><b>FlatBuffers:</b> Zugriff ohne Parsen, anderes Format für Spiele und Mobile.</li>
+  <li><b>Java-Serialisierung:</b> Nur Java, anfällig für Sicherheitsprobleme.</li>
+</ul>
+
+<h3>Produktion</h3>
+<ol>
+  <li><b>Wiederverwendete Feldnummer:</b> Alte Daten werden falsch gelesen. Lösung: <code>reserved</code> und Review der .proto-Dateien.</li>
+  <li><b>Typänderung:</b> Alte und neue Versionen verstehen sich nicht. Lösung: neues Feld mit neuer Nummer und später das alte entfernen.</li>
+  <li><b>Default nicht unterscheidbar:</b> "0" und "nicht gesetzt" sehen gleich aus. Lösung: <code>optional</code> oder eine Untermeldung.</li>
+  <li><b>Neuer Enum-Wert:</b> Alte Clients kennen ihn nicht. Lösung: UNSPECIFIED als 0 und einen <code>default</code>-Zweig im Code.</li>
+  <li><b>Unbekannte Felder verloren:</b> Wer über JSON oder feldweise kopiert, verliert sie. Lösung: binär durchreichen, <code>CopyFrom</code> und <code>MergeFrom</code> nutzen.</li>
+  <li><b>Zu grosse Nachrichten:</b> Millionen Elemente in einer Nachricht. Lösung: Streaming oder Seiten (siehe gRPC-Seite).</li>
+</ol>
+
+<h3>Diagnose: Werkzeuge und Befehle</h3>
+<ul>
+  <li><code>protoc --decode_raw &lt; datei.bin</code>: zeigt Felder und Werte ohne Schema.</li>
+  <li><code>protoc --encode</code> und <code>--decode</code> mit dem Schema: prüfen Nachrichten von Hand.</li>
+  <li><b>buf</b> (<code>buf breaking</code>): findet inkompatible Änderungen im Schema im CI.</li>
+  <li><code>xxd</code> oder <code>hexdump</code>: Rohbytes ansehen und mit der Encoding-Doku vergleichen.</li>
+  <li>Git-Verlauf der .proto-Dateien: zeigt gelöschte oder umgenummerte Felder.</li>
+</ul>
+
+<h3>Senior-Punkte</h3>
+<div class="senior">
+<ol>
+  <li><b>Das Schema ist ein Vertrag.</b> Ein Fehler darin wirkt in jedem Client, auch in alten.</li>
+  <li><b>Nummern sind für immer.</b> Namen kann man ändern, Nummern nicht.</li>
+  <li><b>Breaking-Change-Prüfung in der CI.</b> Ein Werkzeug wie <code>buf breaking</code> findet Fehler vor dem Merge.</li>
+  <li><b>Rollout-Reihenfolge planen.</b> Erst die Leser, dann die Schreiber.</li>
+  <li><b>Defaults und Präsenz bewusst wählen.</b> "Nicht gesetzt" ist oft eine echte Information.</li>
+  <li><b>Kein <code>required</code>, kein <code>Any</code> ohne Grund.</b> Beides macht Evolution schwerer.</li>
+</ol>
+</div>
+
+<h3>Dein Beispiel</h3>
+</details>
+
+</body>
+</html>

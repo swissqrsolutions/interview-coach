@@ -1,0 +1,272 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Interfaces und Error Handling in Go</title>
+<style>
+  body { font: 17px/1.55 -apple-system, system-ui, sans-serif; max-width: 760px; margin: 0 auto; padding: 16px; color: #1d1d1f; }
+  h1 { font-size: 28px; margin: 8px 0 4px; }
+  h2 { font-size: 21px; margin: 32px 0 8px; padding-top: 12px; border-top: 2px solid #e5e5ea; }
+  .kern { background: #eef6ff; border-left: 4px solid #0a66c2; padding: 10px 14px; border-radius: 6px; }
+  .senior { background: #f0faf0; border-left: 4px solid #2e7d32; padding: 10px 14px; border-radius: 6px; }
+  .trap { background: #fff4f2; border-left: 4px solid #c62828; padding: 10px 14px; border-radius: 6px; }
+  code { background: #f2f2f7; padding: 1px 5px; border-radius: 4px; font-size: 15px; }
+  pre { background: #1e1e1e; color: #e6e6e6; padding: 12px; border-radius: 8px; overflow-x: auto; font-size: 13.5px; line-height: 1.45; }
+  svg { width: 100%; height: auto; display: block; margin: 10px 0; }
+  ol li, ul li { margin: 4px 0; }
+  details { border: 1px solid #e5e5ea; border-radius: 8px; padding: 8px 12px; margin: 6px 0; }
+  summary { font-weight: 600; cursor: pointer; }
+  details p { margin: 6px 0 2px; }
+  .small { color: #6e6e73; font-size: 14px; }
+  h3 { font-size: 17px; margin: 20px 0 6px; }
+  .geruest { border: 2px solid #1d1d1f; border-radius: 6px; padding: 10px 14px; margin: 14px 0; font-size: 15px; line-height: 1.4; }
+  .geruest h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; margin: 0 0 8px; padding: 0; border: 0; }
+  .geruest dl { display: grid; grid-template-columns: 6.6em 1fr; gap: 6px 10px; margin: 0; }
+  .geruest dt { font-weight: 700; font-size: 12px; text-transform: uppercase; letter-spacing: .05em; padding-top: 1px; }
+  .geruest dd { margin: 0; }
+  .muster { border: 1px solid #e5e5ea; border-left: 4px solid #1d1d1f; border-radius: 6px; padding: 10px 14px; margin: 14px 0; }
+  .muster h3 { margin: 0 0 6px; font-size: 13px; text-transform: uppercase; letter-spacing: .06em; }
+  .muster .mq { margin: 0 0 6px; }
+</style>
+</head>
+<body>
+
+
+<h1>Interfaces und Error Handling in Go</h1>
+<!-- sources: go.dev: The Go Programming Language Specification (Interface types, Method sets, Type assertions, Defer statements, Handling panics, Errors), Go-Quellcode errors/wrap.go, Go API-Listen (api/go1.13.txt, api/go1.20.txt) -->
+
+<div class="kern">
+<b>Kern:</b> Ein <b>Interface</b> in Go beschreibt eine Menge von Methoden. Ein Typ erfüllt es <b>implizit</b>, ohne <code>implements</code>. Fehler sind normale Werte vom Typ <b>error</b>. Funktionen geben sie als letzten Rückgabewert zurück, und der Aufrufer prüft sie.
+</div>
+
+<div class="muster"><h3>Antwort-Muster</h3><p class="mq"><b>Frage:</b> Wie funktionieren Interfaces und Fehlerbehandlung in Go, und was ist anders als in Java?</p><ol>
+  <li>Mechanismus: Ein Typ erfüllt ein Interface, wenn er alle Methoden hat. Ein Interface-Wert hält einen dynamischen Typ und einen Wert.</li>
+  <li>Zahl: Das Interface <code>error</code> hat genau eine Methode, <code>Error() string</code>. <code>errors.Is</code> und <code>errors.As</code> gibt es seit Go 1.13, <code>errors.Join</code> seit Go 1.20.</li>
+  <li>Trade-off: Implizite Interfaces entkoppeln Code, aber man sieht nicht sofort, wer ein Interface erfüllt. Fehler als Werte sind explizit, aber wortreich.</li>
+  <li>Produktion: Ich verpacke Fehler mit <code>%w</code>, prüfe sie mit <code>errors.Is</code> und <code>errors.As</code> und gebe nie einen typisierten nil-Zeiger als <code>error</code> zurück.</li>
+</ol></div>
+
+<h2>1. Ein Fehler von der Quelle bis zum Aufrufer in 6 Schritten</h2>
+<svg viewBox="0 0 720 244" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+<defs><marker id="f1" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+<rect x="10" y="10" width="200" height="66" rx="10" fill="#eee" stroke="#777"/>
+<text x="110" y="34" text-anchor="middle" font-weight="700" font-size="14" fill="#1d1d1f">1. Funktion</text>
+<text x="110" y="53" text-anchor="middle" font-size="12" fill="#1d1d1f">gibt (T, error) zurück</text>
+<text x="110" y="69" text-anchor="middle" font-size="12" fill="#1d1d1f">bei Erfolg error = nil</text>
+<rect x="260" y="10" width="200" height="66" rx="10" fill="#dbe9fb" stroke="#0a66c2"/>
+<text x="360" y="34" text-anchor="middle" font-weight="700" font-size="14" fill="#1d1d1f">2. Fehler</text>
+<text x="360" y="53" text-anchor="middle" font-size="12" fill="#1d1d1f">errors.New oder eigener Typ</text>
+<text x="360" y="69" text-anchor="middle" font-size="12" fill="#1d1d1f">ein Wert mit Error()</text>
+<rect x="510" y="10" width="200" height="66" rx="10" fill="#dbe9fb" stroke="#0a66c2"/>
+<text x="610" y="34" text-anchor="middle" font-weight="700" font-size="14" fill="#1d1d1f">3. Verpacken</text>
+<text x="610" y="53" text-anchor="middle" font-size="12" fill="#1d1d1f">fmt.Errorf("...: %w", err)</text>
+<text x="610" y="69" text-anchor="middle" font-size="12" fill="#1d1d1f">Kontext hinzufügen</text>
+<rect x="10" y="132" width="200" height="66" rx="10" fill="#fff" stroke="#555"/>
+<text x="110" y="156" text-anchor="middle" font-weight="700" font-size="14" fill="#1d1d1f">4. Aufrufer</text>
+<text x="110" y="175" text-anchor="middle" font-size="12" fill="#1d1d1f">if err != nil</text>
+<text x="110" y="191" text-anchor="middle" font-size="12" fill="#1d1d1f">behandeln oder weitergeben</text>
+<rect x="260" y="132" width="200" height="66" rx="10" fill="#e8f5e9" stroke="#2e7d32"/>
+<text x="360" y="156" text-anchor="middle" font-weight="700" font-size="14" fill="#1d1d1f">5. Prüfen</text>
+<text x="360" y="175" text-anchor="middle" font-size="12" fill="#1d1d1f">errors.Is, errors.As</text>
+<text x="360" y="191" text-anchor="middle" font-size="12" fill="#1d1d1f">durchsucht die Kette</text>
+<rect x="510" y="132" width="200" height="66" rx="10" fill="#fff4f2" stroke="#c62828"/>
+<text x="610" y="156" text-anchor="middle" font-weight="700" font-size="14" fill="#1d1d1f">6. Aufräumen</text>
+<text x="610" y="175" text-anchor="middle" font-size="12" fill="#1d1d1f">defer</text>
+<text x="610" y="191" text-anchor="middle" font-size="12" fill="#1d1d1f">läuft auch im Fehlerfall</text>
+<line x1="210" y1="43" x2="258" y2="43" stroke="#555" stroke-width="2" marker-end="url(#f1)"/>
+<line x1="460" y1="43" x2="508" y2="43" stroke="#555" stroke-width="2" marker-end="url(#f1)"/>
+<path d="M610,76 L610,104 L110,104 L110,130" fill="none" stroke="#555" stroke-width="2" marker-end="url(#f1)"/>
+<line x1="210" y1="165" x2="258" y2="165" stroke="#555" stroke-width="2" marker-end="url(#f1)"/>
+<line x1="460" y1="165" x2="508" y2="165" stroke="#555" stroke-width="2" marker-end="url(#f1)"/>
+</svg>
+<ol>
+  <li><b>Funktion:</b> Eine Funktion gibt <code>(T, error)</code> zurück. Bei Erfolg ist <code>error</code> gleich <code>nil</code>.</li>
+  <li><b>Fehler:</b> Der Fehler ist ein Wert, der <code>Error() string</code> hat. <code>errors.New("...")</code> erzeugt einen einfachen, ein eigener Typ trägt Daten.</li>
+  <li><b>Verpacken:</b> <code>fmt.Errorf("lesen: %w", err)</code> fügt Kontext hinzu und behält den ursprünglichen Fehler in der Kette.</li>
+  <li><b>Aufrufer:</b> Der Aufrufer schreibt <code>if err != nil</code>. Er behandelt den Fehler oder gibt ihn nach oben weiter.</li>
+  <li><b>Prüfen:</b> <code>errors.Is(err, ErrNotFound)</code> sucht einen bestimmten Fehler in der Kette. <code>errors.As(err, &amp;target)</code> sucht einen Fehler eines Typs.</li>
+  <li><b>Aufräumen:</b> <code>defer</code> führt Aufräumcode am Ende der Funktion aus, auch bei einem Fehler. Die Aufrufe laufen in umgekehrter Reihenfolge.</li>
+</ol>
+<p>Eine <b>panic</b> ist für Programmierfehler gedacht. Normale Fehler sind Rückgabewerte.</p>
+
+<h2>2. Aufbau</h2>
+<svg viewBox="0 0 720 240" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+<defs><marker id="f2" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+<rect x="195" y="12" width="330" height="62" rx="10" fill="#dbe9fb" stroke="#0a66c2"/>
+<text x="360" y="36" text-anchor="middle" font-weight="700" font-size="14" fill="#1d1d1f">Interface-Wert</text>
+<text x="360" y="56" text-anchor="middle" font-size="12" fill="#1d1d1f">zwei Teile: Typ und Wert</text>
+<rect x="12" y="124" width="156" height="64" rx="10" fill="#fff" stroke="#555"/>
+<text x="90" y="148" text-anchor="middle" font-weight="700" font-size="14" fill="#1d1d1f">Dynamischer Typ</text>
+<text x="90" y="166" text-anchor="middle" font-size="12" fill="#1d1d1f">z. B. *MyErr</text>
+<text x="90" y="181" text-anchor="middle" font-size="12" fill="#1d1d1f">oder nichts bei nil</text>
+<line x1="360" y1="74" x2="90" y2="122" stroke="#555" stroke-width="2" marker-end="url(#f2)"/>
+<rect x="192" y="124" width="156" height="64" rx="10" fill="#fff" stroke="#555"/>
+<text x="270" y="148" text-anchor="middle" font-weight="700" font-size="14" fill="#1d1d1f">Wert</text>
+<text x="270" y="166" text-anchor="middle" font-size="12" fill="#1d1d1f">der konkrete Wert</text>
+<text x="270" y="181" text-anchor="middle" font-size="12" fill="#1d1d1f">Zeiger oder Kopie</text>
+<line x1="360" y1="74" x2="270" y2="122" stroke="#555" stroke-width="2" marker-end="url(#f2)"/>
+<rect x="372" y="124" width="156" height="64" rx="10" fill="#e8f5e9" stroke="#2e7d32"/>
+<text x="450" y="148" text-anchor="middle" font-weight="700" font-size="14" fill="#1d1d1f">Methodenmenge</text>
+<text x="450" y="166" text-anchor="middle" font-size="12" fill="#1d1d1f">Methoden des Typs</text>
+<text x="450" y="181" text-anchor="middle" font-size="12" fill="#1d1d1f">T oder *T</text>
+<line x1="360" y1="74" x2="450" y2="122" stroke="#555" stroke-width="2" marker-end="url(#f2)"/>
+<rect x="552" y="124" width="156" height="64" rx="10" fill="#eee" stroke="#777"/>
+<text x="630" y="148" text-anchor="middle" font-weight="700" font-size="14" fill="#1d1d1f">nil-Interface</text>
+<text x="630" y="166" text-anchor="middle" font-size="12" fill="#1d1d1f">Typ und Wert leer</text>
+<text x="630" y="181" text-anchor="middle" font-size="12" fill="#1d1d1f">nur dann == nil</text>
+<line x1="360" y1="74" x2="630" y2="122" stroke="#555" stroke-width="2" marker-end="url(#f2)"/>
+<text x="360" y="224" text-anchor="middle" font-size="12" fill="#555">Ein Interface ist nur nil, wenn Typ und Wert beide nil sind.</text>
+</svg>
+<ol>
+  <li>Ein <b>Interface-Typ</b> besteht aus einer Liste von Methoden. <code>interface{ Read(p []byte) (int, error) }</code> ist ein Beispiel.</li>
+  <li>Ein <b>Interface-Wert</b> hat einen statischen Typ (das Interface) und einen dynamischen Typ (den echten Typ).</li>
+  <li>Die <b>Methodenmenge</b> eines Typs <code>T</code> enthält Methoden mit Wert-Empfänger. Die von <code>*T</code> enthält beide.</li>
+  <li>Das Interface <b>error</b> ist <code>interface{ Error() string }</code>. Es ist vordefiniert.</li>
+  <li>Eine <b>Type Assertion</b> <code>x.(T)</code> prüft den dynamischen Typ. Mit <code>v, ok := x.(T)</code> gibt es keine Panic.</li>
+  <li><b>Embedding</b> von Interfaces und Structs ersetzt Vererbung. Methoden werden "hochgereicht".</li>
+</ol>
+
+<h2>3. Details</h2>
+<ol>
+  <li><b>Implizite Erfüllung:</b> Ein Typ erfüllt ein Interface, wenn er alle Methoden hat. Es gibt kein <code>implements</code>. Dadurch definiert der Verbraucher das Interface, nicht der Anbieter.</li>
+  <li><b>Kleine Interfaces:</b> Gute Interfaces haben wenige Methoden, oft eine. <code>io.Reader</code> und <code>error</code> sind Beispiele. Man definiert sie dort, wo man sie braucht.</li>
+  <li><b>Methodenmenge und Zeiger:</b> Hat eine Methode einen Zeiger-Empfänger, erfüllt nur <code>*T</code> das Interface, nicht <code>T</code>. Das ist eine häufige Compiler-Meldung.</li>
+  <li><b>Typisierter nil:</b> Ein Interface mit einem <code>*T</code> mit Wert nil ist nicht nil, denn der dynamische Typ ist <code>*T</code>. Gibt eine Funktion <code>error</code> zurück und liefert einen nil-Zeiger von eigenem Typ, ist <code>err != nil</code> wahr.</li>
+  <li><b>Type Assertion und Type Switch:</b> <code>v, ok := x.(T)</code> prüft sicher. Ohne <code>ok</code> gibt es bei falschem Typ eine Panic. Ein <code>switch x.(type)</code> wählt nach Typ.</li>
+  <li><b>error ist ein Wert:</b> Der Aufrufer kann ihn vergleichen, ändern und weitergeben. Es gibt keine Exceptions im normalen Ablauf. Es gibt auch keine Stacktraces im Standard-Fehler.</li>
+  <li><b>Wrapping:</b> <code>%w</code> in <code>fmt.Errorf</code> behält den inneren Fehler. <code>errors.Unwrap</code> holt ihn. Seit Go 1.13 sind <code>Is</code>, <code>As</code> und <code>Unwrap</code> im Paket <code>errors</code>.</li>
+  <li><b>errors.Is und errors.As:</b> Beide laufen durch die ganze Kette. <code>Is</code> vergleicht mit einem Wert (oder einer eigenen <code>Is</code>-Methode). <code>As</code> sucht einen Typ und setzt das Ziel.</li>
+  <li><b>errors.Join:</b> Seit Go 1.20 fasst <code>errors.Join</code> mehrere Fehler zu einem zusammen. <code>Is</code> und <code>As</code> durchsuchen auch diese Baumstruktur.</li>
+  <li><b>Sentinel- und Typ-Fehler:</b> Ein Sentinel ist ein Wert wie <code>var ErrNotFound = errors.New("not found")</code>. Ein Fehlertyp trägt Daten, zum Beispiel einen Statuscode.</li>
+  <li><b>defer:</b> Ein <code>defer</code>-Aufruf läuft beim Verlassen der Funktion. Mehrere laufen in umgekehrter Reihenfolge. Argumente werden beim <code>defer</code> ausgewertet.</li>
+  <li><b>panic und recover:</b> <code>panic</code> bricht den normalen Ablauf ab und führt <code>defer</code>-Aufrufe aus. <code>recover</code> fängt sie, aber nur in einem <code>defer</code>. Man nutzt es an Grenzen, zum Beispiel in einem Server pro Anfrage.</li>
+</ol>
+
+<h2>4. Fallen</h2>
+<div class="trap">
+<ul>
+  <li>„Ein Typ muss das Interface deklarieren, das er erfüllt.“ → <b>Falsch.</b> Nein. Go prüft nur, ob die Methoden da sind. Es gibt kein <code>implements</code>.</li>
+  <li>„Ein Interface mit nil-Zeiger ist nil.“ → <b>Falsch.</b> Ein Interface ist nur nil, wenn Typ und Wert nil sind. Ein <code>*T</code> mit Wert nil im Interface ist nicht nil.</li>
+  <li>„<code>T</code> und <code>*T</code> erfüllen dasselbe Interface.“ → <b>Falsch.</b> Mit Zeiger-Empfängern erfüllt nur <code>*T</code> das Interface. Die Methodenmenge von <code>T</code> ist kleiner.</li>
+  <li>„Fehler vergleicht man mit <code>==</code>.“ → <b>Falsch.</b> Verpackte Fehler sind nicht mehr gleich. Man nutzt <code>errors.Is</code> und <code>errors.As</code>.</li>
+  <li>„<code>panic</code> ist wie eine Java-Exception für Fehler.“ → <b>Falsch.</b> Panics sind für Programmierfehler. Normale Fehler sind Rückgabewerte.</li>
+  <li>„<code>recover()</code> fängt Panics überall.“ → <b>Falsch.</b> Nur in einer Funktion, die per <code>defer</code> läuft, und nur in derselben Goroutine.</li>
+</ul>
+</div>
+
+<h2>5. Selbsttest</h2>
+<h3>Warum?</h3>
+<details><summary>Warum gibt es implizite Interfaces?</summary><p>Der Code, der ein Interface braucht, kann es selbst definieren. Bibliotheken müssen es nicht vorher kennen. Das entkoppelt Pakete.</p></details>
+<details><summary>Warum sind Fehler Werte statt Exceptions?</summary><p>Der Fehlerpfad ist im Code sichtbar. Jeder Aufruf zeigt, wo es schiefgehen kann. Es gibt keinen versteckten Kontrollfluss.</p></details>
+<details><summary>Warum verpackt man Fehler mit %w?</summary><p>So kommt Kontext dazu und der ursprüngliche Fehler bleibt prüfbar mit <code>errors.Is</code> und <code>errors.As</code>.</p></details>
+<h3>Wie innen?</h3>
+<details><summary>Was ist ein Interface-Wert?</summary><p>Ein Paar aus dynamischem Typ und Wert. Das Interface selbst ist der statische Typ.</p></details>
+<details><summary>Wann ist ein Interface nil?</summary><p>Wenn es keinen dynamischen Typ hat und keinen Wert. Ein typisierter nil-Zeiger macht es nicht nil.</p></details>
+<details><summary>Wie arbeitet errors.Is?</summary><p>Es vergleicht den Fehler mit dem Ziel, dann ruft es <code>Unwrap</code> auf und wiederholt das. Bei <code>Unwrap() []error</code> durchsucht es alle.</p></details>
+<details><summary>Wie arbeitet defer?</summary><p>Beim Ausführen wird der Aufruf mit seinen Argumenten gemerkt. Beim Verlassen der Funktion laufen alle Aufrufe in umgekehrter Reihenfolge.</p></details>
+<h3>Zahlen</h3>
+<details><summary>Wie viele Methoden hat das Interface error?</summary><p>Eine: <code>Error() string</code>.</p></details>
+<details><summary>Seit wann gibt es errors.Is und errors.As?</summary><p>Seit Go 1.13.</p></details>
+<details><summary>Seit wann gibt es errors.Join?</summary><p>Seit Go 1.20.</p></details>
+<h3>Vergleich</h3>
+<details><summary>Go-Interface vs Java-Interface?</summary><p>In Java deklariert die Klasse <code>implements</code>. In Go erfüllt ein Typ ein Interface automatisch, wenn die Methoden passen.</p></details>
+<details><summary>Go-Fehler vs Java-Exceptions?</summary><p>Go gibt Fehler als Werte zurück und der Aufrufer prüft sie. Java wirft Exceptions und die laufen den Stack hoch. Beide haben "Ursache"-Ketten.</p></details>
+<details><summary>Go Embedding vs Java Vererbung?</summary><p>Embedding ist Komposition. Methoden werden hochgereicht, es gibt aber keine Subtyp-Beziehung zum eingebetteten Typ.</p></details>
+<details><summary>defer vs try-finally?</summary><p>Beide räumen auf. <code>defer</code> steht direkt neben dem Öffnen der Ressource und läuft am Funktionsende.</p></details>
+<h3>Produktion</h3>
+<details><summary>Wie testet man auf einen bestimmten Fehler?</summary><p>Mit <code>errors.Is(err, ErrX)</code> für Werte und <code>errors.As(err, &amp;target)</code> für Typen. Nie mit <code>==</code> auf verpackte Fehler.</p></details>
+<details><summary>Wie vermeidet man den typisierten nil-Fehler?</summary><p>Funktionen geben <code>nil</code> direkt zurück, wenn kein Fehler da ist. Nie einen Zeiger-Typ in einer Variable vom Typ <code>error</code> zurückgeben.</p></details>
+<details><summary>Szenario: <code>err != nil</code> ist wahr, aber die Meldung ist leer oder es kommt eine Panic. Was prüfen Sie?</summary><p>Ich vermute einen typisierten nil. Die Funktion gibt einen <code>*MyErr</code> mit Wert nil als <code>error</code> zurück. Ich gebe direkt <code>nil</code> zurück.</p></details>
+<details><summary>Szenario: In den Logs steht nur "not found", niemand weiss woher. Was tun Sie?</summary><p>Ich verpacke Fehler auf jeder Ebene mit Kontext (<code>%w</code>). So zeigt die Meldung den Weg, und <code>errors.Is</code> funktioniert weiter.</p></details>
+<h3>Design</h3>
+<details><summary>Wo definiere ich ein Interface?</summary><p>Beim Verbraucher, klein und mit nur den nötigen Methoden. Der Anbieter gibt konkrete Typen zurück.</p></details>
+<details><summary>Wann nehme ich einen Sentinel, wann einen Fehlertyp?</summary><p>Sentinel für einfache Fälle wie "nicht gefunden". Fehlertyp, wenn der Aufrufer Daten braucht, zum Beispiel Statuscode oder Feld.</p></details>
+<details><summary>Wann ist panic richtig?</summary><p>Bei Programmierfehlern und unmöglichen Zuständen. Für erwartbare Fehler wie Netzwerk oder Eingabe nutze ich Rückgabewerte.</p></details>
+
+<details class="mehr"><summary>Mehr</summary>
+<h3>Gerüst</h3>
+<ul>
+  <li><b>Warum?</b> Entkopplung durch kleine Interfaces. Fehler sind sichtbar im Code.</li>
+  <li><b>Wie innen?</b> Interface-Wert gleich Typ plus Wert. Fehlerkette mit <code>Unwrap</code>. defer in umgekehrter Reihenfolge.</li>
+  <li><b>Zahlen</b> <code>error</code> hat eine Methode. <code>Is</code> und <code>As</code> seit 1.13. <code>Join</code> seit 1.20.</li>
+  <li><b>Vergleich</b> Gegen Java-Interfaces, Exceptions, Vererbung, try-finally.</li>
+  <li><b>Produktion</b> Typisierter nil, <code>==</code> auf verpackten Fehlern, fehlender Kontext.</li>
+  <li><b>Design</b> Interface beim Verbraucher, <code>%w</code> verpacken, panic nur für Programmierfehler.</li>
+</ul>
+
+
+<h3>Beispiel: Fehlerkette, Interface und typisierter nil</h3>
+<pre>var ErrNotFound = errors.New("not found")
+
+type StatusError struct{ Code int }
+func (e *StatusError) Error() string { return fmt.Sprintf("status %d", e.Code) }
+
+func load(id int) error {
+    return fmt.Errorf("load %d: %w", id, &amp;StatusError{Code: 404})
+}
+
+func main() {
+    err := load(7)
+    fmt.Println(err)                                   // load 7: status 404
+    var se *StatusError
+    if errors.As(err, &amp;se) { fmt.Println(se.Code) }    // 404
+    fmt.Println(errors.Is(err, ErrNotFound))           // false
+
+    var p *StatusError                                 // nil Zeiger
+    var e error = p                                    // Interface mit Typ *StatusError
+    fmt.Println(e == nil)                              // false !
+}</pre>
+<p class="small">Nicht ausgeführt.</p>
+<ol>
+  <li><code>%w</code> verpackt den <code>*StatusError</code>. Die Meldung zeigt den Kontext <code>load 7</code>.</li>
+  <li><code>errors.As</code> findet den <code>*StatusError</code> in der Kette. <code>se.Code</code> ist 404.</li>
+  <li><code>errors.Is(err, ErrNotFound)</code> ist <code>false</code>, denn dieser Fehler steckt nicht in der Kette.</li>
+  <li>Die letzte Zeile ist die bekannte Falle. <code>e</code> hat den dynamischen Typ <code>*StatusError</code> und ist darum nicht nil, obwohl der Zeiger nil ist.</li>
+</ol>
+
+<h3>Vergleich</h3>
+<ul>
+  <li><b>Go-Interface:</b> Implizit, klein, beim Verbraucher definiert.</li>
+  <li><b>Java-Interface:</b> Explizit mit <code>implements</code>, oft beim Anbieter definiert.</li>
+  <li><b>Go-Fehler:</b> Rückgabewert, Kette mit <code>%w</code>, Prüfung mit <code>errors.Is</code>.</li>
+  <li><b>Java-Exceptions:</b> Geworfen, Kette über <code>cause</code>, Stacktrace.</li>
+</ul>
+
+<h3>Produktion</h3>
+<ol>
+  <li><b>Verlorener Kontext:</b> Fehler ohne <code>%w</code> zeigen nicht, woher sie kommen. Lösung: auf jeder Ebene verpacken.</li>
+  <li><b>Typisierter nil:</b> <code>err != nil</code> ist wahr, obwohl nichts schiefging. Lösung: <code>nil</code> direkt zurückgeben.</li>
+  <li><b>Fehler ignoriert:</b> <code>_ = f()</code> oder vergessener Rückgabewert. Lösung: Linter wie <code>errcheck</code> und <code>golangci-lint</code>.</li>
+  <li><b>Fehler doppelt geloggt:</b> Jede Ebene loggt und gibt weiter. Lösung: einmal behandeln, oben loggen.</li>
+  <li><b>Panic im Server:</b> Eine Panic in einer Goroutine beendet das Programm. Lösung: <code>recover</code> an der Grenze, zum Beispiel pro Anfrage.</li>
+  <li><b>Zu grosse Interfaces:</b> Mocks werden schwer. Lösung: kleine Interfaces beim Verbraucher.</li>
+</ol>
+
+<h3>Diagnose: Werkzeuge und Befehle</h3>
+<ul>
+  <li><code>go vet</code>: findet viele Fehler, auch falsche Format-Strings mit <code>%w</code>.</li>
+  <li><code>errcheck</code> und <code>golangci-lint</code>: finden ignorierte Fehler.</li>
+  <li><code>fmt.Printf("%T %v", err, err)</code>: zeigt den dynamischen Typ eines Fehlers.</li>
+  <li>Debugger (Delve): zeigt Typ und Wert eines Interfaces.</li>
+  <li><code>go test -race</code> und Tests mit <code>errors.Is</code>: prüfen die Fehlerkette.</li>
+  <li>Stacktrace bei Panic lesen: zeigt die Zeile und die Goroutine.</li>
+</ul>
+
+<h3>Senior-Punkte</h3>
+<div class="senior">
+<ol>
+  <li><b>Interfaces beim Verbraucher.</b> Kleine Interfaces machen Tests und Austausch einfach.</li>
+  <li><b>Fehler sind API.</b> Sentinels und Typen sind Teil des Vertrags. Man ändert sie nicht leichtfertig.</li>
+  <li><b>Kontext statt Stacktrace.</b> Verpacken liefert den Weg im Text. Man loggt nur einmal.</li>
+  <li><b>Nie typisierte nil-Zeiger als <code>error</code> zurückgeben.</b></li>
+  <li><b>panic ist keine Fehlerbehandlung.</b> Es ist für Unmögliches und für Grenzen mit <code>recover</code>.</li>
+  <li><b>Wortreich ist okay.</b> <code>if err != nil</code> ist der Preis für sichtbaren Kontrollfluss.</li>
+</ol>
+</div>
+
+<h3>Dein Beispiel</h3>
+</details>
+
+</body>
+</html>

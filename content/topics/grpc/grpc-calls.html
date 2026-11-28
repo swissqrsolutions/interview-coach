@@ -1,0 +1,269 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>gRPC: Unary und Streaming, Deadlines</title>
+<style>
+  body { font: 17px/1.55 -apple-system, system-ui, sans-serif; max-width: 760px; margin: 0 auto; padding: 16px; color: #1d1d1f; }
+  h1 { font-size: 28px; margin: 8px 0 4px; }
+  h2 { font-size: 21px; margin: 32px 0 8px; padding-top: 12px; border-top: 2px solid #e5e5ea; }
+  .kern { background: #eef6ff; border-left: 4px solid #0a66c2; padding: 10px 14px; border-radius: 6px; }
+  .senior { background: #f0faf0; border-left: 4px solid #2e7d32; padding: 10px 14px; border-radius: 6px; }
+  .trap { background: #fff4f2; border-left: 4px solid #c62828; padding: 10px 14px; border-radius: 6px; }
+  code { background: #f2f2f7; padding: 1px 5px; border-radius: 4px; font-size: 15px; }
+  pre { background: #1e1e1e; color: #e6e6e6; padding: 12px; border-radius: 8px; overflow-x: auto; font-size: 13.5px; line-height: 1.45; }
+  svg { width: 100%; height: auto; display: block; margin: 10px 0; }
+  ol li, ul li { margin: 4px 0; }
+  details { border: 1px solid #e5e5ea; border-radius: 8px; padding: 8px 12px; margin: 6px 0; }
+  summary { font-weight: 600; cursor: pointer; }
+  details p { margin: 6px 0 2px; }
+  .small { color: #6e6e73; font-size: 14px; }
+  h3 { font-size: 17px; margin: 20px 0 6px; }
+  .geruest { border: 2px solid #1d1d1f; border-radius: 6px; padding: 10px 14px; margin: 14px 0; font-size: 15px; line-height: 1.4; }
+  .geruest h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; margin: 0 0 8px; padding: 0; border: 0; }
+  .geruest dl { display: grid; grid-template-columns: 6.6em 1fr; gap: 6px 10px; margin: 0; }
+  .geruest dt { font-weight: 700; font-size: 12px; text-transform: uppercase; letter-spacing: .05em; padding-top: 1px; }
+  .geruest dd { margin: 0; }
+  .muster { border: 1px solid #e5e5ea; border-left: 4px solid #1d1d1f; border-radius: 6px; padding: 10px 14px; margin: 14px 0; }
+  .muster h3 { margin: 0 0 6px; font-size: 13px; text-transform: uppercase; letter-spacing: .06em; }
+  .muster .mq { margin: 0 0 6px; }
+</style>
+</head>
+<body>
+
+
+<h1>gRPC: Unary und Streaming, Deadlines</h1>
+<!-- sources: grpc.io Docs: Core concepts, Deadlines, Status codes, Retry, Keepalive, Performance best practices; gRPC PROTOCOL-HTTP2.md und statuscodes.md (github.com/grpc/grpc); grpc-go server.go und grpc-java GrpcUtil.java (Standardwerte); Microsoft Learn gRPC configuration. Eigener Lauf mit Python 3.12 (Frame von Hand gebaut) -->
+
+<div class="kern">
+<b>Kern:</b> gRPC kennt vier Aufrufarten: <b>Unary</b>, <b>Server Streaming</b>, <b>Client Streaming</b> und <b>Bidirectional Streaming</b>. Ein Aufruf ist ein HTTP/2-Stream mit Nachrichten im Protobuf-Format. Eine <b>Deadline</b> begrenzt, wie lange der Client auf die Antwort wartet. Sie wird an Folgeaufrufe weitergegeben.
+</div>
+
+<div class="muster"><h3>Antwort-Muster</h3><p class="mq"><b>Frage:</b> Welche Aufrufarten hat gRPC, und wie funktionieren Deadlines?</p><ol>
+  <li>Mechanismus: Jeder Aufruf ist ein HTTP/2-POST auf <code>/Service/Methode</code>. Nachrichten haben ein 5-Byte-Präfix, der Status kommt in den Trailern.</li>
+  <li>Zahl: Es gibt vier Aufrufarten und 17 Statuscodes (0 bis 16). Die empfangene Nachricht darf standardmässig höchstens 4 MB gross sein.</li>
+  <li>Trade-off: Streaming spart Verbindungen und Latenz, ist aber komplexer bei Fehlern und Lastverteilung. Ohne Deadline wartet ein Client praktisch ewig.</li>
+  <li>Produktion: Ich setze auf jedem Client-Aufruf eine Deadline, gebe sie an Folgeaufrufe weiter und wiederhole nur idempotente Aufrufe.</li>
+</ol></div>
+
+<h2>1. Ein Unary-Aufruf mit Deadline in 6 Schritten</h2>
+<svg viewBox="0 0 720 244" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+<defs><marker id="f1" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+<rect x="10" y="10" width="200" height="66" rx="10" fill="#eee" stroke="#777"/>
+<text x="110" y="34" text-anchor="middle" font-weight="700" font-size="14" fill="#1d1d1f">1. Client</text>
+<text x="110" y="53" text-anchor="middle" font-size="12" fill="#1d1d1f">setzt Deadline, z. B. 2 s</text>
+<text x="110" y="69" text-anchor="middle" font-size="12" fill="#1d1d1f">ruft Stub-Methode auf</text>
+<rect x="260" y="10" width="200" height="66" rx="10" fill="#dbe9fb" stroke="#0a66c2"/>
+<text x="360" y="34" text-anchor="middle" font-weight="700" font-size="14" fill="#1d1d1f">2. Request</text>
+<text x="360" y="53" text-anchor="middle" font-size="12" fill="#1d1d1f">HTTP/2 POST /Svc/Methode</text>
+<text x="360" y="69" text-anchor="middle" font-size="12" fill="#1d1d1f">Header grpc-timeout: 2S</text>
+<rect x="510" y="10" width="200" height="66" rx="10" fill="#dbe9fb" stroke="#0a66c2"/>
+<text x="610" y="34" text-anchor="middle" font-weight="700" font-size="14" fill="#1d1d1f">3. Nachricht</text>
+<text x="610" y="53" text-anchor="middle" font-size="12" fill="#1d1d1f">1 Byte Flag, 4 Byte Länge</text>
+<text x="610" y="69" text-anchor="middle" font-size="12" fill="#1d1d1f">dann Protobuf-Bytes</text>
+<rect x="10" y="132" width="200" height="66" rx="10" fill="#fff" stroke="#555"/>
+<text x="110" y="156" text-anchor="middle" font-weight="700" font-size="14" fill="#1d1d1f">4. Server</text>
+<text x="110" y="175" text-anchor="middle" font-size="12" fill="#1d1d1f">prüft Frist, ruft Handler</text>
+<text x="110" y="191" text-anchor="middle" font-size="12" fill="#1d1d1f">Frist gilt auch hier</text>
+<rect x="260" y="132" width="200" height="66" rx="10" fill="#e8f5e9" stroke="#2e7d32"/>
+<text x="360" y="156" text-anchor="middle" font-weight="700" font-size="14" fill="#1d1d1f">5. Antwort</text>
+<text x="360" y="175" text-anchor="middle" font-size="12" fill="#1d1d1f">Header, Nachricht</text>
+<text x="360" y="191" text-anchor="middle" font-size="12" fill="#1d1d1f">danach Trailer</text>
+<rect x="510" y="132" width="200" height="66" rx="10" fill="#fff4f2" stroke="#c62828"/>
+<text x="610" y="156" text-anchor="middle" font-weight="700" font-size="14" fill="#1d1d1f">6. Status</text>
+<text x="610" y="175" text-anchor="middle" font-size="12" fill="#1d1d1f">grpc-status in Trailern</text>
+<text x="610" y="191" text-anchor="middle" font-size="12" fill="#1d1d1f">OK oder Fehlercode</text>
+<line x1="210" y1="43" x2="258" y2="43" stroke="#555" stroke-width="2" marker-end="url(#f1)"/>
+<line x1="460" y1="43" x2="508" y2="43" stroke="#555" stroke-width="2" marker-end="url(#f1)"/>
+<path d="M610,76 L610,104 L110,104 L110,130" fill="none" stroke="#555" stroke-width="2" marker-end="url(#f1)"/>
+<line x1="210" y1="165" x2="258" y2="165" stroke="#555" stroke-width="2" marker-end="url(#f1)"/>
+<line x1="460" y1="165" x2="508" y2="165" stroke="#555" stroke-width="2" marker-end="url(#f1)"/>
+</svg>
+<ol>
+  <li><b>Client:</b> Der Client ruft die Stub-Methode auf und setzt eine Deadline, zum Beispiel 2 Sekunden. Ohne Angabe gilt keine Deadline.</li>
+  <li><b>Request:</b> Die Bibliothek sendet einen HTTP/2-<code>POST</code> auf den Pfad <code>/Service/Methode</code>. <code>content-type</code> ist <code>application/grpc</code>. Die Frist reist im Header <code>grpc-timeout</code>, zum Beispiel <code>2S</code>.</li>
+  <li><b>Nachricht:</b> Die Protobuf-Nachricht bekommt ein Präfix. Ein Byte sagt, ob sie komprimiert ist. Vier Byte (Big Endian) nennen die Länge.</li>
+  <li><b>Server:</b> Der Server liest die Frist und startet den Handler. Läuft die Frist ab, bricht das Runtime den Aufruf ab.</li>
+  <li><b>Antwort:</b> Der Server sendet Antwort-Header, die Nachricht und dann die Trailer.</li>
+  <li><b>Status:</b> Der Status steht in den Trailern (<code>grpc-status</code>). Der HTTP-Status ist bei einer gRPC-Antwort 200. Bei Erfolg ist der Code <code>OK</code> (0).</li>
+</ol>
+<p>Der echte Lauf unten baut den Frame für <code>HelloRequest{name="Bern"}</code> von Hand. Er zeigt Flag 0 und Länge 6.</p>
+
+<h2>2. Aufbau</h2>
+<svg viewBox="0 0 720 240" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+<defs><marker id="f2" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+<rect x="195" y="12" width="330" height="62" rx="10" fill="#dbe9fb" stroke="#0a66c2"/>
+<text x="360" y="36" text-anchor="middle" font-weight="700" font-size="14" fill="#1d1d1f">gRPC-Aufruf</text>
+<text x="360" y="56" text-anchor="middle" font-size="12" fill="#1d1d1f">ein HTTP/2-Stream</text>
+<rect x="12" y="124" width="156" height="64" rx="10" fill="#fff" stroke="#555"/>
+<text x="90" y="148" text-anchor="middle" font-weight="700" font-size="14" fill="#1d1d1f">Unary</text>
+<text x="90" y="166" text-anchor="middle" font-size="12" fill="#1d1d1f">1 Request</text>
+<text x="90" y="181" text-anchor="middle" font-size="12" fill="#1d1d1f">1 Response</text>
+<line x1="360" y1="74" x2="90" y2="122" stroke="#555" stroke-width="2" marker-end="url(#f2)"/>
+<rect x="192" y="124" width="156" height="64" rx="10" fill="#fff" stroke="#555"/>
+<text x="270" y="148" text-anchor="middle" font-weight="700" font-size="14" fill="#1d1d1f">Server Streaming</text>
+<text x="270" y="166" text-anchor="middle" font-size="12" fill="#1d1d1f">1 Request</text>
+<text x="270" y="181" text-anchor="middle" font-size="12" fill="#1d1d1f">viele Responses</text>
+<line x1="360" y1="74" x2="270" y2="122" stroke="#555" stroke-width="2" marker-end="url(#f2)"/>
+<rect x="372" y="124" width="156" height="64" rx="10" fill="#e8f5e9" stroke="#2e7d32"/>
+<text x="450" y="148" text-anchor="middle" font-weight="700" font-size="14" fill="#1d1d1f">Client Streaming</text>
+<text x="450" y="166" text-anchor="middle" font-size="12" fill="#1d1d1f">viele Requests</text>
+<text x="450" y="181" text-anchor="middle" font-size="12" fill="#1d1d1f">1 Response</text>
+<line x1="360" y1="74" x2="450" y2="122" stroke="#555" stroke-width="2" marker-end="url(#f2)"/>
+<rect x="552" y="124" width="156" height="64" rx="10" fill="#eee" stroke="#777"/>
+<text x="630" y="148" text-anchor="middle" font-weight="700" font-size="14" fill="#1d1d1f">Bidi Streaming</text>
+<text x="630" y="166" text-anchor="middle" font-size="12" fill="#1d1d1f">viele Requests</text>
+<text x="630" y="181" text-anchor="middle" font-size="12" fill="#1d1d1f">viele Responses</text>
+<line x1="360" y1="74" x2="630" y2="122" stroke="#555" stroke-width="2" marker-end="url(#f2)"/>
+<text x="360" y="224" text-anchor="middle" font-size="12" fill="#555">Alle vier laufen über genau einen HTTP/2-Stream pro Aufruf.</text>
+</svg>
+<ol>
+  <li><b>Unary:</b> Eine Anfrage, eine Antwort. Das entspricht einem normalen Funktionsaufruf.</li>
+  <li><b>Server Streaming:</b> Der Client sendet eine Anfrage. Der Server sendet eine Folge von Nachrichten.</li>
+  <li><b>Client Streaming:</b> Der Client sendet eine Folge. Der Server antwortet einmal, meist am Ende.</li>
+  <li><b>Bidirectional Streaming:</b> Beide Seiten senden unabhängig. Die Reihenfolge innerhalb einer Richtung bleibt.</li>
+  <li><b>Metadata:</b> Schlüssel-Wert-Paare in den HTTP/2-Headern, zum Beispiel für Authentifizierung. Namen mit <code>-bin</code> tragen Binärdaten.</li>
+  <li><b>Status:</b> Ein Code und eine Meldung. Sie stehen in den Trailern am Ende.</li>
+</ol>
+
+<h2>3. Details</h2>
+<ol>
+  <li><b>Wire-Format:</b> Ein Aufruf ist ein HTTP/2-<code>POST</code> mit Pfad <code>/Service/Methode</code>. Die Header enthalten <code>te: trailers</code>, <code>content-type: application/grpc</code> und optional <code>grpc-timeout</code>. Danach folgen Nachrichten und am Ende die Trailer.</li>
+  <li><b>Length-Prefixed Message:</b> Jede Nachricht hat ein Byte Kompressions-Flag und vier Byte Länge (Big Endian). Die Kompression gilt pro Nachricht, es gibt keinen Kontext über Nachrichten hinweg.</li>
+  <li><b>Status in Trailern:</b> Der Status kommt immer in den Trailern, auch bei Erfolg. Bei einem sofortigen Fehler ohne Nachricht gibt es eine "Trailers-Only"-Antwort.</li>
+  <li><b>Statuscodes:</b> Es gibt 17 Codes von <code>OK</code> (0) bis <code>UNAUTHENTICATED</code> (16). Wichtig sind <code>INVALID_ARGUMENT</code>, <code>NOT_FOUND</code>, <code>DEADLINE_EXCEEDED</code>, <code>UNAVAILABLE</code>, <code>INTERNAL</code> und <code>UNKNOWN</code>.</li>
+  <li><b>Deadline:</b> Eine Deadline ist ein Zeitpunkt, an dem der Client nicht mehr wartet. Standard ist keine Deadline. Läuft sie ab, endet der Aufruf mit <code>DEADLINE_EXCEEDED</code>.</li>
+  <li><b>Header grpc-timeout:</b> Der Wert ist eine positive Zahl mit höchstens 8 Ziffern und eine Einheit: <code>H</code>, <code>M</code>, <code>S</code>, <code>m</code>, <code>u</code> oder <code>n</code>. Fehlt er, nimmt der Server eine unendliche Frist an.</li>
+  <li><b>Server und Frist:</b> Hat die Frist ein Aufruf überschritten, bricht der Server ihn ab (Status <code>CANCELLED</code>). Der Server-Code muss aber selbst prüfen, ob er abgebrochen wurde, und die Arbeit stoppen.</li>
+  <li><b>Deadline Propagation:</b> Ruft ein Server einen weiteren Server auf, soll die Frist weitergehen. Java und Go tun das standardmässig, C++ nur auf Anforderung. gRPC rechnet die Frist in eine Restzeit um, wegen unterschiedlicher Uhren.</li>
+  <li><b>Retries:</b> Wiederholungen sind standardmässig eingeschaltet, aber es gibt keine Standard-Policy. Ohne Policy wiederholt gRPC nur Fehler, bei denen sicher nichts angekommen ist. Nach dem Empfang der Antwort-Header ist der Aufruf "committed".</li>
+  <li><b>Keepalive:</b> HTTP/2-Pings prüfen, ob die Verbindung lebt. Im C-Core ist die Zeit beim Client standardmässig aus. Der Server sendet standardmässig alle 2 Stunden. Der Server toleriert zu häufige Pings nicht und sendet GOAWAY.</li>
+  <li><b>Nachrichtengrösse:</b> Der Go-Server nimmt standardmässig höchstens 4 MB pro Nachricht an. Java hat 4 MB als Standard. In .NET sind es für Empfang ebenfalls 4 MB. Grosse Daten gehören in Streams.</li>
+  <li><b>Streaming-Kosten:</b> Streaming-Aufrufe halten Ressourcen und eine Verbindung lange. Die Doku warnt, dass Streaming in manchen Sprachen mehr Threads braucht und langsamer als Unary sein kann.</li>
+</ol>
+
+<h2>4. Fallen</h2>
+<div class="trap">
+<ul>
+  <li>„gRPC hat standardmässig eine Deadline.“ → <b>Falsch.</b> Es hat keine. Der Client kann ewig warten. Man setzt sie immer selbst.</li>
+  <li>„Der gRPC-Fehler steht im HTTP-Status.“ → <b>Falsch.</b> Der HTTP-Status ist 200. Der gRPC-Status steht in den Trailern.</li>
+  <li>„<code>DEADLINE_EXCEEDED</code> heisst, die Aktion wurde nicht ausgeführt.“ → <b>Falsch.</b> Der Server kann sie schon ausgeführt haben. Bei Änderungen muss man das beachten.</li>
+  <li>„Der Server beendet seine Arbeit automatisch, wenn die Frist abläuft.“ → <b>Falsch.</b> Das Runtime bricht den Aufruf ab. Die eigene Arbeit muss der Code selbst stoppen.</li>
+  <li>„Retries sind mit Standardwerten aktiv.“ → <b>Falsch.</b> Ohne konfigurierte Policy gibt es fast keine Wiederholung. Man muss sie einrichten.</li>
+  <li>„Streaming ist immer schneller als Unary.“ → <b>Falsch.</b> Es spart Aufrufe, braucht aber mehr Ressourcen und ist bei Fehlern und Lastverteilung schwerer.</li>
+</ul>
+</div>
+
+<h2>5. Selbsttest</h2>
+<h3>Warum?</h3>
+<details><summary>Warum braucht jeder Aufruf eine Deadline?</summary><p>Ohne Deadline wartet der Client ewig auf einen hängenden Server. Threads und Verbindungen bleiben belegt.</p></details>
+<details><summary>Warum gibt es Streaming?</summary><p>Für viele Nachrichten in einem Aufruf, zum Beispiel Live-Daten oder grosse Listen. Es spart den Aufbau pro Nachricht.</p></details>
+<details><summary>Warum steht der Status in den Trailern?</summary><p>Der Server weiss den Status erst nach der letzten Nachricht. Trailer kommen nach dem Body, darum passt es dorthin.</p></details>
+<h3>Wie innen?</h3>
+<details><summary>Wie sieht ein gRPC-Aufruf auf der Leitung aus?</summary><p>HTTP/2 HEADERS mit POST und Pfad, DATA-Frames mit präfixierten Nachrichten, am Ende HEADERS mit den Trailern und <code>grpc-status</code>.</p></details>
+<details><summary>Wie wird die Deadline übertragen?</summary><p>Als Restzeit im Header <code>grpc-timeout</code>, zum Beispiel <code>1500m</code> für 1500 Millisekunden. Die Zeit läuft pro Hop weiter.</p></details>
+<details><summary>Was ist eine Trailers-Only-Antwort?</summary><p>Eine Antwort ohne Nachricht, bei der Header und Status in einem HEADERS-Frame stehen. Sie kommt bei sofortigen Fehlern.</p></details>
+<details><summary>Wie funktioniert Deadline Propagation?</summary><p>Der Server übernimmt die Restzeit des eingehenden Aufrufs für ausgehende Aufrufe. Java und Go machen es standardmässig.</p></details>
+<h3>Zahlen</h3>
+<details><summary>Wie viele Aufrufarten hat gRPC?</summary><p>Vier: unary, server streaming, client streaming und bidirectional streaming.</p></details>
+<details><summary>Wie viele Statuscodes gibt es?</summary><p>17, von <code>OK</code> (0) bis <code>UNAUTHENTICATED</code> (16).</p></details>
+<details><summary>Wie gross ist das Präfix einer Nachricht?</summary><p>5 Byte: 1 Byte Kompressions-Flag und 4 Byte Länge.</p></details>
+<details><summary>Wie gross darf eine empfangene Nachricht standardmässig sein?</summary><p>4 MB beim Go-Server, bei Java und bei .NET.</p></details>
+<h3>Vergleich</h3>
+<details><summary>Unary vs Streaming?</summary><p>Unary ist einfach und passt zu den meisten Aufrufen. Streaming passt zu Datenströmen und grossen Folgen, ist aber schwerer zu betreiben.</p></details>
+<details><summary>gRPC-Deadline vs HTTP-Timeout?</summary><p>Die Deadline wird über Grenzen weitergegeben. Ein HTTP-Timeout gilt oft nur lokal pro Client.</p></details>
+<details><summary>DEADLINE_EXCEEDED vs UNAVAILABLE?</summary><p><code>DEADLINE_EXCEEDED</code>: die Zeit war um. <code>UNAVAILABLE</code>: der Dienst war nicht erreichbar, meist vorübergehend. Wiederholen ist hier oft sinnvoll.</p></details>
+<details><summary>gRPC-Streaming vs WebSocket?</summary><p>Beide sind lange Verbindungen. gRPC hat Schema, Status und Deadline. WebSocket ist ein roher Kanal.</p></details>
+<h3>Produktion</h3>
+<details><summary>Welche Fehler wiederholt man?</summary><p>Vor allem <code>UNAVAILABLE</code> und nur bei idempotenten Aufrufen. Bei Änderungen braucht man eine Idempotenz-Absicherung.</p></details>
+<details><summary>Wie vermeidet man Kettenreaktionen bei Ausfällen?</summary><p>Mit Deadlines, Propagation und Begrenzung der Wiederholungen (Retry Throttling). Sonst verstärken Retries die Last.</p></details>
+<details><summary>Szenario: Aufrufe enden mit <code>DEADLINE_EXCEEDED</code>, aber der Server hat die Daten geändert. Was tun Sie?</summary><p>Die Aktion kann trotz Fehler gelaufen sein. Ich mache den Aufruf idempotent, zum Beispiel mit einer Anfrage-ID. Der Client kann dann sicher wiederholen.</p></details>
+<details><summary>Szenario: Ein Streaming-Aufruf bricht nach einer Weile ohne Fehler im Server-Log ab. Was prüfen Sie?</summary><p>Ich prüfe Proxys, Lastverteiler und Idle-Timeouts. Ich schalte Keepalive-Pings ein und passe die Einstellungen von Client und Server aufeinander an. Zu häufige Pings beantwortet der Server mit GOAWAY.</p></details>
+<h3>Design</h3>
+<details><summary>Wie wähle ich eine Deadline?</summary><p>Eine begründete Schätzung aus Netz und Verarbeitung, geprüft mit Lasttests. Kurz genug, um Ressourcen zu schützen, lang genug für normale Fälle.</p></details>
+<details><summary>Wann nehme ich Server Streaming?</summary><p>Für Listen mit vielen Einträgen oder Live-Ereignisse. Ich nehme es nicht, wenn Pagination reicht.</p></details>
+<details><summary>Wie gestalte ich Fehler?</summary><p>Mit dem passenden Statuscode und einer klaren Meldung. Details mit <code>grpc-status-details-bin</code> oder einer Fehlernachricht, keine Geheimnisse in der Meldung.</p></details>
+
+<details class="mehr"><summary>Mehr</summary>
+<h3>Gerüst</h3>
+<ul>
+  <li><b>Warum?</b> Ein Vertrag, generierte Clients, Streaming und Fristen in einem Protokoll.</li>
+  <li><b>Wie innen?</b> HTTP/2-POST, 5-Byte-Präfix, Trailer mit Status, Header <code>grpc-timeout</code>.</li>
+  <li><b>Zahlen</b> Vier Aufrufarten, 17 Statuscodes, 4 MB Standardgrösse für Nachrichten.</li>
+  <li><b>Vergleich</b> Gegen REST, WebSocket, HTTP-Timeout. Unary gegen Streaming.</li>
+  <li><b>Produktion</b> Hängende Aufrufe, Retries bei Änderungen, Idle-Timeouts bei Streams.</li>
+  <li><b>Design</b> Deadline immer setzen, weitergeben, idempotent machen, Retries begrenzen.</li>
+</ul>
+
+
+<h3>Beispiel: Ein gRPC-Frame von Hand gebaut</h3>
+<pre>// service Greeter { rpc SayHello (HelloRequest) returns (HelloReply); }
+// message HelloRequest { string name = 1; }
+
+msg   = f_len(1, b'Bern')                          # Protobuf: Feld 1, LEN
+frame = b'\x00' + struct.pack('&gt;I', len(msg)) + msg # Flag + Länge (4 Byte, Big Endian)
+print(hexs(frame))
+
+// Client in Go (Deadline 2 Sekunden):
+//   ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+//   defer cancel()
+//   reply, err := client.SayHello(ctx, &amp;pb.HelloRequest{Name: "Bern"})
+//   // err mit Code DeadlineExceeded, wenn die Frist abläuft</pre>
+<pre>7) gRPC frame: HelloRequest{name='Bern'} (field 1, LEN)
+00 00 00 00 06 0a 04 42 65 72 6e  -&gt; flag=0 length=6</pre>
+<p class="small">Echte Ausgabe, Python 3.12.10 (Frame von Hand gebaut, kein gRPC installiert). Der Go-Client im Kommentar ist nicht ausgeführt.</p>
+<ol>
+  <li>Das erste Byte <code>00</code> ist das Kompressions-Flag. Die Nachricht ist nicht komprimiert.</li>
+  <li>Die nächsten vier Bytes <code>00 00 00 06</code> sind die Länge 6, Big Endian.</li>
+  <li>Die Nachricht selbst ist <code>0a 04 42 65 72 6e</code>. <code>0a</code> ist der Tag (Feld 1, LEN), <code>04</code> die Länge und <code>Bern</code> in UTF-8.</li>
+  <li>Der HTTP/2-Request trägt zusätzlich die Header, zum Beispiel <code>grpc-timeout: 2S</code> für die Frist.</li>
+</ol>
+
+<h3>Vergleich</h3>
+<ul>
+  <li><b>Unary:</b> Wie ein normaler Aufruf. Einfach zu testen und zu wiederholen.</li>
+  <li><b>Server Streaming:</b> Eine Anfrage, viele Antworten. Gut für Ereignisse.</li>
+  <li><b>Client Streaming:</b> Viele Nachrichten hochladen, eine Antwort.</li>
+  <li><b>Bidirectional Streaming:</b> Beide Seiten senden frei. Gut für Chat und Live-Abgleich.</li>
+  <li><b>REST mit Pagination:</b> Seiten statt Stream. Einfacher zu cachen und zu lastverteilen.</li>
+  <li><b>Message Queue:</b> Entkoppelt Sender und Empfänger zeitlich. gRPC-Aufrufe sind synchron.</li>
+</ul>
+
+<h3>Produktion</h3>
+<ol>
+  <li><b>Hängende Aufrufe:</b> Ohne Deadline blockieren Threads. Lösung: auf jedem Aufruf eine Deadline.</li>
+  <li><b>Retry-Sturm:</b> Viele Wiederholungen überlasten einen kranken Dienst. Lösung: Retry Throttling und Begrenzung der Versuche.</li>
+  <li><b>Doppelte Änderung:</b> Ein wiederholter Aufruf ändert zweimal. Lösung: Idempotenz mit Anfrage-ID.</li>
+  <li><b>Lastverteilung:</b> Eine lange HTTP/2-Verbindung bleibt an einem Backend. Lösung: L7-Lastverteiler oder Client-Side Load Balancing.</li>
+  <li><b>Stream bricht ab:</b> Idle-Timeouts in Proxys schliessen die Verbindung. Lösung: Keepalive passend einstellen.</li>
+  <li><b>Nachricht zu gross:</b> Fehler bei mehr als 4 MB. Lösung: Streaming oder kleinere Teile, Limit bewusst anheben.</li>
+</ol>
+
+<h3>Diagnose: Werkzeuge und Befehle</h3>
+<ul>
+  <li><b>grpcurl</b>: ruft Methoden von der Kommandozeile auf (mit Reflection oder .proto).</li>
+  <li><b>grpc_cli</b> oder <b>Postman</b>: testen Dienste interaktiv.</li>
+  <li>Logs mit dem Statuscode pro Aufruf: zeigen die Verteilung von <code>DEADLINE_EXCEEDED</code> und <code>UNAVAILABLE</code>.</li>
+  <li>Umgebungsvariablen <code>GRPC_VERBOSITY=debug</code> und <code>GRPC_TRACE</code> (C-Core): zeigen Verbindungs- und Protokolldetails.</li>
+  <li>Wireshark oder <code>curl --http2</code>: HTTP/2-Frames ansehen.</li>
+  <li>Metriken: Aufrufzahl, Latenz und Fehler je Methode und Statuscode.</li>
+</ul>
+
+<h3>Senior-Punkte</h3>
+<div class="senior">
+<ol>
+  <li><b>Deadlines sind Pflicht, nicht Kür.</b> Jeder Aufruf hat eine, und sie wird weitergegeben.</li>
+  <li><b>Statuscodes sorgfältig wählen.</b> Sie steuern Retries und Alarme.</li>
+  <li><b>Retries nur bei Idempotenz.</b> Und mit Begrenzung, sonst verstärken sie Ausfälle.</li>
+  <li><b>Streaming bewusst einsetzen.</b> Es verlangt Gegendruck, Keepalive und Plan für Neustarts.</li>
+  <li><b>HTTP/2 verändert die Lastverteilung.</b> Eine Verbindung trägt viele Aufrufe.</li>
+  <li><b>Fehlerdetails ohne Geheimnisse.</b> Die Meldung geht zum Client.</li>
+</ol>
+</div>
+
+<h3>Dein Beispiel</h3>
+</details>
+
+</body>
+</html>

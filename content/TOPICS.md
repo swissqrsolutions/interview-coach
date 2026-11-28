@@ -2,7 +2,7 @@
 
 Generated from content/syllabus.json. Priority 1 = asked in almost every interview. Mark: **Projekt** = shown in CV/Gmail · **— kein Projekt** = no project experience · **? prüfen** = unclear, you decide.
 
-437 topics · P1 267 · P2 132 · P3 38 · written 430
+437 topics · P1 267 · P2 132 · P3 38 · written 435
 
 ## Java 21 (core + advanced) (42)
 Sources: Java SE 21/25 docs (docs.oracle.com) · JVM Specification · OpenJDK source + JEPs (openjdk.org) · Oracle Java SE 21 Developer exam 1Z0-830 topics
@@ -183,9 +183,9 @@ Sources: grpc.io docs · protobuf.dev
 
 | P | Topic | Project | Written |
 |---|---|---|---|
-| 3 | Protobuf und Schema-Evolution | Projekt |  |
-| 3 | gRPC: Unary und Streaming, Deadlines | Projekt |  |
-| 3 | gRPC vs REST | Projekt |  |
+| 3 | Protobuf und Schema-Evolution | Projekt | ✓ |
+| 3 | gRPC: Unary und Streaming, Deadlines | Projekt | ✓ |
+| 3 | gRPC vs REST | Projekt | ✓ |
 
 ## Apache Camel (1)
 Sources: Apache Camel docs · Enterprise Integration Patterns (Hohpe/Woolf)
@@ -589,14 +589,14 @@ Sources: Camunda 7 and 8 docs · BPMN 2.0 spec
 | P | Topic | Project | Written |
 |---|---|---|---|
 | 3 | BPMN-Grundlagen | — kein Projekt | ✓ |
-| 3 | Process Engine, External Tasks, Camunda 7 vs 8 | — kein Projekt |  |
+| 3 | Process Engine, External Tasks, Camunda 7 vs 8 | — kein Projekt | ✓ |
 
 ## Solace, Hazelcast, RabbitMQ (3)
 Sources: RabbitMQ docs · Jakarta Messaging spec · Solace and Hazelcast docs
 
 | P | Topic | Project | Written |
 |---|---|---|---|
-| 3 | RabbitMQ: Exchanges, Queues, Routing | — kein Projekt |  |
+| 3 | RabbitMQ: Exchanges, Queues, Routing | — kein Projekt | ✓ |
 | 3 | JMS | — kein Projekt |  |
 | 3 | Hazelcast und Solace | — kein Projekt |  |
 

@@ -1,0 +1,283 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Goroutines und Channels</title>
+<style>
+  body { font: 17px/1.55 -apple-system, system-ui, sans-serif; max-width: 760px; margin: 0 auto; padding: 16px; color: #1d1d1f; }
+  h1 { font-size: 28px; margin: 8px 0 4px; }
+  h2 { font-size: 21px; margin: 32px 0 8px; padding-top: 12px; border-top: 2px solid #e5e5ea; }
+  .kern { background: #eef6ff; border-left: 4px solid #0a66c2; padding: 10px 14px; border-radius: 6px; }
+  .senior { background: #f0faf0; border-left: 4px solid #2e7d32; padding: 10px 14px; border-radius: 6px; }
+  .trap { background: #fff4f2; border-left: 4px solid #c62828; padding: 10px 14px; border-radius: 6px; }
+  code { background: #f2f2f7; padding: 1px 5px; border-radius: 4px; font-size: 15px; }
+  pre { background: #1e1e1e; color: #e6e6e6; padding: 12px; border-radius: 8px; overflow-x: auto; font-size: 13.5px; line-height: 1.45; }
+  svg { width: 100%; height: auto; display: block; margin: 10px 0; }
+  ol li, ul li { margin: 4px 0; }
+  details { border: 1px solid #e5e5ea; border-radius: 8px; padding: 8px 12px; margin: 6px 0; }
+  summary { font-weight: 600; cursor: pointer; }
+  details p { margin: 6px 0 2px; }
+  .small { color: #6e6e73; font-size: 14px; }
+  h3 { font-size: 17px; margin: 20px 0 6px; }
+  .geruest { border: 2px solid #1d1d1f; border-radius: 6px; padding: 10px 14px; margin: 14px 0; font-size: 15px; line-height: 1.4; }
+  .geruest h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; margin: 0 0 8px; padding: 0; border: 0; }
+  .geruest dl { display: grid; grid-template-columns: 6.6em 1fr; gap: 6px 10px; margin: 0; }
+  .geruest dt { font-weight: 700; font-size: 12px; text-transform: uppercase; letter-spacing: .05em; padding-top: 1px; }
+  .geruest dd { margin: 0; }
+  .muster { border: 1px solid #e5e5ea; border-left: 4px solid #1d1d1f; border-radius: 6px; padding: 10px 14px; margin: 14px 0; }
+  .muster h3 { margin: 0 0 6px; font-size: 13px; text-transform: uppercase; letter-spacing: .06em; }
+  .muster .mq { margin: 0 0 6px; }
+</style>
+</head>
+<body>
+
+
+<h1>Goroutines und Channels</h1>
+<!-- sources: go.dev: The Go Programming Language Specification (Go statements, Channel types, Select statements, Close, For statements), The Go Memory Model (go.dev/ref/mem), Go 1.25 und Go 1.22 Release Notes, Go API-Listen (api/go1.25.txt), Go-Quellcode runtime (stack.go, proc.go, runtime2.go) -->
+
+<div class="kern">
+<b>Kern:</b> Eine <b>Goroutine</b> ist eine leichte Funktion, die das Go-Runtime nebenläufig ausführt. Ein <b>Channel</b> ist eine typisierte Warteschlange, mit der Goroutines Werte austauschen und sich synchronisieren. Go folgt dem Motto: Teile Speicher durch Kommunikation.
+</div>
+
+<div class="muster"><h3>Antwort-Muster</h3><p class="mq"><b>Frage:</b> Wie funktionieren Goroutines und Channels, und wie unterscheiden sie sich von Java Threads?</p><ol>
+  <li>Mechanismus: Das Runtime verteilt viele Goroutines auf wenige Betriebssystem-Threads. Channels blockieren Sender und Empfänger, bis beide bereit sind.</li>
+  <li>Zahl: Der Stack einer Goroutine startet mit 2 KB und wächst bis 1 GB auf 64-Bit. <code>GOMAXPROCS</code> ist standardmässig die Zahl der CPUs.</li>
+  <li>Trade-off: Goroutines sind billig, aber ein Leck merkt man spät. Unbuffered Channels synchronisieren, buffered Channels entkoppeln.</li>
+  <li>Produktion: Ich gebe jeder Goroutine einen <code>context</code> zum Abbruch, schliesse Channels nur auf der Sender-Seite und teste mit <code>-race</code>.</li>
+</ol></div>
+
+<h2>1. go func() und eine Nachricht in 6 Schritten</h2>
+<svg viewBox="0 0 720 244" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+<defs><marker id="f1" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+<rect x="10" y="10" width="200" height="66" rx="10" fill="#eee" stroke="#777"/>
+<text x="110" y="34" text-anchor="middle" font-weight="700" font-size="14" fill="#1d1d1f">1. go f()</text>
+<text x="110" y="53" text-anchor="middle" font-size="12" fill="#1d1d1f">neue Goroutine (G)</text>
+<text x="110" y="69" text-anchor="middle" font-size="12" fill="#1d1d1f">Stack 2 KB</text>
+<rect x="260" y="10" width="200" height="66" rx="10" fill="#dbe9fb" stroke="#0a66c2"/>
+<text x="360" y="34" text-anchor="middle" font-weight="700" font-size="14" fill="#1d1d1f">2. Run Queue</text>
+<text x="360" y="53" text-anchor="middle" font-size="12" fill="#1d1d1f">liegt in der Queue</text>
+<text x="360" y="69" text-anchor="middle" font-size="12" fill="#1d1d1f">eines Prozessors (P)</text>
+<rect x="510" y="10" width="200" height="66" rx="10" fill="#dbe9fb" stroke="#0a66c2"/>
+<text x="610" y="34" text-anchor="middle" font-weight="700" font-size="14" fill="#1d1d1f">3. Thread läuft</text>
+<text x="610" y="53" text-anchor="middle" font-size="12" fill="#1d1d1f">ein Thread (M) holt sie</text>
+<text x="610" y="69" text-anchor="middle" font-size="12" fill="#1d1d1f">und führt sie aus</text>
+<rect x="10" y="132" width="200" height="66" rx="10" fill="#fff" stroke="#555"/>
+<text x="110" y="156" text-anchor="middle" font-weight="700" font-size="14" fill="#1d1d1f">4. ch &lt;- v</text>
+<text x="110" y="175" text-anchor="middle" font-size="12" fill="#1d1d1f">Sender</text>
+<text x="110" y="191" text-anchor="middle" font-size="12" fill="#1d1d1f">blockiert ohne Empfänger</text>
+<rect x="260" y="132" width="200" height="66" rx="10" fill="#e8f5e9" stroke="#2e7d32"/>
+<text x="360" y="156" text-anchor="middle" font-weight="700" font-size="14" fill="#1d1d1f">5. v := &lt;-ch</text>
+<text x="360" y="175" text-anchor="middle" font-size="12" fill="#1d1d1f">Empfänger</text>
+<text x="360" y="191" text-anchor="middle" font-size="12" fill="#1d1d1f">Wert wird übergeben</text>
+<rect x="510" y="132" width="200" height="66" rx="10" fill="#fff4f2" stroke="#c62828"/>
+<text x="610" y="156" text-anchor="middle" font-weight="700" font-size="14" fill="#1d1d1f">6. Weiter</text>
+<text x="610" y="175" text-anchor="middle" font-size="12" fill="#1d1d1f">beide laufen wieder</text>
+<text x="610" y="191" text-anchor="middle" font-size="12" fill="#1d1d1f">happens-before gilt</text>
+<line x1="210" y1="43" x2="258" y2="43" stroke="#555" stroke-width="2" marker-end="url(#f1)"/>
+<line x1="460" y1="43" x2="508" y2="43" stroke="#555" stroke-width="2" marker-end="url(#f1)"/>
+<path d="M610,76 L610,104 L110,104 L110,130" fill="none" stroke="#555" stroke-width="2" marker-end="url(#f1)"/>
+<line x1="210" y1="165" x2="258" y2="165" stroke="#555" stroke-width="2" marker-end="url(#f1)"/>
+<line x1="460" y1="165" x2="508" y2="165" stroke="#555" stroke-width="2" marker-end="url(#f1)"/>
+</svg>
+<ol>
+  <li><b>go f():</b> Das <code>go</code>-Statement startet <code>f</code> als neue Goroutine. Argumente werden im aufrufenden Code ausgewertet. Der Stack ist anfangs 2 KB klein.</li>
+  <li><b>Run Queue:</b> Das Runtime legt die Goroutine in die lokale Warteschlange eines Prozessors (P). Diese Queue hat Platz für 256 Einträge.</li>
+  <li><b>Thread:</b> Ein Betriebssystem-Thread (M) holt die Goroutine und führt sie aus. Es laufen höchstens <code>GOMAXPROCS</code> Goroutines gleichzeitig.</li>
+  <li><b>Senden:</b> <code>ch &lt;- v</code> auf einem Channel ohne Puffer blockiert, bis ein Empfänger bereit ist.</li>
+  <li><b>Empfangen:</b> <code>v := &lt;-ch</code> blockiert, bis ein Sender da ist. Dann wird der Wert übergeben.</li>
+  <li><b>Weiter:</b> Beide Goroutines laufen weiter. Das Senden ist vor dem Abschluss des Empfangs synchronisiert. So sieht der Empfänger alle Schreibzugriffe vor dem Senden.</li>
+</ol>
+<p>Beendet <code>main</code> seine Arbeit, endet das Programm. Das Runtime wartet nicht auf andere Goroutines.</p>
+
+<h2>2. Aufbau</h2>
+<svg viewBox="0 0 720 240" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+<defs><marker id="f2" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+<rect x="195" y="12" width="330" height="62" rx="10" fill="#dbe9fb" stroke="#0a66c2"/>
+<text x="360" y="36" text-anchor="middle" font-weight="700" font-size="14" fill="#1d1d1f">Go Runtime Scheduler</text>
+<text x="360" y="56" text-anchor="middle" font-size="12" fill="#1d1d1f">G, M und P</text>
+<rect x="12" y="124" width="156" height="64" rx="10" fill="#fff" stroke="#555"/>
+<text x="90" y="148" text-anchor="middle" font-weight="700" font-size="14" fill="#1d1d1f">G: Goroutine</text>
+<text x="90" y="166" text-anchor="middle" font-size="12" fill="#1d1d1f">Code und Stack</text>
+<text x="90" y="181" text-anchor="middle" font-size="12" fill="#1d1d1f">startet mit 2 KB</text>
+<line x1="360" y1="74" x2="90" y2="122" stroke="#555" stroke-width="2" marker-end="url(#f2)"/>
+<rect x="192" y="124" width="156" height="64" rx="10" fill="#fff" stroke="#555"/>
+<text x="270" y="148" text-anchor="middle" font-weight="700" font-size="14" fill="#1d1d1f">M: Thread</text>
+<text x="270" y="166" text-anchor="middle" font-size="12" fill="#1d1d1f">OS-Thread</text>
+<text x="270" y="181" text-anchor="middle" font-size="12" fill="#1d1d1f">führt G aus</text>
+<line x1="360" y1="74" x2="270" y2="122" stroke="#555" stroke-width="2" marker-end="url(#f2)"/>
+<rect x="372" y="124" width="156" height="64" rx="10" fill="#e8f5e9" stroke="#2e7d32"/>
+<text x="450" y="148" text-anchor="middle" font-weight="700" font-size="14" fill="#1d1d1f">P: Prozessor</text>
+<text x="450" y="166" text-anchor="middle" font-size="12" fill="#1d1d1f">Run Queue (256)</text>
+<text x="450" y="181" text-anchor="middle" font-size="12" fill="#1d1d1f">Anzahl: GOMAXPROCS</text>
+<line x1="360" y1="74" x2="450" y2="122" stroke="#555" stroke-width="2" marker-end="url(#f2)"/>
+<rect x="552" y="124" width="156" height="64" rx="10" fill="#eee" stroke="#777"/>
+<text x="630" y="148" text-anchor="middle" font-weight="700" font-size="14" fill="#1d1d1f">Channel</text>
+<text x="630" y="166" text-anchor="middle" font-size="12" fill="#1d1d1f">typisierte Queue</text>
+<text x="630" y="181" text-anchor="middle" font-size="12" fill="#1d1d1f">mit oder ohne Puffer</text>
+<line x1="360" y1="74" x2="630" y2="122" stroke="#555" stroke-width="2" marker-end="url(#f2)"/>
+<text x="360" y="224" text-anchor="middle" font-size="12" fill="#555">Das Runtime ordnet viele G auf wenige M, über P.</text>
+</svg>
+<ol>
+  <li><b>G</b> ist die Goroutine mit eigenem, wachsendem Stack.</li>
+  <li><b>M</b> ist ein Betriebssystem-Thread. Er führt Code aus.</li>
+  <li><b>P</b> ist ein logischer Prozessor mit lokaler Run Queue. Die Anzahl ist <code>GOMAXPROCS</code>.</li>
+  <li>Ein <b>Channel</b> hat einen Elementtyp und eine Kapazität. Kapazität 0 oder fehlend heisst unbuffered.</li>
+  <li>Ein <b>select</b> wartet auf mehrere Channel-Operationen und nimmt eine, die bereit ist.</li>
+  <li>Ein <b>context</b> transportiert Abbruch und Fristen über Goroutines hinweg.</li>
+</ol>
+
+<h2>3. Details</h2>
+<ol>
+  <li><b>Stack:</b> Eine Goroutine startet mit einem Stack von 2 KB. Der Stack wächst bei Bedarf. Das Maximum ist 1 GB auf 64-Bit und 250 MB auf 32-Bit. Darüber stürzt das Programm ab.</li>
+  <li><b>GOMAXPROCS:</b> Es begrenzt, wie viele Goroutines gleichzeitig Go-Code ausführen. Der Standard ist die Zahl der CPUs. Seit Go 1.25 gilt in Containern die kleinere Zahl aus CPUs und Cgroup-Limit.</li>
+  <li><b>Unbuffered Channel:</b> Kapazität 0. Senden und Empfangen treffen sich. Der Austausch ist eine Synchronisation. Das Senden ist vor dem Abschluss des Empfangs synchronisiert.</li>
+  <li><b>Buffered Channel:</b> Mit Kapazität C blockiert Senden erst, wenn der Puffer voll ist. Der k-te Empfang ist vor dem Abschluss des (k+C)-ten Sendens synchronisiert.</li>
+  <li><b>close:</b> Nur der Sender schliesst. Ein Empfang auf einem geschlossenen Channel liefert immer sofort den Nullwert. Senden auf einen geschlossenen Channel löst eine Panic aus. Auch doppeltes <code>close</code> und <code>close</code> auf nil lösen eine Panic aus.</li>
+  <li><b>nil Channel:</b> Senden und Empfangen auf einem nil Channel blockieren für immer. In einem <code>select</code> wird so ein Zweig nie gewählt.</li>
+  <li><b>select:</b> Sind mehrere Zweige bereit, wählt Go zufällig einen aus (gleichverteilt, pseudozufällig). Mit <code>default</code> blockiert <code>select</code> nie. Ohne bereiten Zweig und ohne <code>default</code> wartet es.</li>
+  <li><b>Goroutine-Leck:</b> Eine Goroutine, die auf einen Channel wartet, den niemand bedient, bleibt für immer. Sie hält Speicher. Es gibt keinen Fehler.</li>
+  <li><b>Schleifenvariablen:</b> Seit Go 1.22 hat jede Iteration einer <code>for</code>-Schleife eigene Variablen. Davor teilten sich alle Goroutines in der Schleife dieselbe Variable.</li>
+  <li><b>WaitGroup:</b> Sie wartet auf mehrere Goroutines. Seit Go 1.25 startet <code>wg.Go(f)</code> eine Goroutine und zählt sie mit.</li>
+  <li><b>Speichermodell:</b> Ohne Synchronisation sind gleichzeitige Zugriffe auf eine Variable ein Data Race. Channels, <code>sync.Mutex</code> und <code>sync/atomic</code> schaffen eine happens-before-Beziehung.</li>
+  <li><b>Mutex oder Channel:</b> Channels sind gut für Übergabe von Besitz und Pipelines. Ein Mutex ist einfacher für geschützten Zustand wie einen Zähler.</li>
+</ol>
+
+<h2>4. Fallen</h2>
+<div class="trap">
+<ul>
+  <li>„Goroutines sind Threads.“ → <b>Falsch.</b> Sie sind vom Runtime verwaltete Funktionen auf wenigen Threads. Der Stack startet mit 2 KB.</li>
+  <li>„<code>main</code> wartet auf alle Goroutines.“ → <b>Falsch.</b> Das Programm endet, wenn <code>main</code> zurückkehrt. Andere Goroutines werden abgebrochen.</li>
+  <li>„Ein Empfang auf einem geschlossenen Channel blockiert.“ → <b>Falsch.</b> Er liefert sofort den Nullwert. Mit <code>v, ok := &lt;-ch</code> erkennt man das Schliessen.</li>
+  <li>„Der Empfänger darf den Channel schliessen.“ → <b>Falsch.</b> Nur der Sender. Senden auf einen geschlossenen Channel löst eine Panic aus.</li>
+  <li>„Alle Goroutines in einer Schleife sehen ihren eigenen Wert.“ → <b>Falsch.</b> Erst seit Go 1.22. Davor teilten sie die Schleifenvariable.</li>
+  <li>„Ein select prüft die Zweige von oben nach unten.“ → <b>Falsch.</b> Sind mehrere bereit, wählt Go einen zufällig. Die Reihenfolge im Code zählt nicht.</li>
+</ul>
+</div>
+
+<h2>5. Selbsttest</h2>
+<h3>Warum?</h3>
+<details><summary>Warum sind Goroutines billiger als Threads?</summary><p>Der Stack startet mit 2 KB und wächst bei Bedarf. Das Runtime wechselt zwischen Goroutines selbst, ohne den Betriebssystem-Scheduler.</p></details>
+<details><summary>Warum gibt es Channels?</summary><p>Sie übergeben Werte und synchronisieren zugleich. So teilt man Daten durch Weitergeben statt durch gemeinsamen Speicher mit Sperren.</p></details>
+<details><summary>Warum braucht man context?</summary><p>Eine Goroutine kann nicht von aussen beendet werden. Ein Context meldet Abbruch und Frist, und die Goroutine beendet sich selbst.</p></details>
+<h3>Wie innen?</h3>
+<details><summary>Wie plant das Runtime Goroutines?</summary><p>G, M und P. Jedes P hat eine lokale Run Queue. Ein M mit einem P führt Goroutines aus. Leere P holen Arbeit von anderen.</p></details>
+<details><summary>Was passiert bei einem blockierenden Send?</summary><p>Die sendende Goroutine wird geparkt. Der Thread führt eine andere Goroutine aus. Kommt ein Empfänger, wird sie wieder bereit.</p></details>
+<details><summary>Wie wächst ein Stack?</summary><p>Das Runtime kopiert den Stack in einen grösseren Speicherbereich, wenn er voll ist. Das Maximum ist 1 GB auf 64-Bit.</p></details>
+<details><summary>Was liefert ein Empfang auf einem geschlossenen Channel?</summary><p>Zuerst noch gepufferte Werte, danach den Nullwert. <code>ok</code> ist dann <code>false</code>.</p></details>
+<h3>Zahlen</h3>
+<details><summary>Wie gross ist der Anfangs-Stack?</summary><p>2 KB (2048 Bytes) im Runtime-Quellcode.</p></details>
+<details><summary>Wie gross wird der Stack höchstens?</summary><p>1 GB auf 64-Bit, 250 MB auf 32-Bit.</p></details>
+<details><summary>Wie gross ist die lokale Run Queue eines P?</summary><p>256 Einträge. Weitere Goroutines kommen in die globale Queue.</p></details>
+<details><summary>Was ist der Standard für GOMAXPROCS?</summary><p>Die Zahl der logischen CPUs. Seit Go 1.25 gilt in Containern die kleinere Zahl aus CPUs und Cgroup-Limit.</p></details>
+<h3>Vergleich</h3>
+<details><summary>Goroutine vs Java Thread?</summary><p>Ein Java Platform Thread ist ein Betriebssystem-Thread. Eine Goroutine wird vom Go Runtime geplant und ist viel leichter.</p></details>
+<details><summary>Goroutine vs Java Virtual Thread?</summary><p>Beide sind leicht und werden vom Laufzeitsystem geplant. Go hat dazu Channels und select in der Sprache.</p></details>
+<details><summary>Channel vs BlockingQueue?</summary><p>Beide sind Warteschlangen mit Blockieren. Ein Channel kann geschlossen werden und hat <code>select</code> in der Sprache.</p></details>
+<details><summary>Channel vs Mutex?</summary><p>Channel für Übergabe und Pipelines. Mutex für Schutz von geteiltem Zustand.</p></details>
+<h3>Produktion</h3>
+<details><summary>Wie findet man Goroutine-Lecks?</summary><p>Mit <code>runtime.NumGoroutine()</code> im Monitoring und dem pprof-Profil <code>goroutine</code>. Eine steigende Zahl ohne Last zeigt ein Leck.</p></details>
+<details><summary>Wie findet man Data Races?</summary><p>Mit <code>go test -race</code> und <code>go run -race</code>. Der Race Detector meldet Zugriffe ohne Synchronisation.</p></details>
+<details><summary>Szenario: Der Speicher eines Dienstes wächst, die Zahl der Goroutines steigt. Was tun Sie?</summary><p>Ich hole das pprof-Profil <code>goroutine</code> und suche, wo viele Goroutines warten. Meist wartet eine auf einen Channel ohne Gegenstück. Ich füge <code>context</code> und Abbruch mit <code>select</code> ein.</p></details>
+<details><summary>Szenario: Ein Programm hängt, alle Goroutines schlafen. Was prüfen Sie?</summary><p>Ich prüfe auf Deadlock. Das Runtime meldet "all goroutines are asleep" nur, wenn gar keine mehr laufen kann. Ich suche unbuffered Channels ohne Gegenstück und fehlendes <code>close</code>.</p></details>
+<h3>Design</h3>
+<details><summary>Wie begrenze ich die Zahl paralleler Goroutines?</summary><p>Mit einem Channel als Semaphor, einem Worker-Pool mit fester Zahl oder <code>errgroup</code> mit Limit. Nie unbegrenzt starten.</p></details>
+<details><summary>Wie beende ich Goroutines sauber?</summary><p>Mit <code>context.WithCancel</code> oder Timeout. Jede Goroutine prüft <code>ctx.Done()</code> in einem <code>select</code>. Der Starter wartet mit <code>WaitGroup</code>.</p></details>
+<details><summary>Wann Puffer, wann kein Puffer?</summary><p>Ohne Puffer für sichere Übergabe. Mit Puffer für Entkoppeln und Bursts. Die Grösse ist eine Entscheidung und kein Allheilmittel.</p></details>
+
+<details class="mehr"><summary>Mehr</summary>
+<h3>Gerüst</h3>
+<ul>
+  <li><b>Warum?</b> Billige Nebenläufigkeit mit Kommunikation statt Sperren. Viele Aufgaben auf wenige Threads.</li>
+  <li><b>Wie innen?</b> G, M und P. Channels parken Goroutines. Stack wächst durch Kopieren.</li>
+  <li><b>Zahlen</b> Stack 2 KB bis 1 GB. Run Queue 256. GOMAXPROCS gleich CPUs (Go 1.25: Cgroup-bewusst).</li>
+  <li><b>Vergleich</b> Gegen Threads, Virtual Threads, BlockingQueue, Mutex.</li>
+  <li><b>Produktion</b> Goroutine-Lecks, Data Races, Deadlocks, nil Channels.</li>
+  <li><b>Design</b> Context zum Abbruch, Sender schliesst, Pool mit Grenze, <code>-race</code> im Test.</li>
+</ul>
+
+
+<h3>Beispiel: Worker-Pool mit Channels und Abbruch</h3>
+<pre>func worker(ctx context.Context, id int, jobs &lt;-chan int, results chan&lt;- string, wg *sync.WaitGroup) {
+    defer wg.Done()
+    for {
+        select {
+        case &lt;-ctx.Done():
+            return                              // Abbruch von aussen
+        case j, ok := &lt;-jobs:
+            if !ok { return }                   // jobs wurde geschlossen
+            results &lt;- fmt.Sprintf("worker %d: job %d", id, j)
+        }
+    }
+}
+
+func main() {
+    ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+    defer cancel()
+    jobs := make(chan int)                      // unbuffered
+    results := make(chan string, 10)            // buffered
+    var wg sync.WaitGroup
+    for i := 1; i &lt;= 3; i++ {
+        wg.Add(1)
+        go worker(ctx, i, jobs, results, &amp;wg)
+    }
+    go func() { for j := 1; j &lt;= 5; j++ { jobs &lt;- j }; close(jobs) }()   // Sender schliesst
+    go func() { wg.Wait(); close(results) }()
+    for r := range results { fmt.Println(r) }
+}</pre>
+<p class="small">Nicht ausgeführt.</p>
+<ol>
+  <li><code>jobs</code> hat keinen Puffer. Jedes Senden wartet auf einen freien Worker.</li>
+  <li>Der Sender schliesst <code>jobs</code>. Die Worker sehen <code>ok == false</code> und enden.</li>
+  <li><code>select</code> mit <code>ctx.Done()</code> macht jeden Worker abbrechbar.</li>
+  <li>Eine eigene Goroutine wartet mit <code>wg.Wait()</code> und schliesst dann <code>results</code>. So endet die Schleife in <code>main</code>.</li>
+  <li>Die Reihenfolge der Ausgaben ist nicht festgelegt. Sie hängt vom Scheduler ab.</li>
+</ol>
+
+<h3>Vergleich</h3>
+<ul>
+  <li><b>Goroutine:</b> Vom Runtime geplant, 2 KB Stack, sehr viele möglich.</li>
+  <li><b>Java Platform Thread:</b> Betriebssystem-Thread, schwer.</li>
+  <li><b>Java Virtual Thread:</b> Leicht, vom JVM-Runtime geplant, blockiert billig.</li>
+  <li><b>Kotlin Coroutine:</b> Leicht, mit <code>suspend</code> und Scopes statt Channels als Kern.</li>
+  <li><b>Channel:</b> Typisierte Queue mit <code>close</code> und <code>select</code> in der Sprache.</li>
+  <li><b>Mutex (<code>sync</code>):</b> Schutz für Zustand. Einfach bei kleinen kritischen Abschnitten.</li>
+</ul>
+
+<h3>Produktion</h3>
+<ol>
+  <li><b>Goroutine-Leck:</b> Eine Goroutine wartet für immer. Lösung: Context mit Abbruch, <code>select</code> mit <code>ctx.Done()</code>.</li>
+  <li><b>Data Race:</b> Zwei Goroutines ändern dieselbe Variable ohne Sperre. Lösung: Mutex, Atomics oder Channel. <code>-race</code> im CI.</li>
+  <li><b>Deadlock:</b> Alle warten aufeinander. Lösung: Reihenfolge der Sperren klären, Channels mit Gegenstück, Timeouts.</li>
+  <li><b>Panic durch close:</b> Senden auf einen geschlossenen Channel. Lösung: nur der Sender schliesst, ein Besitzer pro Channel.</li>
+  <li><b>Unbegrenzte Goroutines:</b> Eine pro Anfrage ohne Grenze füllt den Speicher. Lösung: Worker-Pool, Semaphor.</li>
+  <li><b>CPU-Limit im Container:</b> Vor Go 1.25 nutzte <code>GOMAXPROCS</code> die Zahl der Host-CPUs. Das gab Drosselung. Lösung: Go 1.25 oder neuer, oder <code>GOMAXPROCS</code> setzen.</li>
+</ol>
+
+<h3>Diagnose: Werkzeuge und Befehle</h3>
+<ul>
+  <li><code>go test -race ./...</code> und <code>go run -race</code>: finden Data Races.</li>
+  <li><code>pprof</code> Profil <code>goroutine</code>: zeigt, wo Goroutines warten (<code>/debug/pprof/goroutine?debug=2</code>).</li>
+  <li><code>runtime.NumGoroutine()</code>: als Metrik gegen Lecks.</li>
+  <li><code>GODEBUG=schedtrace=1000</code>: schreibt jede Sekunde den Zustand des Schedulers.</li>
+  <li><code>go tool trace</code>: zeigt Goroutines, Blockaden und GC auf einer Zeitachse.</li>
+  <li><code>SIGQUIT</code> (Ctrl+\) auf einem Programm: gibt alle Goroutine-Stacks aus.</li>
+</ul>
+
+<h3>Senior-Punkte</h3>
+<div class="senior">
+<ol>
+  <li><b>Jede Goroutine braucht ein Ende.</b> Wer sie startet, muss wissen, wie sie endet.</li>
+  <li><b>Ein Besitzer pro Channel.</b> Der Sender schliesst. Empfänger schliessen nie.</li>
+  <li><b>Context ist der Standard für Abbruch.</b> Er läuft durch alle Schichten.</li>
+  <li><b>Puffer sind keine Lösung für Überlast.</b> Sie verschieben das Problem. Gegendruck braucht eine Grenze.</li>
+  <li><b>Race Detector im CI.</b> Data Races zeigen sich in Produktion zufällig.</li>
+  <li><b>Mutex ist okay.</b> Nicht alles muss ein Channel sein.</li>
+</ol>
+</div>
+
+<h3>Dein Beispiel</h3>
+</details>
+
+</body>
+</html>

@@ -1,0 +1,283 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>BackgroundService und Worker</title>
+<style>
+  body { font: 17px/1.55 -apple-system, system-ui, sans-serif; max-width: 760px; margin: 0 auto; padding: 16px; color: #1d1d1f; }
+  h1 { font-size: 28px; margin: 8px 0 4px; }
+  h2 { font-size: 21px; margin: 32px 0 8px; padding-top: 12px; border-top: 2px solid #e5e5ea; }
+  .kern { background: #eef6ff; border-left: 4px solid #0a66c2; padding: 10px 14px; border-radius: 6px; }
+  .senior { background: #f0faf0; border-left: 4px solid #2e7d32; padding: 10px 14px; border-radius: 6px; }
+  .trap { background: #fff4f2; border-left: 4px solid #c62828; padding: 10px 14px; border-radius: 6px; }
+  code { background: #f2f2f7; padding: 1px 5px; border-radius: 4px; font-size: 15px; }
+  pre { background: #1e1e1e; color: #e6e6e6; padding: 12px; border-radius: 8px; overflow-x: auto; font-size: 13.5px; line-height: 1.45; }
+  svg { width: 100%; height: auto; display: block; margin: 10px 0; }
+  ol li, ul li { margin: 4px 0; }
+  details { border: 1px solid #e5e5ea; border-radius: 8px; padding: 8px 12px; margin: 6px 0; }
+  summary { font-weight: 600; cursor: pointer; }
+  details p { margin: 6px 0 2px; }
+  .small { color: #6e6e73; font-size: 14px; }
+  h3 { font-size: 17px; margin: 20px 0 6px; }
+  .geruest { border: 2px solid #1d1d1f; border-radius: 6px; padding: 10px 14px; margin: 14px 0; font-size: 15px; line-height: 1.4; }
+  .geruest h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; margin: 0 0 8px; padding: 0; border: 0; }
+  .geruest dl { display: grid; grid-template-columns: 6.6em 1fr; gap: 6px 10px; margin: 0; }
+  .geruest dt { font-weight: 700; font-size: 12px; text-transform: uppercase; letter-spacing: .05em; padding-top: 1px; }
+  .geruest dd { margin: 0; }
+  .muster { border: 1px solid #e5e5ea; border-left: 4px solid #1d1d1f; border-radius: 6px; padding: 10px 14px; margin: 14px 0; }
+  .muster h3 { margin: 0 0 6px; font-size: 13px; text-transform: uppercase; letter-spacing: .06em; }
+  .muster .mq { margin: 0 0 6px; }
+</style>
+</head>
+<body>
+
+
+<h1>BackgroundService und Worker</h1>
+<!-- sources: Microsoft Learn: Worker Services in .NET, .NET Generic Host, Use scoped services within a BackgroundService; Quellcode dotnet/runtime (BackgroundService.cs, HostOptions.cs, Host.cs, Tags v6.0.0 bis v10.0.0). Eigener Lauf mit .NET SDK 6.0.301 -->
+
+<div class="kern">
+<b>Kern:</b> Ein <b>BackgroundService</b> ist eine Basisklasse für Code, der dauernd im Hintergrund läuft. Der <b>Generic Host</b> startet ihn mit der App und stoppt ihn mit einem <b>CancellationToken</b>. Ein <b>Worker Service</b> ist eine App, die nur aus solchen Diensten besteht.
+</div>
+
+<div class="muster"><h3>Antwort-Muster</h3><p class="mq"><b>Frage:</b> Wie baue ich einen Hintergrunddienst in .NET und wie stoppt er sauber?</p><ol>
+  <li>Mechanismus: Ich erbe von <code>BackgroundService</code> und schreibe <code>ExecuteAsync</code>. Der Host ruft <code>StartAsync</code> auf und gibt beim Stop den Token frei.</li>
+  <li>Zahl: Der Host wartet beim Stoppen standardmässig 30 Sekunden (<code>ShutdownTimeout</code>). In .NET 6 waren es 5 Sekunden.</li>
+  <li>Trade-off: Ein Fehler in <code>ExecuteAsync</code> stoppt standardmässig den ganzen Host. Das ist sicher, aber hart.</li>
+  <li>Produktion: Ich fange Fehler pro Durchlauf, nutze <code>IServiceScopeFactory</code> für Scoped-Dienste und prüfe den Token in jeder Schleife.</li>
+</ol></div>
+
+<h2>1. Start und Stop in 6 Schritten</h2>
+<svg viewBox="0 0 720 244" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+<defs><marker id="f1" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+<rect x="10" y="10" width="200" height="66" rx="10" fill="#eee" stroke="#777"/>
+<text x="110" y="34" text-anchor="middle" font-weight="700" font-size="14" fill="#1d1d1f">1. Host baut</text>
+<text x="110" y="53" text-anchor="middle" font-size="12" fill="#1d1d1f">Services registriert</text>
+<text x="110" y="69" text-anchor="middle" font-size="12" fill="#1d1d1f">AddHostedService&lt;T&gt;()</text>
+<rect x="260" y="10" width="200" height="66" rx="10" fill="#dbe9fb" stroke="#0a66c2"/>
+<text x="360" y="34" text-anchor="middle" font-weight="700" font-size="14" fill="#1d1d1f">2. StartAsync</text>
+<text x="360" y="53" text-anchor="middle" font-size="12" fill="#1d1d1f">jeder Dienst der Reihe nach</text>
+<text x="360" y="69" text-anchor="middle" font-size="12" fill="#1d1d1f">in Reihenfolge der Anmeldung</text>
+<rect x="510" y="10" width="200" height="66" rx="10" fill="#dbe9fb" stroke="#0a66c2"/>
+<text x="610" y="34" text-anchor="middle" font-weight="700" font-size="14" fill="#1d1d1f">3. ExecuteAsync</text>
+<text x="610" y="53" text-anchor="middle" font-size="12" fill="#1d1d1f">läuft im Hintergrund</text>
+<text x="610" y="69" text-anchor="middle" font-size="12" fill="#1d1d1f">Task für die Lebenszeit</text>
+<rect x="10" y="132" width="200" height="66" rx="10" fill="#fff" stroke="#555"/>
+<text x="110" y="156" text-anchor="middle" font-weight="700" font-size="14" fill="#1d1d1f">4. Stop-Signal</text>
+<text x="110" y="175" text-anchor="middle" font-size="12" fill="#1d1d1f">Ctrl+C oder SIGTERM</text>
+<text x="110" y="191" text-anchor="middle" font-size="12" fill="#1d1d1f">ApplicationStopping</text>
+<rect x="260" y="132" width="200" height="66" rx="10" fill="#e8f5e9" stroke="#2e7d32"/>
+<text x="360" y="156" text-anchor="middle" font-weight="700" font-size="14" fill="#1d1d1f">5. StopAsync</text>
+<text x="360" y="175" text-anchor="middle" font-size="12" fill="#1d1d1f">Token wird abgebrochen</text>
+<text x="360" y="191" text-anchor="middle" font-size="12" fill="#1d1d1f">Dienste in umgekehrter Folge</text>
+<rect x="510" y="132" width="200" height="66" rx="10" fill="#fff4f2" stroke="#c62828"/>
+<text x="610" y="156" text-anchor="middle" font-weight="700" font-size="14" fill="#1d1d1f">6. Warten</text>
+<text x="610" y="175" text-anchor="middle" font-size="12" fill="#1d1d1f">bis ShutdownTimeout</text>
+<text x="610" y="191" text-anchor="middle" font-size="12" fill="#1d1d1f">dann gibt der Host auf</text>
+<line x1="210" y1="43" x2="258" y2="43" stroke="#555" stroke-width="2" marker-end="url(#f1)"/>
+<line x1="460" y1="43" x2="508" y2="43" stroke="#555" stroke-width="2" marker-end="url(#f1)"/>
+<path d="M610,76 L610,104 L110,104 L110,130" fill="none" stroke="#555" stroke-width="2" marker-end="url(#f1)"/>
+<line x1="210" y1="165" x2="258" y2="165" stroke="#555" stroke-width="2" marker-end="url(#f1)"/>
+<line x1="460" y1="165" x2="508" y2="165" stroke="#555" stroke-width="2" marker-end="url(#f1)"/>
+</svg>
+<ol>
+  <li><b>Host bauen:</b> <code>AddHostedService&lt;Worker&gt;()</code> meldet den Dienst als Singleton an. Der Host baut den DI-Container.</li>
+  <li><b>StartAsync:</b> Der Host ruft <code>StartAsync</code> jedes Dienstes auf, einen nach dem anderen. Das ist der Standard (<code>ServicesStartConcurrently</code> ist <code>false</code>).</li>
+  <li><b>ExecuteAsync:</b> <code>BackgroundService.StartAsync</code> ruft <code>ExecuteAsync(stoppingToken)</code> auf. Die Methode gibt einen Task zurück, der die ganze Lebenszeit darstellt.</li>
+  <li><b>Stop-Signal:</b> <code>Ctrl+C</code> oder <code>SIGTERM</code> (zum Beispiel <code>docker stop</code>) löst <code>ApplicationStopping</code> aus. Der Host beginnt das Herunterfahren.</li>
+  <li><b>StopAsync:</b> Der Host ruft <code>StopAsync</code> in umgekehrter Reihenfolge auf. <code>BackgroundService</code> bricht den <code>stoppingToken</code> ab und wartet auf das Ende von <code>ExecuteAsync</code>.</li>
+  <li><b>Warten:</b> Der Host wartet höchstens <code>ShutdownTimeout</code>. Danach läuft der Prozess weiter zum Ende, auch wenn der Dienst noch arbeitet.</li>
+</ol>
+<p>Ab .NET 10 startet <code>BackgroundService.StartAsync</code> den Code mit <code>Task.Run</code>. In .NET 6 bis 9 lief <code>ExecuteAsync</code> bis zum ersten <code>await</code> im Aufrufer-Thread, wie das Demo unten zeigt.</p>
+
+<h2>2. Aufbau</h2>
+<svg viewBox="0 0 720 240" font-family="-apple-system, system-ui, sans-serif" font-size="14">
+<defs><marker id="f2" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+<rect x="195" y="12" width="330" height="62" rx="10" fill="#dbe9fb" stroke="#0a66c2"/>
+<text x="360" y="36" text-anchor="middle" font-weight="700" font-size="14" fill="#1d1d1f">Generic Host</text>
+<text x="360" y="56" text-anchor="middle" font-size="12" fill="#1d1d1f">DI, Config, Logging, Lifetime</text>
+<rect x="12" y="124" width="156" height="64" rx="10" fill="#fff" stroke="#555"/>
+<text x="90" y="148" text-anchor="middle" font-weight="700" font-size="14" fill="#1d1d1f">IHostedService</text>
+<text x="90" y="166" text-anchor="middle" font-size="12" fill="#1d1d1f">StartAsync</text>
+<text x="90" y="181" text-anchor="middle" font-size="12" fill="#1d1d1f">StopAsync</text>
+<line x1="360" y1="74" x2="90" y2="122" stroke="#555" stroke-width="2" marker-end="url(#f2)"/>
+<rect x="192" y="124" width="156" height="64" rx="10" fill="#fff" stroke="#555"/>
+<text x="270" y="148" text-anchor="middle" font-weight="700" font-size="14" fill="#1d1d1f">BackgroundService</text>
+<text x="270" y="166" text-anchor="middle" font-size="12" fill="#1d1d1f">ExecuteAsync</text>
+<text x="270" y="181" text-anchor="middle" font-size="12" fill="#1d1d1f">Token zum Stoppen</text>
+<line x1="360" y1="74" x2="270" y2="122" stroke="#555" stroke-width="2" marker-end="url(#f2)"/>
+<rect x="372" y="124" width="156" height="64" rx="10" fill="#e8f5e9" stroke="#2e7d32"/>
+<text x="450" y="148" text-anchor="middle" font-weight="700" font-size="14" fill="#1d1d1f">HostOptions</text>
+<text x="450" y="166" text-anchor="middle" font-size="12" fill="#1d1d1f">ShutdownTimeout</text>
+<text x="450" y="181" text-anchor="middle" font-size="12" fill="#1d1d1f">ExceptionBehavior</text>
+<line x1="360" y1="74" x2="450" y2="122" stroke="#555" stroke-width="2" marker-end="url(#f2)"/>
+<rect x="552" y="124" width="156" height="64" rx="10" fill="#eee" stroke="#777"/>
+<text x="630" y="148" text-anchor="middle" font-weight="700" font-size="14" fill="#1d1d1f">Lifetime</text>
+<text x="630" y="166" text-anchor="middle" font-size="12" fill="#1d1d1f">ApplicationStopping</text>
+<text x="630" y="181" text-anchor="middle" font-size="12" fill="#1d1d1f">StopApplication()</text>
+<line x1="360" y1="74" x2="630" y2="122" stroke="#555" stroke-width="2" marker-end="url(#f2)"/>
+<text x="360" y="224" text-anchor="middle" font-size="12" fill="#555">Der Dienst ist ein Singleton. Scoped-Dienste kommen über eine Scope-Factory.</text>
+</svg>
+<ol>
+  <li><b>IHostedService</b> hat zwei Methoden: <code>StartAsync</code> und <code>StopAsync</code>.</li>
+  <li><b>BackgroundService</b> ist eine abstrakte Klasse darüber. Du schreibst nur <code>ExecuteAsync</code>.</li>
+  <li><b>IHostedLifecycleService</b> ergänzt <code>StartingAsync</code>, <code>StartedAsync</code>, <code>StoppingAsync</code> und <code>StoppedAsync</code>.</li>
+  <li><b>HostOptions</b> hält <code>ShutdownTimeout</code>, <code>StartupTimeout</code> und <code>BackgroundServiceExceptionBehavior</code>.</li>
+  <li><b>IHostApplicationLifetime</b> bietet die Events und <code>StopApplication()</code>.</li>
+  <li>Die <b>Worker-Vorlage</b> (<code>dotnet new worker</code>) erzeugt <code>Program</code> und <code>Worker</code>. Sie nutzt <code>Microsoft.NET.Sdk.Worker</code>.</li>
+</ol>
+
+<h2>3. Details</h2>
+<ol>
+  <li><b>ExecuteAsync:</b> Die Methode muss einen Task liefern, der die Arbeit darstellt. Sie läuft meist in einer Schleife mit <code>while (!stoppingToken.IsCancellationRequested)</code>. Das Ende des Tasks beendet nur den Dienst, nicht den Host.</li>
+  <li><b>StartAsync darf nicht blockieren:</b> Der Host startet die Dienste der Reihe nach. Ein Dienst, der in <code>ExecuteAsync</code> vor dem ersten <code>await</code> lange synchron rechnet, hält in .NET 6 bis 9 den Start auf. Ab .NET 10 startet <code>Task.Run</code> den Code.</li>
+  <li><b>ShutdownTimeout:</b> Standard sind 30 Sekunden. In .NET 6 waren es 5 Sekunden. Der Timeout gilt für alle Dienste zusammen. Man kann ihn in <code>HostOptions</code> oder mit <code>shutdownTimeoutSeconds</code> setzen.</li>
+  <li><b>StopAsync in BackgroundService:</b> Es bricht den <code>stoppingToken</code> ab. Dann wartet es auf den Task von <code>ExecuteAsync</code> oder auf den eigenen Token von <code>StopAsync</code>. Der erste Fall, der eintritt, zählt.</li>
+  <li><b>Reihenfolge:</b> Beim Start laufen die Dienste in der Reihenfolge der Anmeldung. Beim Stop laufen sie umgekehrt. So stoppt ein abhängiger Dienst zuerst.</li>
+  <li><b>Fehler in ExecuteAsync:</b> Standard ist <code>BackgroundServiceExceptionBehavior.StopHost</code>. Der Host loggt den Fehler und ruft <code>StopApplication()</code> auf. Mit <code>Ignore</code> läuft der Host weiter, aber ohne diesen Dienst.</li>
+  <li><b>Scoped-Dienste:</b> Gehostete Dienste sind Singletons. Ein <code>DbContext</code> ist scoped und darf nicht per Konstruktor kommen. Man injiziert <code>IServiceScopeFactory</code> und erzeugt pro Durchlauf einen Scope.</li>
+  <li><b>Laufender Takt:</b> <code>Task.Delay</code> in einer Schleife driftet. <code>PeriodicTimer</code> (seit .NET 6) gibt einen festen Takt. Er wartet mit <code>WaitForNextTickAsync(token)</code>.</li>
+  <li><b>Einmaliger Lauf:</b> Ein Dienst, der fertig ist, muss <code>StopApplication()</code> rufen, wenn der Host enden soll. Sonst läuft der Host weiter.</li>
+  <li><b>Hosting-Arten:</b> Als Windows Service nutzt man <code>AddWindowsService</code>. Unter Linux läuft der Worker als systemd-Dienst oder im Container. Der Host reagiert auf <code>SIGTERM</code>.</li>
+  <li><b>Warteschlange:</b> Für Arbeit von aussen nimmt man oft einen <code>Channel&lt;T&gt;</code> oder eine Queue. Der Dienst liest daraus. Die API schreibt hinein. So blockiert die API nicht.</li>
+  <li><b>Cooperative Stop:</b> Der Dienst muss den Token prüfen und an <code>Task.Delay</code> und I/O weitergeben. Sonst läuft er in den Timeout.</li>
+</ol>
+
+<h2>4. Fallen</h2>
+<div class="trap">
+<ul>
+  <li>„Ein Fehler in ExecuteAsync beendet nur diesen Dienst.“ → <b>Falsch.</b> Standard ist <code>StopHost</code>. Der ganze Host stoppt. Man muss Fehler in der Schleife selbst fangen, wenn der Dienst weiterlaufen soll.</li>
+  <li>„Ein BackgroundService darf einen DbContext im Konstruktor nehmen.“ → <b>Falsch.</b> Der Dienst ist ein Singleton und der DbContext scoped. Nimm <code>IServiceScopeFactory</code> und erzeuge pro Durchlauf einen Scope.</li>
+  <li>„Der Host wartet beim Stoppen beliebig lang.“ → <b>Falsch.</b> Er wartet höchstens <code>ShutdownTimeout</code>. Danach endet der Prozess, auch wenn Arbeit läuft.</li>
+  <li>„<code>Task.Delay</code> in einer Schleife läuft exakt jede Sekunde.“ → <b>Falsch.</b> Die Zeit der Arbeit kommt dazu. Der Takt driftet. <code>PeriodicTimer</code> hält den Takt.</li>
+  <li>„Ohne Prüfung des Tokens stoppt der Dienst von selbst.“ → <b>Falsch.</b> Abbruch ist kooperativ. Ohne Token-Prüfung läuft der Dienst bis zum ShutdownTimeout.</li>
+  <li>„ExecuteAsync läuft immer auf einem eigenen Thread.“ → <b>Falsch.</b> In .NET 6 bis 9 läuft der Anfang im Aufrufer-Thread. Erst ab .NET 10 nutzt <code>StartAsync</code> dafür <code>Task.Run</code>.</li>
+</ul>
+</div>
+
+<h2>5. Selbsttest</h2>
+<h3>Warum?</h3>
+<details><summary>Warum nimmt man BackgroundService statt eines eigenen Threads?</summary><p>Der Host verwaltet Start, Stop, DI, Logging und Konfiguration. Er gibt den Stop-Token weiter und wartet beim Herunterfahren.</p></details>
+<details><summary>Warum braucht ExecuteAsync einen CancellationToken?</summary><p>So kann der Host beim Stop dem Dienst Bescheid sagen. Der Dienst beendet seine Arbeit sauber.</p></details>
+<details><summary>Warum stoppt der Host die Dienste in umgekehrter Reihenfolge?</summary><p>Dienste, die von anderen abhängen, wurden später gestartet. Sie stoppen zuerst, bevor ihre Abhängigkeiten verschwinden.</p></details>
+<h3>Wie innen?</h3>
+<details><summary>Was macht BackgroundService.StartAsync?</summary><p>Es erzeugt einen verlinkten Token. Es ruft <code>ExecuteAsync</code> auf und merkt sich den Task. Es gibt sofort einen fertigen Task zurück.</p></details>
+<details><summary>Was macht BackgroundService.StopAsync?</summary><p>Es bricht den Token ab. Dann wartet es auf den ExecuteAsync-Task oder auf den eigenen Token von StopAsync.</p></details>
+<details><summary>Wie merkt der Host einen Fehler in ExecuteAsync?</summary><p>Er wartet im Hintergrund auf den Task. Bei einer Exception loggt er sie und handelt nach <code>BackgroundServiceExceptionBehavior</code>.</p></details>
+<details><summary>Was passiert bei SIGTERM?</summary><p>Die ConsoleLifetime fängt das Signal. Sie löst ApplicationStopping aus. Der Host ruft StopAsync der Dienste auf.</p></details>
+<h3>Zahlen</h3>
+<details><summary>Wie lang ist der Standard-ShutdownTimeout?</summary><p>30 Sekunden. In .NET 6 waren es 5 Sekunden.</p></details>
+<details><summary>Was ist der Standard bei einem Fehler in ExecuteAsync?</summary><p><code>StopHost</code>. Der Host stoppt.</p></details>
+<details><summary>Wie lang ist der Standard-StartupTimeout?</summary><p>Unendlich (<code>Timeout.InfiniteTimeSpan</code>).</p></details>
+<h3>Vergleich</h3>
+<details><summary>IHostedService vs BackgroundService?</summary><p>IHostedService hat Start und Stop. BackgroundService ist eine Basisklasse, die daraus einen langlaufenden Task macht.</p></details>
+<details><summary>BackgroundService vs Spring @Scheduled?</summary><p>BackgroundService ist ein eigener Lebenszyklus mit Token. <code>@Scheduled</code> ruft Methoden im Takt auf. In .NET nutzt man <code>PeriodicTimer</code> oder eine Bibliothek wie Quartz.NET.</p></details>
+<details><summary>Worker Service vs Web-API mit Hosted Service?</summary><p>Der Worker hat keinen HTTP-Server. Eine Web-App kann beides. Der Hosted Service läuft dann neben den Requests.</p></details>
+<details><summary>PeriodicTimer vs Task.Delay in einer Schleife?</summary><p>PeriodicTimer hält einen festen Takt. Task.Delay addiert die Arbeitszeit zum Warten.</p></details>
+<h3>Produktion</h3>
+<details><summary>Wie vermeidet man, dass ein Fehler den Host stoppt?</summary><p>Fehler pro Durchlauf mit try/catch fangen und loggen. Nur <code>OperationCanceledException</code> beim Stop durchlassen.</p></details>
+<details><summary>Was tun, wenn der Dienst beim Stoppen in den Timeout läuft?</summary><p>Prüfen, ob der Token überall durchgereicht wird. Lange Arbeit in kleine Teile zerlegen. Notfalls ShutdownTimeout erhöhen und Kubernetes-Grace-Period anpassen.</p></details>
+<details><summary>Szenario: Der Worker stürzt nachts ab und der Pod startet neu. Was prüfen Sie?</summary><p>Ich lese das Log nach der Zeile, dass der BackgroundService fehlgeschlagen ist. Ein unbehandelter Fehler in ExecuteAsync stoppt den Host. Ich fange Fehler pro Durchlauf und logge sie.</p></details>
+<details><summary>Szenario: Beim Deployment gehen Nachrichten verloren, weil der Worker hart beendet wird. Was tun Sie?</summary><p>Ich prüfe, ob der Token beachtet wird und die laufende Nachricht fertig wird. Ich setze ShutdownTimeout und die Grace-Period im Orchestrator passend. Ich bestätige Nachrichten erst nach Erfolg.</p></details>
+<h3>Design</h3>
+<details><summary>Wie nutze ich einen DbContext im Worker?</summary><p>Ich injiziere <code>IServiceScopeFactory</code>. Pro Durchlauf erzeuge ich einen Scope und hole den DbContext daraus. Am Ende wird der Scope entsorgt.</p></details>
+<details><summary>Wie gebe ich dem Worker Arbeit von einer API?</summary><p>Mit einem <code>Channel&lt;T&gt;</code> oder einer Queue. Die API schreibt, der Worker liest. Eine Grenze für die Grösse schützt den Speicher.</p></details>
+<details><summary>Wann ist ein Worker die falsche Lösung?</summary><p>Bei Aufgaben, die genau einmal im Cluster laufen sollen, oder die lange und genau geplant sind. Dann nehme ich einen Job-Scheduler oder einen CronJob.</p></details>
+
+<details class="mehr"><summary>Mehr</summary>
+<h3>Gerüst</h3>
+<ul>
+  <li><b>Warum?</b> Der Host verwaltet Start, Stop, DI und Token. Du schreibst nur ExecuteAsync.</li>
+  <li><b>Wie innen?</b> StartAsync ruft ExecuteAsync auf. StopAsync bricht den Token ab und wartet. Stop in umgekehrter Reihenfolge.</li>
+  <li><b>Zahlen</b> ShutdownTimeout 30 s (in .NET 6: 5 s). Standard bei Fehlern: StopHost.</li>
+  <li><b>Vergleich</b> IHostedService gegen BackgroundService. PeriodicTimer gegen Task.Delay.</li>
+  <li><b>Produktion</b> Fehler stoppen den Host. Scoped-Dienste im Singleton. Timeout beim Stoppen.</li>
+  <li><b>Design</b> IServiceScopeFactory, Channel für Arbeit, Token überall durchreichen.</li>
+</ul>
+
+
+<h3>Beispiel: Host, Worker und Stop live</h3>
+<pre>class Worker : BackgroundService {
+  protected override async Task ExecuteAsync(CancellationToken ct) {
+    Console.WriteLine($"Worker.ExecuteAsync start, thread {Environment.CurrentManagedThreadId}");
+    try { while (!ct.IsCancellationRequested) { Console.WriteLine("tick"); await Task.Delay(500, ct); } }
+    catch (OperationCanceledException) { Console.WriteLine("Worker: cancellation seen"); }
+    await Task.Delay(100);
+    Console.WriteLine("Worker: cleanup done");
+  }
+}
+class Quick : IHostedService { /* StartAsync und StopAsync schreiben je eine Zeile */ }
+
+// Program: beide Dienste anmelden, RunAsync, nach 1200 ms host.StopAsync()</pre>
+<pre>ShutdownTimeout = 00:00:05
+Worker.ExecuteAsync start, thread 1
+tick
+Quick.StartAsync
+info: Microsoft.Hosting.Lifetime[0] Application started. Press Ctrl+C to shut down.
+info: Microsoft.Hosting.Lifetime[0] Hosting environment: Production
+tick
+tick
+calling StopAsync
+info: Microsoft.Hosting.Lifetime[0] Application is shutting down...
+Quick.StopAsync
+Quick.StopAsync
+Worker: cancellation seen
+Worker: cleanup done
+host stopped</pre>
+<p class="small">Echte Ausgabe, .NET SDK 6.0.301 (net6.0, mit dem Framework Microsoft.AspNetCore.App). Die Zeile <code>Content root path</code> ist weggelassen. Darum zeigt <code>ShutdownTimeout</code> hier 5 Sekunden (der Wert von .NET 6).</p>
+<ol>
+  <li><code>ShutdownTimeout = 00:00:05</code> ist der .NET-6-Standard. Ab .NET 8 ist der Quellcode-Standard 30 Sekunden.</li>
+  <li><code>Worker.ExecuteAsync start</code> erscheint vor <code>Quick.StartAsync</code>. In .NET 6 lief der Anfang von <code>ExecuteAsync</code> direkt im Aufruf von <code>StartAsync</code>, auf Thread 1.</li>
+  <li>Der Worker tickt alle 500 ms. Nach <code>calling StopAsync</code> bricht der Host den Token ab.</li>
+  <li><code>Worker: cancellation seen</code> und <code>cleanup done</code> zeigen den sauberen Stop. Der Host wartet auf das Ende des Tasks.</li>
+  <li><code>Quick.StopAsync</code> steht zweimal. Mein Demo ruft <code>StopAsync</code> selbst auf und <code>RunAsync</code> stoppt den Host danach noch einmal.</li>
+</ol>
+
+<h3>Vergleich</h3>
+<ul>
+  <li><b>BackgroundService:</b> Hintergrund-Task mit Token im Host. Standard für Worker.</li>
+  <li><b>IHostedService:</b> Nur Start und Stop. Für Dienste ohne Dauerschleife.</li>
+  <li><b>IHostedLifecycleService:</b> Zusätzliche Hooks vor und nach Start und Stop.</li>
+  <li><b>Spring <code>@Scheduled</code>:</b> Methodenaufruf im Takt. In .NET dafür <code>PeriodicTimer</code> oder Quartz.NET.</li>
+  <li><b>Kubernetes CronJob:</b> Ein eigener Prozess pro Lauf. Gut für seltene Aufgaben.</li>
+  <li><b>Hangfire oder Quartz.NET:</b> Bibliotheken mit Speicher, Wiederholung und Plan.</li>
+  <li><b>Windows Service:</b> Der Host kann als Dienst laufen. Dafür nutzt man <code>AddWindowsService</code>.</li>
+</ul>
+
+<h3>Produktion</h3>
+<ol>
+  <li><b>Fehler stoppt den Host:</b> Eine unbehandelte Exception in <code>ExecuteAsync</code> beendet die App. Lösung: Fehler pro Durchlauf fangen und loggen.</li>
+  <li><b>Scoped in Singleton:</b> DbContext im Konstruktor erzeugt Fehler oder Daten-Lecks. Lösung: <code>IServiceScopeFactory</code>.</li>
+  <li><b>Hartes Beenden:</b> Der Dienst prüft den Token nicht und läuft in den Timeout. Lösung: Token überall durchreichen.</li>
+  <li><b>Blockierender Start:</b> Lange synchrone Arbeit vor dem ersten <code>await</code> hält den Host-Start auf (bis .NET 9). Lösung: früh ein <code>await</code> oder <code>Task.Yield()</code>.</li>
+  <li><b>Unbegrenzte Queue:</b> Die API schreibt schneller als der Worker liest. Lösung: begrenzter <code>Channel</code> mit Gegendruck.</li>
+  <li><b>Doppelte Arbeit bei mehreren Pods:</b> Jeder Pod startet den Worker. Lösung: Sperre, Leader Election oder ein CronJob.</li>
+</ol>
+
+<h3>Diagnose: Werkzeuge und Befehle</h3>
+<ul>
+  <li>Log nach <code>BackgroundService failed</code> und <code>Application is shutting down</code> durchsuchen.</li>
+  <li><code>dotnet-counters</code>: zeigt Thread-Pool und GC bei einem laufenden Worker.</li>
+  <li><code>dotnet-dump</code>: zeigt, wo <code>ExecuteAsync</code> hängt.</li>
+  <li><code>kubectl logs</code> und <code>kubectl describe pod</code>: zeigen Restart-Gründe und Exit-Codes.</li>
+  <li><code>kubectl get pod -o yaml</code>: prüft <code>terminationGracePeriodSeconds</code> gegen den ShutdownTimeout.</li>
+  <li><b>Health Checks</b> und Log-Metriken pro Durchlauf: zeigen, ob der Worker noch lebt.</li>
+</ul>
+
+<h3>Senior-Punkte</h3>
+<div class="senior">
+<ol>
+  <li><b>Stoppen ist Teil des Designs.</b> Token, Timeout und Grace-Period des Orchestrators müssen zusammenpassen.</li>
+  <li><b>Fehler-Strategie bewusst wählen.</b> StopHost ist sicher, wenn der Orchestrator neu startet. Bei Teilausfall fängt man pro Durchlauf.</li>
+  <li><b>At-least-once denken.</b> Nach einem Absturz läuft Arbeit erneut. Verarbeitung muss idempotent sein.</li>
+  <li><b>Scoped-Dienste per Scope.</b> Sonst entstehen lang lebende DbContext und Speicherprobleme.</li>
+  <li><b>Version beachten.</b> ShutdownTimeout und Startverhalten haben sich zwischen .NET 6 und 10 geändert.</li>
+  <li><b>Skalierung klären.</b> Mehrere Instanzen führen den Worker mehrfach aus.</li>
+</ol>
+</div>
+
+<h3>Dein Beispiel</h3>
+</details>
+
+</body>
+</html>
